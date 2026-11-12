@@ -1,16 +1,42 @@
 import { passes, pipelines, targets, type Frame, type SizeSource } from '@typegpu/kit';
 import { memo } from '@typegpu/kit/memo';
-import { d, std, tgpu, type TgpuRoot, type TgpuTexture } from 'typegpu';
-import { CARDS, cardOf, Seen } from './sprites.ts';
+import { d, std, tgpu, type TgpuRenderCommands, type TgpuRoot, type TgpuTexture } from 'typegpu';
+import { LAYERS, type Layers } from './layers.ts';
+import { CARDS, cardOf, Seen, TEXELS } from './sprites.ts';
 
 type Picture = TgpuTexture & { usableAsSampled: true };
 
 const Art = tgpu.bindGroupLayout({
-  art: { texture: d.texture2d(d.f32) },
-  shadows: { texture: d.texture2d(d.f32) },
+  layers: { texture: d.texture2dArray(d.f32) },
+  sprites: { texture: d.texture2d(d.f32) },
   smooth: { sampler: 'filtering' },
 });
+const Shadows = tgpu.bindGroupLayout({ shadows: { texture: d.texture2d(d.f32) } });
 const Source = tgpu.bindGroupLayout({ source: { texture: d.texture2d(d.f32) } });
+
+const SKY = d.vec3f(0.36, 0.6, 0.88);
+const HAZE = d.vec3f(0.8, 0.88, 0.92);
+/** The layers, back to front. */
+const ORDER = [LAYERS.clouds, LAYERS.far, LAYERS.near, LAYERS.level];
+/** The texels around a point that bilinear filtering blends. */
+const CORNERS = [d.vec2i(0, 0), d.vec2i(1, 0), d.vec2i(0, 1), d.vec2i(1, 1)].map((offset) => ({
+  offset,
+}));
+
+/** Where four samples across a texel lie, from its centre. */
+const QUARTERS = [
+  d.vec2f(-0.25, -0.25),
+  d.vec2f(0.25, -0.25),
+  d.vec2f(-0.25, 0.25),
+  d.vec2f(0.25, 0.25),
+].map((offset) => ({ offset }));
+
+/** The bilinear weight of the texel at `offset` from the one `t` of a texel before the point. */
+const weightOf = (offset: d.v2i, t: d.v2f) => {
+  'use gpu';
+  const along = std.abs(1 - d.vec2f(offset) - t);
+  return along.x * along.y;
+};
 
 /** Where the lamp's shadows fall, in texels per texel of height, right and down the picture. */
 const FALL = d.vec2f(0.75, 0.9);
@@ -56,49 +82,39 @@ const casters = (card: number) => {
   return std.step(d.vec4f(0.5, 2.5, 3.5, 4.5), d.vec4f(card));
 };
 
-/** Blurs `read` along `direction` with each channel's Gaussian. */
-const blurred = (screen: d.Infer<typeof passes.ScreenVertex>, direction: d.v2i, art: boolean) => {
+/** Blurs the source along `direction` with each channel's Gaussian. */
+const blurred = (screen: d.Infer<typeof passes.ScreenVertex>, direction: d.v2i) => {
   'use gpu';
   const size = d.vec2i(std.textureDimensions(Source.$.source));
   const texel = d.vec2i(std.floor(screen.uv * d.vec2f(size)));
   let sum = d.vec4f();
   for (const tap of tgpu.unroll(TAPS)) {
     const at = std.clamp(texel + direction * tap.offset, d.vec2i(), size - 1);
-    const read = std.textureLoad(Source.$.source, at, 0);
-    let value = d.vec4f(read);
-    if (art) value = casters(std.round(cardOf(read.w)));
-    sum += tap.weights * value;
+    sum += tap.weights * std.textureLoad(Source.$.source, at, 0);
   }
   return Seen({ color: sum });
 };
 
-/** Blurs the casters of each channel across the art. */
+/** Blurs the casters across the view. */
 const castersAcross = (screen: d.Infer<typeof passes.ScreenVertex>) => {
   'use gpu';
-  return blurred(screen, d.vec2i(1, 0), true);
+  return blurred(screen, d.vec2i(1, 0));
 };
 
-/** Blurs the masks blurred across down the art, which makes their blur round. */
+/** Blurs the casters blurred across down the view, which makes their blur round. */
 const castersDown = (screen: d.Infer<typeof passes.ScreenVertex>) => {
   'use gpu';
-  return blurred(screen, d.vec2i(0, 1), false);
+  return blurred(screen, d.vec2i(0, 1));
 };
 
-/** The card at texel `at` of the art. */
-const cardAt = (at: d.v2f) => {
-  'use gpu';
-  const texel = d.vec2i(std.floor(at));
-  return std.round(cardOf(std.textureLoad(Art.$.art, texel, 0).w));
-};
-
-/** The blurred shadow masks around texel position `at`. */
+/** The blurred shadow masks around the view's texel position `at`. */
 const masksAt = (at: d.v2f) => {
   'use gpu';
-  const size = d.vec2f(std.textureDimensions(Art.$.shadows));
-  return std.textureSampleLevel(Art.$.shadows, Art.$.smooth, at / size, 0);
+  const size = d.vec2f(std.textureDimensions(Shadows.$.shadows));
+  return std.textureSampleLevel(Shadows.$.shadows, Art.$.smooth, at / size, 0);
 };
 
-/** The shadow that the cards in front of `card` cast on it at texel position `at`. */
+/** The shadow that the cards in front of `card` cast on it at the view's texel position `at`. */
 const shadowOn = (at: d.v2f, card: number) => {
   'use gpu';
   if (card === CARDS.sky) return masksAt(at - FALL * GAPS.sky).x;
@@ -109,107 +125,239 @@ const shadowOn = (at: d.v2f, card: number) => {
   return std.max(cast, masksAt(at - FALL * GAPS.feet).w);
 };
 
-/**
- * Samples the art with square texels at any scale, blending one-pixel seams, so a fractional
- * upscale keeps every texel the same width.
- */
-const crisp = (at: d.v2f) => {
+/** A layer's texel, clamped to its texture. */
+const texelOf = (layer: number, texel: d.v2i) => {
   'use gpu';
-  const size = d.vec2f(std.textureDimensions(Art.$.art));
-  const seam = std.floor(at + 0.5);
-  const blend = std.clamp((at - seam) / std.fwidth(at), d.vec2f(-0.5), d.vec2f(0.5));
-  return std.textureSampleLevel(Art.$.art, Art.$.smooth, (seam + blend) / size, 0).xyz;
+  const last = d.vec2i(std.textureDimensions(Art.$.layers)) - 1;
+  return std.textureLoad(Art.$.layers, std.clamp(texel, d.vec2i(), last), layer, 0);
 };
 
-/** The art printed on its card, shaded by the cards in front and lit by the lamp. */
-const pixelOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+/** The sky behind every layer, its rows fixed to the view's texels. */
+const skyAt = (at: d.v2f, size: d.v2f) => {
   'use gpu';
-  const size = d.vec2f(std.textureDimensions(Art.$.art));
-  const at = screen.uv * size;
-  const card = cardAt(at);
-  let color = crisp(at);
+  const rise = (size.y * 0.5 - std.floor(at.y) - 0.5) / TEXELS;
+  return std.mix(HAZE, SKY, std.saturate(rise / 6 + 0.5));
+};
 
-  if (card < CARDS.sprites) color *= std.mix(d.vec3f(1), SHADE, shadowOn(at, card));
+/** The view's size in texels, a texel smaller than each layer. */
+const viewSize = () => {
+  'use gpu';
+  return d.vec2f(std.textureDimensions(Art.$.layers)) - 1;
+};
 
-  // A cut edge catches the lamp where a card lower down lies just above or to the left
-  if (card > 0) {
-    let lit = d.f32(0);
-    if (cardAt(at - d.vec2f(0, EDGE.width)) < card) lit = EDGE.top;
-    else if (cardAt(at - d.vec2f(EDGE.width, 0)) < card) lit = EDGE.left;
-    color = std.mix(color, CORE, lit);
+/** The sprites' pixel at the view's texel position `at`. */
+const spriteAt = (at: d.v2f) => {
+  'use gpu';
+  const size = d.vec2f(std.textureDimensions(Art.$.sprites));
+  return std.textureLoad(Art.$.sprites, d.vec2i(std.floor((at / viewSize()) * size)), 0);
+};
+
+/** How much of the view's texel at `at` the sprites cover, from four samples across it. */
+const spritesOver = (at: d.v2f) => {
+  'use gpu';
+  const view = viewSize();
+  let sum = d.f32(0);
+  for (const corner of tgpu.unroll(QUARTERS)) {
+    const uv = (at + corner.offset) / view;
+    sum += std.textureSampleLevel(Art.$.sprites, Art.$.smooth, uv, 0).w;
   }
-
-  const aspect = size.x / size.y;
-  const off = (screen.uv - LAMP.at) * d.vec2f(aspect, 1);
-  const pool = std.exp(-std.dot(off, off) * LAMP.falloff);
-  color *= WARM * std.mix(LAMP.rim, LAMP.centre, pool);
-  return Seen({ color: d.vec4f(color, 1) });
+  return sum * 0.25;
 };
 
 /**
- * Prints the low-resolution art on paper cards under a desk lamp: each card casts a soft shadow
- * on the cards behind, its cut edges catch the light, and the lamp leaves a warm pool. The
- * shadows blur at the art's resolution, so the print reads two texels a pixel.
+ * How much each mask channel's casters cover a layer around texel position `at` of its
+ * texture, filtered between texels so the masks move smoothly with the layer.
  */
-export function createPaper(root: TgpuRoot, options: { art: () => Picture; size: SizeSource }) {
-  const { art, size } = options;
+const castersIn = (layer: number, at: d.v2f) => {
+  'use gpu';
+  const from = at - 0.5;
+  const base = d.vec2i(std.floor(from));
+  const t = std.fract(from);
+  let sum = d.vec4f();
+  for (const corner of tgpu.unroll(CORNERS)) {
+    const card = std.round(cardOf(texelOf(layer, base + corner.offset).w));
+    sum += weightOf(corner.offset, t) * casters(card);
+  }
+  return sum;
+};
+
+/** A full-screen drawing that binds its groups with `bind` before it draws. */
+const fullScreen = (
+  label: string,
+  shade: (screen: d.Infer<typeof passes.ScreenVertex>) => Seen,
+  bind: (pass: TgpuRenderCommands) => void,
+): passes.Drawing<typeof passes.ScreenVertex, Seen> => ({
+  label,
+  ...passes.fullScreen,
+  pixelOf: shade,
+  color: passes.shaded,
+  draw(pass) {
+    bind(pass);
+    pass.draw(3);
+  },
+});
+
+export interface PaperOptions {
+  /** The art in layers, which stores each pixel's card in alpha. */
+  readonly layers: Layers;
+  /** The sprites at the surface's resolution, premultiplied, all on the front card. */
+  readonly sprites: () => Picture;
+  /** The view's size in texels, which the shadow masks follow. */
+  readonly size: SizeSource;
+}
+
+/**
+ * Prints the art's layers and the sprites over them on paper cards under a desk lamp at full
+ * resolution: each layer moves by whole pixels, each card casts a soft shadow on the cards behind, its cut edges catch the
+ * light, and the lamp leaves a warm pool. The shadows blur at the art's resolution.
+ */
+export function createPaper(root: TgpuRoot, options: PaperOptions) {
+  const { layers, sprites, size } = options;
+  const { inLayer } = layers;
   const mask = { format: 'rgba16float', sampled: true } as const;
+  const cast = targets.create(root, size, { color: mask });
   const across = targets.create(root, size, { color: mask });
   const down = targets.create(root, size, { color: mask });
   const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
+  /** The card in front at the view's texel position `at`, the sky where nothing covers it. */
+  const cardAt = (at: d.v2f) => {
+    'use gpu';
+    if (spriteAt(at).w > 0.5) return d.f32(CARDS.sprites);
+    let card = d.f32(CARDS.sky);
+    for (const layer of tgpu.unroll(ORDER)) {
+      const alpha = texelOf(layer, d.vec2i(std.floor(inLayer(layer, at)))).w;
+      if (alpha > 0) card = std.round(cardOf(alpha));
+    }
+    return card;
+  };
+
+  /** Which cards in front of each mask channel's cards cover each texel of the view. */
+  const castersOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+    'use gpu';
+    const at = screen.uv * viewSize();
+    // Sprites lie on the front card, so they shadow every card behind
+    let sum = d.vec4f(spritesOver(at));
+    for (const layer of tgpu.unroll(ORDER)) {
+      sum = std.max(sum, castersIn(layer, inLayer(layer, at)));
+    }
+    return Seen({ color: sum });
+  };
+
+  /**
+   * Lays a layer over `behind` at the view's texel position `at`, shaded by `shadow` where it
+   * lies on a card that takes shadows. Samples the layer with square texels at any scale,
+   * blending one-pixel seams, so a fractional upscale keeps every texel the same width.
+   */
+  const over = (layer: number, at: d.v2f, shadow: number, behind: d.v3f) => {
+    'use gpu';
+    const inside = inLayer(layer, at);
+    const seam = std.floor(inside + 0.5);
+    const blend = std.clamp((inside - seam) / std.fwidth(inside), d.vec2f(-0.5), d.vec2f(0.5));
+    const from = seam + blend - 0.5;
+    const base = d.vec2i(std.floor(from));
+    const t = std.fract(from);
+    const shade = std.mix(d.vec3f(1), SHADE, shadow);
+
+    // Colours count as premultiplied, so sparkles added where nothing was drawn still glow
+    let color = d.vec3f();
+    let coverage = d.f32(0);
+    for (const corner of tgpu.unroll(CORNERS)) {
+      const texel = texelOf(layer, base + corner.offset);
+      const card = std.round(cardOf(texel.w));
+      const weight = weightOf(corner.offset, t);
+      const shaded = card > CARDS.sky && card < CARDS.sprites;
+      color += weight * std.select(texel.xyz, texel.xyz * shade, shaded);
+      coverage += weight * std.select(d.f32(0), d.f32(1), texel.w > 0);
+    }
+    return color + (1 - coverage) * behind;
+  };
+
+  /** The layers printed on their cards, shaded by the cards in front and lit by the lamp. */
+  const pixelOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+    'use gpu';
+    const view = viewSize();
+    const at = screen.uv * view;
+
+    let color = skyAt(at, view) * std.mix(d.vec3f(1), SHADE, shadowOn(at, CARDS.sky));
+    for (const layer of tgpu.unroll(ORDER)) {
+      // Each backdrop layer is one card, behind the level
+      const card = std.select(d.f32(layer + 1), d.f32(CARDS.level), layer === LAYERS.level);
+      color = over(layer, at, shadowOn(at, card), color);
+    }
+    const sprite = spriteAt(at);
+    color = sprite.xyz + (1 - sprite.w) * color;
+
+    // A cut edge catches the lamp where a card lower down lies just above or to the left
+    const card = cardAt(at);
+    if (card > 0) {
+      let lit = d.f32(0);
+      if (cardAt(at - d.vec2f(0, EDGE.width)) < card) lit = EDGE.top;
+      else if (cardAt(at - d.vec2f(EDGE.width, 0)) < card) lit = EDGE.left;
+      color = std.mix(color, CORE, lit);
+    }
+
+    const aspect = view.x / view.y;
+    const off = (screen.uv - LAMP.at) * d.vec2f(aspect, 1);
+    const pool = std.exp(-std.dot(off, off) * LAMP.falloff);
+    color *= WARM * std.mix(LAMP.rim, LAMP.centre, pool);
+    return Seen({ color: d.vec4f(color, 1) });
+  };
+
+  const artOf = memo((texture: Picture, shown: Picture) =>
+    root.createBindGroup(Art, {
+      layers: texture.createView(d.texture2dArray(d.f32)),
+      sprites: shown,
+      smooth,
+    }),
+  );
+  const art = () => artOf(layers.target.textures.color, sprites());
   const sourceOf = memo((texture: Picture) => root.createBindGroup(Source, { source: texture }));
-  const blur = (
-    label: string,
-    shade: (screen: d.Infer<typeof passes.ScreenVertex>) => Seen,
-    read: () => Picture,
-  ): passes.Drawing<typeof passes.ScreenVertex, Seen> => ({
-    label,
-    ...passes.fullScreen,
-    pixelOf: shade,
-    color: passes.shaded,
-    draw(pass) {
-      pass.setBindGroup(sourceOf(read()));
-      pass.draw(3);
-    },
-  });
-  const blurs = [
+  const shadowsOf = memo((texture: Picture) => root.createBindGroup(Shadows, { shadows: texture }));
+
+  const steps = [
+    passes.create(root, cast, { color: passes.color }),
     passes.create(root, across, { color: passes.color }),
     passes.create(root, down, { color: passes.color }),
-  ];
+  ] as const;
   const drawn = [
-    [blurs[0].add(blur('shadows across', castersAcross, art))],
-    [blurs[1].add(blur('shadows down', castersDown, () => across.textures.color))],
-  ];
+    [steps[0].add(fullScreen('casters', castersOf, (pass) => pass.setBindGroup(art())))],
+    [
+      steps[1].add(
+        fullScreen('shadows across', castersAcross, (pass) =>
+          pass.setBindGroup(sourceOf(cast.textures.color)),
+        ),
+      ),
+    ],
+    [
+      steps[2].add(
+        fullScreen('shadows down', castersDown, (pass) =>
+          pass.setBindGroup(sourceOf(across.textures.color)),
+        ),
+      ),
+    ],
+  ] as const;
 
-  const printOf = memo((picture: Picture, shadows: Picture) =>
-    root.createBindGroup(Art, { art: picture, shadows, smooth }),
-  );
-  const drawing: passes.Drawing<typeof passes.ScreenVertex, Seen> = {
-    label: 'paper',
-    ...passes.fullScreen,
-    pixelOf,
-    color: passes.shaded,
-    draw(pass) {
-      pass.setBindGroup(printOf(art(), down.textures.color));
-      pass.draw(3);
-    },
-  };
+  const drawing = fullScreen('paper', pixelOf, (pass) => {
+    pass.setBindGroup(art());
+    pass.setBindGroup(shadowsOf(down.textures.color));
+  });
 
   return {
     /** Add it to the pass that prints the paper, after `record` in each frame. */
     drawing,
-    initAsync: () => pipelines.compile(blurs),
+    initAsync: () => pipelines.compile(steps),
 
-    /** Blurs the shadow masks from the art drawn this frame. */
+    /** Finds and blurs the shadow masks from the layers drawn this frame. */
     record(frame: Frame) {
+      cast.fit();
       across.fit();
       down.fit();
-      blurs[0].record(frame, drawn[0]);
-      blurs[1].record(frame, drawn[1]);
+      for (let k = 0; k < steps.length; k++) steps[k].record(frame, drawn[k]);
     },
 
     destroy() {
+      cast.destroy();
       across.destroy();
       down.destroy();
     },

@@ -10,7 +10,7 @@ import {
 import { d, std, type TgpuRoot } from 'typegpu';
 import { HALF } from './hero.ts';
 import type { Level } from './level.ts';
-import { quad, snapped, sprite, type ArtOptions, type Seen } from './sprites.ts';
+import { pixelated, quad, snapped, sprite, TEXELS, type ArtOptions, type Seen } from './sprites.ts';
 
 const Coin = table.define('Coin', {
   host: {
@@ -38,7 +38,8 @@ const GOLD = d.vec3f(1, 0.8, 0.22);
 const RIM = d.vec3f(0.78, 0.47, 0.1);
 const SHINE = d.vec3f(1, 0.97, 0.8);
 
-const Corner = d.struct({ position: d.vec4f, local: d.vec2f });
+/** A corner of a coin's quad, in quad units and in texels from the coin's snapped centre. */
+const Corner = d.struct({ position: d.vec4f, local: d.vec2f, texel: d.vec2f });
 
 export interface CoinsOptions extends ArtOptions {
   readonly capacity: number;
@@ -75,22 +76,24 @@ export function createCoins(root: TgpuRoot, options: CoinsOptions) {
       // Retain some width so the coin remains visible edge-on
       const turn = std.abs(std.cos(time.$ * SPIN.rate + center.x * SPIN.stagger));
       const across = std.max(turn, SPIN.edge);
-      const world = snapped(center + d.vec2f(0, age * RISE)) + corner * d.vec2f(across, 1) * size;
+      const offset = corner * d.vec2f(across, 1) * size;
+      const world = snapped(center + d.vec2f(0, age * RISE)) + offset;
 
       return Corner({
         position: cameras.toClip(d.vec3f(world, 0)),
         local: corner,
+        texel: offset * TEXELS,
       });
     },
 
     cutout: (corner) => {
       'use gpu';
-      return std.length(corner.local) > 1;
+      return std.length(pixelated(corner.local, corner.texel)) > 1;
     },
 
     pixelOf: (corner) => {
       'use gpu';
-      const local = corner.local;
+      const local = pixelated(corner.local, corner.texel);
       if (std.length(local) > 0.72) return sprite(RIM);
       if (std.abs(local.x + local.y * 0.5 + 0.2) < 0.18) return sprite(SHINE);
       return sprite(GOLD);

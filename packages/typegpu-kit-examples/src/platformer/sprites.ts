@@ -1,11 +1,11 @@
 import { meshes } from '@typegpu/kit/geometry';
 import { sdDisk } from '@typegpu/sdf';
-import { d, std, type TgpuUniform } from 'typegpu';
+import { d, std, tgpu, type TgpuUniform } from 'typegpu';
 
 /** Sprite quad spans -1 to 1 on xz, with two triangles. */
 export const quad = meshes.unindexed(meshes.plane({ width: 2, depth: 2 }));
 
-/** Texels per tile. The camera and every layer snap to them, so the art stays on the grid. */
+/** Texels per tile. Each layer draws on its own grid of them, so its art keeps its pixels. */
 export const TEXELS = 16;
 
 /**
@@ -42,10 +42,37 @@ export const sprite = (color: d.v3f) => {
   return Seen({ color: d.vec4f(color, onCard(CARDS.sprites)) });
 };
 
-/** Rounds a world position to the texel grid, so a moving sprite keeps its exact pixels. */
+/**
+ * Pixels of what sprites are drawn into per tile along each axis. The sprites' pass fills it with
+ * the surface's, and it defaults to the art's texels.
+ */
+export const grid = tgpu.accessor(d.vec2f, d.vec2f(TEXELS));
+
+/** Rounds a world position to the pixels sprites are drawn into, so sprites glide without blur. */
 export const snapped = (world: d.v2f) => {
   'use gpu';
-  return std.round(world * TEXELS) / TEXELS;
+  return std.round(world * grid.$) / grid.$;
+};
+
+/**
+ * Moves a sprite's `local` coordinate to the centre of its texel, so the sprite keeps square
+ * texels of its own as it moves by pixels. `texel` is the same point's offset in texels from the
+ * sprite's snapped position, and both vary linearly across the sprite's quad.
+ */
+export const pixelated = (local: d.v2f, texel: d.v2f) => {
+  'use gpu';
+  const perTexel = d.vec2f(
+    std.dpdx(local).x / std.dpdx(texel).x,
+    std.dpdy(local).y / std.dpdy(texel).y,
+  );
+  return local + (std.floor(texel) + 0.5 - texel) * perTexel;
+};
+
+/** Moves a particle's `local` coordinate to the centre of its texel, for a particle `size` tiles wide. */
+export const pixelatedMote = (local: d.v2f, size: number) => {
+  'use gpu';
+  const texels = size * TEXELS * 0.5;
+  return (std.floor(local * texels) + 0.5) / texels;
 };
 
 const WHITE = d.vec3f(0.98, 0.96, 0.9);

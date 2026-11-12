@@ -1,22 +1,23 @@
 import { particles, pipelines, type CameraBase, type Particle } from '@typegpu/kit';
 import { d, std, type TgpuRoot, type TgpuComputePass } from 'typegpu';
+import { pixelatedMote } from './sprites.ts';
 
 /** Dust colour and opacity. Opaque dust lies on the front card, beside the sprites. */
 export const DUST = [0.82, 0.76, 0.66, 1] as const;
 const GOLD = [1, 0.85, 0.35, 1] as const;
 
-/** Hard-edged shrinking dot matching the pixel art. */
+/** Hard-edged shrinking dot in texels of its own. */
 const dot = (mote: Particle, local: d.v2f) => {
   'use gpu';
   const left = 1 - mote.age / mote.life;
-  if (std.length(local) > left) return d.vec4f();
+  if (std.length(pixelatedMote(local, mote.size)) > left) return d.vec4f();
   return d.vec4f(mote.color.xyz * mote.color.w, mote.color.w);
 };
 
-/** Additive four-pointed sparkle. */
+/** Additive four-pointed sparkle in texels of its own. */
 const twinkle = (spark: Particle, local: d.v2f) => {
   'use gpu';
-  const across = std.abs(local);
+  const across = std.abs(pixelatedMote(local, spark.size));
   const star = std.max(1 - across.x * 4 - across.y, 1 - across.y * 4 - across.x);
   const light = std.saturate(star * 2) * (1 - spark.age / spark.life);
   return d.vec4f(spark.color.xyz * light, 0);

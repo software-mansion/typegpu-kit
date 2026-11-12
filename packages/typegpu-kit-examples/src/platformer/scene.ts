@@ -1,5 +1,4 @@
 import {
-  cameras,
   clock,
   coroutines,
   finish,
@@ -17,9 +16,10 @@ import { createAvatar } from './avatar.ts';
 import { createCoins } from './coins.ts';
 import { createCritters } from './critters.ts';
 import { createEffects } from './effects.ts';
+import { createLayers, LAYERS } from './layers.ts';
 import { createPaper } from './paper.ts';
 import { createScenery } from './scenery.ts';
-import { TEXELS } from './sprites.ts';
+import { grid, TEXELS } from './sprites.ts';
 
 /** View height in tiles. */
 const VIEW = 12;
@@ -27,6 +27,9 @@ const VIEW = 12;
 const ABOVE = 1;
 /** Fixed steps a frame may catch up on, 0.1 s at `STEP`. */
 const MAX_STEPS = 12;
+/** How fast the view follows the hero: the share left after a second is e^-FOLLOW. */
+const FOLLOW = 8;
+const BACKDROP = [LAYERS.clouds, LAYERS.far, LAYERS.near];
 
 export interface SceneOptions {
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
@@ -38,39 +41,43 @@ export interface SceneOptions {
 }
 
 /**
- * Draws a platformer's pixel art into a low-resolution target, then prints it on paper cards under
- * a desk lamp at full resolution. Coins and critters are listed on the GPU, and dust and sparkles
- * are particles.
+ * Draws a platformer's scenery into low-resolution layers, each on its own texel grid, and its
+ * sprites at full resolution, each on whole pixels with texels of its own. Then prints them on
+ * paper cards under a desk lamp, each layer moved by whole pixels. Coins and critters are listed
+ * on the GPU, and dust and sparkles are particles.
  */
 export async function createScene(root: TgpuRoot, surface: Surface, options: SceneOptions = {}) {
   const { map = MAP, onScore = () => {} } = options;
   const level = parseLevel(map);
 
-  // Match the surface aspect ratio at a fixed texel height. An even width keeps each pixel's centre
-  // inside a texel, since the camera snaps its centre to the texel grid
+  // Match the surface aspect ratio at a fixed texel height
   const pixels = {
     get width() {
-      return 2 * Math.round((surface.width / surface.height) * VIEW * TEXELS * 0.5);
+      return Math.round((surface.width / surface.height) * VIEW * TEXELS);
     },
     height: VIEW * TEXELS,
   };
-  const view = cameras.flat(root, {
-    size: pixels,
-    height: VIEW,
-    snap: 1 / TEXELS,
-    center: level.start,
-  });
-  const art = targets.create(root, pixels, { color: { format: 'rgba8unorm', sampled: true } });
-  const scene = passes.create(root, art, { color: passes.color }).pipe(view.inject());
+  const layers = createLayers(root, { size: pixels, surface });
+  const scene = passes
+    .create(root, layers.target, { color: passes.color })
+    .pipe(layers.camera.inject());
+  // Sprites glide over the layers by whole pixels of the surface
+  const shown = targets.create(root, surface, { color: { format: 'rgba8unorm', sampled: true } });
+  const front = passes
+    .create(root, shown, { color: passes.color })
+    .pipe(layers.screen.inject())
+    .pipe((cfg) => cfg.with(grid, layers.grid));
+  const [x, y] = level.start;
+  const eye = { x, y };
 
   const time = root.createUniform(d.f32);
   const sim = clock.fixedStep({ step: STEP, maxSteps: MAX_STEPS });
   const scheduler = coroutines.create();
 
-  const scenery = createScenery(root, time, level);
+  const scenery = createScenery(root, time, level, layers);
   const avatar = createAvatar(root, { time });
   const coins = createCoins(root, { time, capacity: level.coins.length, scheduler });
-  const effects = createEffects(root, view, { step: sim.step });
+  const effects = createEffects(root, layers.screen, { step: sim.step });
   const critters = createCritters(root, {
     time,
     capacity: level.critters.length,
@@ -78,19 +85,20 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
     avatar,
     dust: effects.dust,
   });
-  const drawn = [
-    scene.add(scenery.drawing),
-    scene.add(coins.drawing),
-    scene.add(critters.drawing),
-    scene.add(effects.dust.drawing),
-    scene.add(effects.sparks.drawing),
-    scene.add(avatar.drawing),
+  const backdrop = [scene.add(scenery.backdrop)];
+  const tiles = [scene.add(scenery.drawing)];
+  const sprites = [
+    front.add(coins.drawing),
+    front.add(critters.drawing),
+    front.add(effects.dust.drawing),
+    front.add(effects.sparks.drawing),
+    front.add(avatar.drawing),
   ];
 
   // The paper is already in display colour space, so skip tone mapping and encoding
   const sheet = targets.create(root, surface, { color: { format: 'rgba8unorm', sampled: true } });
   const print = passes.create(root, sheet, { color: passes.color });
-  const paper = createPaper(root, { art: () => art.textures.color, size: pixels });
+  const paper = createPaper(root, { layers, sprites: () => shown.textures.color, size: pixels });
   const printed = [print.add(paper.drawing)];
   const final = finish.create(root, {
     format: surface.format,
@@ -100,7 +108,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
     settings: { vignette: 0.18, dither: 0 },
   });
 
-  await pipelines.compile([scene, coins, critters, effects, paper, print, final]);
+  await pipelines.compile([scene, front, coins, critters, effects, paper, print, final]);
 
   let score = '';
   const game = createPlatformer(level, { coins, critters, effects, sim }, (state) => {
@@ -146,7 +154,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       }
       time.write(frame.time);
       scheduler.run(frame);
-      art.fit();
+      layers.target.fit();
+      shown.fit();
       sheet.fit();
 
       coins.table.flush();
@@ -163,13 +172,21 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
       // Queue writes precede frame commands, so every critter step reads the hero's whole path
       avatar.update(hero, sim.alpha, game.safe);
+      critters.lead(sim.ahead);
 
+      // Follow the hero where it is drawn, between steps
+      const { position, previous } = hero;
+      const heroX = previous[0] + (position[0] - previous[0]) * sim.alpha;
+      const heroY = previous[1] + (position[1] - previous[1]) * sim.alpha;
       const halfWidth = pixels.width / TEXELS / 2;
-      view.goal.x = clamp(hero.position[0], halfWidth, level.width - halfWidth);
-      view.goal.y = clamp(hero.position[1] + ABOVE, VIEW / 2, level.height - VIEW / 2);
-      view.update(frame.dt);
+      const follow = clock.ease(frame.dt, FOLLOW);
+      eye.x += (clamp(heroX, halfWidth, level.width - halfWidth) - eye.x) * follow;
+      eye.y += (clamp(heroY + ABOVE, VIEW / 2, level.height - VIEW / 2) - eye.y) * follow;
+      layers.place(eye, frame.time);
 
-      scene.record(frame, drawn);
+      for (const layer of BACKDROP) scene.record(frame, backdrop, { layer });
+      scene.record(frame, tiles, { layer: LAYERS.level });
+      front.record(frame, sprites);
       paper.record(frame);
       print.record(frame, printed);
       final.record(frame, surface.view(frame));
@@ -177,7 +194,9 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
     destroy() {
       scheduler.destroy();
-      for (const made of [art, scenery, coins, critters, effects, sheet, paper]) made.destroy();
+      for (const made of [layers, shown, scenery, coins, critters, effects, sheet, paper]) {
+        made.destroy();
+      }
     },
   };
 }

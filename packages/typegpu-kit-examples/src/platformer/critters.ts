@@ -16,7 +16,16 @@ import { avatar } from './avatar.ts';
 import { DUST } from './effects.ts';
 import { HALF } from './hero.ts';
 import { BAT, WALKER, type Level } from './level.ts';
-import { eyes, quad, snapped, sprite, TEXELS, type ArtOptions, type Seen } from './sprites.ts';
+import {
+  eyes,
+  pixelated,
+  quad,
+  snapped,
+  sprite,
+  TEXELS,
+  type ArtOptions,
+  type Seen,
+} from './sprites.ts';
 
 const Critter = table.define('Critter', {
   host: {
@@ -79,8 +88,17 @@ const shellAt = (local: d.v2f) => {
   return sdRoundedBox2d(local + d.vec2f(0, 0.15), d.vec2f(0.85, 0.7), 0.55);
 };
 
-/** What a critter's pixels read from its quad: the corner in quad units, its kind and facing. */
-const Corner = d.struct({ position: d.vec4f, local: d.vec2f, kind: d.u32, facing: d.f32 });
+/**
+ * What a critter's pixels read from its quad: the corner in quad units and in texels from the
+ * critter's snapped position, its kind and facing.
+ */
+const Corner = d.struct({
+  position: d.vec4f,
+  local: d.vec2f,
+  texel: d.vec2f,
+  kind: d.u32,
+  facing: d.f32,
+});
 
 /** The part of [0, 1] where `origin + path * t` lies strictly between `low` and `high`. */
 const slab = (origin: number, path: number, low: number, high: number) => {
@@ -123,6 +141,9 @@ export interface CrittersOptions extends ArtOptions {
 /** Moves walkers and bats on the GPU and detects contacts with the hero. */
 export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   const { capacity, step, time, dust } = options;
+  /** Seconds since the last step, which walkers are drawn ahead by. */
+  const ahead = root.createUniform(d.f32);
+  let drawnAhead = 0;
 
   const critters = table.create(root, Critter, {
     capacity,
@@ -130,6 +151,28 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   });
   const live = liveLists.create(root, { ...critters.live(), draws: [quad] });
   const critter = critters.gpu;
+
+  /** Where bat `i` flies at `t` seconds, and which way. */
+  const flightAt = (i: number, t: number) => {
+    'use gpu';
+    const at = t + critter.phase(i);
+    const across = std.sin(at * FLIGHT.pace) * FLIGHT.reach;
+    return critter.home(i) + d.vec2f(across, std.sin(at * FLIGHT.bob) * FLIGHT.rise);
+  };
+
+  /**
+   * Where critter `i` is drawn at the frame's time, between steps: a bat on its loop, a walker
+   * ahead along its patrol and a squashed critter where it was stomped.
+   */
+  const shownAt = (i: number) => {
+    'use gpu';
+    const position = critter.position(i);
+    if (critter.squashedAt(i) >= 0) return position;
+    if (critter.kind(i) === BAT) return flightAt(i, time.$);
+    const patrol = critter.patrol(i);
+    const x = position.x + critter.heading(i) * WALK * ahead.$;
+    return d.vec2f(std.clamp(x, patrol.x, patrol.y), position.y);
+  };
 
   // Read contacts every frame to minimise stomp-bounce latency
   const contacts = counters.create(root, ['stomps', 'hurts'], { hz: 60 });
@@ -171,10 +214,8 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       if (x < patrol.x || x > patrol.y) row.heading = -row.heading;
       row.position.x = std.clamp(x, patrol.x, patrol.y);
     } else {
-      const t = time.$ + critter.phase(i);
-      const across = std.sin(t * FLIGHT.pace) * FLIGHT.reach;
-      row.position = critter.home(i) + d.vec2f(across, std.sin(t * FLIGHT.bob) * FLIGHT.rise);
-      row.heading = std.sign(std.cos(t * FLIGHT.pace));
+      row.position = flightAt(i, time.$);
+      row.heading = std.sign(std.cos((time.$ + critter.phase(i)) * FLIGHT.pace));
     }
 
     const enter = touchAt(row.position);
@@ -215,11 +256,12 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       const scale = std.select(d.vec2f(1), FLAT * fade, flat);
 
       const local = corner * scale * SIZE + d.vec2f(0, (scale.y - 1) * SIZE);
-      const world = snapped(critter.position(slot)) + local;
+      const world = snapped(shownAt(slot)) + local;
 
       return Corner({
         position: cameras.toClip(d.vec3f(world, 0)),
         local: corner,
+        texel: local * TEXELS,
         kind: critter.kind(slot),
         facing: critter.heading(slot),
       });
@@ -227,13 +269,14 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
 
     cutout: (corner) => {
       'use gpu';
-      if (corner.kind === BAT) return wingAt(corner.local) > 0 && sdDisk(corner.local, 0.5) > 0;
-      return shellAt(corner.local) > 0;
+      const local = pixelated(corner.local, corner.texel);
+      if (corner.kind === BAT) return wingAt(local) > 0 && sdDisk(local, 0.5) > 0;
+      return shellAt(local) > 0;
     },
 
     pixelOf: (corner) => {
       'use gpu';
-      const local = corner.local;
+      const local = pixelated(corner.local, corner.texel);
       if (corner.kind === BAT && wingAt(local) < 0) return sprite(WING);
 
       const facing = corner.facing;
@@ -275,6 +318,13 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
         pass.setPipeline(stepPipeline);
         pass.dispatchWorkgroups(workgroups);
       }
+    },
+
+    /** Draws walkers `seconds` ahead of the last step, such as a fixed-step clock's `ahead`. */
+    lead(seconds: number) {
+      if (seconds === drawnAhead) return;
+      drawnAhead = seconds;
+      ahead.write(seconds);
     },
 
     destroy() {
