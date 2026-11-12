@@ -12,15 +12,17 @@ const STRIP = ['', '', '', '@ o          w             F', '####################
 /**
  * A frame's events. One compute pass holds the critters', the dust's and the sparkles' steps, any
  * spawns, and two compacting kernels each for the coins, the critters, the dust and the sparkles.
- * The art pass draws the scenery, the coins, critters, dust and sparkles indirectly, and the hero.
- * Two passes blur the shadow masks, one prints the art on paper and the final pass draws it onto
- * the surface.
+ * A pass draws each backdrop layer and one the level's tiles. The sprites' pass draws the coins,
+ * critters, dust and sparkles indirectly, and the hero. One pass finds what casts shadows and two
+ * blur them, one prints the layers and sprites on paper and the final pass draws it onto the
+ * surface.
  */
 const frame = (steps: number, spawns: number, capture: boolean) => [
   ...compute(3 * steps + spawns + 8),
   ...(capture ? ['copy-buffer'] : []),
-  ...pass('draw', ...Array<string>(4).fill('draw-indirect'), 'draw'),
   ...Array.from({ length: 4 }, () => pass('draw')).flat(),
+  ...pass(...Array<string>(4).fill('draw-indirect'), 'draw'),
+  ...Array.from({ length: 5 }, () => pass('draw')).flat(),
   'submit',
 ];
 
@@ -52,9 +54,9 @@ describeExample(
       return { ...parts, step, advance, contact };
     };
 
-    it('records a frame in one compute pass, the art, its shadows and its print on paper', async () => {
+    it('records a frame in one compute pass, the layers, their shadows and their print on paper', async () => {
       const { log, next } = await setup();
-      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(10);
+      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(12);
 
       // Each frame copies the contacts, which are read at 60 Hz. The second takes four steps, and
       // the hero lands from where it was placed in a puff of dust
@@ -198,8 +200,8 @@ describeExample(
   },
   {
     // Coins, critters, dust and sparkles each compact with two kernels. The critters' step, a spawn
-    // and a step each for dust and sparkles, six draws of the art, the shadows' two blurs, the
-    // print on paper and the final pass.
-    pipelines: 23,
+    // and a step each for dust and sparkles, the backdrop, the tiles, five sprite drawings, the shadows'
+    // casters and two blurs, the print on paper and the final pass.
+    pipelines: 25,
   },
 );

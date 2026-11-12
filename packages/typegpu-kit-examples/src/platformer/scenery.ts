@@ -1,10 +1,10 @@
-import { cameras, passes } from '@typegpu/kit';
+import { passes } from '@typegpu/kit';
 import { perlin2d, randf } from '@typegpu/noise';
 import { d, std, type TgpuRoot, type TgpuUniform } from 'typegpu';
+import { LAYERS, type Layers } from './layers.ts';
 import { BRICKS, EMPTY, GROUND, type Level } from './level.ts';
 import { CARDS, onCard, Seen, TEXELS } from './sprites.ts';
 
-const SKY = d.vec3f(0.36, 0.6, 0.88);
 const HAZE = d.vec3f(0.8, 0.88, 0.92);
 const CLOUD = d.vec3f(0.98, 0.97, 0.94);
 const CLOUD_BELLY = d.vec3f(0.83, 0.87, 0.93);
@@ -23,24 +23,14 @@ const MORTAR = d.vec3f(0.45, 0.23, 0.18);
 const POLE = d.vec3f(0.9, 0.9, 0.85);
 const PENNANT = d.vec3f(0.95, 0.3, 0.35);
 
-/** Cloud, far-hill and near-hill parallax factors relative to camera movement. */
-const PARALLAX = { clouds: 0.9, far: 0.7, near: 0.45 };
 /**
  * Cumulus: the range of their flat bases above the horizon, the tiles between banks, the share of
  * clear sky between banks, and the smallest and largest puff in tiles.
  */
 const CLOUDS = { base: [3.2, 5.2], spacing: 8, clear: 0.2, size: [0.8, 1.6] };
-/** Tiles a second the clouds drift. */
-const DRIFT = 0.3;
 /** Radians a second the pennant waves. */
 const FLUTTER = 6;
 const TEXEL = 1 / TEXELS;
-
-/** Moves a layer by whole texels, so its art keeps its pixels as the camera pans. */
-const shift = (offset: d.v2f) => {
-  'use gpu';
-  return std.round(offset * TEXELS) / TEXELS;
-};
 
 /** Dirt and pebbles, under a lumpy grass edge where `open` says the tile above is empty. */
 const ground = (world: d.v2f, open: boolean) => {
@@ -96,10 +86,41 @@ const cloudAt = (at: d.v2f) => {
   return false;
 };
 
+/** A backdrop layer's card at `at`, in its own tiles, or zero alpha where it shows the sky. */
+const backdropAt = (layer: number, at: d.v2f) => {
+  'use gpu';
+  if (layer === LAYERS.near) {
+    const rise = 1 + perlin2d.sample(d.vec2f(at.x * 0.2, 7.5)) * 1.5;
+    if (at.y >= rise) return d.vec4f();
+    // Darker toward the foot of the hills, in whole texel rows
+    const below = std.floor((rise - at.y) * TEXELS) * TEXEL;
+    if (below < 2 * TEXEL) return d.vec4f(NEAR_CREST, onCard(CARDS.near));
+    return d.vec4f(NEAR * (1 - std.min(below, 3) * 0.05), onCard(CARDS.near));
+  }
+
+  if (layer === LAYERS.far) {
+    const crest = 2.5 + perlin2d.sample(d.vec2f(at.x * 0.12, 1.5)) * 2;
+    if (at.y >= crest) return d.vec4f();
+    const below = std.floor((crest - at.y) * TEXELS) * TEXEL;
+    if (below < 2 * TEXEL) return d.vec4f(FAR_CREST, onCard(CARDS.far));
+    return d.vec4f(std.mix(FAR, HAZE, std.min(below, 4) * 0.06), onCard(CARDS.far));
+  }
+
+  if (!cloudAt(at)) return d.vec4f();
+  if (!cloudAt(at - d.vec2f(0, 2 * TEXEL))) return d.vec4f(CLOUD_BELLY, onCard(CARDS.clouds));
+  return d.vec4f(CLOUD, onCard(CARDS.clouds));
+};
+
 /**
- * Shades sky, clouds, hills, tiles and flag per texel in one full-screen pass, each on its card.
+ * Shades clouds, hills, tiles and flag per texel, each on its card: `backdrop` into whichever
+ * backdrop layer its pass draws, `drawing` into the level layer, transparent around the tiles.
  */
-export function createScenery(root: TgpuRoot, time: TgpuUniform<d.F32>, level: Level) {
+export function createScenery(
+  root: TgpuRoot,
+  time: TgpuUniform<d.F32>,
+  level: Level,
+  layers: Layers,
+) {
   const { width, height } = level;
   const flag = d.vec2f(level.flag[0] - 0.5, level.flag[1] - 0.5);
 
@@ -110,37 +131,6 @@ export function createScenery(root: TgpuRoot, time: TgpuUniform<d.F32>, level: L
     if (cell.x < 0 || cell.x >= width) return d.u32(GROUND);
     if (cell.y < 0 || cell.y >= height) return d.u32(EMPTY);
     return tiles.$[cell.y * width + cell.x];
-  };
-
-  /** The cards behind the level, which scroll slower than it. */
-  const backdrop = (world: d.v2f, eye: d.v2f) => {
-    'use gpu';
-    const near = world - shift(eye * PARALLAX.near);
-    const rise = 1 + perlin2d.sample(d.vec2f(near.x * 0.2, 7.5)) * 1.5;
-    if (near.y < rise) {
-      // Darker toward the foot of the hills, in whole texel rows
-      const below = std.floor((rise - near.y) * TEXELS) * TEXEL;
-      if (below < 2 * TEXEL) return d.vec4f(NEAR_CREST, onCard(CARDS.near));
-      return d.vec4f(NEAR * (1 - std.min(below, 3) * 0.05), onCard(CARDS.near));
-    }
-
-    const far = world - shift(eye * PARALLAX.far);
-    const crest = 2.5 + perlin2d.sample(d.vec2f(far.x * 0.12, 1.5)) * 2;
-    if (far.y < crest) {
-      const below = std.floor((crest - far.y) * TEXELS) * TEXEL;
-      if (below < 2 * TEXEL) return d.vec4f(FAR_CREST, onCard(CARDS.far));
-      return d.vec4f(std.mix(FAR, HAZE, std.min(below, 4) * 0.06), onCard(CARDS.far));
-    }
-
-    const drift = world - shift(eye * PARALLAX.clouds - d.vec2f(time.$ * DRIFT, 0));
-    if (cloudAt(drift)) {
-      if (!cloudAt(drift - d.vec2f(0, 2 * TEXEL)))
-        return d.vec4f(CLOUD_BELLY, onCard(CARDS.clouds));
-      return d.vec4f(CLOUD, onCard(CARDS.clouds));
-    }
-
-    const sky = std.mix(HAZE, SKY, std.saturate((world.y - eye.y) / 6 + 0.5));
-    return d.vec4f(sky, onCard(CARDS.sky));
   };
 
   /** The flag's pole and waving pennant, or zero alpha beside them. */
@@ -157,12 +147,10 @@ export function createScenery(root: TgpuRoot, time: TgpuUniform<d.F32>, level: L
     return d.vec4f();
   };
 
-  /** The tile, or the cards behind, under each texel the camera sees. */
+  /** The tile or the flag under each texel of the level layer. */
   const pixelOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
     'use gpu';
-    const ndc = d.vec2f(screen.uv.x * 2 - 1, 1 - screen.uv.y * 2);
-    const world = cameras.rayOf(cameras.current.$, ndc).origin.xy;
-    const eye = cameras.current.$.position.xy;
+    const world = layers.pointOf(LAYERS.level, screen.uv);
     const front = onCard(CARDS.level);
 
     const cell = d.vec2i(std.floor(world));
@@ -175,7 +163,14 @@ export function createScenery(root: TgpuRoot, time: TgpuUniform<d.F32>, level: L
     if (kind === BRICKS) return Seen({ color: d.vec4f(bricks(world), front) });
     const pole = flagAt(world);
     if (pole.w > 0) return Seen({ color: d.vec4f(pole.xyz, front) });
-    return Seen({ color: backdrop(world, eye) });
+    return Seen({ color: d.vec4f() });
+  };
+
+  /** The backdrop layer that the pass draws into, in its own tiles. */
+  const backdropOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+    'use gpu';
+    const layer = passes.layer.$;
+    return Seen({ color: backdropAt(layer, layers.pointOf(layer, screen.uv)) });
   };
 
   const drawing: passes.Drawing<typeof passes.ScreenVertex, Seen> = {
@@ -185,9 +180,19 @@ export function createScenery(root: TgpuRoot, time: TgpuUniform<d.F32>, level: L
     color: passes.shaded,
     draw: (pass) => pass.draw(3),
   };
+  const backdrop: passes.Drawing<typeof passes.ScreenVertex, Seen> = {
+    label: 'backdrop',
+    ...passes.fullScreen,
+    pixelOf: backdropOf,
+    color: passes.shaded,
+    draw: (pass) => pass.draw(3),
+  };
 
   return {
+    /** Add it to the level layer's pass. */
     drawing,
+    /** Add it to a pass recorded into each backdrop layer. */
+    backdrop,
 
     destroy() {
       tiles.buffer.destroy();

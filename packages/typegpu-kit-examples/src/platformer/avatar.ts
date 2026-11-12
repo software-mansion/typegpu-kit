@@ -5,6 +5,7 @@ import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { HALF, type Hero } from './hero.ts';
 import {
   eyes,
+  pixelated,
   quad,
   snapped,
   sprite as front,
@@ -62,7 +63,8 @@ const bodyAt = (local: d.v2f) => {
   return sdRoundedBox2d(local - d.vec2f(0, half.y - HALF[1]), half, 0.14);
 };
 
-const Corner = d.struct({ position: d.vec4f, local: d.vec2f });
+/** A corner of the hero's quad, in quad units and in texels from the hero's snapped position. */
+const Corner = d.struct({ position: d.vec4f, local: d.vec2f, texel: d.vec2f });
 
 /** Sets `pair` to `x, y`. Returns whether it changed. */
 const set = (pair: [number, number], x: number, y: number) => {
@@ -97,18 +99,23 @@ export function createAvatar(root: TgpuRoot, options: ArtOptions) {
       'use gpu';
       const local = quad.vertexAt(vertexIndex).position.xz * REACH;
       const world = snapped(avatar.$.position) + local;
-      return Corner({ position: cameras.toClip(d.vec3f(world, 0)), local });
+      return Corner({
+        position: cameras.toClip(d.vec3f(world, 0)),
+        local,
+        texel: local * TEXELS,
+      });
     },
 
     cutout: (corner) => {
       'use gpu';
+      const local = pixelated(corner.local, corner.texel);
       if (sprite.$.blink > 0 && std.fract(time.$ * BLINKS) < 0.5) return true;
-      return bodyAt(corner.local) > 0;
+      return bodyAt(local) > 0;
     },
 
     pixelOf: (corner) => {
       'use gpu';
-      const local = corner.local;
+      const local = pixelated(corner.local, corner.texel);
       const facing = sprite.$.facing;
       const stretch = stretchAt();
       const eye = eyesAt(local - d.vec2f(facing * EYES.ahead, EYES.up + stretch * 0.3), facing);
