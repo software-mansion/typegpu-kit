@@ -1,5 +1,5 @@
 import { cameras, targets, type SizeSource } from '@typegpu/kit';
-import { d, type TgpuRoot } from 'typegpu';
+import { d, std, type TgpuRoot } from 'typegpu';
 import { mat4 } from 'wgpu-matrix';
 import { TEXELS } from './sprites.ts';
 
@@ -60,13 +60,24 @@ export function createLayers(root: TgpuRoot, options: LayersOptions) {
   const pointOf = (layer: number, uv: d.v2f) => {
     'use gpu';
     const flipped = d.vec2f(uv.x, 1 - uv.y);
-    return placement.$.layers[layer]!.xy + (flipped * placement.$.size) / TEXELS;
+    return placement.$.layers[layer].xy + (flipped * placement.$.size) / TEXELS;
   };
 
   /** Where the view's texel position `at`, from its top left, lies in a layer's texture. */
   const inLayer = (layer: number, at: d.v2f) => {
     'use gpu';
-    return at + placement.$.layers[layer]!.zw;
+    return at + placement.$.layers[layer].zw;
+  };
+
+  /**
+   * The texel at `texel` of a layer's texture, counted from the origin of the layer's own tiles,
+   * so it names the same texel of the layer's art wherever the texture lies.
+   */
+  const cellOf = (layer: number, texel: d.v2f) => {
+    'use gpu';
+    const corner = placement.$.layers[layer].xy * TEXELS;
+    const up = placement.$.size.y - 1 - texel.y;
+    return d.vec2i(std.round(d.vec2f(corner.x + texel.x, corner.y + up)));
   };
 
   return {
@@ -81,6 +92,7 @@ export function createLayers(root: TgpuRoot, options: LayersOptions) {
     grid,
     pointOf,
     inLayer,
+    cellOf,
 
     /**
      * Places every layer around `eye`, the view's centre in tiles, with the clouds drifted by
@@ -93,8 +105,8 @@ export function createLayers(root: TgpuRoot, options: LayersOptions) {
       const down = surface.height / height;
 
       for (let k = 0; k < COUNT; k++) {
-        const x = eye.x * SCROLL[k]! + (k === LAYERS.clouds ? time * DRIFT : 0);
-        const y = eye.y * SCROLL[k]!;
+        const x = eye.x * SCROLL[k] + (k === LAYERS.clouds ? time * DRIFT : 0);
+        const y = eye.y * SCROLL[k];
         // The view's top left in the layer's texels, x right and y down, on the surface's pixels
         const left = Math.round((x * TEXELS - width / 2) * across) / across;
         const top = Math.round((-y * TEXELS - height / 2) * down) / down;
@@ -122,15 +134,15 @@ export function createLayers(root: TgpuRoot, options: LayersOptions) {
       }
 
       const at = 4 * LAYERS.level;
-      const left = floats[at]!;
-      const bottom = floats[at + 1]!;
+      const left = floats[at];
+      const bottom = floats[at + 1];
       const right = left + (width + 1) / TEXELS;
       const top = bottom + (height + 1) / TEXELS;
       camera.write(view, mat4.ortho(left, right, bottom, top, -1, 1, projection));
 
       // The view lies its shift into the level layer, right of and below the layer's top left
-      const viewLeft = left + floats[at + 2]! / TEXELS;
-      const viewTop = top - floats[at + 3]! / TEXELS;
+      const viewLeft = left + floats[at + 2] / TEXELS;
+      const viewTop = top - floats[at + 3] / TEXELS;
       const viewRight = viewLeft + width / TEXELS;
       const viewBottom = viewTop - height / TEXELS;
       screen.write(view, mat4.ortho(viewLeft, viewRight, viewBottom, viewTop, -1, 1, projection));

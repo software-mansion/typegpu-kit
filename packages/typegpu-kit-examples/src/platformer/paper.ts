@@ -2,6 +2,7 @@ import { passes, pipelines, targets, type Frame, type SizeSource } from '@typegp
 import { memo } from '@typegpu/kit/memo';
 import { d, std, tgpu, type TgpuRenderCommands, type TgpuRoot, type TgpuTexture } from 'typegpu';
 import { LAYERS, type Layers } from './layers.ts';
+import { dithered, nearest, thresholdAt } from './palette.ts';
 import { CARDS, cardOf, Seen, TEXELS } from './sprites.ts';
 
 type Picture = TgpuTexture & { usableAsSampled: true };
@@ -18,49 +19,43 @@ const SKY = d.vec3f(0.36, 0.6, 0.88);
 const HAZE = d.vec3f(0.8, 0.88, 0.92);
 /** The layers, back to front. */
 const ORDER = [LAYERS.clouds, LAYERS.far, LAYERS.near, LAYERS.level];
-/** The texels around a point that bilinear filtering blends. */
-const CORNERS = [d.vec2i(0, 0), d.vec2i(1, 0), d.vec2i(0, 1), d.vec2i(1, 1)].map((offset) => ({
-  offset,
-}));
-
-/** Where four samples across a texel lie, from its centre. */
-const QUARTERS = [
-  d.vec2f(-0.25, -0.25),
-  d.vec2f(0.25, -0.25),
-  d.vec2f(-0.25, 0.25),
-  d.vec2f(0.25, 0.25),
-].map((offset) => ({ offset }));
-
-/** The bilinear weight of the texel at `offset` from the one `t` of a texel before the point. */
-const weightOf = (offset: d.v2i, t: d.v2f) => {
-  'use gpu';
-  const along = std.abs(1 - d.vec2f(offset) - t);
-  return along.x * along.y;
-};
-
 /** Where the lamp's shadows fall, in texels per texel of height, right and down the picture. */
 const FALL = d.vec2f(0.75, 0.9);
 /**
- * Texels of height between the cards that cast shadows and the cards that take them, in the
- * channels of the shadow masks: on the sky, on the far hills, on the near hills and on the level.
- * Sprites stand closest to the level, and their feet closer still.
+ * Texels of height between the cards that cast shadows and the cards that take them: the sky, the
+ * clouds and far hills, the near hills and the level. Sprites stand closest to the level, and their
+ * feet closer still.
  */
 const GAPS = { sky: 4.5, far: 4, near: 4, level: 3, feet: 1 };
-/** The penumbra of each mask channel, as a Gaussian's standard deviation in texels. */
-const SOFTNESS = [2.4, 2, 2, 1.2];
+/**
+ * The scenery's shadow masks lie in two halves of one texture, each channel covered by one layer
+ * on that layer's own texels, so each shadow dithers on the texels of the layer that casts it and
+ * holds still on them as the layer moves. The first half shadows the sky,
+ * cast by the clouds, the far hills, the near hills and the level. The second shadows the cards in
+ * front of it, cast by the near hills and the level. Sprites cast solid shadows, kept out of the
+ * masks so no dither crawls around the figures that move.
+ */
+const MASKS = { clouds: 0, far: 1, near: 2, level: 3, behind: { near: 0, level: 1 } };
+/** The penumbra of each mask channel in each half, as a Gaussian's standard deviation in texels. */
+const SOFTNESS = [
+  [2.4, 2.4, 2.4, 2.4],
+  [2, 2, 2, 2],
+];
 /** Texels the blur reaches to each side, three of the widest deviations. */
 const REACH = 7;
-/** The blur's taps: an offset in texels and each mask channel's Gaussian weight, summing to 1. */
+/** The blur's taps: an offset in texels and each half's Gaussian weights, each summing to 1. */
 const TAPS = (() => {
   const offsets = Array.from({ length: 2 * REACH + 1 }, (_, k) => k - REACH);
-  const curves = offsets.map((i) => SOFTNESS.map((s) => Math.exp((i * i * -0.5) / (s * s))));
-  const totals = SOFTNESS.map((_, c) => curves.reduce((total, curve) => total + curve[c], 0));
-  return offsets.map((offset, k) => ({
-    offset,
-    weights: d.vec4f(
-      ...(curves[k].map((weight, c) => weight / totals[c]) as [number, number, number, number]),
-    ),
-  }));
+  const [sky, behind] = SOFTNESS.map((softness) => {
+    const curves = offsets.map((i) => softness.map((s) => Math.exp((i * i * -0.5) / (s * s))));
+    const totals = softness.map((_, c) => curves.reduce((total, curve) => total + curve[c], 0));
+    return curves.map((curve) =>
+      d.vec4f(
+        ...(curve.map((weight, c) => weight / totals[c]) as [number, number, number, number]),
+      ),
+    );
+  });
+  return offsets.map((offset, k) => ({ offset, sky: sky[k], behind: behind[k] }));
 })();
 /** How dark and how cool a full shadow makes the card. */
 const SHADE = d.vec3f(0.52, 0.56, 0.7);
@@ -68,29 +63,21 @@ const SHADE = d.vec3f(0.52, 0.56, 0.7);
 const EDGE = { width: 0.33, top: 0.5, left: 0.28 };
 /** Paper is white inside, so lit cut edges show pale. */
 const CORE = d.vec3f(1, 0.98, 0.93);
-/** The lamp's warm pool: centre in UV coordinates, falloff, and light at the rim and centre. */
-const LAMP = { at: d.vec2f(0.38, 0.1), falloff: 1.1, rim: 0.93, centre: 1.04 };
-const WARM = d.vec3f(1.02, 1, 0.96);
-
-/**
- * Which cards cast shadows on each mask channel's cards: everything in front of the sky, of the
- * far hills, of the near hills and of the level. Clouds take the far hills' channel, since the
- * hills below them cast nothing up onto them.
- */
-const casters = (card: number) => {
-  'use gpu';
-  return std.step(d.vec4f(0.5, 2.5, 3.5, 4.5), d.vec4f(card));
-};
 
 /** Blurs the source along `direction` with each channel's Gaussian. */
 const blurred = (screen: d.Infer<typeof passes.ScreenVertex>, direction: d.v2i) => {
   'use gpu';
   const size = d.vec2i(std.textureDimensions(Source.$.source));
   const texel = d.vec2i(std.floor(screen.uv * d.vec2f(size)));
+  // Each half blurs on its own, with its own deviations
+  const width = d.i32(size.x / 2);
+  const behind = texel.x >= width;
+  const first = d.vec2i(std.select(0, width, behind), 0);
+  const last = first + d.vec2i(width, size.y) - 1;
   let sum = d.vec4f();
   for (const tap of tgpu.unroll(TAPS)) {
-    const at = std.clamp(texel + direction * tap.offset, d.vec2i(), size - 1);
-    sum += tap.weights * std.textureLoad(Source.$.source, at, 0);
+    const at = std.clamp(texel + direction * tap.offset, first, last);
+    sum += std.select(tap.sky, tap.behind, behind) * std.textureLoad(Source.$.source, at, 0);
   }
   return Seen({ color: sum });
 };
@@ -107,22 +94,13 @@ const castersDown = (screen: d.Infer<typeof passes.ScreenVertex>) => {
   return blurred(screen, d.vec2i(0, 1));
 };
 
-/** The blurred shadow masks around the view's texel position `at`. */
-const masksAt = (at: d.v2f) => {
+/** The blurred shadow masks of half `half` around texel position `at` of the layers' textures. */
+const masksAt = (at: d.v2f, half: number) => {
   'use gpu';
   const size = d.vec2f(std.textureDimensions(Shadows.$.shadows));
-  return std.textureSampleLevel(Shadows.$.shadows, Art.$.smooth, at / size, 0);
-};
-
-/** The shadow that the cards in front of `card` cast on it at the view's texel position `at`. */
-const shadowOn = (at: d.v2f, card: number) => {
-  'use gpu';
-  if (card === CARDS.sky) return masksAt(at - FALL * GAPS.sky).x;
-  if (card <= CARDS.far) return masksAt(at - FALL * GAPS.far).y;
-  if (card === CARDS.near) return masksAt(at - FALL * GAPS.near).z;
-  // Where sprites stand on the level, a tighter shadow grounds their feet
-  const cast = masksAt(at - FALL * GAPS.level).w;
-  return std.max(cast, masksAt(at - FALL * GAPS.feet).w);
+  const width = size.x * 0.5;
+  const x = std.clamp(at.x, 0.5, width - 0.5) + d.f32(half) * width;
+  return std.textureSampleLevel(Shadows.$.shadows, Art.$.smooth, d.vec2f(x, at.y) / size, 0);
 };
 
 /** A layer's texel, clamped to its texture. */
@@ -132,10 +110,13 @@ const texelOf = (layer: number, texel: d.v2i) => {
   return std.textureLoad(Art.$.layers, std.clamp(texel, d.vec2i(), last), layer, 0);
 };
 
-/** The sky behind every layer, its rows fixed to the view's texels. */
-const skyAt = (at: d.v2f, size: d.v2f) => {
+/** The far layer's height, in its tiles, where the sky's gradient is halfway from haze to blue. */
+const HORIZON = 1.8;
+
+/** The sky at the far layer's texel `cell`, in whole texel rows, so it scrolls with the hills. */
+const skyAt = (cell: d.v2i) => {
   'use gpu';
-  const rise = (size.y * 0.5 - std.floor(at.y) - 0.5) / TEXELS;
+  const rise = (d.f32(cell.y) + 0.5) / TEXELS - HORIZON;
   return std.mix(HAZE, SKY, std.saturate(rise / 6 + 0.5));
 };
 
@@ -152,33 +133,34 @@ const spriteAt = (at: d.v2f) => {
   return std.textureLoad(Art.$.sprites, d.vec2i(std.floor((at / viewSize()) * size)), 0);
 };
 
-/** How much of the view's texel at `at` the sprites cover, from four samples across it. */
-const spritesOver = (at: d.v2f) => {
+/**
+ * Whether the sprites, on the front card, shade the view's texel position `at` across `gap`
+ * texels of height: solid wherever their outline falls, with no penumbra to dither.
+ */
+const spritesShade = (at: d.v2f, gap: number) => {
   'use gpu';
-  const view = viewSize();
-  let sum = d.f32(0);
-  for (const corner of tgpu.unroll(QUARTERS)) {
-    const uv = (at + corner.offset) / view;
-    sum += std.textureSampleLevel(Art.$.sprites, Art.$.smooth, uv, 0).w;
-  }
-  return sum * 0.25;
+  return spriteAt(at - FALL * d.f32(gap)).w > 0.5;
 };
 
-/**
- * How much each mask channel's casters cover a layer around texel position `at` of its
- * texture, filtered between texels so the masks move smoothly with the layer.
- */
-const castersIn = (layer: number, at: d.v2f) => {
+/** Whether a layer's cards cover its texel `texel`, 1 where they do. */
+const coveredBy = (layer: number, texel: d.v2i) => {
   'use gpu';
-  const from = at - 0.5;
-  const base = d.vec2i(std.floor(from));
-  const t = std.fract(from);
-  let sum = d.vec4f();
-  for (const corner of tgpu.unroll(CORNERS)) {
-    const card = std.round(cardOf(texelOf(layer, base + corner.offset).w));
-    sum += weightOf(corner.offset, t) * casters(card);
-  }
-  return sum;
+  return std.select(d.f32(0), d.f32(1), texelOf(layer, texel).w > 0);
+};
+
+/** Which mask channel's casters cover each texel of their layer's texture, in both halves. */
+const castersOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+  'use gpu';
+  const twice = screen.uv.x * 2;
+  const half = std.floor(twice);
+  const texel = d.vec2i(std.floor(d.vec2f(twice - half, screen.uv.y) * (viewSize() + 1)));
+  const clouds = coveredBy(LAYERS.clouds, texel);
+  const far = coveredBy(LAYERS.far, texel);
+  const near = coveredBy(LAYERS.near, texel);
+  const level = coveredBy(LAYERS.level, texel);
+  const sky = d.vec4f(clouds, far, near, level);
+  const behind = d.vec4f(near, level, 0, 0);
+  return Seen({ color: std.select(sky, behind, half > 0.5) });
 };
 
 /** A full-screen drawing that binds its groups with `bind` before it draws. */
@@ -208,16 +190,25 @@ export interface PaperOptions {
 
 /**
  * Prints the art's layers and the sprites over them on paper cards under a desk lamp at full
- * resolution: each layer moves by whole pixels, each card casts a soft shadow on the cards behind, its cut edges catch the
- * light, and the lamp leaves a warm pool. The shadows blur at the art's resolution.
+ * resolution, in the palette's colours: each layer moves by whole pixels, each card casts a
+ * dithered shadow on the cards behind, and its cut edges catch the light.
  */
 export function createPaper(root: TgpuRoot, options: PaperOptions) {
   const { layers, sprites, size } = options;
-  const { inLayer } = layers;
+  const { inLayer, cellOf } = layers;
   const mask = { format: 'rgba16float', sampled: true } as const;
-  const cast = targets.create(root, size, { color: mask });
-  const across = targets.create(root, size, { color: mask });
-  const down = targets.create(root, size, { color: mask });
+  // The masks' two halves side by side, each the size of a layer's texture
+  const halves = {
+    get width() {
+      return (size.width + 1) * 2;
+    },
+    get height() {
+      return size.height + 1;
+    },
+  };
+  const cast = targets.create(root, halves, { color: mask });
+  const across = targets.create(root, halves, { color: mask });
+  const down = targets.create(root, halves, { color: mask });
   const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
   /** The card in front at the view's texel position `at`, the sky where nothing covers it. */
@@ -232,75 +223,91 @@ export function createPaper(root: TgpuRoot, options: PaperOptions) {
     return card;
   };
 
-  /** Which cards in front of each mask channel's cards cover each texel of the view. */
-  const castersOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
+  /**
+   * Whether the shadow in `channel` of the masks' half `half`, falling across `gap` texels of
+   * height, darkens the view's texel position `at`. It dithers on the texels of `layer`, the layer
+   * that casts it, each of them taking the shadow at its centre as one.
+   */
+  const darkens = (layer: number, at: d.v2f, half: number, channel: number, gap: number) => {
     'use gpu';
-    const at = screen.uv * viewSize();
-    // Sprites lie on the front card, so they shadow every card behind
-    let sum = d.vec4f(spritesOver(at));
-    for (const layer of tgpu.unroll(ORDER)) {
-      sum = std.max(sum, castersIn(layer, inLayer(layer, at)));
+    const inside = inLayer(layer, at);
+    const texel = std.floor(inside);
+    const shadow = std.dot(
+      masksAt(texel + 0.5 - FALL * d.f32(gap), half),
+      std.select(d.vec4f(), d.vec4f(1), std.eq(d.vec4i(channel), d.vec4i(0, 1, 2, 3))),
+    );
+    return shadow > thresholdAt(cellOf(layer, texel));
+  };
+
+  /** Whether the cards in front of `card` shade it at the view's texel position `at`. */
+  const shadedAt = (at: d.v2f, card: number) => {
+    'use gpu';
+    if (card === CARDS.sky) {
+      return (
+        darkens(LAYERS.clouds, at, 0, MASKS.clouds, GAPS.sky) ||
+        darkens(LAYERS.far, at, 0, MASKS.far, GAPS.sky) ||
+        darkens(LAYERS.near, at, 0, MASKS.near, GAPS.sky) ||
+        darkens(LAYERS.level, at, 0, MASKS.level, GAPS.sky) ||
+        spritesShade(at, GAPS.sky)
+      );
     }
-    return Seen({ color: sum });
+    if (card <= CARDS.far) {
+      return (
+        darkens(LAYERS.near, at, 1, MASKS.behind.near, GAPS.far) ||
+        darkens(LAYERS.level, at, 1, MASKS.behind.level, GAPS.far) ||
+        spritesShade(at, GAPS.far)
+      );
+    }
+    if (card === CARDS.near) {
+      return (
+        darkens(LAYERS.level, at, 1, MASKS.behind.level, GAPS.near) || spritesShade(at, GAPS.near)
+      );
+    }
+    // Where sprites stand on the level, a tighter shadow grounds their feet
+    return spritesShade(at, GAPS.level) || spritesShade(at, GAPS.feet);
   };
 
   /**
-   * Lays a layer over `behind` at the view's texel position `at`, shaded by `shadow` where it
-   * lies on a card that takes shadows. Samples the layer with square texels at any scale,
-   * blending one-pixel seams, so a fractional upscale keeps every texel the same width.
+   * The layers and sprites printed on their cards in the palette's colours, the sky's gradient
+   * dithered on the far layer's texels and each shadow on the texels of the layer that casts it,
+   * so each pattern stays put on its own layer as it scrolls.
    */
-  const over = (layer: number, at: d.v2f, shadow: number, behind: d.v3f) => {
-    'use gpu';
-    const inside = inLayer(layer, at);
-    const seam = std.floor(inside + 0.5);
-    const blend = std.clamp((inside - seam) / std.fwidth(inside), d.vec2f(-0.5), d.vec2f(0.5));
-    const from = seam + blend - 0.5;
-    const base = d.vec2i(std.floor(from));
-    const t = std.fract(from);
-    const shade = std.mix(d.vec3f(1), SHADE, shadow);
-
-    // Colours count as premultiplied, so sparkles added where nothing was drawn still glow
-    let color = d.vec3f();
-    let coverage = d.f32(0);
-    for (const corner of tgpu.unroll(CORNERS)) {
-      const texel = texelOf(layer, base + corner.offset);
-      const card = std.round(cardOf(texel.w));
-      const weight = weightOf(corner.offset, t);
-      const shaded = card > CARDS.sky && card < CARDS.sprites;
-      color += weight * std.select(texel.xyz, texel.xyz * shade, shaded);
-      coverage += weight * std.select(d.f32(0), d.f32(1), texel.w > 0);
-    }
-    return color + (1 - coverage) * behind;
-  };
-
-  /** The layers printed on their cards, shaded by the cards in front and lit by the lamp. */
   const pixelOf = (screen: d.Infer<typeof passes.ScreenVertex>) => {
     'use gpu';
-    const view = viewSize();
-    const at = screen.uv * view;
+    const at = screen.uv * viewSize();
 
-    let color = skyAt(at, view) * std.mix(d.vec3f(1), SHADE, shadowOn(at, CARDS.sky));
+    // The sky, on the far layer's texels, under whichever layer is in front
+    const behind = std.floor(inLayer(LAYERS.far, at));
+    const sky = skyAt(cellOf(LAYERS.far, behind));
+    let ink = d.vec3f(sky);
+    let card = d.f32(CARDS.sky);
     for (const layer of tgpu.unroll(ORDER)) {
-      // Each backdrop layer is one card, behind the level
-      const card = std.select(d.f32(layer + 1), d.f32(CARDS.level), layer === LAYERS.level);
-      color = over(layer, at, shadowOn(at, card), color);
+      const read = texelOf(layer, d.vec2i(std.floor(inLayer(layer, at))));
+      if (read.w > 0) {
+        ink = read.xyz;
+        card = std.round(cardOf(read.w));
+      }
     }
+    // Each card's ink is one flat palette colour, and the sky's gradient is dithered between two
+    let lit = nearest(ink);
+    if (card === CARDS.sky) lit = dithered(ink, thresholdAt(cellOf(LAYERS.far, behind)));
+    // Shadows swap the ink for its shaded palette colour, on more texels where they are deeper
+    let color = std.select(lit, nearest(lit * SHADE), shadedAt(at, card));
+
+    // Sprites take no shadows, and sparkles add their light where nothing was drawn
     const sprite = spriteAt(at);
-    color = sprite.xyz + (1 - sprite.w) * color;
+    if (sprite.w > 0 || std.dot(sprite.xyz, d.vec3f(1)) > 0) {
+      color = nearest(sprite.xyz + (1 - sprite.w) * color);
+    }
+    if (sprite.w > 0.5) card = CARDS.sprites;
 
     // A cut edge catches the lamp where a card lower down lies just above or to the left
-    const card = cardAt(at);
     if (card > 0) {
-      let lit = d.f32(0);
-      if (cardAt(at - d.vec2f(0, EDGE.width)) < card) lit = EDGE.top;
-      else if (cardAt(at - d.vec2f(EDGE.width, 0)) < card) lit = EDGE.left;
-      color = std.mix(color, CORE, lit);
+      let edge = d.f32(0);
+      if (cardAt(at - d.vec2f(0, EDGE.width)) < card) edge = EDGE.top;
+      else if (cardAt(at - d.vec2f(EDGE.width, 0)) < card) edge = EDGE.left;
+      if (edge > 0) color = nearest(std.mix(color, CORE, edge));
     }
-
-    const aspect = view.x / view.y;
-    const off = (screen.uv - LAMP.at) * d.vec2f(aspect, 1);
-    const pool = std.exp(-std.dot(off, off) * LAMP.falloff);
-    color *= WARM * std.mix(LAMP.rim, LAMP.centre, pool);
     return Seen({ color: d.vec4f(color, 1) });
   };
 

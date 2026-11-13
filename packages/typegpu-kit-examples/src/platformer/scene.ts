@@ -95,7 +95,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
     front.add(avatar.drawing),
   ];
 
-  // The paper is already in display colour space, so skip tone mapping and encoding
+  // The paper is already in display colour space and in the palette, so skip tone mapping,
+  // encoding and the vignette
   const sheet = targets.create(root, surface, { color: { format: 'rgba8unorm', sampled: true } });
   const print = passes.create(root, sheet, { color: passes.color });
   const paper = createPaper(root, { layers, sprites: () => shown.textures.color, size: pixels });
@@ -105,7 +106,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
     source: () => sheet.textures.color,
     tone: null,
     encode: false,
-    settings: { vignette: 0.18, dither: 0 },
+    settings: { vignette: 0, dither: 0 },
   });
 
   await pipelines.compile([scene, front, coins, critters, effects, paper, print, final]);
