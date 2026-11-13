@@ -129,8 +129,11 @@ const viewSize = () => {
 /** The sprites' pixel at the view's texel position `at`. */
 const spriteAt = (at: d.v2f) => {
   'use gpu';
-  const size = d.vec2f(std.textureDimensions(Art.$.sprites));
-  return std.textureLoad(Art.$.sprites, d.vec2i(std.floor((at / viewSize()) * size)), 0);
+  const size = d.vec2i(std.textureDimensions(Art.$.sprites));
+  const pixel = d.vec2i(std.floor((at / viewSize()) * d.vec2f(size)));
+  // Off the surface there are no sprites; a load there may read any of its pixels instead
+  if (std.any(std.lt(pixel, d.vec2i())) || std.any(std.ge(pixel, size))) return d.vec4f();
+  return std.textureLoad(Art.$.sprites, pixel, 0);
 };
 
 /**
