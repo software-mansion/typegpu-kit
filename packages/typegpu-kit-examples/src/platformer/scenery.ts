@@ -1,6 +1,6 @@
 import { passes } from '@typegpu/kit';
 import { perlin2d, randf } from '@typegpu/noise';
-import { d, std, type TgpuRoot, type TgpuUniform } from 'typegpu';
+import { d, std, tgpu, type TgpuRoot, type TgpuUniform } from 'typegpu';
 import { LAYERS, type Layers } from './layers.ts';
 import { BRICKS, EMPTY, GROUND, type Level } from './level.ts';
 import { CARDS, onCard, Seen, TEXELS } from './sprites.ts';
@@ -12,11 +12,22 @@ const FAR = d.vec3f(0.56, 0.71, 0.8);
 const NEAR = d.vec3f(0.36, 0.62, 0.47);
 const NEAR_CREST = d.vec3f(0.5, 0.74, 0.5);
 const FAR_CREST = d.vec3f(0.68, 0.8, 0.86);
-const GRASS = d.vec3f(0.38, 0.76, 0.3);
 const GRASS_TIP = d.vec3f(0.62, 0.88, 0.4);
-const GRASS_ROOT = d.vec3f(0.24, 0.5, 0.2);
-const DIRT = d.vec3f(0.58, 0.38, 0.23);
-const PEBBLE = d.vec3f(0.44, 0.27, 0.16);
+/** The ground's greens from the surface down, each deeper and colder, as palette colours. */
+const GREENS = [
+  d.vec3f(0.38, 0.761, 0.29),
+  d.vec3f(0.275, 0.533, 0.302),
+  d.vec3f(0.18, 0.412, 0.243),
+  d.vec3f(0.133, 0.29, 0.263),
+];
+const greens = tgpu.const(d.arrayOf(d.vec3f, GREENS.length), GREENS);
+/** Ground tiles below the surface that the greens count down, the last green reaching on. */
+const DEEPEST = GREENS.length - 1;
+/**
+ * The texel row from a tile's top where the next green takes over, on the tile's left half; the
+ * right half's lies a texel lower, so the change waves across each tile.
+ */
+const STEP = 8;
 const BRICK = d.vec3f(0.8, 0.42, 0.28);
 const BRICK_EDGE = d.vec3f(0.93, 0.6, 0.42);
 const MORTAR = d.vec3f(0.45, 0.23, 0.18);
@@ -32,20 +43,27 @@ const CLOUDS = { base: [3.2, 5.2], spacing: 8, clear: 0.2, size: [0.8, 1.6] };
 const FLUTTER = 6;
 const TEXEL = 1 / TEXELS;
 
-/** Dirt and pebbles, under a lumpy grass edge where `open` says the tile above is empty. */
-const ground = (world: d.v2f, open: boolean) => {
+/**
+ * Grass all the way down, `below` tiles under the surface, a deeper green each tile. Each change
+ * of green is ordered-dithered across the two texel rows above it and waves a texel between the
+ * tile's halves. A lumpy, pale edge tops the tile where `below` is 0.
+ */
+const ground = (world: d.v2f, below: number) => {
   'use gpu';
   const texel = std.floor(world * TEXELS);
-  const depth = std.floor((std.ceil(world.y) - world.y) * TEXELS);
-  const lumps = perlin2d.sample(texel * 0.21);
-
-  if (open) {
-    const grass = 3 + std.step(0, lumps) * 2;
-    if (depth < 1) return GRASS_TIP;
-    if (depth < grass - 1) return GRASS;
-    if (depth < grass) return GRASS_ROOT;
+  const column = d.i32(texel.x) - d.i32(std.floor(world.x)) * TEXELS;
+  const row = d.i32(std.floor((std.ceil(world.y) - world.y) * TEXELS));
+  if (below === 0 && row < 1 + d.i32(std.step(0.3, perlin2d.sample(texel * 0.21)))) {
+    return GRASS_TIP;
   }
-  return std.mix(DIRT, PEBBLE, std.step(0.35, lumps));
+
+  // Rows from the change of green, negative above it
+  const from = row - (STEP + std.select(0, 1, column >= d.i32(TEXELS / 2)));
+  let deeper = from >= 0;
+  // Every fourth texel two rows above the change, every other one in the row above
+  if (from === -2) deeper = column % 4 === 1;
+  if (from === -1) deeper = column % 2 === 0;
+  return d.vec3f(greens.$[std.min(below + std.select(0, 1, deeper), GREENS.length - 1)]);
 };
 
 /** Bricks in a running bond, two courses a tile, mortar along their bottoms and left ends. */
@@ -157,8 +175,12 @@ export function createScenery(
     const kind = tileAt(cell);
 
     if (kind === GROUND) {
-      const open = tileAt(cell + d.vec2i(0, 1)) === EMPTY;
-      return Seen({ color: d.vec4f(ground(world, open), front) });
+      // Ground tiles above this one, up to the deepest the greens count
+      let below = 0;
+      for (let k = 1; k <= DEEPEST; k++) {
+        if (below === k - 1 && tileAt(cell + d.vec2i(0, k)) === GROUND) below = k;
+      }
+      return Seen({ color: d.vec4f(ground(world, below), front) });
     }
     if (kind === BRICKS) return Seen({ color: d.vec4f(bricks(world), front) });
     const pole = flagAt(world);
