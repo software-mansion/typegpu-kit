@@ -172,7 +172,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       critters.contacts.capture(frame);
 
       // Queue writes precede frame commands, so every critter step reads the hero's whole path
-      avatar.update(hero, sim.alpha, game.safe);
+      avatar.update(hero, sim.alpha, game.safe, frame.time);
       critters.lead(sim.ahead);
 
       // Follow the hero where it is drawn, between steps
