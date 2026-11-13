@@ -31,6 +31,9 @@ const Sprite = d.struct({
   facing: d.f32,
   /** Invulnerability flag, 1 while the hero cannot be hurt and 0 otherwise. */
   blink: d.f32,
+  /** When the hero last landed, in seconds of the clock, and how hard, as its deepest squash. */
+  landedAt: d.f32,
+  impact: d.f32,
 });
 
 const BODY = d.vec3f(0.93, 0.36, 0.24);
@@ -43,25 +46,16 @@ const REACH = 0.6;
  * Downward velocity squashes the body.
  */
 const STRETCH = { rate: 0.012, most: 0.15 };
+/**
+ * The squash after landing: squash per tile per second of the fall, the deepest squash, how fast
+ * it settles a second, and how fast it springs back, in radians a second.
+ */
+const LANDING = { rate: 0.025, most: 0.3, settle: 11, spring: 28 };
 /** Blinks a second while the hero can't be hurt. */
 const BLINKS = 8;
 /** Eye size and centre offset forward and above the body centre. */
 const eyesAt = eyes({ apart: 0.09, radius: 0.07, pupil: 0.035, look: 0.025 });
 const EYES = { ahead: 0.1, up: 0.12 };
-
-/** How much the body stretches as it rises, or squashes as it falls. */
-const stretchAt = () => {
-  'use gpu';
-  return std.clamp(avatar.$.velocity.y * STRETCH.rate, -STRETCH.most, STRETCH.most);
-};
-
-/** The body's distance at `local`, its feet kept grounded while it stretches or squashes. */
-const bodyAt = (local: d.v2f) => {
-  'use gpu';
-  const stretch = stretchAt();
-  const half = d.vec2f(HALF[0] * (1 - stretch), HALF[1] * (1 + stretch));
-  return sdRoundedBox2d(local - d.vec2f(0, half.y - HALF[1]), half, 0.14);
-};
 
 /** A corner of the hero's quad, in quad units and in texels from the hero's snapped position. */
 const Corner = d.struct({ position: d.vec4f, local: d.vec2f, texel: d.vec2f });
@@ -86,8 +80,30 @@ export function createAvatar(root: TgpuRoot, options: ArtOptions) {
     after: [0, 0],
   };
 
-  const sprite = root.createUniform(Sprite, { facing: 1, blink: 0 });
-  const shown = { facing: 1, blink: 0 };
+  const sprite = root.createUniform(Sprite, { facing: 1, blink: 0, landedAt: -1, impact: 0 });
+  const shown = { facing: 1, blink: 0, landedAt: -1, impact: 0 };
+  let grounded = true;
+  let fall = 0;
+
+  /**
+   * How much the body stretches as it rises, or squashes as it falls and after it lands, springing
+   * back past its rest and settling.
+   */
+  const stretchAt = () => {
+    'use gpu';
+    const motion = std.clamp(avatar.$.velocity.y * STRETCH.rate, -STRETCH.most, STRETCH.most);
+    const since = std.max(time.$ - sprite.$.landedAt, 0);
+    const landing = std.exp(-since * LANDING.settle) * std.cos(since * LANDING.spring);
+    return motion - sprite.$.impact * landing;
+  };
+
+  /** The body's distance at `local`, its feet kept grounded while it stretches or squashes. */
+  const bodyAt = (local: d.v2f) => {
+    'use gpu';
+    const stretch = stretchAt();
+    const half = d.vec2f(HALF[0] * (1 - stretch), HALF[1] * (1 + stretch));
+    return sdRoundedBox2d(local - d.vec2f(0, half.y - HALF[1]), half, 0.14);
+  };
 
   const inject = (): Inject => (cfg) => cfg.with(avatar, state);
 
@@ -138,10 +154,11 @@ export function createAvatar(root: TgpuRoot, options: ArtOptions) {
     drawing,
 
     /**
-     * Interpolates the hero by `alpha` between fixed steps and records its swept path. Writes
-     * position, facing and blink state only when they change.
+     * Interpolates the hero by `alpha` between fixed steps and records its swept path, and a
+     * landing at `now` seconds when the hero touches down. Writes position, facing, blink and
+     * landing state only when they change.
      */
-    update(hero: Hero, alpha: number, blink: boolean) {
+    update(hero: Hero, alpha: number, blink: boolean, now: number) {
       const { position, previous, start, velocity } = hero;
       const x = previous[0] + (position[0] - previous[0]) * alpha;
       const y = previous[1] + (position[1] - previous[1]) * alpha;
@@ -152,8 +169,18 @@ export function createAvatar(root: TgpuRoot, options: ArtOptions) {
       moved = set(written.after, position[0], position[1]) || moved;
       if (moved) state.write(written);
 
+      // The fall's speed is the last one seen in the air, since landing stops it
+      let landed = false;
+      if (!hero.grounded) fall = Math.max(-velocity[1], 0);
+      else if (!grounded) {
+        shown.landedAt = now;
+        shown.impact = Math.min(fall * LANDING.rate, LANDING.most);
+        landed = true;
+      }
+      grounded = hero.grounded;
+
       const flicker = blink ? 1 : 0;
-      if (hero.facing !== shown.facing || flicker !== shown.blink) {
+      if (landed || hero.facing !== shown.facing || flicker !== shown.blink) {
         shown.facing = hero.facing;
         shown.blink = flicker;
         sprite.write(shown);
