@@ -1,7 +1,7 @@
 import { solidAt, type Level } from './level.ts';
 
 /** Half the hero's size, in tiles. */
-export const HALF = [0.32, 0.42] as const;
+export const HALF = [0.38, 0.48] as const;
 
 /** Top running speed, jump, stomp bounce and top falling speed, in tiles per second. */
 const SPEED = { run: 7.5, jump: 22, bounce: 15, fall: 22 };
