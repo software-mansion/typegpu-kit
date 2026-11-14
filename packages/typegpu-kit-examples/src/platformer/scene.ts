@@ -10,6 +10,7 @@ import {
 } from '@typegpu/kit';
 import { clamp } from 'math';
 import { d, type TgpuRoot } from 'typegpu';
+import type { Picture } from '../contract.ts';
 import { createPlatformer, STEP, type Score } from './game.ts';
 import { MAP, parseLevel } from './level.ts';
 import { createAvatar } from './avatar.ts';
@@ -32,6 +33,8 @@ const FOLLOW = 8;
 const BACKDROP = [LAYERS.clouds, LAYERS.far, LAYERS.near];
 
 export interface SceneOptions {
+  /** The hero's sheet, from `assets.ts`. */
+  readonly hero: Picture;
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
   readonly map?: readonly string[];
   /** Receives the score at startup and whenever it changes. */
@@ -46,7 +49,7 @@ export interface SceneOptions {
  * paper cards under a desk lamp, each layer moved by whole pixels. Coins and critters are listed
  * on the GPU, and dust and sparkles are particles.
  */
-export async function createScene(root: TgpuRoot, surface: Surface, options: SceneOptions = {}) {
+export async function createScene(root: TgpuRoot, surface: Surface, options: SceneOptions) {
   const { map = MAP, onScore = () => {} } = options;
   const level = parseLevel(map);
 
@@ -75,7 +78,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   const scheduler = coroutines.create();
 
   const scenery = createScenery(root, time, level, layers);
-  const avatar = createAvatar(root, { time });
+  const avatar = createAvatar(root, { time, sheet: options.hero });
   const coins = createCoins(root, { time, capacity: level.coins.length, scheduler });
   const effects = createEffects(root, layers.screen, { step: sim.step });
   const critters = createCritters(root, {
@@ -195,7 +198,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
     destroy() {
       scheduler.destroy();
-      for (const made of [layers, shown, scenery, coins, critters, effects, sheet, paper]) {
+      for (const made of [layers, shown, scenery, avatar, coins, critters, effects, sheet, paper]) {
         made.destroy();
       }
     },
