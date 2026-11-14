@@ -167,6 +167,7 @@ const list: Example[] = [
     ui: fishtankUi,
   }),
   example('platformer', platformer, () => import('./platformer/scene.ts'), {
+    assets: () => import('./platformer/assets.ts'),
     ui: platformerUi,
   }),
   example('blockfall', blockfall, () => import('./blockfall/scene.ts'), {
