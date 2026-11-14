@@ -16,9 +16,9 @@ const GRASS_TIP = d.vec3f(0.62, 0.88, 0.4);
 /** The ground's greens from the surface down, each deeper and colder, as palette colours. */
 const GREENS = [
   d.vec3f(0.38, 0.761, 0.29),
-  d.vec3f(0.275, 0.533, 0.302),
-  d.vec3f(0.18, 0.412, 0.243),
-  d.vec3f(0.133, 0.29, 0.263),
+  d.vec3f(0.29, 0.525, 0.322),
+  d.vec3f(0.188, 0.42, 0.227),
+  d.vec3f(0.141, 0.294, 0.247),
 ];
 const greens = tgpu.const(d.arrayOf(d.vec3f, GREENS.length), GREENS);
 /** Ground tiles below the surface that the greens count down, the last green reaching on. */
