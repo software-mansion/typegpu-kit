@@ -23,7 +23,7 @@ const twinkle = (spark: Particle, local: d.v2f) => {
   return d.vec4f(spark.color.xyz * light, 0);
 };
 
-/** Dust kicked up by landings and stomps, and sparkles from taken coins. */
+/** Dust kicked up by landings, skids and stomps, and sparkles from taken coins. */
 export function createEffects(root: TgpuRoot, camera: CameraBase, options: { step: number }) {
   const { step } = options;
   const shared = { step, dimensions: 2 } as const;
@@ -58,11 +58,12 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: { ste
     },
     initAsync: () => pipelines.compile([dust, sparks]),
 
-    /** Emits dust at the hero's feet. */
-    puff(x: number, y: number) {
+    /** Emits dust at the hero's feet, kicked `push` tiles a second along x. */
+    puff(x: number, y: number, push = 0) {
       dust.burst({
         count: 6,
         position: [x, y, 0],
+        velocity: [push, 0, 0],
         area: [0.25, 0, 0],
         scatter: 2.5,
         size: 0.22,
