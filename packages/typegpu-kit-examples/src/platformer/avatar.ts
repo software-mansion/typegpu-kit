@@ -2,7 +2,7 @@ import { cameras, images, passes } from '@typegpu/kit';
 import { unfilled, type Inject } from '@typegpu/kit/inject';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import type { Picture } from '../contract.ts';
-import { HALF, type Hero } from './hero.ts';
+import { HALF, SKID, type Hero } from './hero.ts';
 import {
   pixelated,
   quad,
@@ -34,6 +34,8 @@ const Sprite = d.struct({
   landedAt: d.f32,
   /** 1 while the hero stands on the ground and 0 in the air. */
   grounded: d.f32,
+  /** When the hero last turned on a heel, in seconds of the clock, or -1 once it can't. */
+  turnedAt: d.f32,
 });
 
 /** Texels along each side of a frame of the sheet. */
@@ -41,9 +43,15 @@ const FRAME = 32;
 /** The sheet's frames in order: their first frame, how many there are and frames a second. */
 const IDLE = { first: 0, count: 6, rate: 8 };
 const RUN = { first: 6, count: 6, rate: 14 };
-const JUMP = { up: 12, down: 13 };
+/**
+ * Rising, around the top of a jump while slower than `apex` tiles a second up or down, and
+ * falling.
+ */
+const JUMP = { up: 12, top: 13, down: 14, apex: 4 };
 /** The squash after landing, two frames each shown this many seconds. */
-const LANDING = { first: 14, count: 2, hold: 0.07 };
+const LANDING = { first: 15, count: 2, hold: 0.07 };
+/** Turning on a heel, from when the hero starts to skid, for `hold` seconds or while it skids. */
+const TURN = { frame: 17, hold: 0.18 };
 /** The speed in tiles a second that counts as running. */
 const RUNNING = 0.5;
 /** The texel row of the hero's feet below its centre, which the sheet's bottom row lands on. */
@@ -86,20 +94,24 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
     after: [0, 0],
   };
 
-  const shown = { facing: 1, blink: 0, landedAt: -1, grounded: 1 };
+  const shown = { facing: 1, blink: 0, landedAt: -1, grounded: 1, turnedAt: -1 };
   const sprite = root.createUniform(Sprite, shown);
 
   /** The frame of the sheet the hero shows now. */
   const frameAt = () => {
     'use gpu';
     const since = time.$ - sprite.$.landedAt;
+    const velocity = avatar.$.velocity;
     if (sprite.$.grounded === 0) {
-      return std.select(JUMP.down, JUMP.up, avatar.$.velocity.y > 0);
+      if (std.abs(velocity.y) < JUMP.apex) return d.i32(JUMP.top);
+      return std.select(JUMP.down, JUMP.up, velocity.y > 0);
     }
     if (since >= 0 && since < LANDING.hold * LANDING.count) {
       return LANDING.first + d.i32(since / LANDING.hold);
     }
-    if (std.abs(avatar.$.velocity.x) > RUNNING) {
+    const turning = time.$ - sprite.$.turnedAt < TURN.hold;
+    if (turning || velocity.x * sprite.$.facing < -SKID) return d.i32(TURN.frame);
+    if (std.abs(velocity.x) > RUNNING) {
       return RUN.first + (d.i32(time.$ * RUN.rate) % RUN.count);
     }
     return IDLE.first + (d.i32(time.$ * IDLE.rate) % IDLE.count);
@@ -158,8 +170,8 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
 
     /**
      * Interpolates the hero by `alpha` between fixed steps and records its swept path, and a
-     * landing at `now` seconds when the hero touches down. Writes position, facing, blink and
-     * whether it stands only when they change.
+     * landing at `now` seconds when the hero touches down, or a turn when it turns against its
+     * slide. Writes position, facing, blink, whether it stands and its turn only when they change.
      */
     update(hero: Hero, alpha: number, blink: boolean, now: number) {
       const { position, previous, start, velocity } = hero;
@@ -177,6 +189,9 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
       if (landed) shown.landedAt = now;
       const flicker = blink ? 1 : 0;
       if (grounded !== shown.grounded || hero.facing !== shown.facing || flicker !== shown.blink) {
+        // A turn starts when the hero starts to skid, and ends when it leaves the ground
+        if (grounded === 0) shown.turnedAt = -1;
+        else if (hero.facing !== shown.facing) shown.turnedAt = hero.skidding ? now : -1;
         shown.grounded = grounded;
         shown.facing = hero.facing;
         shown.blink = flicker;
