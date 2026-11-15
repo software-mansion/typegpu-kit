@@ -13,6 +13,8 @@ export const STEP = 1 / 120;
 const SAFE = 1.5;
 /** Fall distance below the level before restart, in tiles. */
 const FELL = 1;
+/** Tiles a second a skid kicks its dust, the way the hero slides. */
+const KICK = 7;
 
 export interface Score {
   coins: number;
@@ -92,8 +94,12 @@ export function createPlatformer(
       hero.start[1] = hero.position[1];
       for (let steps = sim.update(frame.dt); steps > 0; steps--) {
         const airborne = !hero.grounded;
+        const skidding = hero.skidding;
         hero.step(input, STEP);
-        if (airborne && hero.grounded) effects.puff(hero.position[0], hero.position[1] - HALF[1]);
+        const feet = hero.position[1] - HALF[1];
+        if (airborne && hero.grounded) effects.puff(hero.position[0], feet);
+        else if (!skidding && hero.skidding)
+          effects.puff(hero.position[0], feet, -hero.facing * KICK);
 
         taken += coins.collect(hero.position, now, effects.sparkle);
         critters.step(pass);
