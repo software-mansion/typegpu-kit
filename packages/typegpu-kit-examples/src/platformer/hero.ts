@@ -2,6 +2,8 @@ import { solidAt, type Level } from './level.ts';
 
 /** Half the hero's size, in tiles. */
 export const HALF = [0.38, 0.48] as const;
+/** Speed in tiles a second the hero still slides against the way it faces while it skids. */
+export const SKID = 0.1;
 
 /** Top running speed, jump, stomp bounce and top falling speed, in tiles per second. */
 const SPEED = { run: 7.5, jump: 22, bounce: 15, fall: 22 };
@@ -64,6 +66,11 @@ export function createHero(level: Level) {
     velocity,
     facing: 1,
     grounded: false,
+
+    /** Whether the hero stands and slides against the way it faces, turning on a heel. */
+    get skidding() {
+      return hero.grounded && velocity[0] * hero.facing < -SKID;
+    },
 
     place(x: number, y: number) {
       position[0] = previous[0] = start[0] = x;
