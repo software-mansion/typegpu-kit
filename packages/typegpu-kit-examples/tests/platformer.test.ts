@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { VANISH } from '../src/platformer/coins.ts';
-import { STEP, type Score } from '../src/platformer/game.ts';
+import { HEARTS, STEP, type Score } from '../src/platformer/game.ts';
 import { createHero, HALF, POISE, SNEAK, type Input } from '../src/platformer/hero.ts';
 import { MAP, parseLevel } from '../src/platformer/level.ts';
 import { createScene } from '../src/platformer/scene.ts';
@@ -14,15 +14,17 @@ const STRIP = ['', '', '', '@ o          w             F', '####################
  * bubbles' steps, any spawns, and two compacting kernels each for the coins, the critters, the
  * dust, the sparkles and the bubbles. A pass draws each backdrop layer and one the level's tiles.
  * The sprites' pass draws the coins, critters, bubbles, dust and sparkles indirectly, and the hero. One pass finds what casts shadows and two
- * blur them, one prints the layers and sprites on paper and the final pass draws it onto the
- * surface.
+ * blur them, one prints the layers and sprites on paper with the health bar over them and the final
+ * pass draws it onto the surface.
  */
 const frame = (steps: number, spawns: number, capture: boolean) => [
   ...compute(4 * steps + spawns + 10),
   ...(capture ? ['copy-buffer'] : []),
   ...Array.from({ length: 4 }, () => pass('draw')).flat(),
   ...pass(...Array<string>(5).fill('draw-indirect'), 'draw'),
-  ...Array.from({ length: 5 }, () => pass('draw')).flat(),
+  ...Array.from({ length: 3 }, () => pass('draw')).flat(),
+  ...pass('draw', 'draw'),
+  ...pass('draw'),
   'submit',
 ];
 
@@ -47,8 +49,12 @@ describeExample(
 
       // The GPU never runs here, so contacts are written into the counters it would add to.
       const counters = bytes(scene.critters.contacts.buffer);
-      const contact = (stomps: number, hurts: number) => {
-        new Uint32Array(counters.buffer, counters.byteOffset, 2).set([stomps, hurts]);
+      /**
+       * Running totals of contacts, of which `rightward` hurts came from a critter on the hero's
+       * left. The game takes the increase since the last read.
+       */
+      const contact = (stomps: number, hurts: number, rightward = 0) => {
+        new Uint32Array(counters.buffer, counters.byteOffset, 3).set([stomps, hurts, rightward]);
       };
 
       return { ...parts, step, advance, contact };
@@ -56,7 +62,7 @@ describeExample(
 
     it('records a frame in one compute pass, the layers, their shadows and their print on paper', async () => {
       const { log, next } = await setup();
-      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(13);
+      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(14);
 
       // Each frame copies the contacts, which are read at 60 Hz. The second takes four steps, and
       // the hero lands from where it was placed in a puff of dust
@@ -375,18 +381,66 @@ describeExample(
       expect(scene.hero.position[1]).toBeGreaterThan(standing + 0.3);
     });
 
-    it('ignores touches right after a start, then starts over at the next', async () => {
-      const { scene, advance, contact } = await play(STRIP);
-      scene.input.right = true;
+    it('ignores touches right after a start, then loses half a raspberry and flies back out of control', async () => {
+      const { scene, scores, advance, contact } = await play(STRIP);
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS);
 
       contact(0, 1);
       await advance(0.5);
-      expect(scene.hero.position[0]).toBeGreaterThan(2);
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS);
 
+      // A critter on the hero's left knocks it right and up, and the stick can't turn it
       await advance(1.2);
-      contact(0, 2);
+      scene.input.left = true;
+      contact(0, 2, 1);
       await advance(0.1);
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS - 1);
+      expect(scene.hero.knocked).toBe(true);
+      expect(scene.hero.velocity[0]).toBeGreaterThan(0);
+      expect(scene.hero.velocity[1]).toBeGreaterThan(0);
+
+      // It can't be hurt again while it blinks, and takes the stick back once it lands
+      contact(0, 3, 1);
+      await advance(0.5);
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS - 1);
+      expect(scene.hero.grounded).toBe(true);
+      expect(scene.hero.knocked).toBe(false);
+      await advance(0.2);
+      expect(scene.hero.velocity[0]).toBeLessThan(0);
+    });
+
+    it('starts over with every raspberry when the last half goes', async () => {
+      const { scene, scores, advance, contact } = await play(STRIP);
+
+      for (let hit = 1; hit < 2 * HEARTS; hit++) {
+        await advance(1.6);
+        contact(0, hit);
+        await advance(0.1);
+        expect(scores.at(-1)?.health).toBe(2 * HEARTS - hit);
+      }
+      await advance(1.6);
+      contact(0, 2 * HEARTS);
+      await advance(0.1);
+
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS);
       expect(scene.hero.position[0]).toBeLessThan(1.5);
+    });
+
+    it('puts the hero back beside a hole it fell in, for half a raspberry, and keeps it safe a while', async () => {
+      const map = ['', '', '', '@ o            w  F', '#####   ###########'];
+      const { scene, scores, advance } = await play(map);
+      scene.input.right = true;
+
+      while ((scores.at(-1)?.health ?? 0) === 2 * HEARTS) await advance(0.05);
+      scene.input.right = false;
+
+      expect(scores.at(-1)?.health).toBe(2 * HEARTS - 1);
+      expect(scene.hero.position[0]).toBe(4.5);
+      expect(scene.hero.position[1]).toBeCloseTo(1 + HALF[1], 3);
+      await advance(1.8);
+      expect(scene.game.safe).toBe(true);
+      await advance(0.4);
+      expect(scene.game.safe).toBe(false);
     });
 
     it('runs while its buttons are held, jumps from its jump button and shows its score', async () => {
@@ -425,7 +479,7 @@ describeExample(
   {
     // Coins, critters, dust and sparkles each compact with two kernels. The critters' step, a spawn
     // and a step each for dust and sparkles, the backdrop, the tiles, five sprite drawings, the shadows'
-    // casters and two blurs, the print on paper and the final pass.
-    pipelines: 30,
+    // casters and two blurs, the print on paper, the health bar and the final pass.
+    pipelines: 31,
   },
 );

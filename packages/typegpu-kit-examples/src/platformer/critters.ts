@@ -301,7 +301,8 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   };
 
   // Read contacts every frame to minimise stomp-bounce latency
-  const contacts = counters.create(root, ['stomps', 'hurts', 'slides'], { hz: 60 });
+  // Of the hurts, `rightward` counts those from a critter on the hero's left, which knock it right
+  const contacts = counters.create(root, ['stomps', 'hurts', 'rightward', 'slides'], { hz: 60 });
 
   /** Emits stomp dust at `at`, seeded by the critter's index. */
   const kickUp = (at: d.v2f, index: number) => {
@@ -386,6 +387,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       kickUp(centre, i);
     } else {
       contacts.add.hurts(1);
+      if (offset.x > 0) contacts.add.rightward(1);
     }
   });
 
@@ -486,7 +488,10 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   return {
     table: critters,
     compact: live.compact,
-    /** Stomps and hurts the steps count. Capture them after the steps each frame. */
+    /**
+     * Stomps, slides and hurts the steps count, and how many of the hurts came from the hero's
+     * left. Capture them after the steps each frame.
+     */
     contacts,
 
     drawing,
