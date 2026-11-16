@@ -26,6 +26,11 @@ const SLIDE = 8;
  * seconds it keeps them, until it lands, before the stick steers again.
  */
 const FLIP = { jump: 25, back: 5, hold: 0.5 };
+/**
+ * A hit's knockback: tiles a second back from what hit the hero and up. The player can't steer,
+ * jump or duck until the hero lands.
+ */
+const KNOCK = { back: 6, up: 12 };
 /** Top upward speed once jump is released, in tiles per second. */
 const CUT = SPEED.jump / 2;
 /** Ground and air acceleration, and gravity, in tiles per second squared. */
@@ -44,6 +49,8 @@ export interface Input {
   /** Ducks on the ground: slides when moving faster than sneaking, and sneaks otherwise. */
   down: boolean;
 }
+
+const IDLE: Input = { left: false, right: false, jump: false, down: false };
 
 /** Moves `value` toward `target` by at most `amount`. */
 const approach = (value: number, target: number, amount: number) =>
@@ -135,6 +142,8 @@ export function createHero(level: Level) {
      * direction held. The stick doesn't steer it until it lands or `FLIP.hold` seconds pass.
      */
     flipping: false,
+    /** Whether the hero flies back from a hit, out of the player's control until it lands. */
+    knocked: false,
     /**
      * Whether a jump now would backflip: on the ground with no direction held, from a turn and for
      * at least `POISE` seconds.
@@ -151,13 +160,22 @@ export function createHero(level: Level) {
       position[1] = previous[1] = start[1] = y - 0.5 + HALF[1] + SKIN;
       velocity[0] = velocity[1] = 0;
       hero.facing = 1;
-      hero.ducked = hero.sliding = hero.flipping = hero.poised = false;
+      hero.ducked = hero.sliding = hero.flipping = hero.poised = hero.knocked = false;
       sinceHeel = sincePoise = Infinity;
       skidded = false;
     },
 
     jump() {
-      sincePress = 0;
+      if (!hero.knocked) sincePress = 0;
+    },
+
+    /** Knocks the hero back the way `way` points, ±1, and up, out of the player's control. */
+    knock(way: number) {
+      velocity[0] = way * KNOCK.back;
+      velocity[1] = KNOCK.up;
+      hero.knocked = true;
+      hero.grounded = hero.sliding = hero.flipping = hero.poised = false;
+      sinceGround = sincePress = Infinity;
     },
 
     bounce() {
@@ -165,9 +183,11 @@ export function createHero(level: Level) {
       sinceGround = Infinity;
     },
 
-    step(input: Input, dt: number) {
+    step(held: Input, dt: number) {
       previous[0] = position[0];
       previous[1] = position[1];
+      // A knocked-back hero ignores the player
+      const input = hero.knocked ? IDLE : held;
 
       const want = Number(input.right) - Number(input.left);
       const cramped = hero.ducked && blocked(2 * HALF[1]);
@@ -180,7 +200,7 @@ export function createHero(level: Level) {
         const way = Math.sign(velocity[0]);
         velocity[0] = approach(velocity[0], way * SNEAK, SLIDE * dt);
         if (Math.abs(velocity[0]) <= SNEAK) hero.sliding = false;
-      } else if (!hero.flipping) {
+      } else if (!hero.flipping && !hero.knocked) {
         if (want !== 0) hero.facing = want;
         const acceleration = hero.grounded ? ACCELERATION.ground : ACCELERATION.air;
         const top = ducking ? SNEAK : SPEED.run;
@@ -211,8 +231,8 @@ export function createHero(level: Level) {
         sincePress = sinceGround = Infinity;
       }
 
-      // A backflip always reaches its full height
-      if (!input.jump && !hero.flipping && velocity[1] > CUT) velocity[1] = CUT;
+      // A backflip and a knockback always reach their full height
+      if (!input.jump && !hero.flipping && !hero.knocked && velocity[1] > CUT) velocity[1] = CUT;
       velocity[1] = Math.max(velocity[1] - ACCELERATION.gravity * dt, -SPEED.fall);
 
       move(0, velocity[0] * dt);
@@ -220,6 +240,7 @@ export function createHero(level: Level) {
       hero.grounded = move(1, velocity[1] * dt) && falling;
       if (hero.grounded) sinceGround = 0;
       if (hero.grounded || sinceFlip >= FLIP.hold) hero.flipping = false;
+      if (hero.grounded) hero.knocked = false;
       if (!hero.grounded || hero.flipping) hero.poised = false;
     },
   };

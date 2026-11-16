@@ -11,7 +11,8 @@ import {
 import { clamp } from 'math';
 import { d, type TgpuRoot } from 'typegpu';
 import type { Picture } from '../contract.ts';
-import { createPlatformer, STEP, type Score } from './game.ts';
+import { createPlatformer, HEARTS, STEP, type Score } from './game.ts';
+import { createHud } from './hud.ts';
 import { MAP, parseLevel } from './level.ts';
 import { createAvatar } from './avatar.ts';
 import { createCoins } from './coins.ts';
@@ -41,6 +42,8 @@ export interface SceneOptions {
   readonly bubble: Picture;
   /** The fork's sheet, from `assets.ts`. */
   readonly fork: Picture;
+  /** The health bar's raspberries, from `assets.ts`. */
+  readonly raspberry: Picture;
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
   readonly map?: readonly string[];
   /** Receives the score at startup and whenever it changes. */
@@ -113,7 +116,9 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   const sheet = targets.create(root, surface, { color: { format: 'rgba8unorm', sampled: true } });
   const print = passes.create(root, sheet, { color: passes.color });
   const paper = createPaper(root, { layers, sprites: () => shown.textures.color, size: pixels });
-  const printed = [print.add(paper.drawing)];
+  const hud = createHud(root, { sheet: options.raspberry, hearts: HEARTS });
+  // The health bar lies over the print, in its sheet's own colours
+  const printed = [print.add(paper.drawing), print.add(hud.drawing)];
   const final = finish.create(root, {
     format: surface.format,
     source: () => sheet.textures.color,
@@ -125,7 +130,9 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   await pipelines.compile([scene, front, coins, critters, effects, paper, print, final]);
 
   let score = '';
+  let health = 2 * HEARTS;
   const game = createPlatformer(level, { coins, critters, effects, sim }, (state) => {
+    health = state.health;
     const record = state.best === undefined ? '' : `\nbest ${state.best.toFixed(1)} s`;
     score = `coins ${state.coins} · stomps ${state.stomps}${record}`;
     onScore(state);
@@ -155,6 +162,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
     /** Held inputs, set by the buttons `ui` binds. */
     input,
+    /** The run: its hero, and whether the hero can be hurt. */
+    game,
     hero,
     coins,
     critters,
@@ -187,6 +196,9 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
       // Queue writes precede frame commands, so every critter step reads the hero's whole path
       avatar.update(hero, sim.alpha, game.safe, frame.time);
+      // The raspberries keep whole pixels a texel, about the size of the art's
+      const scale = Math.max(1, Math.round(surface.height / (VIEW * TEXELS)));
+      hud.update(health, surface.width, surface.height, scale);
       critters.lead(sim.ahead);
 
       // Follow the hero where it is drawn, between steps
@@ -209,9 +221,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
     destroy() {
       scheduler.destroy();
-      for (const made of [layers, shown, scenery, avatar, coins, critters, effects, sheet, paper]) {
-        made.destroy();
-      }
+      const made = [layers, shown, scenery, avatar, coins, critters, effects, sheet, paper, hud];
+      for (const module of made) module.destroy();
     },
   };
 }

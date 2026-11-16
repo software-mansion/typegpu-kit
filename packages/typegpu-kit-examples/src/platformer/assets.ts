@@ -8,6 +8,8 @@ export const assets = {
   sponge: image('textures/sponge.webp'),
   /** The fork's frames, facing right: standing, crouched to jump or from landing, and in flight. */
   fork: image('textures/fork.webp'),
+  /** A raspberry of the hero's health, 16 texels square: whole, then empty. */
+  raspberry: image('textures/raspberry.webp'),
   /** A bubble's frames, 8 texels square: whole, then popping. */
   bubble: image('textures/bubble.webp'),
 };
