@@ -1,6 +1,6 @@
 /**
  * One character per tile, top row first: `#` ground, `=` bricks, `o` a coin, `w` a walker,
- * `f` a fork, `b` a bat, `@` the start and `F` the flag.
+ * `f` a fork, `g` a pepper grinder, `@` the start and `F` the flag.
  */
 export const MAP = [
   '',
@@ -9,8 +9,8 @@ export const MAP = [
   '                                                                                  ====',
   '                                                                                  ====',
   '                  ooo                                ooooo                        ====                    o o',
-  '                                                       w      b   o o o           ====      b',
-  '          o o o   ===                  b             =====                    b   ====                    ooo',
+  '                                                       w      g   o o o           ====      g',
+  '          o o o   ===                  g             =====                    g   ====                    ooo',
   '                          o               o                       =====           ====      o             ###',
   '          =====          o o             o o   ====                               ====     o o            ###',
   '                                    ##                                    ##      ====                    ###',
@@ -24,14 +24,15 @@ export const GROUND = 1;
 export const BRICKS = 2;
 
 export const WALKER = 0;
-export const BAT = 1;
+/** A pepper grinder, which flies and stops to grind pepper on what lies below it. */
+export const GRINDER = 1;
 /** A walker with spikes on top, which only a slide defeats. */
 export const FORK = 2;
 
 type Point = readonly [x: number, y: number];
 
 export interface Spawn {
-  readonly kind: typeof WALKER | typeof BAT | typeof FORK;
+  readonly kind: typeof WALKER | typeof GRINDER | typeof FORK;
   /** Centre of its tile. */
   readonly at: Point;
   /** Walker travel limits between walls and floor edges. */
@@ -108,7 +109,7 @@ export function parseLevel(map: readonly string[]): Level {
     critters: [
       ...(marks.w ?? []).map(spawn(WALKER)),
       ...(marks.f ?? []).map(spawn(FORK)),
-      ...(marks.b ?? []).map(spawn(BAT)),
+      ...(marks.g ?? []).map(spawn(GRINDER)),
     ],
   };
 }

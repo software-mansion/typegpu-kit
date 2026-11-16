@@ -1,5 +1,4 @@
 import { meshes } from '@typegpu/kit/geometry';
-import { sdDisk } from '@typegpu/sdf';
 import { d, std, tgpu, type TgpuUniform } from 'typegpu';
 
 /** Sprite quad spans -1 to 1 on xz, with two triangles. */
@@ -86,31 +85,3 @@ export const pixelatedMote = (local: d.v2f, size: number) => {
   const texels = size * TEXELS * 0.5;
   return (std.floor(local * texels) + 0.5) / texels;
 };
-
-const WHITE = d.vec3f(0.98, 0.96, 0.9);
-const PUPIL = d.vec3f(0.08, 0.06, 0.1);
-
-/** Eye dimensions in quad units. */
-export interface Eyes {
-  /** Offset from the pair midpoint to each eye centre. */
-  readonly apart: number;
-  readonly radius: number;
-  readonly pupil: number;
-  /** Forward pupil offset from each eye centre. */
-  readonly look: number;
-}
-
-/**
- * Returns eye colour at a point relative to the pair midpoint, using the sprite's x facing.
- * Returns zero alpha outside the eyes.
- */
-export function eyes({ apart, radius, pupil, look }: Eyes) {
-  const eyesAt = (at: d.v2f, facing: number) => {
-    'use gpu';
-    const pupils = at - d.vec2f(facing * look, 0);
-    if (sdDisk(d.vec2f(std.abs(pupils.x) - apart, pupils.y), pupil) < 0) return d.vec4f(PUPIL, 1);
-    if (sdDisk(d.vec2f(std.abs(at.x) - apart, at.y), radius) < 0) return d.vec4f(WHITE, 1);
-    return d.vec4f();
-  };
-  return eyesAt;
-}

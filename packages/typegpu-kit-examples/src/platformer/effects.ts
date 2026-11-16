@@ -45,6 +45,34 @@ export const blown = (at: d.v2f) => {
   });
 };
 
+/** Pepper's two colours, as the grinder's sheet draws them. */
+const PEPPER = [
+  d.vec4f(0x22 / 255, 0x20 / 255, 0x34 / 255, 1),
+  d.vec4f(0x4b / 255, 0x42 / 255, 0x41 / 255, 1),
+];
+/** Tiles a second pepper falls. */
+export const FALL = 5;
+/** A grain of pepper's width in tiles, two texels. */
+const GRAIN = 2 / TEXELS;
+
+/**
+ * A grain of pepper dropped at `at`, falling `depth` tiles before it goes. It draws on `randf`,
+ * which the caller seeds.
+ */
+export const grain = (at: d.v2f, depth: number) => {
+  'use gpu';
+  const seed = randf.sample();
+  return Particle({
+    position: d.vec3f(at, 0),
+    age: 0,
+    velocity: d.vec3f(0, -FALL, 0),
+    life: depth / FALL,
+    color: std.select(PEPPER[0], PEPPER[1], seed < 0.5),
+    size: GRAIN,
+    seed,
+  });
+};
+
 /** Rises at the speed it was blown with, swaying side to side, and holds still as it pops. */
 const drift = (bubble: Particle) => {
   'use gpu';
@@ -61,6 +89,12 @@ const dot = (mote: Particle, local: d.v2f) => {
   const left = 1 - mote.age / mote.life;
   if (std.length(pixelatedMote(local, mote.size)) > left) return d.vec4f();
   return d.vec4f(mote.color.xyz * mote.color.w, mote.color.w);
+};
+
+/** A square of its colour, a grain of pepper. */
+const fleck = (mote: Particle) => {
+  'use gpu';
+  return d.vec4f(mote.color.xyz, 1);
 };
 
 /** Additive four-pointed sparkle in texels of its own. */
@@ -80,8 +114,8 @@ export interface EffectsOptions {
 }
 
 /**
- * Dust kicked up by landings, skids, slides and stomps, sparkles from taken coins and bubbles the sponges
- * blow.
+ * Dust kicked up by landings, skids, slides and stomps, sparkles from taken coins, bubbles the
+ * sponges blow and pepper the grinders grind.
  */
 export function createEffects(root: TgpuRoot, camera: CameraBase, options: EffectsOptions) {
   const { step } = options;
@@ -139,6 +173,14 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: Effec
     shade: film,
     settings: { gravity: [0, 0, 0], drag: 0 },
   });
+  const pepper = particles.create(root, camera, {
+    ...shared,
+    capacity: 256,
+    label: 'pepper',
+    blend: 'over',
+    shade: fleck,
+    settings: { gravity: [0, 0, 0], drag: 0 },
+  });
 
   return {
     /** Kernels can `dust.emit` motes of their own. */
@@ -147,18 +189,22 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: Effec
     sparks,
     /** Kernels can `bubbles.emit` a bubble `blown` where they like. */
     bubbles,
+    /** Kernels can `pepper.emit` a `grain` where they like. */
+    pepper,
 
     spawn(pass: TgpuComputePass) {
       dust.spawn(pass);
       sparks.spawn(pass);
       bubbles.spawn(pass);
+      pepper.spawn(pass);
     },
     compact(pass: TgpuComputePass, ahead: number) {
       dust.compact(pass, ahead);
       sparks.compact(pass, ahead);
       bubbles.compact(pass, ahead);
+      pepper.compact(pass, ahead);
     },
-    initAsync: () => pipelines.compile([dust, sparks, bubbles]),
+    initAsync: () => pipelines.compile([dust, sparks, bubbles, pepper]),
 
     /** Emits dust at the hero's feet, kicked `push` tiles a second along x. */
     puff(x: number, y: number, push = 0) {
@@ -204,6 +250,7 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: Effec
       dust.destroy();
       sparks.destroy();
       bubbles.destroy();
+      pepper.destroy();
     },
   };
 }

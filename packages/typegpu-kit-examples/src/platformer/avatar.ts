@@ -23,7 +23,7 @@ const Avatar = d.struct({
   after: d.vec2f,
   /** 1 while the hero ducks, which halves its height on its feet, and 0 otherwise. */
   ducked: d.f32,
-  /** 1 while the hero slides, ducked, which defeats forks and bats it touches, and 0 otherwise. */
+  /** 1 while the hero slides, ducked, which defeats forks and grinders it touches, and 0 otherwise. */
   sliding: d.f32,
 });
 

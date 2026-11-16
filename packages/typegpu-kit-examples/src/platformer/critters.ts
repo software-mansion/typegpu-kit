@@ -11,15 +11,13 @@ import {
 } from '@typegpu/kit';
 import type { Injectable } from '@typegpu/kit/inject';
 import { randf } from '@typegpu/noise';
-import { sdDisk, sdRoundedBox2d } from '@typegpu/sdf';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 import type { Picture } from '../contract.ts';
 import { avatar } from './avatar.ts';
-import { blown, DUST } from './effects.ts';
+import { blown, DUST, FALL, grain } from './effects.ts';
 import { HALF } from './hero.ts';
-import { BAT, FORK, WALKER, type Level } from './level.ts';
+import { FORK, GRINDER, solidAt, WALKER, type Level } from './level.ts';
 import {
-  eyes,
   pixelated,
   quad,
   shakenAt,
@@ -36,7 +34,7 @@ const Critter = table.define('Critter', {
     home: d.vec2f,
     /** Horizontal turning bounds in tiles. */
     patrol: d.vec2f,
-    /** Phase offset in seconds of a bat's loop, a sponge's wiggles and a fork's hops. */
+    /** Phase offset in seconds of a grinder's rounds, a sponge's wiggles and a fork's hops. */
     phase: d.f32,
   },
   device: {
@@ -44,8 +42,8 @@ const Critter = table.define('Critter', {
     heading: d.f32,
     /** Stomp time in seconds, or -1 before a stomp. */
     squashedAt: d.f32,
-    /** When a sponge next blows a bubble, in seconds of the clock. */
-    bubbleAt: d.f32,
+    /** When a sponge next blows a bubble or a grinding grinder drops pepper, in seconds of the clock. */
+    emitAt: d.f32,
   },
 });
 
@@ -60,15 +58,30 @@ const FLAT = d.vec2f(1.3, 0.3);
 const BUBBLES = 2;
 /** Tiles a second a sponge crawls while it wiggles. */
 const WALK = 1.6;
-/** Bat loop frequencies in radians per second and horizontal and vertical amplitudes in tiles. */
+/** Grinder loop frequencies in radians per second and horizontal and vertical amplitudes in tiles. */
 const FLIGHT = { pace: 0.9, reach: 2.5, bob: 2.3, rise: 0.6 };
-/** Radians a second a bat's wings beat. */
-const WINGBEAT = 18;
-/** Loop phase offset per critter in seconds. Keeps bats from flying in step. */
+/** Loop phase offset per critter in seconds. Keeps grinders from flying in step. */
 const STAGGER = 1.7;
-
-/** Half a bat's size, in tiles. */
-const SIZE = 0.4;
+/**
+ * A grinder's round, over and over: it flies its loop for `wander` seconds, then stops where it is
+ * and grinds pepper for `grind`.
+ */
+const ROUND = { wander: 3, grind: 2 };
+const ROUNDS = ROUND.wander + ROUND.grind;
+/** Frames a second a grinding grinder shows, and times a second a flying one bobs a texel up. */
+const GRINDING = 10;
+const WOBBLE = 4;
+/** The grinder's frames: two grinding, then flying. */
+const MILL = { frames: 2, flying: 2 };
+/** Half a grinder's hitbox in tiles, centred on its quad. */
+const GRINDER_BOX = d.vec2f(7 / TEXELS, 11 / TEXELS);
+/** Where pepper leaves a grinder facing right, from its centre in tiles. */
+const MOUTH = d.vec2f(6.5 / TEXELS, -12 / TEXELS);
+/**
+ * Pepper a grinder drops: grains a second on average, and tiles either side of its mouth they
+ * fall within, which is half the width of the column that hurts.
+ */
+const PEPPER = { rate: 30, spread: 3 / TEXELS };
 /** Overlap margin in tiles. A graze within this margin does not count as contact. */
 const GRAZE = 0.08;
 /** The hero's share of the contact distance between hero and critter centres. */
@@ -114,15 +127,9 @@ const FORK_AT = d.vec2f(0, PRONGS.tall - 0.5);
 const KICK = { motes: 8, spread: d.vec2f(5, 2), lift: 1.5, life: [0.3, 0.5], size: 0.3 };
 const MOTE = d.vec4f(...DUST);
 
-const SHELL = d.vec3f(0.42, 0.25, 0.6);
-const WING = d.vec3f(0.22, 0.16, 0.32);
-/** Eye size and centre offset forward and above the critter centre. */
-const eyesAt = eyes({ apart: 0.2, radius: 0.16, pupil: 0.08, look: 0.06 });
-const EYES = { ahead: 0.2, up: 0.15 };
-
 /**
  * What a critter's pixels read from its quad: the corner in quad units and in texels from the
- * critter's snapped position, its kind, facing and a sponge's or fork's frame.
+ * critter's snapped position, its kind, facing and frame.
  */
 const Corner = d.struct({
   position: d.vec4f,
@@ -136,13 +143,13 @@ const Corner = d.struct({
 /** Half a critter's hitbox in tiles, and its centre from the critter's position. */
 const boxOf = (kind: number) => {
   'use gpu';
-  if (kind === BAT) return d.vec2f(SIZE);
+  if (kind === GRINDER) return GRINDER_BOX;
   if (kind === FORK) return FORK_BOX;
   return SPONGE;
 };
 const boxAt = (kind: number) => {
   'use gpu';
-  if (kind === BAT) return d.vec2f();
+  if (kind === GRINDER) return d.vec2f();
   if (kind === FORK) return FORK_AT;
   return SPONGE_AT;
 };
@@ -181,12 +188,28 @@ const touchAt = (centre: d.v2f, half: d.v2f) => {
   return enter;
 };
 
+/** Which way a grinder faces after flying its loop for `flown` seconds: 1 right, -1 left. */
+const headingAt = (flown: number) => {
+  'use gpu';
+  return std.select(d.f32(-1), 1, std.cos(flown * FLIGHT.pace) >= 0);
+};
+
+/** Where pepper leaves a grinder at `at` facing `facing`. */
+const mouthOf = (at: d.v2f, facing: number) => {
+  'use gpu';
+  return at + d.vec2f(facing * MOUTH.x, MOUTH.y);
+};
+
 export interface CrittersOptions extends ArtOptions {
   readonly capacity: number;
+  /** The level's width in tiles. */
+  readonly columns: number;
   /** The sponge's sheet, frames of `FRAME` texels square in a row, facing left. */
   readonly sponge: Picture;
   /** The fork's sheet, frames of `FRAME` texels square in a row, facing right. */
   readonly fork: Picture;
+  /** The grinder's sheet, frames of `FRAME` texels square in a row, facing left. */
+  readonly grinder: Picture;
   /** Seconds per `step`. */
   readonly step: number;
   /** Fills `avatar` for contact detection. */
@@ -195,20 +218,31 @@ export interface CrittersOptions extends ArtOptions {
   readonly dust: Pick<Particles<typeof Particle>, 'emit'>;
   /** Takes the bubbles sponges blow. */
   readonly bubbles: Pick<Particles<typeof Particle>, 'emit'>;
+  /** Takes the pepper grinders grind, which falls at the speed `FALL`. */
+  readonly pepper: Pick<Particles<typeof Particle>, 'emit'>;
 }
 
 /**
- * Moves sponges, forks and bats on the GPU and detects contacts with the hero. A slide defeats
- * any critter but a sponge, and a stomp any but a fork.
+ * Moves sponges, forks and pepper grinders on the GPU and detects contacts with the hero, and with
+ * the pepper the grinders grind. A slide defeats any critter but a sponge, and a stomp any but a
+ * fork.
  */
 export function createCritters(root: TgpuRoot, options: CrittersOptions) {
-  const { capacity, step, time, dust, bubbles } = options;
+  const { capacity, step, time, dust, bubbles, pepper } = options;
   // The sheets hold display colours, as the print reads them, so they load unconverted
-  const textures = [options.sponge, options.fork].map((picture) =>
+  const textures = [options.sponge, options.fork, options.grinder].map((picture) =>
     images.create(root, picture, { color: 'linear', mips: false }),
   );
   const spongeSheet = textures[0]!.createView(d.texture2d(d.f32));
   const forkSheet = textures[1]!.createView(d.texture2d(d.f32));
+  const grinderSheet = textures[2]!.createView(d.texture2d(d.f32));
+  // The top of each column's highest solid tile, where pepper lands, or 0 over a pit
+  const tops = root.createReadonly(d.arrayOf(d.f32, options.columns));
+  /** The height in tiles of the ground pepper lands on at `x`. */
+  const groundAt = (x: number) => {
+    'use gpu';
+    return tops.$[std.clamp(d.i32(std.floor(x)), 0, options.columns - 1)];
+  };
   /** Seconds since the last step, which walkers are drawn ahead by. */
   const ahead = root.createUniform(d.f32);
   let drawnAhead = 0;
@@ -220,12 +254,45 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   const live = liveLists.create(root, { ...critters.live(), draws: [quad] });
   const critter = critters.gpu;
 
-  /** Where bat `i` flies at `t` seconds, and which way. */
-  const flightAt = (i: number, t: number) => {
+  /**
+   * Grinder `i`'s rounds at `t` seconds: how many seconds it has flown, and how many since its
+   * last grind began, counted on through the flight after it.
+   */
+  const roundAt = (i: number, t: number) => {
     'use gpu';
     const at = t + critter.phase(i);
-    const across = std.sin(at * FLIGHT.pace) * FLIGHT.reach;
-    return critter.home(i) + d.vec2f(across, std.sin(at * FLIGHT.bob) * FLIGHT.rise);
+    const rounds = std.floor(at / ROUNDS);
+    const into = at - rounds * ROUNDS;
+    const flown = rounds * ROUND.wander + std.min(into, ROUND.wander);
+    const ground = std.select(into + ROUND.grind, into - ROUND.wander, into >= ROUND.wander);
+    return d.vec2f(flown, ground);
+  };
+
+  /** Where grinder `i` is after flying its loop for `flown` seconds. */
+  const flightAt = (i: number, flown: number) => {
+    'use gpu';
+    const across = std.sin(flown * FLIGHT.pace) * FLIGHT.reach;
+    return critter.home(i) + d.vec2f(across, std.sin(flown * FLIGHT.bob) * FLIGHT.rise);
+  };
+
+  /**
+   * The column of pepper grinder `i` has ground still falling at the frame's time, as its centre
+   * and half size, or a zero half size for none. Pepper leaves the mouth from the grind's start to
+   * its end, and each grain falls at `FALL` to the ground under the mouth.
+   */
+  const pepperOf = (i: number) => {
+    'use gpu';
+    const round = roundAt(i, time.$);
+    const since = round.y;
+    const after = std.max(since - ROUND.grind, 0);
+    // The grinder has flown on since the grind ended, so find where it stood
+    const flown = round.x - after;
+    const mouth = mouthOf(flightAt(i, flown), headingAt(flown));
+    const top = mouth.y - after * FALL;
+    const bottom = std.max(groundAt(mouth.x), mouth.y - since * FALL);
+    // No grind began before the clock started
+    if (top <= bottom || since > time.$) return d.vec4f();
+    return d.vec4f(mouth.x, (top + bottom) / 2, PEPPER.spread, (top - bottom) / 2);
   };
 
   /**
@@ -284,16 +351,23 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     return std.select(0, WALK, frameOf(i) >= STILL);
   };
 
+  /** The frame grinder `i` shows at the frame's time: grinding in turn, or flying. */
+  const millOf = (i: number) => {
+    'use gpu';
+    if (roundAt(i, time.$).y >= ROUND.grind) return d.i32(MILL.flying);
+    return d.i32(time.$ * GRINDING) % MILL.frames;
+  };
+
   /**
-   * Where critter `i` is drawn at the frame's time, between steps: a bat on its loop, a sponge or
-   * fork ahead along its patrol, a fork up its hop and a squashed critter where it was stomped.
+   * Where critter `i` is drawn at the frame's time, between steps: a grinder on its loop, a sponge
+   * or fork ahead along its patrol, a fork up its hop and a squashed critter where it was stomped.
    */
   const shownAt = (i: number) => {
     'use gpu';
     const position = critter.position(i);
     if (critter.squashedAt(i) >= 0) return position;
     const kind = critter.kind(i);
-    if (kind === BAT) return flightAt(i, time.$);
+    if (kind === GRINDER) return flightAt(i, roundAt(i, time.$).x);
     const patrol = critter.patrol(i);
     const x = position.x + critter.heading(i) * paceOf(i) * ahead.$;
     const lift = std.select(0, liftOf(i), kind === FORK);
@@ -336,6 +410,19 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     return time.$ + (0.5 + randf.sample()) / BUBBLES;
   };
 
+  /**
+   * Drops a grain of pepper from the mouth of grinder `i` at `at` facing `facing`, to the ground,
+   * and picks when the next one comes, `PEPPER.rate` a second on average.
+   */
+  const grind = (i: number, at: d.v2f, facing: number) => {
+    'use gpu';
+    randf.seed2(d.vec2f(d.f32(i), time.$ + 0.25));
+    const mouth = mouthOf(at, facing);
+    const spot = mouth + d.vec2f((randf.sample() * 2 - 1) * PEPPER.spread, 0);
+    pepper.emit(grain(spot, std.max(mouth.y - groundAt(spot.x), 0)));
+    return time.$ + (0.5 + randf.sample()) / PEPPER.rate;
+  };
+
   const stepKernel = tgpu.computeFn({
     workgroupSize: [WORKGROUP],
     in: { gid: d.builtin.globalInvocationId },
@@ -365,16 +452,24 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       const x = row.position.x + row.heading * paceOf(i) * step;
       if (x < patrol.x || x > patrol.y) row.heading = -row.heading;
       row.position.x = std.clamp(x, patrol.x, patrol.y);
-      if (time.$ >= row.bubbleAt) row.bubbleAt = blow(i, row.position);
     } else {
-      row.position = flightAt(i, time.$);
-      row.heading = std.sign(std.cos((time.$ + critter.phase(i)) * FLIGHT.pace));
+      const flown = roundAt(i, time.$).x;
+      row.position = flightAt(i, flown);
+      row.heading = headingAt(flown);
     }
 
     const centre = row.position + boxAt(kind) + d.vec2f(0, lift);
     const half = boxOf(kind);
     const enter = touchAt(centre, half);
-    if (enter < 0) return;
+    if (enter < 0) {
+      // Falling pepper only hurts
+      if (kind !== GRINDER) return;
+      const column = pepperOf(i);
+      if (column.w === 0 || touchAt(column.xy, column.zw) < 0) return;
+      contacts.add.hurts(1);
+      if (avatar.$.after.x > column.x) contacts.add.rightward(1);
+      return;
+    }
 
     const offset = std.mix(avatar.$.before, avatar.$.after, enter) - centre;
     if (avatar.$.sliding > 0 && kind !== WALKER) {
@@ -391,21 +486,33 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     }
   });
 
-  /** A bat's wing distance at `local`, beating by the clock. */
-  const wingAt = (local: d.v2f) => {
+  // Emitting binds two storage buffers per system, more than the step has room for beside the dust
+  const emitKernel = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
     'use gpu';
-    const beat = std.sin(time.$ * WINGBEAT) * 0.3;
-    const wing = d.vec2f(std.abs(local.x) - 0.6, local.y - beat * (std.abs(local.x) - 0.3));
-    return sdRoundedBox2d(wing, d.vec2f(0.38, 0.12), 0.1);
-  };
+    const i = gid.x;
+    if (!critter.alive(i)) return;
+
+    const row = critter.device.$[i];
+    if (row.squashedAt >= 0 || time.$ < row.emitAt) return;
+
+    const kind = critter.kind(i);
+    if (kind === WALKER) {
+      row.emitAt = blow(i, row.position);
+    } else if (kind === GRINDER && roundAt(i, time.$).y < ROUND.grind) {
+      row.emitAt = grind(i, row.position, row.heading);
+    }
+  });
 
   /**
-   * A sponge's or fork's colour at `local` in quad units, or zero alpha around it: the texel of
-   * `frame` of its sheet, facing `facing`, with the frame's bottom row on the floor.
+   * A critter's colour at `local` in quad units, or zero alpha around it: the texel of `frame` of
+   * its sheet, facing `facing`.
    */
   const sheetAt = (local: d.v2f, kind: number, frame: number, facing: number) => {
     'use gpu';
-    // The sponge's sheet faces left, and the fork's right
+    // The sponge's and the grinder's sheets face left, and the fork's right
     const fork = kind === FORK;
     const mirror = std.select(-facing, facing, fork);
     const t = d.vec2i(std.floor(d.vec2f(local.x * mirror, local.y) * MIDDLE));
@@ -414,6 +521,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     if (column < 0 || column >= FRAME || row < 0 || row >= FRAME) return d.vec4f();
     const texel = d.vec2i(frame * FRAME + column, row);
     if (fork) return std.textureLoad(forkSheet.$, texel, 0);
+    if (kind === GRINDER) return std.textureLoad(grinderSheet.$, texel, 0);
     return std.textureLoad(spongeSheet.$, texel, 0);
   };
 
@@ -433,18 +541,27 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       const fade = std.saturate(1 - (time.$ - squashedAt) / VANISH);
       const scale = std.select(d.vec2f(1), FLAT * fade, flat);
 
-      // A walker's quad is a tile and a half across, standing on the floor
+      // A walker's quad stands on the floor, and a grinder's centres on it
       const kind = critter.kind(slot);
-      const bat = kind === BAT;
-      const reach = std.select(REACH, SIZE, bat);
-      const lift = std.select(LIFT, 0, bat);
-      const local = corner * scale * reach + d.vec2f(0, (scale.y - 1) * reach);
+      const grinder = kind === GRINDER;
+      const local = corner * scale * REACH + d.vec2f(0, (scale.y - 1) * REACH);
       const fork = kind === FORK;
-      // A winding-up fork shakes by whole texels, so its texels stay on the grid
+      // A winding-up fork shakes and a flying grinder bobs by whole texels, so its texels stay on
+      // the grid
       const shake = std.select(0, shakeOf(slot), fork && !flat);
+      let frame = frameOf(slot);
+      let still = d.i32(SHUT);
+      let lift = d.f32(LIFT);
+      if (fork) {
+        frame = poseOf(slot);
+        still = d.i32(POSE.still);
+      } else if (grinder) {
+        frame = millOf(slot);
+        still = d.i32(MILL.flying);
+        const bob = std.select(0, 1 / TEXELS, std.fract(time.$ * WOBBLE) < 0.5);
+        lift = std.select(0, bob, frame === MILL.flying && !flat);
+      }
       const world = snapped(shownAt(slot)) + d.vec2f(shake, lift) + local;
-      const shown = std.select(frameOf(slot), poseOf(slot), fork);
-      const still = std.select(d.i32(SHUT), d.i32(POSE.still), fork);
 
       return Corner({
         position: cameras.toClip(d.vec3f(world, 0)),
@@ -452,29 +569,20 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
         texel: local * TEXELS,
         kind,
         facing: critter.heading(slot),
-        frame: std.select(shown, still, flat),
+        frame: std.select(frame, still, flat),
       });
     },
 
     cutout: (corner) => {
       'use gpu';
       const local = pixelated(corner.local, corner.texel);
-      if (corner.kind === BAT) return wingAt(local) > 0 && sdDisk(local, 0.5) > 0;
       return sheetAt(local, corner.kind, corner.frame, corner.facing).w === 0;
     },
 
     pixelOf: (corner) => {
       'use gpu';
       const local = pixelated(corner.local, corner.texel);
-      const facing = corner.facing;
-      if (corner.kind !== BAT) {
-        return sprite(sheetAt(local, corner.kind, corner.frame, facing).xyz);
-      }
-      if (wingAt(local) < 0) return sprite(WING);
-
-      const eye = eyesAt(local - d.vec2f(facing * EYES.ahead, EYES.up), facing);
-      if (eye.w > 0) return sprite(eye.xyz);
-      return sprite(SHELL * (0.75 + 0.25 * std.step(-0.3, local.y)));
+      return sprite(sheetAt(local, corner.kind, corner.frame, corner.facing).xyz);
     },
 
     color: passes.shaded,
@@ -484,6 +592,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   const stepPipeline = root
     .pipe(options.avatar.inject())
     .createComputePipeline({ compute: stepKernel });
+  const emitPipeline = root.createComputePipeline({ compute: emitKernel });
 
   return {
     table: critters,
@@ -495,10 +604,17 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     contacts,
 
     drawing,
-    initAsync: () => pipelines.compile([live, stepPipeline]),
+    initAsync: () => pipelines.compile([live, stepPipeline, emitPipeline]),
 
     reset(level: Level) {
       critters.clear();
+      tops.write(
+        Array.from({ length: options.columns }, (_, x) => {
+          let top = level.height;
+          while (top > 0 && !solidAt(level, x, top - 1)) top--;
+          return top;
+        }),
+      );
       level.critters.forEach(({ kind, at, patrol }, i) => {
         // Keep a walker's body within its patrol's tiles
         const wide = kind === WALKER ? BODY.wide : kind === FORK ? PRONGS.wide : 0.5;
@@ -509,11 +625,13 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       });
     },
 
-    /** Records one step after `table.flush()`. */
+    /** Records one step after `table.flush()`, then the bubbles and pepper the critters emit. */
     step(pass: TgpuComputePass) {
       const workgroups = Math.ceil(critters.span / WORKGROUP);
       if (workgroups > 0) {
         pass.setPipeline(stepPipeline);
+        pass.dispatchWorkgroups(workgroups);
+        pass.setPipeline(emitPipeline);
         pass.dispatchWorkgroups(workgroups);
       }
     },
@@ -530,6 +648,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       critters.destroy();
       live.destroy();
       contacts.destroy();
+      tops.buffer.destroy();
     },
   };
 }

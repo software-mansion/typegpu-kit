@@ -53,7 +53,7 @@ The vertex shader reads its row's slot with `live.slot(SOLID, instanceIndex)`, i
 
 <Rules>
 
-- **Grouping** Group by mesh or pipeline, such as fish species. Rows that share both stay one group and branch on a field, as the platformer's walkers and bats do.
+- **Grouping** Group by mesh or pipeline, such as fish species. Rows that share both stay one group and branch on a field, as the platformer's walkers and pepper grinders do.
 - **Default group** Without `group`, every live row is in group 0; rows whose group is out of range aren't drawn.
 - **Swapping a draw** `setDraw(group, draw)` swaps a group's draw, such as for a new mesh, and keeps its count.
 - **Table rows** `blocks.live()` returns the table's `capacity`, its `gpu.alive` and its `span`. Without `alive`, every slot is live, and the types refuse a `span`.
@@ -106,7 +106,7 @@ Set the pipeline on the pass once, then draw each group with `live.draw(pass, 0)
 
 ## Running over a group
 
-`compact` also writes indirect dispatch arguments for each group's live rows. `live.dispatch(pass, group)` dispatches the pipeline set on the pass over the group's rows, in workgroups of `workgroupSize` threads, 64 by default. Its threads return at or beyond `live.count(group)`, the group's live row count, and find their rows with `live.slot(group, i)`. An update to the walkers then skips holes and bats:
+`compact` also writes indirect dispatch arguments for each group's live rows. `live.dispatch(pass, group)` dispatches the pipeline set on the pass over the group's rows, in workgroups of `workgroupSize` threads, 64 by default. Its threads return at or beyond `live.count(group)`, the group's live row count, and find their rows with `live.slot(group, i)`. An update to the walkers then skips holes and grinders:
 
 ```ts twoslash
 import { d, tgpu, type TgpuComputePass } from 'typegpu';
