@@ -103,7 +103,8 @@ export function createPlatformer(
         hero.step(input, STEP);
         const feet = hero.position[1] - HALF[1];
         if (airborne && hero.grounded) effects.puff(hero.position[0], feet);
-        else if (!skidding && hero.skidding)
+        // A ducked hero turns without kicking up dust
+        else if (!skidding && hero.skidding && !hero.ducked)
           effects.puff(hero.position[0], feet, -hero.facing * KICK);
 
         taken += coins.collect(hero.position, now, effects.sparkle);
