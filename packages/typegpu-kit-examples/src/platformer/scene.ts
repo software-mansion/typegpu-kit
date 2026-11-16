@@ -35,6 +35,10 @@ const BACKDROP = [LAYERS.clouds, LAYERS.far, LAYERS.near];
 export interface SceneOptions {
   /** The hero's sheet, from `assets.ts`. */
   readonly hero: Picture;
+  /** The sponge's sheet, from `assets.ts`. */
+  readonly sponge: Picture;
+  /** The bubble's sheet, from `assets.ts`. */
+  readonly bubble: Picture;
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
   readonly map?: readonly string[];
   /** Receives the score at startup and whenever it changes. */
@@ -80,19 +84,22 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   const scenery = createScenery(root, time, level, layers);
   const avatar = createAvatar(root, { time, sheet: options.hero });
   const coins = createCoins(root, { time, capacity: level.coins.length, scheduler });
-  const effects = createEffects(root, layers.screen, { step: sim.step });
+  const effects = createEffects(root, layers.screen, { step: sim.step, bubble: options.bubble });
   const critters = createCritters(root, {
     time,
     capacity: level.critters.length,
+    sheet: options.sponge,
     step: STEP,
     avatar,
     dust: effects.dust,
+    bubbles: effects.bubbles,
   });
   const backdrop = [scene.add(scenery.backdrop)];
   const tiles = [scene.add(scenery.drawing)];
   const sprites = [
     front.add(coins.drawing),
     front.add(critters.drawing),
+    front.add(effects.bubbles.drawing),
     front.add(effects.dust.drawing),
     front.add(effects.sparks.drawing),
     front.add(avatar.drawing),
@@ -132,6 +139,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       controls: {
         left: hold('left'),
         right: hold('right'),
+        down: hold('down'),
         jump: {
           press() {
             hero.jump();

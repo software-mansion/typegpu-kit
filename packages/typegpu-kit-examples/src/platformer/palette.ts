@@ -5,28 +5,27 @@ import { d, std, tgpu } from 'typegpu';
  * The 32 colours the print may show, dark to light. Fitted with k-means in OKLab to the game's
  * inks, their full shadows and lit cut edges, and the sky's gradient, weighting the ground's greens
  * so each keeps an entry of its own and sprites' colours so small ones keep their hue. The ten
- * colours of the hero's sheet then replaced entries near them, so the hero prints as drawn.
+ * colours of the hero's sheet and the six of the sponge's then replaced entries near them or
+ * barely used, so both print as drawn.
  */
 const PALETTE = [
-  '#140f1a',
   '#222034',
-  '#15322d',
   '#50182c',
   '#382952',
   '#244b3f',
   '#743f57',
   '#873f24',
-  '#396157',
   '#6b4099',
   '#306b3a',
+  '#4b692f',
   '#3f5f9b',
   '#af2a5a',
   '#a05024',
   '#4a8652',
-  '#7581a2',
   '#b97034',
   '#6a9c7e',
   '#f24d59',
+  '#df7126',
   '#d77b83',
   '#6aa2e2',
   '#61c24a',
@@ -35,10 +34,12 @@ const PALETTE = [
   '#e19d57',
   '#ea9a75',
   '#93bad9',
+  '#cdca22',
   '#accbe3',
   '#a2df74',
   '#ffcc38',
   '#cbddea',
+  '#fbf236',
   '#ffffff',
 ];
 

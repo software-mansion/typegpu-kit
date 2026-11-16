@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 import { VANISH } from '../src/platformer/coins.ts';
 import { STEP, type Score } from '../src/platformer/game.ts';
-import { createHero, HALF } from '../src/platformer/hero.ts';
-import { parseLevel } from '../src/platformer/level.ts';
+import { createHero, HALF, HEEL, SNEAK, type Input } from '../src/platformer/hero.ts';
+import { MAP, parseLevel } from '../src/platformer/level.ts';
 import { createScene } from '../src/platformer/scene.ts';
 import { compute, describeExample, pass } from './utils/examples.ts';
 
@@ -10,18 +10,18 @@ import { compute, describeExample, pass } from './utils/examples.ts';
 const STRIP = ['', '', '', '@ o          w             F', '###########################'];
 
 /**
- * A frame's events. One compute pass holds the critters', the dust's and the sparkles' steps, any
- * spawns, and two compacting kernels each for the coins, the critters, the dust and the sparkles.
- * A pass draws each backdrop layer and one the level's tiles. The sprites' pass draws the coins,
- * critters, dust and sparkles indirectly, and the hero. One pass finds what casts shadows and two
+ * A frame's events. One compute pass holds the critters', the dust's, the sparkles' and the
+ * bubbles' steps, any spawns, and two compacting kernels each for the coins, the critters, the
+ * dust, the sparkles and the bubbles. A pass draws each backdrop layer and one the level's tiles.
+ * The sprites' pass draws the coins, critters, bubbles, dust and sparkles indirectly, and the hero. One pass finds what casts shadows and two
  * blur them, one prints the layers and sprites on paper and the final pass draws it onto the
  * surface.
  */
 const frame = (steps: number, spawns: number, capture: boolean) => [
-  ...compute(3 * steps + spawns + 8),
+  ...compute(4 * steps + spawns + 10),
   ...(capture ? ['copy-buffer'] : []),
   ...Array.from({ length: 4 }, () => pass('draw')).flat(),
-  ...pass(...Array<string>(4).fill('draw-indirect'), 'draw'),
+  ...pass(...Array<string>(5).fill('draw-indirect'), 'draw'),
   ...Array.from({ length: 5 }, () => pass('draw')).flat(),
   'submit',
 ];
@@ -56,7 +56,7 @@ describeExample(
 
     it('records a frame in one compute pass, the layers, their shadows and their print on paper', async () => {
       const { log, next } = await setup();
-      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(12);
+      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(13);
 
       // Each frame copies the contacts, which are read at 60 Hz. The second takes four steps, and
       // the hero lands from where it was placed in a puff of dust
@@ -111,7 +111,8 @@ describeExample(
       const hero = createHero(level);
       const floor = 1 + HALF[1];
 
-      for (let t = 0; t < 1; t += STEP) hero.step({ left: false, right: true, jump: false }, STEP);
+      for (let t = 0; t < 1; t += STEP)
+        hero.step({ left: false, right: true, jump: false, down: false }, STEP);
       expect(hero.position[0]).toBeCloseTo(6 - HALF[0], 3);
       expect(hero.position[1]).toBeCloseTo(floor, 3);
       expect(hero.grounded).toBe(true);
@@ -119,12 +120,178 @@ describeExample(
       hero.jump();
       let top = 0;
       for (let t = 0; t < 1; t += STEP) {
-        hero.step({ left: false, right: false, jump: true }, STEP);
+        hero.step({ left: false, right: false, jump: true, down: false }, STEP);
         top = Math.max(top, hero.position[1] - floor);
       }
 
       expect(top).toBeGreaterThan(3.2);
       expect(top).toBeLessThan(3.6);
+    });
+
+    it('ducks in place, slides at a run down to a sneak, and sneaks from there', () => {
+      const level = parseLevel(['', '@                        ', '###########################']);
+      const hero = createHero(level);
+      const hold = (input: Partial<Input>, seconds: number) => {
+        const held = { left: false, right: false, jump: false, down: false, ...input };
+        for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+      };
+
+      hold({}, 0.5);
+      hold({ down: true }, 0.2);
+      expect(hero.ducked).toBe(true);
+      expect(hero.sliding).toBe(false);
+      expect(hero.velocity[0]).toBe(0);
+
+      hold({ right: true }, 0.5);
+      expect(hero.velocity[0]).toBeGreaterThan(SNEAK);
+      hold({ right: true, down: true }, 0.2);
+      expect(hero.sliding).toBe(true);
+      expect(hero.velocity[0]).toBeGreaterThan(SNEAK);
+
+      // The slide keeps its way against the stick, and slows down to a sneak
+      hold({ left: true, down: true }, 0.1);
+      expect(hero.sliding).toBe(true);
+      expect(hero.facing).toBe(1);
+      hold({ right: true, down: true }, 1);
+      expect(hero.sliding).toBe(false);
+      expect(hero.velocity[0]).toBeCloseTo(SNEAK, 5);
+
+      hold({ right: true }, 0.5);
+      expect(hero.ducked).toBe(false);
+      expect(hero.velocity[0]).toBeGreaterThan(SNEAK);
+    });
+
+    it('squeezes through a tunnel a tile high only ducked, and stands once out of it', () => {
+      const level = parseLevel(['', '    =====    ', '@            ', '#############']);
+      const hero = createHero(level);
+      const hold = (input: Partial<Input>, seconds: number) => {
+        const held = { left: false, right: false, jump: false, down: false, ...input };
+        for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+      };
+
+      hold({ right: true }, 1);
+      expect(hero.position[0]).toBeCloseTo(4 - HALF[0], 3);
+
+      hold({ right: true, down: true }, 1);
+      expect(hero.position[0]).toBeGreaterThan(5);
+
+      // Without room to stand, letting go of the duck keeps the hero ducked
+      hold({ right: true }, 0.3);
+      expect(hero.ducked).toBe(true);
+      expect(hero.position[0]).toBeLessThan(9);
+      hold({ right: true }, 2);
+      expect(hero.ducked).toBe(false);
+      expect(hero.position[0]).toBeGreaterThan(9 + HALF[0]);
+    });
+
+    it('backflips away from the way it faces when it jumps in a skid', () => {
+      const level = parseLevel([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '@                        ',
+        '###########################',
+      ]);
+      const hero = createHero(level);
+      const floor = 1 + HALF[1];
+      const hold = (input: Partial<Input>, seconds: number) => {
+        const held = { left: false, right: false, jump: false, down: false, ...input };
+        for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+      };
+
+      hold({ right: true }, 1);
+      hold({ left: true }, 0.03);
+      expect(hero.skidding).toBe(true);
+      expect(hero.facing).toBe(-1);
+
+      hero.jump();
+      hold({ left: true }, STEP);
+      expect(hero.flipping).toBe(true);
+      expect(hero.velocity[0]).toBeGreaterThan(0);
+
+      // The stick doesn't steer the flip, and a released jump doesn't cut it short
+      let top = 0;
+      hold({ left: true }, 0.3);
+      expect(hero.velocity[0]).toBeGreaterThan(0);
+      expect(hero.facing).toBe(-1);
+      for (let t = 0; t < 1; t += STEP) {
+        hero.step({ left: false, right: false, jump: false, down: false }, STEP);
+        top = Math.max(top, hero.position[1] - floor);
+      }
+      expect(top).toBeGreaterThan(4);
+      expect(hero.grounded).toBe(true);
+      expect(hero.flipping).toBe(false);
+    });
+
+    it('backflips from a jump late in the turn, after the skid itself, but not after the turn', () => {
+      const level = parseLevel([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '@                        ',
+        '###########################',
+      ]);
+      const turnThenJump = (wait: number) => {
+        const hero = createHero(level);
+        const hold = (input: Partial<Input>, seconds: number) => {
+          const held = { left: false, right: false, jump: false, down: false, ...input };
+          for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+        };
+        hold({ right: true }, 1);
+        hold({ left: true }, wait);
+        const skidding = hero.skidding;
+        hero.jump();
+        hold({ left: true, jump: true }, STEP);
+        return { skidding, flipping: hero.flipping };
+      };
+
+      expect(turnThenJump(HEEL - 0.03)).toEqual({ skidding: false, flipping: true });
+      expect(turnThenJump(HEEL + 0.05)).toEqual({ skidding: false, flipping: false });
+    });
+
+    it('reaches the pillar by the flag only with a backflip', () => {
+      const level = parseLevel(MAP);
+      const ground = 2;
+      /** Whether a run from `x` that way, jumping after `wait` seconds, ends on the pillar. */
+      const onPillar = (x: number, way: number, wait: number, turn: boolean) => {
+        const hero = createHero(level);
+        hero.place(x, ground + 0.5);
+        const run = { left: way < 0, right: way > 0, jump: false, down: false };
+        for (let t = 0; t < wait; t += STEP) hero.step(run, STEP);
+        const back = turn ? { ...run, left: way > 0, right: way < 0 } : run;
+        if (turn) for (let t = 0; t < 0.05; t += STEP) hero.step(back, STEP);
+        hero.jump();
+        // A regular jump steers on toward its target, and a backflip lets go of the stick
+        const air = turn ? { ...back, left: false, right: false } : back;
+        for (let t = 0; t < 1.5; t += STEP) hero.step({ ...air, jump: true }, STEP);
+        return hero.grounded && hero.position[1] - HALF[1] > ground + 3.5;
+      };
+
+      for (let x = 100.5; x < 114; x += 0.5) {
+        for (const way of [-1, 1]) {
+          for (let wait = 0; wait < 1.2; wait += 0.05) {
+            expect(onPillar(x, way, wait, false), `jumping from ${x} after ${wait} s`).toBe(false);
+          }
+        }
+      }
+      const turns = Array.from({ length: 24 }, (_, k) => k * 0.05);
+      expect(turns.some((wait) => onPillar(100.5, 1, wait, true))).toBe(true);
+    });
+
+    it('turns walkers where a tile above leaves no room', () => {
+      const level = parseLevel(['', '   =', ' w  ', '####']);
+
+      expect(level.critters).toEqual([{ kind: 0, at: [1.5, 1.5], patrol: [0.5, 2.5] }]);
+    });
+
+    it('reads forks as walkers of their own', () => {
+      const level = parseLevel(['', ' f   #', '###  #', '######']);
+
+      expect(level.critters).toEqual([{ kind: 2, at: [1.5, 2.5], patrol: [0.5, 2.5] }]);
     });
 
     it('takes a coin it runs through, and the coin goes after it flies off', async () => {
@@ -202,6 +369,6 @@ describeExample(
     // Coins, critters, dust and sparkles each compact with two kernels. The critters' step, a spawn
     // and a step each for dust and sparkles, the backdrop, the tiles, five sprite drawings, the shadows'
     // casters and two blurs, the print on paper and the final pass.
-    pipelines: 25,
+    pipelines: 30,
   },
 );
