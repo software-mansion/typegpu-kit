@@ -74,7 +74,18 @@ export interface CameraKind {
   readonly selfie?: boolean;
 }
 
-export type UiElement = TextKind | AnyButtonsKind | ImageKind | CameraKind;
+/**
+ * Short sounds the scene plays, such as a jump's, by name. The web host decodes each file with Web
+ * Audio and plays it when the scene asks, once the reader has pressed a key or touched the page;
+ * the native host stays silent.
+ */
+export interface SoundsKind<N extends string = string> {
+  readonly kind: 'sounds';
+  /** Each sound's file, by path from the example's directory, such as `sounds/jump.wav`. */
+  readonly files: Readonly<Record<N, string>>;
+}
+
+export type UiElement = TextKind | AnyButtonsKind | ImageKind | CameraKind | SoundsKind;
 export type Ui = Readonly<Record<string, UiElement>>;
 
 export function text(options: { readonly corner: Corner }): TextKind {
@@ -94,6 +105,43 @@ export function image(label: string): ImageKind {
 
 export function camera(label: string, options: { readonly selfie?: boolean } = {}): CameraKind {
   return { kind: 'camera', label, ...options };
+}
+
+export function sounds<const N extends string>(files: Readonly<Record<N, string>>): SoundsKind<N> {
+  return { kind: 'sounds', files };
+}
+
+/** Where a sound sits in the mix. */
+export interface Placement {
+  /** From -1, all left, to 1, all right. Default 0, centred. */
+  readonly pan?: number;
+  /** Its loudness, from 0, silent, to 1, as recorded. Default 1. */
+  readonly gain?: number;
+}
+
+/** A sound playing, which can be moved in the mix and cut short. */
+export interface Voice {
+  /** Whether the sound still plays. */
+  readonly playing: boolean;
+  /** Moves the sound in the mix, as a sound that moves or is heard from somewhere else would. */
+  place(placement: Placement): void;
+  /** Fades the sound out over `fade` seconds, then stops it. Does nothing once it has ended. */
+  stop(fade: number): void;
+}
+
+/**
+ * Plays sound `name` once, now, placed in the mix as `placement` says. Returns the playing sound,
+ * or nothing when it isn't heard.
+ */
+export type Play<N extends string = string> = (
+  name: N,
+  placement?: Placement,
+) => Voice | undefined | void;
+
+/** What a scene binds to a sounds element: where the host attaches its player. */
+export interface Speaker<N extends string = string> {
+  /** Takes the host's player, or `undefined` to fall silent, as the host leaves. */
+  attach(play: Play<N> | undefined): void;
 }
 
 /** What a scene binds to a camera element: where the host attaches the camera's source. */
@@ -124,4 +172,6 @@ export type Handler<E extends UiElement> = E extends TextKind
       ? (picture: Picture) => void
       : E extends CameraKind
         ? Camera
-        : never;
+        : E extends SoundsKind<infer N>
+          ? Speaker<N>
+          : never;
