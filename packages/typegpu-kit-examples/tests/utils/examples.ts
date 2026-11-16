@@ -15,7 +15,7 @@ import type { ExampleScene, Loading, Read } from '../../src/contract.ts';
 import { begin, filesOf, readingsOf, shapeOf } from '../../src/hosts.ts';
 import { exampleOf } from '../../src/index.ts';
 import type { Choice, Knob, Range, Value } from '../../src/settings.ts';
-import type { Camera, Ui } from '../../src/ui.ts';
+import type { Camera, Speaker, Ui } from '../../src/ui.ts';
 
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -254,7 +254,7 @@ export function describeExample<O, S extends ExampleScene>(
       const readings = readingsOf({ scene, root, surface, loop, ready: true }, example.ui);
       expect(structuredClone(readings)).toEqual(readings);
 
-      await checkUi(example.ui ?? {}, scene.ui ?? {}, () => next());
+      await checkUi(key, example.ui ?? {}, scene.ui ?? {}, () => next());
       await run(1);
     });
 
@@ -264,10 +264,16 @@ export function describeExample<O, S extends ExampleScene>(
 
 /**
  * Checks that `bound` has a handler of the right kind for every element `ui` declares, that each
- * button has keys or a pad, and that pressing each button, picking a 2 × 2 image and attaching a
- * camera leave the next frame running.
+ * button has keys or a pad and each sound's file of example `example` exists, and that pressing
+ * each button, picking a 2 × 2 image, attaching a camera and attaching a player leave the next
+ * frame running.
  */
-async function checkUi(ui: Ui, bound: Readonly<Record<string, unknown>>, next: () => void) {
+async function checkUi(
+  example: string,
+  ui: Ui,
+  bound: Readonly<Record<string, unknown>>,
+  next: () => void,
+) {
   const pixels = new Uint8Array(16).fill(255);
   for (const [name, element] of Object.entries(ui)) {
     const handler = bound[name];
@@ -293,6 +299,15 @@ async function checkUi(ui: Ui, bound: Readonly<Record<string, unknown>>, next: (
       next();
       expect(camera.frames, `${name} receives a camera frame`).toBe(1);
       camera.attach(undefined);
+      next();
+    } else if (element.kind === 'sounds') {
+      for (const path of Object.values(element.files)) {
+        expect((await readFromDisk(`${example}/${path}`)).byteLength, path).toBeGreaterThan(0);
+      }
+      const speaker = handler as Speaker;
+      speaker.attach((sound) => expect(Object.keys(element.files), name).toContain(sound));
+      next();
+      speaker.attach(undefined);
       next();
     } else {
       const padded = new Set([...(element.pads.left ?? []), ...(element.pads.right ?? [])].flat());

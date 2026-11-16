@@ -6,14 +6,16 @@ import type GUI from 'lil-gui';
 import { exampleOf } from 'typegpu-kit-examples';
 import type { ExampleScene, Picture, Say } from 'typegpu-kit-examples/contract';
 import { WARMUP_FRAMES } from 'typegpu-kit-examples/hosts';
-import type { Camera, CameraKind, Ui } from 'typegpu-kit-examples/ui.ts';
+import type { Camera, CameraKind, Speaker, Ui } from 'typegpu-kit-examples/ui.ts';
 import { posterOf } from '../components/site/posters.ts';
 import { reducedMotion } from '../components/viz/figure.ts';
 import { veil } from '../components/site/veil.ts';
 import { film, type Filming } from './camera.ts';
+import { fetchExampleFile } from './files.ts';
 import { connectPad, listenKeys, padsOf, type Pad, type PadRows, type Pressed } from './buttons.ts';
 import { host } from './host.ts';
 import { panel } from './panel.ts';
+import { speak } from './sounds.ts';
 
 /** Finds an element in the example markup. Throws if none matches `selector`. */
 const element = <E extends HTMLElement>(selector: string) => {
@@ -140,9 +142,10 @@ interface Shown extends Disposable {
 /**
  * Shows the example's declared UI and connects it to the scene's bindings: texts at the canvas's
  * corners, keys and touch pads pressing buttons, an image picker in `gui` with drops on the
- * canvas, and a camera button in `gui`. Throws if the scene binds no handler for a declared element.
+ * canvas, a camera button in `gui`, and sounds the example `key` ships. Throws if the scene binds
+ * no handler for a declared element.
  */
-function ui(declared: Ui | undefined, scene: ExampleScene, gui?: GUI): Shown {
+function ui(key: string, declared: Ui | undefined, scene: ExampleScene, gui?: GUI): Shown {
   const listening = new AbortController();
   const { signal } = listening;
   const bound = (scene.ui ?? {}) as Readonly<Record<string, unknown>>;
@@ -176,6 +179,10 @@ function ui(declared: Ui | undefined, scene: ExampleScene, gui?: GUI): Shown {
 
       case 'camera':
         cameras(part, binding as Camera, gui, signal);
+        break;
+
+      case 'sounds':
+        speak(key, part, binding as Speaker, fetchExampleFile, signal).catch(fail);
         break;
     }
   }
@@ -220,7 +227,7 @@ export function run(key: string): Hosted<ExampleScene> {
         scene.settings || picks
           ? panel(scene.settings, example.title.toLowerCase(), fail)
           : undefined;
-      const made = ui(example.ui, scene, gui);
+      const made = ui(key, example.ui, scene, gui);
       shown = made;
       return {
         [Symbol.dispose]() {
