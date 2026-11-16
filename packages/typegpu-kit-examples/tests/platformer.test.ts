@@ -10,18 +10,19 @@ import { compute, describeExample, pass } from './utils/examples.ts';
 const STRIP = ['', '', '', '@ o          w             F', '###########################'];
 
 /**
- * A frame's events. One compute pass holds the critters', the dust's, the sparkles' and the
- * bubbles' steps, any spawns, and two compacting kernels each for the coins, the critters, the
- * dust, the sparkles and the bubbles. A pass draws each backdrop layer and one the level's tiles.
- * The sprites' pass draws the coins, critters, bubbles, dust and sparkles indirectly, and the hero. One pass finds what casts shadows and two
+ * A frame's events. One compute pass holds the critters' two kernels, the dust's, the sparkles', the bubbles'
+ * and the pepper's steps, any spawns, and two compacting kernels each for the coins, the critters,
+ * the dust, the sparkles, the bubbles and the pepper. A pass draws each backdrop layer and one the
+ * level's tiles. The sprites' pass draws the coins, critters, pepper, bubbles, dust and sparkles
+ * indirectly, and the hero. One pass finds what casts shadows and two
  * blur them, one prints the layers and sprites on paper with the health bar over them and the final
  * pass draws it onto the surface.
  */
 const frame = (steps: number, spawns: number, capture: boolean) => [
-  ...compute(4 * steps + spawns + 10),
+  ...compute(6 * steps + spawns + 12),
   ...(capture ? ['copy-buffer'] : []),
   ...Array.from({ length: 4 }, () => pass('draw')).flat(),
-  ...pass(...Array<string>(5).fill('draw-indirect'), 'draw'),
+  ...pass(...Array<string>(6).fill('draw-indirect'), 'draw'),
   ...Array.from({ length: 3 }, () => pass('draw')).flat(),
   ...pass('draw', 'draw'),
   ...pass('draw'),
@@ -62,7 +63,7 @@ describeExample(
 
     it('records a frame in one compute pass, the layers, their shadows and their print on paper', async () => {
       const { log, next } = await setup();
-      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(14);
+      expect(log.shaders.filter((code) => code.includes('@vertex'))).toHaveLength(15);
 
       // Each frame copies the contacts, which are read at 60 Hz. The second takes four steps, and
       // the hero lands from where it was placed in a puff of dust
@@ -480,6 +481,6 @@ describeExample(
     // Coins, critters, dust and sparkles each compact with two kernels. The critters' step, a spawn
     // and a step each for dust and sparkles, the backdrop, the tiles, five sprite drawings, the shadows'
     // casters and two blurs, the print on paper, the health bar and the final pass.
-    pipelines: 31,
+    pipelines: 37,
   },
 );

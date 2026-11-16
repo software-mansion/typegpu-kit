@@ -42,6 +42,8 @@ export interface SceneOptions {
   readonly bubble: Picture;
   /** The fork's sheet, from `assets.ts`. */
   readonly fork: Picture;
+  /** The pepper grinder's sheet, from `assets.ts`. */
+  readonly grinder: Picture;
   /** The health bar's raspberries, from `assets.ts`. */
   readonly raspberry: Picture;
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
@@ -93,18 +95,22 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   const critters = createCritters(root, {
     time,
     capacity: level.critters.length,
+    columns: level.width,
     sponge: options.sponge,
     fork: options.fork,
+    grinder: options.grinder,
     step: STEP,
     avatar,
     dust: effects.dust,
     bubbles: effects.bubbles,
+    pepper: effects.pepper,
   });
   const backdrop = [scene.add(scenery.backdrop)];
   const tiles = [scene.add(scenery.drawing)];
   const sprites = [
     front.add(coins.drawing),
     front.add(critters.drawing),
+    front.add(effects.pepper.drawing),
     front.add(effects.bubbles.drawing),
     front.add(effects.dust.drawing),
     front.add(effects.sparks.drawing),

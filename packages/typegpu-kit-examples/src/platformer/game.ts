@@ -153,6 +153,7 @@ export function createPlatformer(
         effects.dust.step(pass);
         effects.sparks.step(pass);
         effects.bubbles.step(pass);
+        effects.pepper.step(pass);
       }
 
       if (taken > 0) {
