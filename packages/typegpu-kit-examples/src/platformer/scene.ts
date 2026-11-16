@@ -39,6 +39,8 @@ export interface SceneOptions {
   readonly sponge: Picture;
   /** The bubble's sheet, from `assets.ts`. */
   readonly bubble: Picture;
+  /** The fork's sheet, from `assets.ts`. */
+  readonly fork: Picture;
   /** The level, one string per row, as `parseLevel` reads it. Default `MAP`. */
   readonly map?: readonly string[];
   /** Receives the score at startup and whenever it changes. */
@@ -88,7 +90,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   const critters = createCritters(root, {
     time,
     capacity: level.critters.length,
-    sheet: options.sponge,
+    sponge: options.sponge,
+    fork: options.fork,
     step: STEP,
     avatar,
     dust: effects.dust,

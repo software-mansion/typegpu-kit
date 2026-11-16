@@ -35,7 +35,7 @@ const Critter = table.define('Critter', {
     home: d.vec2f,
     /** Horizontal turning bounds in tiles. */
     patrol: d.vec2f,
-    /** Phase offset in seconds of a bat's loop and a sponge's wiggles. */
+    /** Phase offset in seconds of a bat's loop, a sponge's wiggles and a fork's hops. */
     phase: d.f32,
   },
   device: {
@@ -94,46 +94,19 @@ const SPONGE = d.vec2f(BODY.wide, BODY.tall);
 const SPONGE_AT = d.vec2f(0, BODY.tall - 0.5);
 
 /**
- * A fork's parts in tiles from its quad's centre, a tile above the floor: the handle it stands on,
- * the bridge its eyes sit on and four tines, two texels wide with gaps of three.
+ * A fork's hop, over and over: it stands for `still` seconds, winds up shaking for `wind`, flies
+ * `far` tiles forward and `high` tiles up for `flight`, and lands crouched for `land`.
  */
-const HANDLE = { at: d.vec2f(0, -0.72), half: d.vec2f(1 / TEXELS, 0.28) };
-const BRIDGE = { at: d.vec2f(0, -0.36), half: d.vec2f(8.5 / TEXELS, 0.14), round: 0.12 };
-const TINES = {
-  inner: 2.5 / TEXELS,
-  outer: 7.5 / TEXELS,
-  y: -0.03,
-  half: d.vec2f(1 / TEXELS, 0.28),
-};
-/** Half a fork's hitbox in tiles, with its foot on the floor below its tile centre. */
-const PRONGS = { wide: 0.5, tall: 0.6 };
+const HOP = { still: 0.5, wind: 0.3, flight: 0.4, land: 0.08, far: 1.5, high: 0.5 };
+const CYCLE = HOP.still + HOP.wind + HOP.flight + HOP.land;
+/** The fork's frames: standing, crouched to jump or from landing, and in flight. */
+const POSE = { still: 0, crouch: 1, flight: 2 };
+/** Times a second a winding-up fork shakes from side to side, a texel each way. */
+const SHAKE = 12;
+/** Half a fork's hitbox standing, in tiles, with its foot on the floor below its tile centre. */
+const PRONGS = { wide: 5 / TEXELS, tall: 13 / TEXELS };
 const FORK_BOX = d.vec2f(PRONGS.wide, PRONGS.tall);
 const FORK_AT = d.vec2f(0, PRONGS.tall - 0.5);
-const STEEL = d.vec3f(0.608, 0.678, 0.718);
-const GLINT = d.vec3f(0.796, 0.867, 0.918);
-const INK = d.vec3f(0.133, 0.125, 0.204);
-const forkEyesAt = eyes({ apart: 0.18, radius: 0.09, pupil: 0.05, look: 0.03 });
-/** A fork's eyes, above its bridge's centre. */
-const FORK_EYES = -0.36;
-
-/** A fork's distance at `local`, in tiles. */
-const forkAt = (local: d.v2f) => {
-  'use gpu';
-  const handle = sdRoundedBox2d(local - HANDLE.at, HANDLE.half, 0);
-  const bridge = sdRoundedBox2d(local - BRIDGE.at, BRIDGE.half, BRIDGE.round);
-  const across = std.abs(local.x);
-  const inner = sdRoundedBox2d(
-    d.vec2f(across - TINES.inner, local.y - TINES.y),
-    TINES.half,
-    1 / TEXELS,
-  );
-  const outer = sdRoundedBox2d(
-    d.vec2f(across - TINES.outer, local.y - TINES.y),
-    TINES.half,
-    1 / TEXELS,
-  );
-  return std.min(std.min(handle, bridge), std.min(inner, outer));
-};
 
 /**
  * Stomp dust count, horizontal and vertical velocity spread and lift in tiles per second,
@@ -150,7 +123,7 @@ const EYES = { ahead: 0.2, up: 0.15 };
 
 /**
  * What a critter's pixels read from its quad: the corner in quad units and in texels from the
- * critter's snapped position, its kind, facing and a sponge's frame.
+ * critter's snapped position, its kind, facing and a sponge's or fork's frame.
  */
 const Corner = d.struct({
   position: d.vec4f,
@@ -212,7 +185,9 @@ const touchAt = (centre: d.v2f, half: d.v2f) => {
 export interface CrittersOptions extends ArtOptions {
   readonly capacity: number;
   /** The sponge's sheet, frames of `FRAME` texels square in a row, facing left. */
-  readonly sheet: Picture;
+  readonly sponge: Picture;
+  /** The fork's sheet, frames of `FRAME` texels square in a row, facing right. */
+  readonly fork: Picture;
   /** Seconds per `step`. */
   readonly step: number;
   /** Fills `avatar` for contact detection. */
@@ -229,9 +204,12 @@ export interface CrittersOptions extends ArtOptions {
  */
 export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   const { capacity, step, time, dust, bubbles } = options;
-  // The sheet holds display colours, as the print reads them, so it loads unconverted
-  const texture = images.create(root, options.sheet, { color: 'linear', mips: false });
-  const sheet = texture.createView(d.texture2d(d.f32));
+  // The sheets hold display colours, as the print reads them, so they load unconverted
+  const textures = [options.sponge, options.fork].map((picture) =>
+    images.create(root, picture, { color: 'linear', mips: false }),
+  );
+  const spongeSheet = textures[0]!.createView(d.texture2d(d.f32));
+  const forkSheet = textures[1]!.createView(d.texture2d(d.f32));
   /** Seconds since the last step, which walkers are drawn ahead by. */
   const ahead = root.createUniform(d.f32);
   let drawnAhead = 0;
@@ -265,28 +243,62 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     return std.select(d.i32(0), d.i32(SHUT), randf.sample() < WIGGLE.blink);
   };
 
+  /** Seconds fork `i` is into its hop at the frame's time, from 0 up to `CYCLE`. */
+  const hopOf = (i: number) => {
+    'use gpu';
+    const at = time.$ + critter.phase(i);
+    return at - std.floor(at / CYCLE) * CYCLE;
+  };
+
+  /** The frame fork `i` shows at the frame's time. */
+  const poseOf = (i: number) => {
+    'use gpu';
+    const hop = hopOf(i);
+    if (hop < HOP.still) return d.i32(POSE.still);
+    if (hop >= HOP.still + HOP.wind && hop < CYCLE - HOP.land) return d.i32(POSE.flight);
+    return d.i32(POSE.crouch);
+  };
+
+  /** Tiles fork `i` stands above the floor at the frame's time, along its hop's arc. */
+  const liftOf = (i: number) => {
+    'use gpu';
+    const flown = (hopOf(i) - HOP.still - HOP.wind) / HOP.flight;
+    if (flown <= 0 || flown >= 1) return d.f32(0);
+    return 4 * HOP.high * flown * (1 - flown);
+  };
+
+  /** Tiles fork `i` is shaken sideways by at the frame's time: a texel each way as it winds up. */
+  const shakeOf = (i: number) => {
+    'use gpu';
+    const hop = hopOf(i);
+    if (hop < HOP.still || hop >= HOP.still + HOP.wind) return d.f32(0);
+    return std.select(-1, d.f32(1), std.fract(time.$ * SHAKE) < 0.5) / TEXELS;
+  };
+
   /**
    * Tiles a second walker `i` moves at the frame's time: a sponge only while it wiggles, and a
-   * fork steadily.
+   * fork only in flight.
    */
   const paceOf = (i: number) => {
     'use gpu';
-    if (critter.kind(i) === FORK) return d.f32(WALK);
+    if (critter.kind(i) === FORK) return std.select(0, HOP.far / HOP.flight, liftOf(i) > 0);
     return std.select(0, WALK, frameOf(i) >= STILL);
   };
 
   /**
-   * Where critter `i` is drawn at the frame's time, between steps: a bat on its loop, a sponge
-   * ahead along its patrol and a squashed critter where it was stomped.
+   * Where critter `i` is drawn at the frame's time, between steps: a bat on its loop, a sponge or
+   * fork ahead along its patrol, a fork up its hop and a squashed critter where it was stomped.
    */
   const shownAt = (i: number) => {
     'use gpu';
     const position = critter.position(i);
     if (critter.squashedAt(i) >= 0) return position;
-    if (critter.kind(i) === BAT) return flightAt(i, time.$);
+    const kind = critter.kind(i);
+    if (kind === BAT) return flightAt(i, time.$);
     const patrol = critter.patrol(i);
     const x = position.x + critter.heading(i) * paceOf(i) * ahead.$;
-    return d.vec2f(std.clamp(x, patrol.x, patrol.y), position.y);
+    const lift = std.select(0, liftOf(i), kind === FORK);
+    return d.vec2f(std.clamp(x, patrol.x, patrol.y), position.y + lift);
   };
 
   // Read contacts every frame to minimise stomp-bounce latency
@@ -336,18 +348,30 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     if (row.squashedAt >= 0) return;
 
     const kind = critter.kind(i);
-    if (kind !== BAT) {
+    let lift = d.f32(0);
+    if (kind === FORK) {
+      // A fork stops at the end of its patrol in flight, and turns once it lands
+      const patrol = critter.patrol(i);
+      row.position.x = std.clamp(
+        row.position.x + row.heading * paceOf(i) * step,
+        patrol.x,
+        patrol.y,
+      );
+      lift = liftOf(i);
+      const end = std.select(patrol.x, patrol.y, row.heading > 0);
+      if (lift === 0 && row.position.x === end) row.heading = -row.heading;
+    } else if (kind === WALKER) {
       const patrol = critter.patrol(i);
       const x = row.position.x + row.heading * paceOf(i) * step;
       if (x < patrol.x || x > patrol.y) row.heading = -row.heading;
       row.position.x = std.clamp(x, patrol.x, patrol.y);
-      if (kind === WALKER && time.$ >= row.bubbleAt) row.bubbleAt = blow(i, row.position);
+      if (time.$ >= row.bubbleAt) row.bubbleAt = blow(i, row.position);
     } else {
       row.position = flightAt(i, time.$);
       row.heading = std.sign(std.cos((time.$ + critter.phase(i)) * FLIGHT.pace));
     }
 
-    const centre = row.position + boxAt(kind);
+    const centre = row.position + boxAt(kind) + d.vec2f(0, lift);
     const half = boxOf(kind);
     const enter = touchAt(centre, half);
     if (enter < 0) return;
@@ -375,17 +399,21 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   };
 
   /**
-   * A sponge's colour at `local` in quad units, or zero alpha around it: the texel of `frame`,
-   * facing `facing`, with the frame's bottom row on the floor.
+   * A sponge's or fork's colour at `local` in quad units, or zero alpha around it: the texel of
+   * `frame` of its sheet, facing `facing`, with the frame's bottom row on the floor.
    */
-  const spongeAt = (local: d.v2f, frame: number, facing: number) => {
+  const sheetAt = (local: d.v2f, kind: number, frame: number, facing: number) => {
     'use gpu';
-    // The sheet faces left
-    const t = d.vec2i(std.floor(d.vec2f(-local.x * facing, local.y) * MIDDLE));
+    // The sponge's sheet faces left, and the fork's right
+    const fork = kind === FORK;
+    const mirror = std.select(-facing, facing, fork);
+    const t = d.vec2i(std.floor(d.vec2f(local.x * mirror, local.y) * MIDDLE));
     const column = t.x + MIDDLE;
     const row = MIDDLE - 1 - t.y;
     if (column < 0 || column >= FRAME || row < 0 || row >= FRAME) return d.vec4f();
-    return std.textureLoad(sheet.$, d.vec2i(frame * FRAME + column, row), 0);
+    const texel = d.vec2i(frame * FRAME + column, row);
+    if (fork) return std.textureLoad(forkSheet.$, texel, 0);
+    return std.textureLoad(spongeSheet.$, texel, 0);
   };
 
   const drawing: passes.Drawing<typeof Corner, Seen> = {
@@ -410,7 +438,12 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       const reach = std.select(REACH, SIZE, bat);
       const lift = std.select(LIFT, 0, bat);
       const local = corner * scale * reach + d.vec2f(0, (scale.y - 1) * reach);
-      const world = snapped(shownAt(slot)) + d.vec2f(0, lift) + local;
+      const fork = kind === FORK;
+      // A winding-up fork shakes by whole texels, so its texels stay on the grid
+      const shake = std.select(0, shakeOf(slot), fork && !flat);
+      const world = snapped(shownAt(slot)) + d.vec2f(shake, lift) + local;
+      const shown = std.select(frameOf(slot), poseOf(slot), fork);
+      const still = std.select(d.i32(SHUT), d.i32(POSE.still), fork);
 
       return Corner({
         position: cameras.toClip(d.vec3f(world, 0)),
@@ -418,7 +451,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
         texel: local * TEXELS,
         kind,
         facing: critter.heading(slot),
-        frame: std.select(frameOf(slot), d.i32(SHUT), flat),
+        frame: std.select(shown, still, flat),
       });
     },
 
@@ -426,22 +459,15 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
       'use gpu';
       const local = pixelated(corner.local, corner.texel);
       if (corner.kind === BAT) return wingAt(local) > 0 && sdDisk(local, 0.5) > 0;
-      // A fork wears a texel of outline around it
-      if (corner.kind === FORK) return forkAt(local) > 1 / TEXELS;
-      return spongeAt(local, corner.frame, corner.facing).w === 0;
+      return sheetAt(local, corner.kind, corner.frame, corner.facing).w === 0;
     },
 
     pixelOf: (corner) => {
       'use gpu';
       const local = pixelated(corner.local, corner.texel);
       const facing = corner.facing;
-      if (corner.kind === WALKER) return sprite(spongeAt(local, corner.frame, facing).xyz);
-      if (corner.kind === FORK) {
-        if (forkAt(local) > 0) return sprite(INK);
-        const eye = forkEyesAt(local - d.vec2f(0, FORK_EYES), facing);
-        if (eye.w > 0) return sprite(eye.xyz);
-        // Light falls from the left, so each part's left texel glints
-        return sprite(std.select(STEEL, GLINT, forkAt(local - d.vec2f(1 / TEXELS, 0)) > 0));
+      if (corner.kind !== BAT) {
+        return sprite(sheetAt(local, corner.kind, corner.frame, facing).xyz);
       }
       if (wingAt(local) < 0) return sprite(WING);
 
@@ -496,7 +522,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     },
 
     destroy() {
-      texture.destroy();
+      for (const texture of textures) texture.destroy();
       critters.destroy();
       live.destroy();
       contacts.destroy();
