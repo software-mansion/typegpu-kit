@@ -106,6 +106,7 @@ export function createPlatformer(
         // A ducked hero turns without kicking up dust
         else if (!skidding && hero.skidding && !hero.ducked)
           effects.puff(hero.position[0], feet, -hero.facing * KICK);
+        effects.slide(hero.position[0], feet, hero.sliding ? hero.velocity[0] : 0);
 
         taken += coins.collect(hero.position, now, effects.sparkle);
         critters.step(pass);

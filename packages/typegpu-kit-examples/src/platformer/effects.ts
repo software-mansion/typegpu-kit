@@ -8,6 +8,12 @@ import { pixelatedMote, TEXELS } from './sprites.ts';
 export const DUST = [0.82, 0.76, 0.66, 1] as const;
 const GOLD = [1, 0.85, 0.35, 1] as const;
 
+/**
+ * Dust a slide sprays ahead of it: motes a second, tiles from the hero's centre to its leading
+ * foot, and tiles a second each flies faster than the hero and up.
+ */
+const SLIDING = { rate: 50, foot: 0.4, ahead: 2, up: 4 };
+
 /** Texels along each side of a bubble's frame, and its width in tiles. */
 const BUBBLE = 8;
 const BUBBLE_SIZE = BUBBLE / TEXELS;
@@ -74,7 +80,7 @@ export interface EffectsOptions {
 }
 
 /**
- * Dust kicked up by landings, skids and stomps, sparkles from taken coins and bubbles the sponges
+ * Dust kicked up by landings, skids, slides and stomps, sparkles from taken coins and bubbles the sponges
  * blow.
  */
 export function createEffects(root: TgpuRoot, camera: CameraBase, options: EffectsOptions) {
@@ -106,6 +112,17 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: Effec
     shade: dot,
     settings: { gravity: [0, 2, 0], drag: 6 },
   });
+  // The game moves the slide's dust to the hero's feet each step, and the stream reads it
+  const kicked = {
+    position: [0, 0, 0] as [number, number, number],
+    velocity: [0, 0, 0] as [number, number, number],
+    area: [0.1, 0, 0] as const,
+    scatter: 1.5,
+    size: 0.22,
+    life: 0.35,
+    color: DUST,
+  };
+  const trail = dust.stream(0, kicked);
   const sparks = particles.create(root, camera, {
     ...shared,
     capacity: 256,
@@ -155,6 +172,19 @@ export function createEffects(root: TgpuRoot, camera: CameraBase, options: Effec
         life: 0.35,
         color: DUST,
       });
+    },
+
+    /**
+     * Sprays dust diagonally up ahead of a hero sliding `speed` tiles a second along x, from the
+     * leading foot of its feet at `x, y`, or stops when `speed` is 0.
+     */
+    slide(x: number, y: number, speed: number) {
+      const way = Math.sign(speed);
+      trail.rate = way === 0 ? 0 : SLIDING.rate;
+      kicked.position[0] = x + way * SLIDING.foot;
+      kicked.position[1] = y;
+      kicked.velocity[0] = speed + way * SLIDING.ahead;
+      kicked.velocity[1] = SLIDING.up;
     },
 
     sparkle(x: number, y: number) {
