@@ -22,6 +22,7 @@ import {
   eyes,
   pixelated,
   quad,
+  shakenAt,
   snapped,
   sprite,
   TEXELS,
@@ -101,8 +102,6 @@ const HOP = { still: 0.5, wind: 0.3, flight: 0.4, land: 0.08, far: 1.5, high: 0.
 const CYCLE = HOP.still + HOP.wind + HOP.flight + HOP.land;
 /** The fork's frames: standing, crouched to jump or from landing, and in flight. */
 const POSE = { still: 0, crouch: 1, flight: 2 };
-/** Times a second a winding-up fork shakes from side to side, a texel each way. */
-const SHAKE = 12;
 /** Half a fork's hitbox standing, in tiles, with its foot on the floor below its tile centre. */
 const PRONGS = { wide: 5 / TEXELS, tall: 13 / TEXELS };
 const FORK_BOX = d.vec2f(PRONGS.wide, PRONGS.tall);
@@ -272,7 +271,7 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     'use gpu';
     const hop = hopOf(i);
     if (hop < HOP.still || hop >= HOP.still + HOP.wind) return d.f32(0);
-    return std.select(-1, d.f32(1), std.fract(time.$ * SHAKE) < 0.5) / TEXELS;
+    return shakenAt(time.$);
   };
 
   /**

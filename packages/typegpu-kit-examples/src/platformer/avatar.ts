@@ -6,6 +6,7 @@ import { HALF, HEEL, SKID, type Hero } from './hero.ts';
 import {
   pixelated,
   quad,
+  shakenAt,
   snapped,
   sprite as front,
   TEXELS,
@@ -189,7 +190,9 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
     at: (vertexIndex) => {
       'use gpu';
       const local = quad.vertexAt(vertexIndex).position.xz * REACH;
-      const world = snapped(avatar.$.position) + local;
+      // A hero crouched for a backflip shakes like a fork winding up
+      const shake = std.select(0, shakenAt(time.$), sprite.$.poised > 0);
+      const world = snapped(avatar.$.position) + d.vec2f(shake, 0) + local;
       return Corner({
         position: cameras.toClip(d.vec3f(world, 0)),
         local,

@@ -68,6 +68,18 @@ export const pixelated = (local: d.v2f, texel: d.v2f) => {
   return local + (std.floor(texel) + 0.5 - texel) * perTexel;
 };
 
+/** Times a second a shaking sprite moves from side to side. */
+const SHAKE = 12;
+
+/**
+ * Tiles a shaking sprite is moved sideways at `time` seconds: a texel each way, so its texels stay
+ * on the grid.
+ */
+export const shakenAt = (time: number) => {
+  'use gpu';
+  return std.select(-1, d.f32(1), std.fract(time * SHAKE) < 0.5) / TEXELS;
+};
+
 /** Moves a particle's `local` coordinate to the centre of its texel, for a particle `size` tiles wide. */
 export const pixelatedMote = (local: d.v2f, size: number) => {
   'use gpu';
