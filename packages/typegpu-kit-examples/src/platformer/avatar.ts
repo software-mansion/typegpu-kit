@@ -51,7 +51,7 @@ const Sprite = d.struct({
 const FRAME = 32;
 /** The sheet's frames in order: their first frame, how many there are and frames a second. */
 const IDLE = { first: 0, count: 6, rate: 8 };
-const RUN = { first: 6, count: 6, rate: 14 };
+export const RUN = { first: 6, count: 6, rate: 14 };
 /**
  * Rising, around the top of a jump while slower than `apex` tiles a second up or down, and
  * falling.
@@ -74,7 +74,7 @@ const DUCKING = { first: 19, rate: 7 };
 /** Seconds a backflip takes to spin once around. */
 const SPIN = 0.6;
 /** The speed in tiles a second that counts as running. */
-const RUNNING = 0.5;
+export const RUNNING = 0.5;
 /** The texel row of the hero's feet below its centre, which the sheet's bottom row lands on. */
 const FEET = Math.round(-HALF[1] * TEXELS);
 /** The column of a frame the hero's centre lies on. */

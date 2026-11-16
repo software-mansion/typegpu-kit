@@ -137,6 +137,8 @@ export function createHero(level: Level) {
     ducked: false,
     /** Whether the hero slides, ducked, slowing down to sneaking speed. */
     sliding: false,
+    /** The jump the last step took off in, if any. */
+    leapt: undefined as 'jump' | 'backflip' | undefined,
     /**
      * Whether the hero backflips, away from the way it faces, from a jump in a skid with no
      * direction held. The stick doesn't steer it until it lands or `FLIP.hold` seconds pass.
@@ -186,6 +188,7 @@ export function createHero(level: Level) {
     step(held: Input, dt: number) {
       previous[0] = position[0];
       previous[1] = position[1];
+      hero.leapt = undefined;
       // A knocked-back hero ignores the player
       const input = hero.knocked ? IDLE : held;
 
@@ -224,9 +227,11 @@ export function createHero(level: Level) {
           velocity[0] = -hero.facing * FLIP.back;
           velocity[1] = FLIP.jump;
           hero.flipping = true;
+          hero.leapt = 'backflip';
           sinceFlip = 0;
         } else {
           velocity[1] = SPEED.jump;
+          hero.leapt = 'jump';
         }
         sincePress = sinceGround = Infinity;
       }

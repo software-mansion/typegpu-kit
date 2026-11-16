@@ -11,7 +11,8 @@ import {
 import { clamp } from 'math';
 import { d, type TgpuRoot } from 'typegpu';
 import type { Picture } from '../contract.ts';
-import { createPlatformer, HEARTS, STEP, type Score } from './game.ts';
+import { createPlatformer, HEARTS, STEP, type Score, type Sound } from './game.ts';
+import type { Play, Speaker, Voice } from '../ui.ts';
 import { createHud } from './hud.ts';
 import { MAP, parseLevel } from './level.ts';
 import { createAvatar } from './avatar.ts';
@@ -22,6 +23,11 @@ import { createLayers, LAYERS } from './layers.ts';
 import { createPaper } from './paper.ts';
 import { createScenery } from './scenery.ts';
 import { grid, TEXELS } from './sprites.ts';
+
+/** Tiles from the middle of the view at which a placed sound falls silent. */
+const HEARING = 16;
+/** The loudness of sounds mixed quieter than recorded. */
+const LOUDNESS: Partial<Record<Sound, number>> = { slide: 0.8, sponge_walk: 0.5 };
 
 /** View height in tiles. */
 const VIEW = 12;
@@ -137,7 +143,33 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
 
   let score = '';
   let health = 2 * HEARTS;
-  const game = createPlatformer(level, { coins, critters, effects, sim }, (state) => {
+  let play: Play<Sound> | undefined;
+  const speaker: Speaker<Sound> = { attach: (player) => (play = player) };
+  /**
+   * Plays `sound`, panned by how far left or right of the middle of the view `at` lies, and
+   * quieter the farther it lies from it.
+   */
+  const placementOf = (name: Sound, at: readonly [x: number, y: number]) => {
+    const across = at[0] - eye.x;
+    const away = Math.hypot(across, at[1] - eye.y);
+    const halfWidth = pixels.width / TEXELS / 2;
+    const gain = (LOUDNESS[name] ?? 1) * clamp(1 - away / HEARING, 0, 1);
+    return { pan: clamp(across / halfWidth, -1, 1), gain };
+  };
+  /** Sounds heard from somewhere, which follow the view as it moves. */
+  const placed = new Set<{
+    readonly voice: Voice;
+    readonly name: Sound;
+    readonly at: readonly [number, number];
+  }>();
+  const sound = (name: Sound, at?: readonly [x: number, y: number]) => {
+    if (!at) return play?.(name, { gain: LOUDNESS[name] ?? 1 });
+    const voice = play?.(name, placementOf(name, at));
+    if (voice) placed.add({ voice, name, at });
+    return voice;
+  };
+  const parts = { coins, critters, effects, sim, play: sound };
+  const game = createPlatformer(level, parts, (state) => {
     health = state.health;
     const record = state.best === undefined ? '' : `\nbest ${state.best.toFixed(1)} s`;
     score = `coins ${state.coins} · stomps ${state.stomps}${record}`;
@@ -152,6 +184,7 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
   return {
     ui: {
       score: () => score,
+      sounds: speaker,
       controls: {
         left: hold('left'),
         right: hold('right'),
@@ -216,6 +249,10 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       eye.x += (clamp(heroX, halfWidth, level.width - halfWidth) - eye.x) * follow;
       eye.y += (clamp(heroY + ABOVE, VIEW / 2, level.height - VIEW / 2) - eye.y) * follow;
       layers.place(eye, frame.time);
+      for (const heard of placed) {
+        if (heard.voice.playing) heard.voice.place(placementOf(heard.name, heard.at));
+        else placed.delete(heard);
+      }
 
       for (const layer of BACKDROP) scene.record(frame, backdrop, { layer });
       scene.record(frame, tiles, { layer: LAYERS.level });
