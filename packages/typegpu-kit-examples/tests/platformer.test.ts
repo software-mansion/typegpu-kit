@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { VANISH } from '../src/platformer/coins.ts';
 import { STEP, type Score } from '../src/platformer/game.ts';
-import { createHero, HALF, HEEL, SNEAK, type Input } from '../src/platformer/hero.ts';
+import { createHero, HALF, POISE, SNEAK, type Input } from '../src/platformer/hero.ts';
 import { MAP, parseLevel } from '../src/platformer/level.ts';
 import { createScene } from '../src/platformer/scene.ts';
 import { compute, describeExample, pass } from './utils/examples.ts';
@@ -205,10 +205,17 @@ describeExample(
       hold({ left: true }, 0.03);
       expect(hero.skidding).toBe(true);
       expect(hero.facing).toBe(-1);
+      expect(hero.poised).toBe(false);
+
+      // Letting go of the stick in the skid crouches for the flip
+      hold({}, STEP);
+      expect(hero.skidding).toBe(true);
+      expect(hero.poised).toBe(true);
 
       hero.jump();
-      hold({ left: true }, STEP);
+      hold({}, STEP);
       expect(hero.flipping).toBe(true);
+      expect(hero.poised).toBe(false);
       expect(hero.velocity[0]).toBeGreaterThan(0);
 
       // The stick doesn't steer the flip, and a released jump doesn't cut it short
@@ -225,7 +232,7 @@ describeExample(
       expect(hero.flipping).toBe(false);
     });
 
-    it('backflips from a jump late in the turn, after the skid itself, but not after the turn', () => {
+    it('stays crouched for a backflip at least a while after the skid, until it takes a direction', () => {
       const level = parseLevel([
         '',
         '',
@@ -242,15 +249,65 @@ describeExample(
           for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
         };
         hold({ right: true }, 1);
-        hold({ left: true }, wait);
+        hold({ left: true }, 0.03);
+        hold({}, wait);
         const skidding = hero.skidding;
+        const poised = hero.poised;
         hero.jump();
-        hold({ left: true, jump: true }, STEP);
-        return { skidding, flipping: hero.flipping };
+        hold({ jump: true }, STEP);
+        return { skidding, poised, flipping: hero.flipping };
       };
 
-      expect(turnThenJump(HEEL - 0.03)).toEqual({ skidding: false, flipping: true });
-      expect(turnThenJump(HEEL + 0.05)).toEqual({ skidding: false, flipping: false });
+      expect(turnThenJump(POISE - 0.02)).toEqual({ skidding: false, poised: true, flipping: true });
+      expect(turnThenJump(POISE + 0.03)).toEqual({
+        skidding: false,
+        poised: false,
+        flipping: false,
+      });
+
+      // Taking a direction again ends the crouch at once
+      const hero = createHero(level);
+      const hold = (input: Partial<Input>, seconds: number) => {
+        const held = { left: false, right: false, jump: false, down: false, ...input };
+        for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+      };
+      hold({ right: true }, 1);
+      hold({ left: true }, 0.03);
+      hold({}, 0.05);
+      expect(hero.poised).toBe(true);
+      hold({ left: true }, STEP);
+      expect(hero.poised).toBe(false);
+      // Letting go once the turn is over runs out without a crouch
+      hold({ left: true }, POISE);
+      hold({}, STEP);
+      expect(hero.poised).toBe(false);
+    });
+
+    it('jumps as usual from a skid while a direction is held', () => {
+      const level = parseLevel([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '@                        ',
+        '###########################',
+      ]);
+      const hero = createHero(level);
+      const hold = (input: Partial<Input>, seconds: number) => {
+        const held = { left: false, right: false, jump: false, down: false, ...input };
+        for (let t = 0; t < seconds; t += STEP) hero.step(held, STEP);
+      };
+
+      hold({ right: true }, 1);
+      hold({ left: true }, 0.03);
+      expect(hero.skidding).toBe(true);
+      expect(hero.poised).toBe(false);
+
+      hero.jump();
+      hold({ left: true, jump: true }, STEP);
+      expect(hero.grounded).toBe(false);
+      expect(hero.flipping).toBe(false);
     });
 
     it('reaches the pillar by the flag only with a backflip', () => {

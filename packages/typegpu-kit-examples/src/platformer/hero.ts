@@ -6,9 +6,14 @@ export const HALF = [0.38, 0.65] as const;
 export const SKID = 0.1;
 /**
  * Seconds a turn on a heel lasts at least, from when the skid starts, or longer while it skids.
- * A jump in the turn backflips.
+ * A jump in the turn with no direction held backflips.
  */
 export const HEEL = 0.18;
+/**
+ * Seconds the hero stays crouched for a backflip at least, from when it lets go of the stick in a
+ * turn, unless it takes a direction again or leaves the ground.
+ */
+export const POISE = 0.2;
 
 /** Top running speed, jump, stomp bounce and top falling speed, in tiles per second. */
 const SPEED = { run: 7.5, jump: 22, bounce: 15, fall: 22 };
@@ -54,6 +59,7 @@ export function createHero(level: Level) {
   let sincePress = Infinity;
   let sinceFlip = Infinity;
   let sinceHeel = Infinity;
+  let sincePoise = Infinity;
   let skidded = false;
 
   /**
@@ -125,10 +131,15 @@ export function createHero(level: Level) {
     /** Whether the hero slides, ducked, slowing down to sneaking speed. */
     sliding: false,
     /**
-     * Whether the hero backflips, away from the way it faces, from a jump in a skid. The stick
-     * doesn't steer it until it lands or `FLIP.hold` seconds pass.
+     * Whether the hero backflips, away from the way it faces, from a jump in a skid with no
+     * direction held. The stick doesn't steer it until it lands or `FLIP.hold` seconds pass.
      */
     flipping: false,
+    /**
+     * Whether a jump now would backflip: on the ground with no direction held, from a turn and for
+     * at least `POISE` seconds.
+     */
+    poised: false,
 
     /** Whether the hero stands and slides against the way it faces, turning on a heel. */
     get skidding() {
@@ -140,8 +151,8 @@ export function createHero(level: Level) {
       position[1] = previous[1] = start[1] = y - 0.5 + HALF[1] + SKIN;
       velocity[0] = velocity[1] = 0;
       hero.facing = 1;
-      hero.ducked = hero.sliding = hero.flipping = false;
-      sinceHeel = Infinity;
+      hero.ducked = hero.sliding = hero.flipping = hero.poised = false;
+      sinceHeel = sincePoise = Infinity;
       skidded = false;
     },
 
@@ -180,11 +191,16 @@ export function createHero(level: Level) {
       sincePress += dt;
       sinceFlip += dt;
       sinceHeel += dt;
+      sincePoise += dt;
       const skidding = hero.skidding;
       if (skidding && !skidded) sinceHeel = 0;
       skidded = skidding;
+      const turning = skidding || sinceHeel < HEEL;
+      const still = hero.grounded && !ducking && want === 0;
+      if (still && turning && !hero.poised) sincePoise = 0;
+      hero.poised = still && (turning || sincePoise < POISE);
       if (sincePress < GRACE.buffer && sinceGround < GRACE.coyote) {
-        if (skidding || sinceHeel < HEEL) {
+        if (hero.poised) {
           velocity[0] = -hero.facing * FLIP.back;
           velocity[1] = FLIP.jump;
           hero.flipping = true;
@@ -204,6 +220,7 @@ export function createHero(level: Level) {
       hero.grounded = move(1, velocity[1] * dt) && falling;
       if (hero.grounded) sinceGround = 0;
       if (hero.grounded || sinceFlip >= FLIP.hold) hero.flipping = false;
+      if (!hero.grounded || hero.flipping) hero.poised = false;
     },
   };
 

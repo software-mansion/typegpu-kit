@@ -42,6 +42,8 @@ const Sprite = d.struct({
   turnedAt: d.f32,
   /** When the hero last backflipped, in seconds of the clock. Its spin ends when it lands. */
   flippedAt: d.f32,
+  /** 1 while a jump would backflip, crouched in its turn with no direction held, and 0 otherwise. */
+  poised: d.f32,
 });
 
 /** Texels along each side of a frame of the sheet. */
@@ -56,11 +58,17 @@ const RUN = { first: 6, count: 6, rate: 14 };
 const JUMP = { up: 12, top: 13, down: 14, apex: 4 };
 /** The squash after landing, two frames each shown this many seconds. */
 const LANDING = { first: 15, count: 2, hold: 0.07 };
-/** Turning on a heel, from when the hero starts to skid, for `hold` seconds or while it skids. */
+/**
+ * Turning on a heel, from when the hero starts to skid, for `hold` seconds or while it skids,
+ * unless it crouches for a backflip.
+ */
 const TURN = { frame: 17, hold: HEEL };
 /** The frame the hero shows while it slides, feet first. */
 const SLIDING = 18;
-/** Ducking, still on its first frame, or sneaking through its frames 0, 1, 0, 2, steps a second. */
+/**
+ * Ducking, still on its first frame, or sneaking through its frames 0, 1, 0, 2, steps a second.
+ * The first frame also shows the hero crouched for a backflip.
+ */
 const DUCKING = { first: 19, rate: 7 };
 /** Seconds a backflip takes to spin once around. */
 const SPIN = 0.6;
@@ -108,7 +116,15 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
     sliding: 0,
   };
 
-  const shown = { facing: 1, blink: 0, landedAt: -1, grounded: 1, turnedAt: -1, flippedAt: -1 };
+  const shown = {
+    facing: 1,
+    blink: 0,
+    landedAt: -1,
+    grounded: 1,
+    turnedAt: -1,
+    flippedAt: -1,
+    poised: 0,
+  };
   let flipping = false;
   const sprite = root.createUniform(Sprite, shown);
 
@@ -126,6 +142,7 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
       }
       return d.i32(DUCKING.first);
     }
+    if (sprite.$.poised > 0) return d.i32(DUCKING.first);
     if (sprite.$.grounded === 0) {
       if (std.abs(velocity.y) < JUMP.apex) return d.i32(JUMP.top);
       return std.select(JUMP.down, JUMP.up, velocity.y > 0);
@@ -205,7 +222,7 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
      * Interpolates the hero by `alpha` between fixed steps and records its swept path, and a
      * landing at `now` seconds when the hero touches down, a turn when it turns against its
      * slide, or a backflip when it starts one. Writes position, facing, blink, whether it stands,
-     * its turn and its backflip only when they change.
+     * its turn, its crouch for a backflip and its backflip only when they change.
      */
     update(hero: Hero, alpha: number, blink: boolean, now: number) {
       const { position, previous, start, velocity } = hero;
@@ -227,11 +244,13 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
       const landed = grounded === 1 && shown.grounded === 0;
       if (landed) shown.landedAt = now;
       const flicker = blink ? 1 : 0;
+      const poised = hero.poised ? 1 : 0;
       const flipped = hero.flipping && !flipping;
       flipping = hero.flipping;
       if (flipped) shown.flippedAt = now;
       if (
         flipped ||
+        poised !== shown.poised ||
         grounded !== shown.grounded ||
         hero.facing !== shown.facing ||
         flicker !== shown.blink
@@ -242,6 +261,7 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
         shown.grounded = grounded;
         shown.facing = hero.facing;
         shown.blink = flicker;
+        shown.poised = poised;
         sprite.write(shown);
       }
     },
