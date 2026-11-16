@@ -52,13 +52,51 @@ describeExample(
       const counters = bytes(scene.critters.contacts.buffer);
       /**
        * Running totals of contacts, of which `rightward` hurts came from a critter on the hero's
-       * left. The game takes the increase since the last read.
+       * left and `sponges` stomps were sponges'. The game takes the increase since the last read.
        */
-      const contact = (stomps: number, hurts: number, rightward = 0) => {
-        new Uint32Array(counters.buffer, counters.byteOffset, 3).set([stomps, hurts, rightward]);
+      const contact = (stomps: number, hurts: number, rightward = 0, sponges = 0) => {
+        const totals = new Uint32Array(counters.buffer, counters.byteOffset, 5);
+        totals.set([stomps, hurts, rightward]);
+        totals[4] = sponges;
+      };
+      const totals = () => new Uint32Array(counters.buffer, counters.byteOffset, 20);
+      /**
+       * Adds a sponge's crawl, a grinder's grind, or a fork's jump or landing, begun at `x, y` in
+       * tiles to the running totals.
+       */
+      const begin = (first: number) => (x: number, y: number) => {
+        const counts = totals();
+        counts[first]! += 1;
+        counts[first + 1]! += Math.round(x * 16);
+        counts[first + 2]! += Math.round(y * 16);
+      };
+      /** Adds a grinder defeated mid-grind to the running totals. */
+      const quiet = () => {
+        totals()[11]! += 1;
+      };
+      /** Adds a fork the hero slid into to the running totals. */
+      const breakFork = () => {
+        const counts = totals();
+        counts[3]! += 1;
+        counts[18]! += 1;
       };
 
-      return { ...parts, step, advance, contact };
+      return {
+        ...parts,
+        step,
+        advance,
+        contact,
+        crawl: begin(5),
+        /** Adds a grind heard at `x, y` in tiles, `left` seconds from its end. */
+        grind: (x: number, y: number, left = 2) => {
+          begin(8)(x, y);
+          totals()[19]! += Math.round(left * 1000);
+        },
+        quiet,
+        hop: begin(12),
+        land: begin(15),
+        breakFork,
+      };
     };
 
     it('records a frame in one compute pass, the layers, their shadows and their print on paper', async () => {
@@ -93,6 +131,23 @@ describeExample(
 
       const step = log.shaders.find((code) => code.includes('fn add('));
       expect(step).toContain('fn emit(');
+    });
+
+    it('plays steps on the grass, a jump and a coin as the hero runs, jumps and takes one', async () => {
+      const { scene, scores, step } = await play(STRIP);
+      const played: string[] = [];
+      scene.ui.sounds.attach((sound) => {
+        played.push(sound);
+      });
+      scene.input.right = true;
+
+      while (scores.at(-1)?.coins === 0) await step();
+      scene.hero.jump();
+      await step();
+
+      expect(played).toContain('coin');
+      expect(played.at(-1)).toBe('jump');
+      expect(played.filter((sound) => sound.startsWith('grass')).length).toBeGreaterThan(0);
     });
 
     it('finds where each walker turns around', () => {
@@ -373,6 +428,135 @@ describeExample(
 
       expect(scores.at(-1)?.stomps).toBe(1);
       expect(scene.hero.position[1]).toBeGreaterThan(standing + 0.3);
+    });
+
+    it('hears a fork jump and land from where it does, and a fork slid into break', async () => {
+      const { scene, advance, hop, land, breakFork } = await play(STRIP);
+      const played: { sound: string; pan?: number }[] = [];
+      scene.ui.sounds.attach((sound, placement) => {
+        played.push({ sound, ...placement });
+      });
+      await advance(1);
+      // At the start the view's middle lies well right of the hero
+      const [x, y] = scene.hero.position;
+      played.length = 0;
+
+      hop(x + 19, y);
+      await advance(0.1);
+      land(x + 19, y);
+      await advance(0.1);
+      breakFork();
+      await advance(0.1);
+
+      expect(played.map(({ sound }) => sound)).toEqual([
+        'fork_jump',
+        'fork_land',
+        'death_layer',
+        'fork_death',
+      ]);
+      expect(played.find(({ sound }) => sound === 'fork_jump')!.pan).toBeGreaterThan(0);
+    });
+
+    it('layers a squelch over the sound of a kill when it was a sponge', async () => {
+      const { scene, advance, contact } = await play(STRIP);
+      const played: string[] = [];
+      scene.ui.sounds.attach((sound) => {
+        played.push(sound);
+      });
+      await advance(0.1);
+
+      contact(1, 0);
+      await advance(0.1);
+      expect(played.filter((sound) => sound.includes('death'))).toEqual(['death_layer']);
+
+      played.length = 0;
+      contact(2, 0, 0, 1);
+      await advance(0.1);
+      expect(played).toContain('death_layer');
+      expect(played.filter((sound) => sound.startsWith('sponge_death'))).toHaveLength(1);
+    });
+
+    it('pans a sponge’s crawl toward its side of the view, quieter the farther it is', async () => {
+      const { scene, advance, crawl } = await play(STRIP);
+      const played: { sound: string; pan?: number; gain?: number }[] = [];
+      scene.ui.sounds.attach((sound, placement) => {
+        played.push({ sound, ...placement });
+      });
+      await advance(1);
+      // At the start the view stops at the level's left edge, its middle well right of the hero
+      const [x, y] = scene.hero.position;
+
+      crawl(x + 19, y);
+      await advance(0.1);
+      crawl(x + 14, y);
+      await advance(0.1);
+
+      const [far, near] = played.filter(({ sound }) => sound === 'sponge_walk');
+      expect(far!.pan).toBeGreaterThan(near!.pan!);
+      expect(near!.pan).toBeGreaterThan(0);
+      expect(far!.gain).toBeLessThan(near!.gain!);
+      expect(near!.gain).toBeLessThan(1);
+    });
+
+    it('plays a slide 20 % quieter, and fades it out over 30 ms when the slide ends early', async () => {
+      const { scene, advance } = await play(STRIP);
+      const slides: { gain: number | undefined; fades: number[] }[] = [];
+      scene.ui.sounds.attach((sound, placement) => {
+        if (sound !== 'slide') return;
+        const slide = { gain: placement?.gain, fades: [] as number[] };
+        slides.push(slide);
+        return { playing: true, place() {}, stop: (fade: number) => void slide.fades.push(fade) };
+      });
+      await advance(1);
+
+      scene.input.right = true;
+      await advance(1);
+      scene.input.down = true;
+      await advance(0.1);
+      expect(slides).toEqual([{ gain: 0.8, fades: [] }]);
+
+      scene.input.down = false;
+      await advance(0.1);
+      expect(slides).toEqual([{ gain: 0.8, fades: [0.03] }]);
+    });
+
+    it('grinds pepper aloud from when it is heard until the grind ends or its grinder is defeated, following the view', async () => {
+      const { scene, advance, grind, quiet } = await play(STRIP);
+      const grinds: { fades: number[]; moves: number }[] = [];
+      scene.ui.sounds.attach((sound) => {
+        if (sound !== 'peppergrind') return;
+        const heard = { fades: [] as number[], moves: 0 };
+        grinds.push(heard);
+        return {
+          get playing() {
+            return heard.fades.length === 0;
+          },
+          place: () => void heard.moves++,
+          stop: (fade: number) => void heard.fades.push(fade),
+        };
+      });
+      await advance(1);
+      const [x, y] = scene.hero.position;
+
+      grind(x + 12, y);
+      await advance(1.5);
+      expect(grinds).toEqual([{ fades: [], moves: expect.any(Number) }]);
+      expect(grinds[0]!.moves).toBeGreaterThan(30);
+      await advance(1);
+      expect(grinds[0]!.fades).toEqual([0.1]);
+
+      grind(x + 12, y);
+      await advance(0.5);
+      quiet();
+      await advance(0.1);
+      expect(grinds[1]!.fades).toEqual([0.1]);
+
+      // A grind come into earshot halfway through ends with the grind
+      grind(x + 12, y, 1);
+      await advance(0.8);
+      expect(grinds[2]!.fades).toEqual([]);
+      await advance(0.4);
+      expect(grinds[2]!.fades).toEqual([0.1]);
     });
 
     it('ignores touches right after a start, then loses half a raspberry and flies back out of control', async () => {

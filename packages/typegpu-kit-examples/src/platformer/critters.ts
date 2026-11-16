@@ -44,6 +44,8 @@ const Critter = table.define('Critter', {
     squashedAt: d.f32,
     /** When a sponge next blows a bubble or a grinding grinder drops pepper, in seconds of the clock. */
     emitAt: d.f32,
+    /** 1 while a sponge crawls in a wiggle, a fork flies or a grinder grinds, and 0 otherwise. */
+    busy: d.u32,
   },
 });
 
@@ -66,7 +68,7 @@ const STAGGER = 1.7;
  * A grinder's round, over and over: it flies its loop for `wander` seconds, then stops where it is
  * and grinds pepper for `grind`.
  */
-const ROUND = { wander: 3, grind: 2 };
+export const ROUND = { wander: 3, grind: 2 };
 const ROUNDS = ROUND.wander + ROUND.grind;
 /** Frames a second a grinding grinder shows, and times a second a flying one bobs a texel up. */
 const GRINDING = 10;
@@ -154,6 +156,13 @@ const boxAt = (kind: number) => {
   return SPONGE_AT;
 };
 
+/**
+ * How far in tiles from the hero, across and up or down, critters' sounds are heard: farther than
+ * any view reaches, so a sound starts before its critter comes into view, and the scene's mix
+ * fades it by its distance from the view.
+ */
+const HEARD = d.vec2f(24, 12);
+
 /** How far a ducking hero's contact box shrinks down from the top, in tiles. */
 const CROUCH = HALF[1] / 2;
 
@@ -198,6 +207,17 @@ const headingAt = (flown: number) => {
 const mouthOf = (at: d.v2f, facing: number) => {
   'use gpu';
   return at + d.vec2f(facing * MOUTH.x, MOUTH.y);
+};
+
+/** Whether the hero hears what happens at `at`. */
+const heard = (at: d.v2f) => {
+  'use gpu';
+  return std.all(std.lt(std.abs(at - avatar.$.after), HEARD));
+};
+/** `at` in texels, for counters to sum. */
+const texelsOf = (at: d.v2f) => {
+  'use gpu';
+  return d.vec2u(std.round(std.max(at, d.vec2f()) * TEXELS));
 };
 
 export interface CrittersOptions extends ArtOptions {
@@ -375,8 +395,38 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
   };
 
   // Read contacts every frame to minimise stomp-bounce latency
-  // Of the hurts, `rightward` counts those from a critter on the hero's left, which knock it right
-  const contacts = counters.create(root, ['stomps', 'hurts', 'rightward', 'slides'], { hz: 60 });
+  // Of the hurts, `rightward` counts those from a critter on the hero's left, which knock it right.
+  // Of the stomps, `sponges` counts sponges. `walks` counts crawls begun near the hero, and
+  // `walkedX` and `walkedY` sum where they began, in texels. `grinds`, `groundX` and `groundY` do
+  // the same for grinds, `hops` for forks' jumps and `lands` for their landings. `quiets` counts
+  // grinders defeated mid-grind, and of the slides, `forks` counts forks. `grindLeft` sums the
+  // milliseconds left of each grind heard
+  const contacts = counters.create(
+    root,
+    [
+      'stomps',
+      'hurts',
+      'rightward',
+      'slides',
+      'sponges',
+      'walks',
+      'walkedX',
+      'walkedY',
+      'grinds',
+      'groundX',
+      'groundY',
+      'quiets',
+      'hops',
+      'hoppedX',
+      'hoppedY',
+      'lands',
+      'landedX',
+      'landedY',
+      'forks',
+      'grindLeft',
+    ],
+    { hz: 60 },
+  );
 
   /** Emits stomp dust at `at`, seeded by the critter's index. */
   const kickUp = (at: d.v2f, index: number) => {
@@ -445,17 +495,51 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
         patrol.y,
       );
       lift = liftOf(i);
+      const flying = d.u32(lift > 0);
+      if (flying !== row.busy && heard(row.position)) {
+        const at = texelsOf(row.position);
+        if (flying === 1) {
+          contacts.add.hops(1);
+          contacts.add.hoppedX(at.x);
+          contacts.add.hoppedY(at.y);
+        } else {
+          contacts.add.lands(1);
+          contacts.add.landedX(at.x);
+          contacts.add.landedY(at.y);
+        }
+      }
+      row.busy = flying;
       const end = std.select(patrol.x, patrol.y, row.heading > 0);
       if (lift === 0 && row.position.x === end) row.heading = -row.heading;
     } else if (kind === WALKER) {
       const patrol = critter.patrol(i);
-      const x = row.position.x + row.heading * paceOf(i) * step;
+      const pace = paceOf(i);
+      const walking = d.u32(pace > 0);
+      if (walking > row.busy && heard(row.position)) {
+        const at = texelsOf(row.position);
+        contacts.add.walks(1);
+        contacts.add.walkedX(at.x);
+        contacts.add.walkedY(at.y);
+      }
+      row.busy = walking;
+      const x = row.position.x + row.heading * pace * step;
       if (x < patrol.x || x > patrol.y) row.heading = -row.heading;
       row.position.x = std.clamp(x, patrol.x, patrol.y);
     } else {
-      const flown = roundAt(i, time.$).x;
-      row.position = flightAt(i, flown);
-      row.heading = headingAt(flown);
+      const round = roundAt(i, time.$);
+      row.position = flightAt(i, round.x);
+      row.heading = headingAt(round.x);
+      // A grind is heard from when the hero first comes within earshot of it, until it ends
+      const grinding = round.y < ROUND.grind;
+      if (grinding && row.busy === 0 && heard(row.position)) {
+        const at = texelsOf(row.position);
+        contacts.add.grinds(1);
+        contacts.add.groundX(at.x);
+        contacts.add.groundY(at.y);
+        contacts.add.grindLeft(d.u32((ROUND.grind - round.y) * 1000));
+        row.busy = 1;
+      }
+      if (!grinding) row.busy = 0;
     }
 
     const centre = row.position + boxAt(kind) + d.vec2f(0, lift);
@@ -475,10 +559,14 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     if (avatar.$.sliding > 0 && kind !== WALKER) {
       row.squashedAt = time.$;
       contacts.add.slides(1);
+      if (kind === FORK) contacts.add.forks(1);
+      if (kind === GRINDER && row.busy === 1) contacts.add.quiets(1);
       kickUp(centre, i);
     } else if (kind !== FORK && avatar.$.velocity.y < 0 && offset.y > half.y) {
       row.squashedAt = time.$;
       contacts.add.stomps(1);
+      if (kind === WALKER) contacts.add.sponges(1);
+      if (kind === GRINDER && row.busy === 1) contacts.add.quiets(1);
       kickUp(centre, i);
     } else {
       contacts.add.hurts(1);
@@ -598,8 +686,12 @@ export function createCritters(root: TgpuRoot, options: CrittersOptions) {
     table: critters,
     compact: live.compact,
     /**
-     * Stomps, slides and hurts the steps count, and how many of the hurts came from the hero's
-     * left. Capture them after the steps each frame.
+     * Stomps, slides and hurts the steps count, how many of the hurts came from the hero's left,
+     * how many of the stomps were sponges', how many sponges began a crawl and grinders a grind
+     * near the hero, forks jumped and landed near it, and the sums of where, in texels, how many
+     * grinders were defeated mid-grind, how many of the slides were forks', and the milliseconds
+     * left of the grinds heard.
+     * Capture them after the steps each frame.
      */
     contacts,
 
