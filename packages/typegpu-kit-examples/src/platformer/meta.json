@@ -2,10 +2,10 @@
   "title": "Platformer",
   "category": "games",
   "rarity": "rare",
-  "description": "Pixel art at 16 texels a tile is printed on paper cards under a desk lamp, in a palette of 32 colours. Each card casts a shadow on the cards behind it, ordered-dithered on the texels of the card it falls on, and its cut edges catch the light. Each layer is drawn at 16 texels a tile on its own grid, and the print composites the layers at full resolution, moving each by whole screen pixels so they scroll smoothly without breaking up their texels. Sprites are drawn at full resolution too, each placed on whole screen pixels with a 16-texel grid of its own, so they glide at any refresh rate. Hero physics runs on the CPU at 120 Hz. The GPU moves critters, counts their contacts as events and reads them back. A coroutine removes collected coins from a table. Particles add dust and sparkles. The hero's sprite sheet was drawn for the kit and is CC0.",
+  "description": "Pixel art at 16 texels a tile is printed on paper cards under a desk lamp, in a palette of 32 colours. Each card casts a shadow on the cards behind it, ordered-dithered on the texels of the card it falls on, and its cut edges catch the light. Each layer is drawn at 16 texels a tile on its own grid, and the print composites the layers at full resolution, moving each by whole screen pixels so they scroll smoothly without breaking up their texels. Sprites are drawn at full resolution too, each placed on whole screen pixels with a 16-texel grid of its own, so they glide at any refresh rate. Hero physics runs on the CPU at 120 Hz. The GPU moves critters, counts their contacts as events and reads them back. A coroutine removes collected coins from a table. Particles add dust, sparkles and the bubbles that sponges blow from the critters' kernel. The hero's, the sponge's and the bubble's sprite sheets were drawn for the kit and are CC0.",
   "line": "Pixel art printed on paper cards, critters moved on the GPU.",
   "order": 28,
-  "hint": "arrows or A D move \u00b7 space jumps, longer when held",
+  "hint": "arrows or A D move \u00b7 shift ducks, and slides at a run \u00b7 space jumps, longer when held",
   "card": { "demo": [2.2] },
   "poster": { "seconds": 2.62 }
 }

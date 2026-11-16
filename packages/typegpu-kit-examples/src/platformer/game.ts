@@ -18,6 +18,7 @@ const KICK = 7;
 
 export interface Score {
   coins: number;
+  /** Critters defeated, by stomps and slides. */
   stomps: number;
   /** Fastest time to the flag in seconds. */
   best: number | undefined;
@@ -43,7 +44,7 @@ export function createPlatformer(
   const { coins, critters, effects, sim } = parts;
 
   const hero = createHero(level);
-  const input: Input = { left: false, right: false, jump: false };
+  const input: Input = { left: false, right: false, jump: false, down: false };
   const score: Score = { coins: 0, stomps: 0, best: undefined };
 
   let now = 0;
@@ -87,6 +88,10 @@ export function createPlatformer(
         score.stomps += contact.stomps;
         onScore(score);
       }
+      if (contact?.slides) {
+        score.stomps += contact.slides;
+        onScore(score);
+      }
       if (contact?.hurts && now >= safeUntil) restart();
 
       let taken = 0;
@@ -105,6 +110,7 @@ export function createPlatformer(
         critters.step(pass);
         effects.dust.step(pass);
         effects.sparks.step(pass);
+        effects.bubbles.step(pass);
       }
 
       if (taken > 0) {

@@ -1,22 +1,22 @@
 /**
  * One character per tile, top row first: `#` ground, `=` bricks, `o` a coin, `w` a walker,
- * `b` a bat, `@` the start and `F` the flag.
+ * `f` a fork, `b` a bat, `@` the start and `F` the flag.
  */
 export const MAP = [
   '',
   '',
   '',
-  '',
-  '',
-  '                  ooo                                ooooo',
-  '                                                       w      b   o o o                     b',
-  '          o o o   ===                  b             =====                    b   o o o',
-  '                          o               o                       =====                     o',
-  '          =====          o o             o o   ====                               =====    o o',
-  '                                    ##                                    ##',
-  '   @                 w         w  ####        w           w            w  ##    w       w        ##  F',
-  '#########################   #############   #################  ############################   ##########',
-  '#########################   #############   #################  ############################   ##########',
+  '                                                                                  ====',
+  '                                                                                  ====',
+  '                  ooo                                ooooo                        ====                    o o',
+  '                                                       w      b   o o o           ====      b',
+  '          o o o   ===                  b             =====                    b   ====                    ooo',
+  '                          o               o                       =====           ====      o             ###',
+  '          =====          o o             o o   ====                               ====     o o            ###',
+  '                                    ##                                    ##      ====                    ###',
+  '   @                 w         w  ####        f           w            w  ##    f  oo   w        ##       ###      F',
+  '#########################   #############   #################  ############################   ########################',
+  '#########################   #############   #################  ############################   ########################',
 ];
 
 export const EMPTY = 0;
@@ -25,11 +25,13 @@ export const BRICKS = 2;
 
 export const WALKER = 0;
 export const BAT = 1;
+/** A walker with spikes on top, which only a slide defeats. */
+export const FORK = 2;
 
 type Point = readonly [x: number, y: number];
 
 export interface Spawn {
-  readonly kind: typeof WALKER | typeof BAT;
+  readonly kind: typeof WALKER | typeof BAT | typeof FORK;
   /** Centre of its tile. */
   readonly at: Point;
   /** Walker travel limits between walls and floor edges. */
@@ -79,10 +81,14 @@ export function parseLevel(map: readonly string[]): Level {
 
   const level: Tiles = { width, height, tiles };
 
-  /** Centre of the last tile from `x` in direction `step` that is open with floor below. */
+  /** Whether a walker on tile `x, y` stands on a floor, with room above for its body. */
+  const walkable = (x: number, y: number) =>
+    !solidAt(level, x, y) && !solidAt(level, x, y + 1) && solidAt(level, x, y - 1);
+
+  /** Centre of the last walkable tile from `x` in direction `step`. */
   const patrolEnd = (x: number, y: number, step: number) => {
     let end = Math.floor(x);
-    while (!solidAt(level, end + step, y) && solidAt(level, end + step, y - 1)) end += step;
+    while (walkable(end + step, y)) end += step;
     return end + 0.5;
   };
 
@@ -99,6 +105,10 @@ export function parseLevel(map: readonly string[]): Level {
     start: marks['@']?.[0] ?? [0.5, 0.5],
     flag: marks.F?.[0] ?? [width - 0.5, 0.5],
     coins: marks.o ?? [],
-    critters: [...(marks.w ?? []).map(spawn(WALKER)), ...(marks.b ?? []).map(spawn(BAT))],
+    critters: [
+      ...(marks.w ?? []).map(spawn(WALKER)),
+      ...(marks.f ?? []).map(spawn(FORK)),
+      ...(marks.b ?? []).map(spawn(BAT)),
+    ],
   };
 }

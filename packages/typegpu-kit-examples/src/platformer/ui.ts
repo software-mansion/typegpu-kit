@@ -6,8 +6,9 @@ export const ui = {
     {
       left: { label: '◀', name: 'left', keys: ['ArrowLeft', 'KeyA'], held: true },
       right: { label: '▶', name: 'right', keys: ['ArrowRight', 'KeyD'], held: true },
+      down: { label: '▼', name: 'duck', keys: ['ShiftLeft', 'ShiftRight'], held: true },
       jump: { label: 'jump', keys: ['ArrowUp', 'KeyW', 'Space'], held: true },
     },
-    { left: [['left', 'right']], right: [['jump']] },
+    { left: [['left', 'down', 'right']], right: [['jump']] },
   ),
 };

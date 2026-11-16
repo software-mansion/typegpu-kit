@@ -2,7 +2,7 @@ import { cameras, images, passes } from '@typegpu/kit';
 import { unfilled, type Inject } from '@typegpu/kit/inject';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import type { Picture } from '../contract.ts';
-import { HALF, SKID, type Hero } from './hero.ts';
+import { HALF, HEEL, SKID, type Hero } from './hero.ts';
 import {
   pixelated,
   quad,
@@ -20,6 +20,10 @@ const Avatar = d.struct({
   /** Hero positions before and after this frame's steps, used for swept contact tests. */
   before: d.vec2f,
   after: d.vec2f,
+  /** 1 while the hero ducks, which halves its height on its feet, and 0 otherwise. */
+  ducked: d.f32,
+  /** 1 while the hero slides, ducked, which defeats forks and bats it touches, and 0 otherwise. */
+  sliding: d.f32,
 });
 
 /** The hero's state for shaders, such as the critters' contact test. */
@@ -36,6 +40,8 @@ const Sprite = d.struct({
   grounded: d.f32,
   /** When the hero last turned on a heel, in seconds of the clock, or -1 once it can't. */
   turnedAt: d.f32,
+  /** When the hero last backflipped, in seconds of the clock. Its spin ends when it lands. */
+  flippedAt: d.f32,
 });
 
 /** Texels along each side of a frame of the sheet. */
@@ -51,7 +57,13 @@ const JUMP = { up: 12, top: 13, down: 14, apex: 4 };
 /** The squash after landing, two frames each shown this many seconds. */
 const LANDING = { first: 15, count: 2, hold: 0.07 };
 /** Turning on a heel, from when the hero starts to skid, for `hold` seconds or while it skids. */
-const TURN = { frame: 17, hold: 0.18 };
+const TURN = { frame: 17, hold: HEEL };
+/** The frame the hero shows while it slides, feet first. */
+const SLIDING = 18;
+/** Ducking, still on its first frame, or sneaking through its frames 0, 1, 0, 2, steps a second. */
+const DUCKING = { first: 19, rate: 7 };
+/** Seconds a backflip takes to spin once around. */
+const SPIN = 0.6;
 /** The speed in tiles a second that counts as running. */
 const RUNNING = 0.5;
 /** The texel row of the hero's feet below its centre, which the sheet's bottom row lands on. */
@@ -87,14 +99,17 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
   const sheet = texture.createView(d.texture2d(d.f32));
 
   const state = root.createUniform(Avatar);
-  const written: Record<keyof d.Infer<typeof Avatar>, [number, number]> = {
-    position: [0, 0],
-    velocity: [0, 0],
-    before: [0, 0],
-    after: [0, 0],
+  const written = {
+    position: [0, 0] as [number, number],
+    velocity: [0, 0] as [number, number],
+    before: [0, 0] as [number, number],
+    after: [0, 0] as [number, number],
+    ducked: 0,
+    sliding: 0,
   };
 
-  const shown = { facing: 1, blink: 0, landedAt: -1, grounded: 1, turnedAt: -1 };
+  const shown = { facing: 1, blink: 0, landedAt: -1, grounded: 1, turnedAt: -1, flippedAt: -1 };
+  let flipping = false;
   const sprite = root.createUniform(Sprite, shown);
 
   /** The frame of the sheet the hero shows now. */
@@ -102,6 +117,15 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
     'use gpu';
     const since = time.$ - sprite.$.landedAt;
     const velocity = avatar.$.velocity;
+    if (avatar.$.sliding > 0) return d.i32(SLIDING);
+    if (avatar.$.ducked > 0) {
+      if (std.abs(velocity.x) > RUNNING) {
+        // Odd steps put a foot forward, the first and then the second
+        const step = d.i32(time.$ * DUCKING.rate) % 4;
+        return DUCKING.first + std.select(0, d.i32((step + 1) / 2), step % 2 === 1);
+      }
+      return d.i32(DUCKING.first);
+    }
     if (sprite.$.grounded === 0) {
       if (std.abs(velocity.y) < JUMP.apex) return d.i32(JUMP.top);
       return std.select(JUMP.down, JUMP.up, velocity.y > 0);
@@ -119,10 +143,19 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
 
   /**
    * The hero's colour at `local`, or zero alpha around it: the texel of the current frame, facing
-   * the hero's way, with the frame's bottom row on the hero's feet.
+   * the hero's way, with the frame's bottom row on the hero's feet. A backflipping hero spins once
+   * around its centre, head first away from the way it faces, until it lands.
    */
-  const heroAt = (local: d.v2f) => {
+  const heroAt = (at: d.v2f) => {
     'use gpu';
+    const spin = std.saturate((time.$ - sprite.$.flippedAt) / SPIN);
+    const spinning = sprite.$.grounded === 0 && sprite.$.flippedAt >= 0 && spin < 1;
+    const angle = std.select(0, sprite.$.facing * spin * Math.PI * 2, spinning);
+    // Reads the unspun sprite where the spin carried this texel from
+    const cos = std.cos(angle);
+    const sin = std.sin(angle);
+    const local = d.vec2f(cos * at.x + sin * at.y, cos * at.y - sin * at.x);
+
     const t = d.vec2i(std.floor(d.vec2f(local.x * sprite.$.facing, local.y) * TEXELS));
     const column = t.x + MIDDLE;
     const row = FRAME - 1 - (t.y - FEET);
@@ -170,8 +203,9 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
 
     /**
      * Interpolates the hero by `alpha` between fixed steps and records its swept path, and a
-     * landing at `now` seconds when the hero touches down, or a turn when it turns against its
-     * slide. Writes position, facing, blink, whether it stands and its turn only when they change.
+     * landing at `now` seconds when the hero touches down, a turn when it turns against its
+     * slide, or a backflip when it starts one. Writes position, facing, blink, whether it stands,
+     * its turn and its backflip only when they change.
      */
     update(hero: Hero, alpha: number, blink: boolean, now: number) {
       const { position, previous, start, velocity } = hero;
@@ -182,13 +216,26 @@ export function createAvatar(root: TgpuRoot, options: AvatarOptions) {
       moved = set(written.velocity, velocity[0], velocity[1]) || moved;
       moved = set(written.before, start[0], start[1]) || moved;
       moved = set(written.after, position[0], position[1]) || moved;
+      const ducked = hero.ducked ? 1 : 0;
+      const sliding = hero.sliding ? 1 : 0;
+      moved = moved || ducked !== written.ducked || sliding !== written.sliding;
+      written.ducked = ducked;
+      written.sliding = sliding;
       if (moved) state.write(written);
 
       const grounded = hero.grounded ? 1 : 0;
       const landed = grounded === 1 && shown.grounded === 0;
       if (landed) shown.landedAt = now;
       const flicker = blink ? 1 : 0;
-      if (grounded !== shown.grounded || hero.facing !== shown.facing || flicker !== shown.blink) {
+      const flipped = hero.flipping && !flipping;
+      flipping = hero.flipping;
+      if (flipped) shown.flippedAt = now;
+      if (
+        flipped ||
+        grounded !== shown.grounded ||
+        hero.facing !== shown.facing ||
+        flicker !== shown.blink
+      ) {
         // A turn starts when the hero starts to skid, and ends when it leaves the ground
         if (grounded === 0) shown.turnedAt = -1;
         else if (hero.facing !== shown.facing) shown.turnedAt = hero.skidding ? now : -1;
