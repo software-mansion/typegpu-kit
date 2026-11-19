@@ -1,0 +1,156 @@
+---
+import { examples } from '../../examples/examples.ts';
+import { exampleHref } from '../site/urls.ts';
+import { optionsOf, type Embed } from './example.ts';
+import Loupe from './Loupe.astro';
+import type { Placement } from './loupe.ts';
+
+interface Props {
+  example: string;
+  /** Scene options over the example's card's, such as fewer particles. */
+  options?: Record<string, unknown>;
+  controls?: readonly string[];
+  /** Settings it starts from, by name, such as `{ view: 'motion' }`. */
+  values?: Record<string, number | boolean | string>;
+  /** What to try. The figure's children make the caption instead, for one with code or links. */
+  caption?: string;
+  /** The canvas's width over its height, as CSS writes it. Default `16 / 10`. */
+  aspect?: string;
+  /** A magnifier over the canvas: `true`, or what Loupe.astro takes. */
+  loupe?: boolean | Partial<Placement>;
+}
+
+const { example: key, controls = [], values = {}, caption, aspect = '16 / 10', loupe } = Astro.props;
+const example = examples.find((each) => each.key === key);
+if (!example) {
+  throw new Error(`No example ${key}; there are ${examples.map((each) => each.key).join(', ')}.`);
+}
+
+const embed: Embed = { key, options: optionsOf(example.card, Astro.props.options), controls, values };
+const captioned = caption !== undefined || Astro.slots.has('default');
+---
+
+<figure class="viz example" data-viz="example" data-example={JSON.stringify(embed)}>
+  <div class="heading"><span>{key}</span><span>{example.line}</span></div>
+  <div class="viz-screen screen" style={`aspect-ratio: ${aspect}`}>
+    <canvas aria-label={`${example.title}. ${example.line}`}></canvas>
+    <span class="cover" data-cover></span>
+    <span class="reach" data-reach hidden></span>
+    {loupe && <Loupe {...(loupe === true ? {} : loupe)} />}
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <a class="open" href={exampleHref(key)}>Open the full example</a>
+  </div>
+  {
+    captioned && (
+      <figcaption class="viz-caption">
+        {caption ?? <slot />}
+      </figcaption>
+    )
+  }
+</figure>
+
+<style>
+  .screen {
+    overflow: hidden;
+    border-block: 1px solid var(--rule);
+    border-radius: 0;
+    background: var(--ground);
+  }
+
+  .heading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    margin-bottom: var(--s-3);
+    color: var(--text);
+    font: var(--type-label) / 1.5 var(--font-mono);
+  }
+
+  .heading span + span {
+    color: var(--muted);
+  }
+
+  .screen > canvas {
+    height: 100%;
+    aspect-ratio: auto;
+  }
+
+  .screen > canvas[data-armed] {
+    outline: 2px solid var(--viz-accent);
+    outline-offset: -2px;
+  }
+
+  /* Over the poster, on a ground of its own */
+  .cover {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    box-sizing: border-box;
+    max-width: calc(100% - 2 * var(--s-4));
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text);
+    font: var(--type-status) / 1.5 var(--font-mono);
+    text-align: center;
+    pointer-events: none;
+    transition: opacity 0.2s ease-out;
+    translate: -50% -50%;
+  }
+
+  .cover:empty {
+    display: none;
+  }
+
+  .example:global(.live) .cover {
+    opacity: 0;
+  }
+
+  .screen > :global(.viz-loupe) {
+    visibility: hidden;
+  }
+
+  .example:global(.live) .screen > :global(.viz-loupe) {
+    visibility: visible;
+  }
+
+  .viz-controls :global(.viz-readout) {
+    gap: var(--s-2);
+    align-items: center;
+    color: var(--text-2);
+  }
+
+  .reach {
+    position: absolute;
+    top: 0;
+    left: 0;
+    box-sizing: border-box;
+    border: 1px dashed var(--viz-accent);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .viz-controls .open {
+    margin-left: auto;
+    color: var(--link);
+    font: var(--type-label) / 1.5 var(--font-mono);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cover {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  import { each, whenNear } from './figure.ts';
+
+  each('example', (figure) =>
+    whenNear(figure, async () => (await import('./example.ts')).mount(figure)),
+  );
+</script>

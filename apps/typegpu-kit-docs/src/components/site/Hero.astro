@@ -1,0 +1,9 @@
+---
+import HomeHero from '../home/HomeHero.astro';
+
+// Only the home page has a hero
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero ?? {};
+---
+
+<HomeHero title={title} tagline={tagline} actions={actions} />

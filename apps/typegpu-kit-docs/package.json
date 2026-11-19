@@ -1,0 +1,45 @@
+{
+  "name": "typegpu-kit-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeGPU Kit docs and examples.",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "dev:host": "DEV_HOST=1 astro dev --host",
+    "build": "astro build",
+    "preview": "astro preview",
+    "contracts": "node src/contracts/print.ts",
+    "agents": "node src/contracts/agents.ts",
+    "test:types": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.12",
+    "@astrojs/markdown-satteri": "0.4.10",
+    "@astrojs/starlight": "^0.43.1",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@typegpu/color": "catalog:",
+    "@typegpu/create-kit": "workspace:*",
+    "@typegpu/kit": "workspace:*",
+    "@typegpu/noise": "catalog:",
+    "@typegpu/radiance-cascades": "catalog:",
+    "astro": "^7.4.12",
+    "expressive-code-twoslash": "^0.6.1",
+    "lil-gui": "^0.21.0",
+    "typegpu": "catalog:",
+    "typegpu-kit-examples": "workspace:*",
+    "typegpu-kit-pull": "workspace:*",
+    "wgpu-matrix": "catalog:"
+  },
+  "devDependencies": {
+    "@emnapi/runtime": "1.11.3",
+    "@types/draco3d": "1.4.10",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@webgpu/types": "catalog:types",
+    "draco3d": "1.5.9",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:",
+    "vitest": "catalog:test",
+    "webgpu": "catalog:test"
+  }
+}

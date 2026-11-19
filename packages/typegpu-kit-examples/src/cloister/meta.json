@@ -1,0 +1,8 @@
+{
+  "title": "Cloister",
+  "category": "worlds",
+  "description": "A cloister at the blue hour, lit by the sky and eight lanterns that cast point shadows through its arcades. The shadows are drawn once, since nothing moves. The model is loaded as Blender exports it, Draco-compressed with WebP textures. Each texture's KHR_texture_transform tiles the paving and the stone roofs, turns the border and cuts the carved panels from one atlas. Its ambient occlusion is baked onto a second uv set, TEXCOORD_1, which the mesh pool keeps beside the first. The occlusion darkens only the sky's light, under the arches, along the walks and at the column bases, and a setting turns it off or shows it alone. The camera stays inside the garth, pulling in along its view where it would pass through the arcades. TAA and bloom finish the frame. The model, its border, its panels and its occlusion were made for the kit and are CC0. Its stone, plaster and paving are Poly Haven's CC0 scans Medieval Blocks 05 and White Plaster Rough 01 by Rob Tuytel and Monastery Stone Floor by Amal Kumar, its lawn is Grass Ground by Charlotte Baglioni, and its props are Poly Haven's CC0 Large Castle Door by Tina, Painted Wooden Bench by Kirill Sannikov, Wine Barrel 01 by James Ray Cock, Potted Plant 02, Shrub Sorrel 01 and Flower Empodium by Rico Cilliers.",
+  "line": "A closed Blender cloister whose textures tile and turn by their transforms, its shade baked on a second uv set.",
+  "order": 5,
+  "hint": "drag to orbit · wheel to zoom"
+}

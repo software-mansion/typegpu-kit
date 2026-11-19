@@ -1,0 +1,300 @@
+---
+// A module at a glance, above its prose: the import, the main call, the facts that differ from a
+// plain module, and the way to its card
+import {
+  cardOf,
+  counted,
+  glanceOf,
+  importOf,
+  meanings,
+  type Links,
+} from '../../contracts/facets.ts';
+import Call from './Call.astro';
+import {
+  anchorOf,
+  callId,
+  hrefOf,
+  moduleById,
+  referenceOf,
+  type ModuleContract,
+} from './modules.ts';
+import SheetParts from './SheetParts.astro';
+import { exampleHref, pageHref, READING } from './urls.ts';
+
+interface Props {
+  module: ModuleContract;
+  modules: readonly ModuleContract[];
+}
+
+const { module, modules } = Astro.props;
+
+const links: Links = {
+  module: (id) => hrefOf(modules, moduleById(modules, id)),
+  example: (key) => ({ href: exampleHref(key), title: key }),
+};
+
+const card = cardOf(module, modules);
+const [call, ...others] = card.signature.lines;
+const also = [...new Set([...others.map((line) => line.name), ...card.signature.rest])].filter(
+  (name) => name !== call?.name,
+);
+const exported = card.exports[0];
+const facts = glanceOf(card.facts);
+
+const count = (n: number, one: string) => (n === 0 ? [] : [counted(n, one)]);
+const size = [
+  ...count(card.options.reduce((sum, table) => sum + table.fields.length, 0), 'option'),
+  ...count(card.handles.reduce((sum, handle) => sum + handle.members.length, 0), 'member'),
+].join(' · ');
+
+/** The import as words and names, so the names read first. */
+const imported = importOf(module, true).split(/(\bimport\b|\bfrom\b|\* as\b)/);
+---
+
+<dl class="strip not-content" id={anchorOf(module)} data-pagefind-ignore>
+  <div>
+    <dt>import</dt>
+    <dd>
+      <code class="import"
+        >{imported.map((part) => (/^(import|from|\* as)$/.test(part) ? <i>{part}</i> : part))}</code
+      >
+      <button class="copy" type="button" data-copy={importOf(module, true)}>copy</button>
+    </dd>
+  </div>
+  {
+    call ? (
+      <div>
+        <dt>call</dt>
+        <dd>
+          <span class="call">
+            <Call module={module} card={card} line={call} links={links} />
+          </span>
+          {also.length > 0 && (
+            <span class="also">
+              also{' '}
+              {also.map((name, at) => (
+                <Fragment>
+                  {at > 0 && ' · '}
+                  <a href={`#${card.signature.rest.includes(name) ? referenceOf(module) : callId(module, name)}`}>
+                    {name}
+                  </a>
+                </Fragment>
+              ))}
+            </span>
+          )}
+        </dd>
+      </div>
+    ) : (
+      exported && (
+        <div>
+          <dt>{exported.label}</dt>
+          <dd>
+            <span class="names">
+              {(exported.value ?? []).slice(0, 6).map((part) => (
+                <SheetParts parts={[part]} links={links} />
+              ))}
+            </span>
+            {(exported.value ?? []).length > 6 && (
+              <span class="also">and {(exported.value ?? []).length - 6} more</span>
+            )}
+          </dd>
+        </div>
+      )
+    )
+  }
+  {
+    facts.length > 0 && (
+      <div>
+        <dt>facts</dt>
+        <dd>
+          {facts.map((fact) => (
+            <span
+              class:list={['fact', { exception: fact.exception }]}
+              data-facet={fact.facet}
+              title={meanings[fact.key as keyof typeof meanings]}
+            >
+              <b>{fact.label}</b>
+              <SheetParts parts={fact.value!} links={links} />
+            </span>
+          ))}
+        </dd>
+      </div>
+    )
+  }
+  <div>
+    <dt>reference</dt>
+    <dd>
+      <a class="down" href={`#${referenceOf(module)}`}>
+        Every call, option and member <span aria-hidden="true">↓</span>
+      </a>
+      {size && <span class="also">{size}</span>}
+      <a class="how" href={`${pageHref(READING)}#a-module-page`}>How to read this</a>
+    </dd>
+  </div>
+</dl>
+
+<script>
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.strip .copy')) {
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(button.dataset.copy!);
+      button.textContent = 'copied';
+      setTimeout(() => (button.textContent = 'copy'), 1200);
+    });
+  }
+</script>
+
+<style>
+  .strip {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    margin: var(--s-5) 0 var(--s-4);
+    border-top: 1px solid var(--rule-strong);
+    border-bottom: 1px solid var(--rule);
+    scroll-margin-top: 6rem;
+  }
+
+  .strip > div {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    padding: var(--s-2) 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .strip > div:last-child {
+    border-bottom: 0;
+  }
+
+  dt {
+    color: var(--muted);
+    font: 500 11px/22px var(--font-mono);
+  }
+
+  dd {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--s-1) var(--s-4);
+    min-width: 0;
+    margin: 0;
+    color: var(--text);
+    font: 400 13.5px/22px var(--font-mono);
+  }
+
+  .strip code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+
+  .import i {
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  .copy {
+    margin-left: auto;
+    padding: 0 6px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: none;
+    color: var(--muted);
+    font: 400 11px/18px var(--font-mono);
+    cursor: pointer;
+  }
+
+  .copy:hover,
+  .copy:focus-visible {
+    border-color: var(--rule-control);
+    color: var(--accent-high);
+  }
+
+  .call {
+    display: flex;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .names {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--s-3);
+  }
+
+  .also {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .also a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .also a:hover {
+    color: var(--accent-high);
+  }
+
+  /* A fact: its dot and label in its facet's colour, then its shortest value. */
+  .fact {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--s-2);
+    color: var(--text-2);
+  }
+
+  .fact::before {
+    content: '';
+    align-self: center;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--dot, var(--rule-control));
+  }
+
+  .fact b {
+    color: color-mix(in oklab, var(--dot, var(--muted)) 80%, var(--muted));
+    font: 500 11px/22px var(--font-mono);
+  }
+
+  .fact.exception {
+    color: var(--f-exception);
+  }
+
+  .down,
+  .how {
+    color: var(--link);
+    font: 400 14px/22px var(--font-sans);
+    text-decoration: none;
+  }
+
+  .how {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .down:hover,
+  .how:hover {
+    color: var(--accent-high);
+    text-decoration: underline;
+  }
+
+  @media (max-width: 30rem) {
+    .strip {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .strip > div {
+      padding: var(--s-2) 0;
+    }
+
+    dt {
+      line-height: 16px;
+    }
+  }
+</style>

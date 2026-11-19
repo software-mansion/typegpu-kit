@@ -1,0 +1,134 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="fixed-step">
+  <p class="viz-title">Frames as wide as they took, holding the fixed steps they ran</p>
+  <svg viewBox="0 0 640 126" role="img" aria-label="Frames as boxes on a time axis, with a tick for each fixed step, the time carried to later frames and the time dropped"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="stall">Stall 150 ms</button>
+    <Choice name="fps" label="display" options={[30, 60, 144].map((fps) => ({ value: fps, label: `${fps} fps` }))} value={60} />
+    <Choice name="hz" label="step" options={[30, 60, 120].map((hz) => ({ value: hz, label: `${hz} Hz` }))} value={60} />
+    <Slider inline name="max" label="maxSteps" min={1} max={8} value={4} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Stall a frame, then lower <code>maxSteps</code>. A long frame runs at most <code>maxSteps</code> steps, carries as much time again to the frames after it and drops the rest. Time runs at one fifth speed.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each, slider } from './figure.ts';
+  import { CHAR, fitWidth, stipple, svg, text } from './svg.ts';
+  import { axis, edge, frameBoxes, frameStrip, playStrip, PRESENT, scroll, STALL, x } from './frame-strip.ts';
+  import { createProgram, type Ran } from './FixedStep.program.ts';
+
+  const LEGEND = 10;
+  const TOP = 46;
+  const LANE = 56;
+  const HEIGHT = TOP + LANE + 24;
+  /** How far a tick stops short of its box's top and bottom. */
+  const INSET = 10;
+  /** Seconds of frames the figure opens on, ending just after a stall. */
+  const OPENING = 1.28;
+  /** Seconds the strip's own hitches take: a long frame within the cap, then one beyond it. */
+  const HITCHES = [0.045, STALL, 0.045, 0];
+
+  const STEP = 'var(--viz-b)';
+  const CARRIED = 'var(--viz-c)';
+  const DROPPED = 'var(--viz-bad)';
+
+  each('fixed-step', (root) => {
+    const figure = root.querySelector('svg')!;
+    const fps = choice(root, 'fps', () => shown.show());
+    const hz = choice(root, 'hz', () => rebuild());
+    const max = slider(root, 'max', () => rebuild());
+
+    const create = () => createProgram({ step: 1 / Number(hz.value), maxSteps: max.valueAsNumber });
+    let program = create();
+    const strip = frameStrip<Ran>({
+      seed: 11,
+      fps: () => Number(fps.value),
+      hitches: HITCHES,
+      first: 0.7,
+      run: (frame) => program.frame(frame.start, frame.end),
+    });
+
+    const draw = fitWidth(figure, (width) => {
+      const view = scroll(figure, strip.now, 0, width - PRESENT, HEIGHT);
+      const { group, from } = view;
+      // A step a frame ran late lies in an earlier frame's box
+      const frames = strip.frames.filter((frame) => frame.end > from - 0.4);
+
+      let place = 0;
+      for (const [name, colour] of [['step', STEP], ['carried', CARRIED], ['dropped', DROPPED]] as const) {
+        if (name === 'step') svg('rect', { x: place + 4, y: LEGEND - 9, width: 2, height: 10, fill: colour }, figure);
+        else svg('rect', { x: place, y: LEGEND - 9, width: 10, height: 10, fill: stipple(figure, colour, 0.5) }, figure);
+        text(figure, place + 15, LEGEND, name, { fill: colour });
+        place += 15 + name.length * CHAR + 16;
+      }
+
+      frameBoxes(figure, view, strip, TOP, LANE);
+
+      // Only a frame `maxSteps` held back carries time past its own steps, and drops what is over.
+      // The ground under each keeps a box's band out of it.
+      const zone = (start: number, end: number, colour: string) => {
+        const left = Math.round(x(start)) + 1;
+        const right = Math.round(x(end));
+        if (right <= left) return;
+        for (const fill of ['var(--ground)', stipple(figure, colour, 0.5)]) {
+          svg('rect', { x: left, y: TOP + 1, width: right - left, height: LANE - 2, fill }, group);
+        }
+      };
+      for (const { end, ran } of frames) {
+        if (!ran.capped) continue;
+        zone(ran.carried, ran.dropped, CARRIED);
+        zone(ran.dropped, end, DROPPED);
+      }
+
+      for (const { ran } of frames) {
+        for (const at of ran.steps) {
+          svg('rect', { x: Math.round(x(at)) - 1, y: TOP + INSET, width: 2, height: LANE - INSET * 2, fill: STEP }, group);
+        }
+      }
+
+      // A bracket over the steps of each frame that ran all `maxSteps` allows, joined to that frame
+      // when they lie in an earlier one and no other bracket stands between
+      const brackets = frames.flatMap(({ start, end, ran }) => {
+        const last = ran.steps.at(-1);
+        if (!ran.capped || last === undefined) return [];
+        return [{ left: edge(ran.from), right: edge(last), start: edge(start), own: edge((start + end) / 2) }];
+      });
+      const high = TOP - 8.5;
+      let labelled = -Infinity;
+      for (const { left, right, start, own } of brackets) {
+        svg('path', { d: `M${left},${TOP - 3}V${high}H${right}V${TOP - 3}`, fill: 'none', stroke: 'var(--viz-muted)' }, group);
+        if (right < start && !brackets.some((other) => other.left >= right && other.left < own)) {
+          svg('path', { d: `M${right},${high}H${own}V${TOP - 4}`, fill: 'none', stroke: 'var(--viz-muted)' }, group);
+          svg('circle', { cx: own, cy: TOP - 3, r: 2, fill: 'var(--viz-muted)' }, group);
+        }
+
+        const middle = Math.round((left + right) / 2);
+        const half = ('maxSteps'.length * CHAR) / 2;
+        if (middle - half < labelled + 10) continue;
+        text(group, middle, TOP - 14, 'maxSteps', { 'text-anchor': 'middle' });
+        labelled = middle + half;
+      }
+
+      axis(figure, 0, width - PRESENT, TOP + LANE);
+      return HEIGHT;
+    });
+
+    const shown = playStrip(root, strip, draw);
+
+    /** Runs the same frames again on a clock with the new step and cap. */
+    const rebuild = () => {
+      program = create();
+      strip.replay();
+      shown.redraw();
+    };
+
+    strip.advance(OPENING);
+  });
+</script>

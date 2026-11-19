@@ -1,0 +1,89 @@
+---
+title: Counters
+description: Named counters that kernels increment and the CPU reads as changes since its last read.
+modules: [kit/counters]
+---
+
+import CountersTimeline from '../../../components/viz/CountersTimeline.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+`counters` keeps a **counter** for each kind of event, such as a hit, a kill or a pickup. It carries counts and no details: kernels add to a counter, and the CPU reads how much it grew a frame or two later. That is enough to update a score, play a sound or restart a level, none of which a kernel can do. The details of each event take a queue of your own.
+
+<Hidden card="falling-sand">
+  <CountersTimeline />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+declare function bounce(times: number): void;
+declare function restart(): void;
+const critters = root.createReadonly(d.arrayOf(d.vec2f, 64));
+const hero = root.createUniform(d.vec2f);
+// ---cut---
+import { counters } from '@typegpu/kit';
+
+const contacts = counters.create(root, ['stomps', 'hurts'], { hz: 60 });
+
+const touch = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 64) return;
+
+  const offset = hero.$ - critters.$[gid.x];
+  if (offset.y > 0.4 && offset.y < 0.8) contacts.add.stomps(1);
+});
+const touching = root.createComputePipeline({ compute: touch });
+
+frames.create(root, (frame) => {
+  const contact = contacts.take(); // what each gained since the last take, or undefined
+  if (contact?.stomps) bounce(contact.stomps);
+  if (contact?.hurts) restart();
+
+  const compute = frame.encoder.beginComputePass();
+  compute.setPipeline(touching);
+  compute.dispatchWorkgroups(1);
+  compute.end();
+  contacts.capture(frame); // after the passes that add
+});
+```
+
+<Rules>
+
+- **Adding** `add.stomps(amount)` adds atomically, from any thread of any kernel. The amount can vary, such as a kill's reward of 1, 4 or 1000 gold.
+- **Capturing** `capture` copies counters at `hz`, 30 times per second by default. It uses a [readback](/kit/readback/) with `staging` buffers, 3 by default, and skips a capture while all are mapping. The platformer reads at 60 Hz, so the hero bounces a frame or two after a stomp.
+- **Reading** `take()` returns each counter's increase since the last `take`, once per completed read, and `undefined` between reads. `latest` holds totals since the last `clear`. Each reuses an object and updates it in place. Copy a result to keep it.
+- **Late reads** Counters only increase, so late or repeated reads lose no events. The next difference includes them. Differences use `u32` arithmetic and remain correct across a wrap at 2^32.
+
+</Rules>
+
+Use `{ per: 'frame' }` to count objects in a frame, such as the stampede's skinned horses and cards. `capture` copies when a read is due and clears counters every frame. `latest` and `take()` then return one frame's counts. Call `capture` every frame, after the passes that count.
+
+## Starting again
+
+`clear(frame)` sets every counter to 0 in the frame and drops the reads made before it, so the next gains count from the clear. Record it before the passes that add, as at a restart:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { counters, frames } from '@typegpu/kit';
+const root = await tgpu.init();
+const tally = counters.create(root, ['spawned', 'slain', 'breached']);
+let restarting = false;
+// ---cut---
+frames.create(root, (frame) => {
+  if (restarting) tally.clear(frame);
+  restarting = false;
+  // ... the passes that add, then tally.capture(frame)
+});
+```
+
+Read `latest` to display totals such as enemies spawned, slain or through the gate. The platformer keeps its counters across restarts and ignores damage for 1.5 s, longer than a read takes to complete.
+
+## Limits
+
+- Counters omit event details such as location. Handle immediate effects on the GPU, such as squashing a critter or emitting dust. Let the CPU react to the count.
+- Per-item thresholds need separate counters. The fish tank uses its own counter array to count bites per pellet and decide on the GPU when each is eaten.

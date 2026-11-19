@@ -1,0 +1,131 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="domino-lean">
+  <p class="viz-title">A domino tips about its front edge onto the next</p>
+  <svg viewBox="0 0 640 270" role="img" aria-label="Side view of a domino tipping about its bottom front edge toward the next"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="angle" label="angle" min={0} max={30} step={0.5} value={14} unit="°" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the angle to tip the first domino, shown from the side in centimetres. Its weight restores it below <code>TIP</code> and accelerates it forward above that angle, until its top rests at <code>leanOn(0)</code> against the next domino.
+  </figcaption>
+</figure>
+
+<script>
+  import { HEIGHT, SPACING, THICKNESS } from 'typegpu-kit-examples/dominoes/layout.ts';
+  import { leanOn, TIP } from 'typegpu-kit-examples/dominoes/topple.ts';
+  import { each, slider, statusLine } from './figure.ts';
+  import { stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  const DEGREES = 180 / Math.PI;
+  const REST = leanOn(0);
+  /** The gauge's radius, in dominoes' heights. */
+  const GAUGE = 1.14;
+  const BOTTOM = 46;
+
+  each('domino-lean', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const angle = slider(root, 'angle', () => draw(), (value) => value.toFixed(1));
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        // From a centimetre behind the first domino to one past the third
+        const span = SPACING * 2 + THICKNESS + 2.4;
+        const scale = Math.min((width - 24) / span, 40);
+        const top = HEIGHT * scale * (GAUGE - 1) + 24;
+        const height = top + HEIGHT * scale + BOTTOM;
+        const floor = top + HEIGHT * scale;
+        const left = (width - span * scale) / 2 + 1.2 * scale;
+        /** A point `x` centimetres along the floor from the first domino's foot, `y` up. */
+        const at = (x: number, y: number) => [left + (x + THICKNESS / 2) * scale, floor - y * scale] as const;
+
+        const tipped = Math.min(angle.valueAsNumber / DEGREES, REST);
+        const resting = tipped >= REST - 1e-4;
+        const pivot = THICKNESS / 2;
+        const turn = (x: number, y: number, by: number) =>
+          at(pivot + x * Math.cos(by) + y * Math.sin(by), -x * Math.sin(by) + y * Math.cos(by));
+        const outline = (by: number) =>
+          [turn(-THICKNESS, 0, by), turn(0, 0, by), turn(0, HEIGHT, by), turn(-THICKNESS, HEIGHT, by)]
+            .map((point) => point.join(','))
+            .join(' ');
+
+        svg('line', { x1: 0, x2: width, y1: floor, y2: floor, stroke: 'var(--viz-line)' }, figure);
+
+        for (const k of [1, 2]) {
+          const [x0, y0] = at(k * SPACING - THICKNESS / 2, HEIGHT);
+          svg('rect', {
+            x: x0, y: y0, width: THICKNESS * scale, height: HEIGHT * scale, rx: 2,
+            fill: stipple(figure), stroke: 'var(--viz-muted)',
+          }, figure);
+        }
+
+        svg('polygon', { points: outline(0), fill: 'none', stroke: 'var(--viz-line)', 'stroke-dasharray': '3 3' }, figure);
+        svg('polygon', {
+          points: outline(tipped), fill: stipple(figure, 'var(--viz-accent)', 0.5),
+          stroke: resting ? 'var(--viz-a)' : 'var(--viz-accent)', 'stroke-width': 1.5,
+        }, figure);
+
+        const [mx, my] = turn(-THICKNESS / 2, HEIGHT / 2, tipped);
+        const [px, py] = at(pivot, 0);
+        const past = tipped > TIP;
+        svg('line', { x1: mx, x2: mx, y1: my, y2: floor, stroke: past ? 'var(--viz-a)' : 'var(--viz-muted)', 'stroke-dasharray': '2 3' }, figure);
+        svg('circle', { cx: mx, cy: my, r: 3.5, fill: past ? 'var(--viz-a)' : 'var(--viz-muted)' }, figure);
+        svg('circle', { cx: px, cy: py, r: 4, fill: 'var(--viz-a)' }, figure);
+        text(figure, px + 6, floor + 15, 'pivot', { class: 'strong' });
+
+        const radius = HEIGHT * scale * GAUGE;
+        const onGauge = (by: number, out = 0) =>
+          [px + Math.sin(by) * (radius + out), py - Math.cos(by) * (radius + out)] as const;
+        const [gx0, gy0] = onGauge(0);
+        const [gx1, gy1] = onGauge(REST + 0.08);
+        svg('path', { d: `M${gx0},${gy0}A${radius},${radius} 0 0 1 ${gx1},${gy1}`, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+        for (const [by, label] of [[TIP, 'TIP'], [REST, 'rests']] as const) {
+          const [ax, ay] = onGauge(by, -5);
+          const [bx, by2] = onGauge(by, 5);
+          svg('line', { x1: ax, y1: ay, x2: bx, y2: by2, stroke: 'var(--viz-muted)' }, figure);
+          const [lx, ly] = onGauge(by, 10);
+          text(figure, lx, ly, `${label} ${(by * DEGREES).toFixed(1)}°`, { 'text-anchor': 'start' });
+        }
+        if (tipped > 0.002) {
+          const [ex, ey] = onGauge(tipped);
+          svg('path', { d: `M${gx0},${gy0}A${radius},${radius} 0 0 1 ${ex},${ey}`, fill: 'none', stroke: 'var(--viz-a)', 'stroke-width': 2 }, figure);
+        }
+        const [cx, cy] = onGauge(tipped);
+        svg('circle', { cx, cy, r: 3.5, fill: 'var(--viz-a)' }, figure);
+        text(figure, gx0 - 8, gy0 + 4, `θ ${(tipped * DEGREES).toFixed(1)}°`, { class: 'strong', 'text-anchor': 'end' });
+
+        const [hx, hy] = at(2 * SPACING + THICKNESS / 2 + 0.35, HEIGHT);
+        svg('path', { d: `M${hx},${hy}V${floor}M${hx - 3},${hy}h6M${hx - 3},${floor}h6`, stroke: 'var(--viz-line)' }, figure);
+        /** `name value` where it fits before the right edge, else the value alone. */
+        const sized = (x: number, name: string, value: number) =>
+          x + (name.length + 1 + String(value).length) * CHAR < width - 4 ? `${name} ${value}` : String(value);
+        text(figure, hx + 6, (hy + floor) / 2 + 4, sized(hx + 6, 'HEIGHT', HEIGHT));
+        const [tx0, ty] = at(2 * SPACING - THICKNESS / 2, HEIGHT + 0.25);
+        const [tx1] = at(2 * SPACING + THICKNESS / 2, HEIGHT);
+        svg('path', { d: `M${tx0},${ty}H${tx1}M${tx0},${ty - 3}v6M${tx1},${ty - 3}v6`, stroke: 'var(--viz-line)' }, figure);
+        text(figure, tx1 + 6, ty + 4, sized(tx1 + 6, 'THICKNESS', THICKNESS));
+        const [sx0] = at(SPACING, 0);
+        const [sx1] = at(2 * SPACING, 0);
+        const sy = floor + 30;
+        svg('path', { d: `M${sx0},${sy}H${sx1}M${sx0},${sy - 3}v6M${sx1},${sy - 3}v6`, stroke: 'var(--viz-line)' }, figure);
+        text(figure, (sx0 + sx1) / 2, sy + 13, `SPACING ${SPACING}`, { 'text-anchor': 'middle' });
+
+        const degrees = (tipped * DEGREES).toFixed(1);
+        status.textContent = resting
+          ? `At ${degrees}°, its top rests on the next domino's back: it stops here.`
+          : past
+            ? `At ${degrees}°, its middle is past the edge: its weight tips it on.`
+            : `At ${degrees}°, its middle is behind the edge: its weight stands it back up.`;
+        return height;
+      },
+      320,
+    );
+
+    draw();
+  });
+</script>

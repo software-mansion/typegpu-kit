@@ -1,0 +1,473 @@
+---
+title: Final pass
+description: The last pass of a frame, mapping linear light to the screen through a tone curve, bloom and your own grade.
+modules: [kit/finish, kit/bloom, kit/tone, kit/exposure, kit/post]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import Bloom from '../../../components/viz/Bloom.astro';
+import BloomChain from '../../../components/viz/BloomChain.astro';
+import ExposureAdapt from '../../../components/viz/ExposureAdapt.astro';
+import ToneCurves from '../../../components/viz/ToneCurves.astro';
+
+<Module id="kit/finish" />
+
+Linear light can exceed 1. Blockfall's cleared blocks flash brighter than white. Clipping to the screen range of 0 to 1 turns bright colours yellow, bands dark gradients and loses glow. Use `finish.create` for a **final pass** that maps the image to the screen with one full-screen triangle. Add [bloom](#bloom), [FXAA](/kit/fxaa/), [TAA](/kit/taa/) or [depth of field](/kit/dof/) around it.
+
+<Hidden card="afterimage">
+  <Bloom />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+import { bloom, finish } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+const source = () => screen.textures.hdr;
+
+const glow = bloom.create(root, { source });
+const final = finish.create(root, { format: surface.format, source, glow });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    screen.fit();
+
+    const scene = frame.encoder.beginRenderPass({ colorAttachments: { view: screen.views.hdr } });
+    // the scene, in linear colour
+    scene.end();
+
+    glow.record(frame);
+    final.record(frame, surface.view(frame));
+  }),
+);
+```
+
+<Rules>
+
+- **Drawing** Use `final.draw(pass)` for a pass you opened, such as one a HUD draws into afterwards. `record(frame, view, { timestampWrites })` times the pass under one [profiler](/kit/profiler/) timer.
+- **Viewport** `record(frame, view, { viewport })` draws the picture into a rectangle of the view, such as a letterbox, and clears the rest to black, or to transparent with `alpha: 'premultiplied'`.
+- **Source** The source is a function returning a single-sampled float [target](/kit/targets/) with `sampled: true`, or a picture another module rendered, such as `aa`, `blur` or `glow`. Other sources fail to type-check. A 32-bit float format requires `float32-filterable`.
+- **Resizing** Each `draw` or `record` reads current source, region and texture values, so target resizing through `fit()` is supported. A source that returns any of several textures in turn binds each the first time it draws, and nothing after.
+- **Region** A rendered picture brings its `region`. Give `region` yourself only with a function source drawn below full [resolution](/kit/targets/#resolution-scale), such as `screen.regions.hdr`.
+- **Glow** The final pass adds glow to its own `source`. Bloom can therefore read a separate image, as in [What glows](#what-glows). Any object with `output`, and optionally `region`, can supply glow.
+- **Stage order** Each pixel applies these stages in order: glow, exposure, `tone`, `grade`, vignette, sRGB encoding and dither.
+- **Skipping stages** Uniform values of zero do not remove shader work. Vignette, dither and `glowIntensity` still run their calculations, and glow still samples. Omit stages with no `glow`, `tone: null`, no `grade` or `encode: false`. Dither always runs.
+- **Picked colours** Convert screen-picked sRGB colours once with `srgbToLinear` from `@typegpu/color`. It runs on the CPU too.
+
+</Rules>
+
+[Falling sand](/examples/falling-sand/) renders to a small target and upscales it with `filter: 'sharp'`.
+
+## Tone curves
+
+<Module id="kit/tone" />
+
+<ToneCurves />
+
+| `tone`                   |                                                      |
+| ------------------------ | ---------------------------------------------------- |
+| `tone.neutral` (default) | Khronos PBR Neutral. Keeps hue until the highlights. |
+| `tone.aces`              | Narkowicz's fit of ACES. Bright colours go white.    |
+| `tone.reinhard`          | On luminance. Soft, and never reaches white.         |
+| `tone.agx`               | Blender's AgX. Bright colours fade to white evenly.  |
+| `null`                   | No curve, for sources already in display range.      |
+
+`tone.neutral` and `tone.aces` are `neutral` and `aces` from `@typegpu/color`, and any other curve from it, such as `hable`, fits the `tone` option too.
+
+## Bloom
+
+<Module id="kit/bloom" />
+
+A wide full-resolution blur needs hundreds of samples per pixel. Bloom reduces that work by blurring progressively smaller levels.
+
+<BloomChain />
+
+<Rules>
+
+- **Downsampling** On the way down, each level halves the dimensions and samples 13 taps. Jimenez's filter combines five overlapping four-tap boxes, weighted one half for the centre and one eighth per corner.
+- **First level** The first downsample keeps bright values through `bright`. It uses a **Karis average**, weighting boxes by `1 / (1 + luminance)`, to prevent flicker from isolated bright pixels.
+- **Threshold** The default `bright` is `bloom.threshold`. It keeps the excess of the brightest channel above `threshold`. A quadratic softens the transition starting `knee × threshold` below it.
+- **Upsampling** On the way up, each level samples the smaller level through a 3 × 3 tent, with weights 1, 2 and 4 divided by 16. Taps are `spread` texels apart. Add the filtered result to the next larger level.
+- **Intensity** The final pass multiplies the glow by `glowIntensity` before exposure and tone mapping.
+- **Region** A `region` restricts bloom to the source area drawn at [lower resolution](/kit/targets/#resolution-scale). Each level reads and draws its corresponding region. The final pass reads `glow.region` through `glow`.
+- **Timing** `record(frame, { timestampWrites })` times all its passes under one [profiler](/kit/profiler/) timer.
+- **Levels** The default 6 levels require 11 render passes, one downsample per level and one upsample for all but the smallest. Level 0 does about three quarters of the pixel work with 13 taps down and 9 up. Each following level has one quarter as many pixels. Removing a level saves little GPU work but removes two CPU-recorded passes, each requiring begin, viewport, draw and end calls.
+
+</Rules>
+
+### What glows
+
+By default, everything above the brightness threshold glows, including white sky. To bloom only emitters, draw them into a separate target and bloom that target. Keep the full scene as the final pass's source. Use `bright` to select or modify emission:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+import { bloom, finish } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  emission: { format: 'rgba16float', sampled: true },
+});
+
+// Bloom the full emission target with a warmer tint
+const warm = (color: d.v3f) => {
+  'use gpu';
+  return color * d.vec3f(1, 0.7, 0.4);
+};
+const glow = bloom.create(root, { source: () => screen.textures.emission, bright: warm });
+const final = finish.create(root, {
+  format: surface.format,
+  source: () => screen.textures.hdr,
+  glow,
+});
+```
+
+- Call `bloom.threshold(color)` within `bright` to tint values above the threshold or weight them by `tone.luminance`. It reads bloom settings and is valid only inside `bright`.
+- A `bright` that reads another module [carries its fill](/concepts/connecting-modules/), as `bright: tgpu.fn(masked).pipe(mask.inject())` does.
+
+## Adapting exposure
+
+<Module id="kit/exposure" />
+
+`exposure.create` measures the picture each frame and eases the exposure towards a target on the GPU, as an eye adapts to light and dark:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+// ---cut---
+import { exposure, finish } from '@typegpu/kit';
+
+const source = () => screen.textures.hdr;
+const eye = exposure.create(root, { source, settings: { highest: 8 } });
+const final = finish.create(root, { format: surface.format, source, exposure: eye });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    screen.fit();
+    // the scene, into screen.views.hdr
+    eye.record(frame);
+    final.record(frame, surface.view(frame));
+  }),
+);
+```
+
+<ExposureAdapt />
+
+<Rules>
+
+- **Metering** `record(frame)` averages the log luminance of 4096 samples over the source and moves the exposure towards `key` divided by that average, within `lowest` and `highest`. The exposure stays on the GPU, so the final pass of the same frame reads it.
+- **Speed** The exposure rises at `rise` and falls at `fall`, per second, over the frame's `dt`: each second closes `1 - e^-rise` of the remaining stops, as [`clock.ease`](/kit/clock/#easing-towards-a-goal) does. By default it falls three times as fast as it rises, so a flash dims the picture quickly and a dark scene brightens slowly. The first `record` takes the target at once.
+- **With an encoder** With an encoder in place of the frame, give the seconds yourself, `eye.record(encoder, { dt })`. Without `dt`, it takes the target at once.
+- **Trim** `final.settings.exposure` multiplies the adapted exposure, so it trims the look as before.
+- **Second view** A second view, such as a picture-in-picture camera, takes its own `exposure.create` and final pass.
+- **In shaders** Shaders of your own read the value through `exposure.current` with `root.pipe(eye.inject())`.
+- **Settings** `eye.settings` patches like the other settings. Its fields don't overlap the final pass's or the bloom's.
+
+</Rules>
+
+| Field     | Default |                                                                  |
+| --------- | ------- | ---------------------------------------------------------------- |
+| `key`     | `0.18`  | Average luminance the exposed picture aims for, mid grey.        |
+| `lowest`  | `1/16`  | Lowest exposure, for the brightest pictures.                     |
+| `highest` | `16`    | Highest exposure, for the darkest pictures.                      |
+| `rise`    | `1`     | How fast exposure rises after the picture darkens, per second.   |
+| `fall`    | `3`     | How fast exposure falls after the picture brightens, per second. |
+
+## Settings
+
+`final.settings` and `glow.settings` are uniforms. Their initial values combine `defaults` with the `settings` option. Use TypeGPU's `patch` when settings change. It uploads supplied fields and skips fields absent from that uniform. Since the fields do not overlap, one object can patch both:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+// ---cut---
+import { bloom, finish } from '@typegpu/kit';
+
+const source = () => screen.textures.hdr;
+const glow = bloom.create(root, { source, settings: { threshold: 0.6 } });
+const final = finish.create(root, {
+  format: surface.format,
+  source,
+  settings: { exposure: 1.4 },
+  glow,
+});
+
+// When settings change
+const look = { exposure: 1.1, threshold: 0.8 };
+final.settings.patch(look);
+glow.settings.patch(look);
+```
+
+| Field           | Default |                                                                            |
+| --------------- | ------- | -------------------------------------------------------------------------- |
+| `exposure`      | `1`     | Multiplies the source before the tone curve.                               |
+| `vignette`      | `0.35`  | Darkens the corners, or fades them out over a page: 0 not at all, 1 fully. |
+| `dither`        | `1`     | Noise against banding, in 8-bit steps of what the output stores. 0 is off. |
+| `glowIntensity` | `0.12`  | How much glow the final pass adds.                                         |
+| `threshold`     | `1`     | Brightness where the glow starts.                                          |
+| `knee`          | `0.5`   | How gradually it starts, as a fraction of the threshold.                   |
+| `spread`        | `1`     | Distance between taps on each step up, in texels of the smaller level.     |
+
+The first four fields belong to the final pass and the last three to bloom. [FXAA](/kit/fxaa/#settings)'s settings patch the same way.
+
+## Grading
+
+`grade(color, uv)` runs after the tone curve, on colours in display range, and before the vignette. This one cools the shadows:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+const root = await tgpu.init();
+const screen = targets.create(
+  root,
+  { width: 640, height: 360 },
+  {
+    hdr: { format: 'rgba16float', sampled: true },
+  },
+);
+// ---cut---
+import { finish, tone } from '@typegpu/kit';
+
+const coolShadows = (color: d.v3f, _uv: d.v2f) => {
+  'use gpu';
+  const dark = 1 - std.saturate(tone.luminance(color) * 3);
+  return std.mix(color, color * d.vec3f(0.85, 0.95, 1.15), dark);
+};
+
+const final = finish.create(root, {
+  format: 'bgra8unorm',
+  source: () => screen.textures.hdr,
+  grade: coolShadows,
+});
+```
+
+### Around the pixel
+
+Use `finish.picture(uv)` inside `grade` to read a neighbouring source pixel with glow, exposure and tone mapping applied. `finish.glow(uv)` reads glow before `glowIntensity` scales it and returns zero if absent. This grade adds red and blue fringes like lens chromatic aberration:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+const root = await tgpu.init();
+const screen = targets.create(
+  root,
+  { width: 640, height: 360 },
+  {
+    hdr: { format: 'rgba16float', sampled: true },
+  },
+);
+// ---cut---
+import { finish } from '@typegpu/kit';
+
+const fringe = (color: d.v3f, uv: d.v2f) => {
+  'use gpu';
+  const shift = (uv - 0.5) * 0.008;
+  return d.vec3f(finish.picture(uv + shift).x, color.y, finish.picture(uv - shift).z);
+};
+
+const final = finish.create(root, {
+  format: 'bgra8unorm',
+  source: () => screen.textures.hdr,
+  grade: fringe,
+});
+```
+
+- Each `finish.picture` call repeats source and glow reads and tone mapping. The fringe example triples that work. For sharpening, sample neighbours `std.fwidth(uv)` apart, one texel.
+- These functions work only inside the final pass's `grade`. Other uses fail shader compilation.
+- For a lookup table, capture a 3D texture view and sampler in the grade. If the table can change, read it through a [filled accessor](/concepts/connecting-modules/), for example `grade: tgpu.fn(looked).pipe((cfg) => cfg.with(table, () => view.$))`.
+
+### Another target
+
+A grade can show any sampled target instead of the picture, such as depth while you tune fog. Read a target that follows the canvas through a [`bindings.layout`](/kit/bindings/) part, and set the shared group on the pass before `draw`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+import { d, std } from 'typegpu';
+import { bindings, finish, targets } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth24plus', sampled: true },
+});
+const shown = bindings.layout({ depth: { texture: d.textureDepth2d() } });
+const part = shown.bind({ depth: screen.textures.depth });
+const shared = bindings.share(root, { shown: part }); // before `finish.create`
+
+// Depth as grey, white at the eye
+const depthOf = (_color: d.v3f, uv: d.v2f) => {
+  'use gpu';
+  const texel = d.vec2i(uv * d.vec2f(std.textureDimensions(shown.$.depth)));
+  return d.vec3f(1 - std.textureLoad(shown.$.depth, texel, 0));
+};
+const final = finish.create(root, {
+  format: surface.format,
+  source: () => screen.textures.hdr,
+  grade: tgpu.fn(depthOf).pipe(part.inject()),
+});
+
+frames.animate(
+  frames.create(root, (frame) => {
+    if (screen.fit()) part.replace({ depth: screen.textures.depth });
+    // the scene, into hdr and depth
+
+    const output = frame.encoder.beginRenderPass({
+      colorAttachments: { view: surface.view(frame) },
+    });
+    output.setBindGroup(shared.layout, shared.group());
+    final.draw(output);
+    output.end();
+  }),
+);
+```
+
+- `fit()` returns true after it rebuilds the targets. Replacing the part's texture then keeps the pipeline. Without the share, `replace` throws at the first resize; bind the part with [`unshared`](/kit/bindings/#resources-that-change) to have `finish.create`'s pipeline throw as it builds instead.
+- With `glow`, the final pass uses 3 bind groups and the shared group is the fourth, WebGPU's limit.
+- The final pass still encodes, vignettes and dithers what the grade returns. Pass `encode: false` and set `vignette` and `dither` to 0 to see the stored values unchanged.
+
+### Intermediate targets
+
+The same grade shows what a module computes on the way to the picture. [Ambient occlusion](/kit/ao/) stores visibility in red, so a final pass can take its output as the source and show red as grey:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { ao, finish } from '@typegpu/kit';
+declare const root: Parameters<typeof finish.create>[0];
+declare const occlusion: ao.Ao;
+// ---cut---
+const grey = (color: d.v3f) => {
+  'use gpu';
+  return d.vec3f(color.x);
+};
+const occlusionView = finish.create(root, {
+  format: 'bgra8unorm',
+  source: occlusion,
+  tone: null,
+  encode: false,
+  grade: grey,
+  settings: { vignette: 0, dither: 0 },
+});
+```
+
+## Over a page
+
+A surface with `alphaMode: 'premultiplied'` shows what is behind it, such as a web page. Draw the scene in premultiplied colour into a target cleared to transparent, and give the final pass `alpha: 'premultiplied'`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { bloom, finish } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const surface = web.surface(root, document.querySelector('canvas')!, {
+  alphaMode: 'premultiplied',
+});
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+
+const glow = bloom.create(root, { source: () => screen.textures.hdr });
+const final = finish.create(root, {
+  format: surface.format,
+  source: () => screen.textures.hdr,
+  alpha: 'premultiplied',
+  glow,
+});
+```
+
+- Divide out alpha before the curve and grade. Multiply it back after dither so clear pixels stay clear and noise does not show over the page.
+- The glow raises the alpha by its brightest channel, so it shows over the page around what casts it.
+- The vignette fades the corners out, colour and alpha together, instead of darkening them, which would tint the page.
+
+## In a shader of your own
+
+Custom screen shaders can finish with a tone curve, `linearToSrgb` from `@typegpu/color` and `tone.dither(encoded, pixel, steps)` to reduce banding. Import curves, `luminance` and `dither` from `@typegpu/kit/tone` without creating bloom or a final pass.
+
+```ts twoslash
+import { d } from 'typegpu';
+// ---cut---
+import { tone } from '@typegpu/kit';
+import { linearToSrgb } from '@typegpu/color';
+
+const shown = (color: d.v3f, position: d.v4f) => {
+  'use gpu';
+  return d.vec4f(tone.dither(linearToSrgb(tone.neutral(color)), position.xy, 1), 1);
+};
+```
+
+## An effect of your own
+
+<Module id="kit/post" />
+
+An effect you write takes its picture as the kit's effects do, so it fits anywhere in the chain. `post.Source` is what every `source` option accepts, and an object with `output` and optionally `region` is a `post.Rendered` that the next effect takes:
+
+```ts twoslash
+import type { TgpuRoot } from 'typegpu';
+declare const trail: () => post.FloatTexture;
+// ---cut---
+import { post, type Frame, type SizeSource } from '@typegpu/kit';
+
+interface GhostOptions {
+  readonly source: post.Source;
+  readonly region?: SizeSource;
+}
+
+function createGhost(root: TgpuRoot, options: GhostOptions) {
+  const source = post.textureOf(options.source);
+  const region = post.regionOf(options.source, options.region);
+
+  return {
+    get output() {
+      return trail(); // the texture this effect draws into
+    },
+    region,
+    record(frame: Frame) {
+      const picture = source(); // at every recording, since a resize replaces the texture
+      // draw from `picture` within `region` into `output`
+    },
+  };
+}
+```
+
+- `post.textureOf(source)` returns a function for either form of source. Call it at every recording.
+- `post.regionOf(source, region)` picks the `region` option, else a rendered source's own region. `undefined` means the whole texture.
+- `post.fitRegion(size, texture, region)` stores the region's size in texels in `size`, at most the texture's, and returns whether it changed, for a uniform written only on a resize.
+- `post.within(at, region, size)` clamps texture coordinates to the region in a shader, so filtering reads nothing beyond its edge.
+
+## What it's made of
+
+| Part                         |                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `final.settings`             | Exposure, vignette, dither and `glowIntensity`, a uniform.                                              |
+| `glow.settings`              | Threshold, knee and spread, a uniform.                                                                  |
+| `glow.output`, `glow.region` | Bloom chain with glow at level 0 and its region. Read each frame because resizing replaces the texture. |
+
+## Limits
+
+- `tone` and `grade` compile into pipelines. Create another final pass to switch them at runtime.
+- Built-in curves do not use Oklab. Per-channel curves shift orange toward yellow and blue toward cyan. Supply a custom `tone` using conversions from `@typegpu/color`.
+- `linearToSrgb` passes negative values through; a unorm target clamps them as it stores.
+- `exposure` meters with one compute pass of one 256-thread workgroup, the same at any resolution. Pixels darker than 0.0001 count as 0.0001, and every sample weighs the same, with no weighting towards the centre.
+- Final-pass stage order is fixed. For a custom vignette or encoding, implement it in `grade` and set `vignette: 0` and `encode: false`.

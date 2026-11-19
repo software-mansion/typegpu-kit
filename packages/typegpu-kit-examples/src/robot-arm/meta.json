@@ -1,0 +1,11 @@
+{
+  "title": "Robot arm",
+  "category": "animation",
+  "description": "Tap a block to have a toy robot arm pick it up, then tap the bench or another block to set it down or stack it. Left alone, it sorts the painted blocks into a tower of each colour, then scatters a few to sort again. The CPU solves its joints with cyclic coordinate descent using wgpu-matrix, runs each task as a machine from machines.run and pushes blocks out of the gripper's way. Instances draw @typegpu/kit/geometry shapes, their oak planks, pegboard and painted grain from material hooks, in a dim workshop under a desk lamp. The lamp is a spot light whose shadow an attenuation hook samples across the bulb so its edges soften, ambient occlusion from a depth prepass darkens the seams between blocks, and FXAA smooths the finished frame.",
+  "line": "A toy arm sorting painted blocks into towers on a workbench, its joints solved with wgpu-matrix.",
+  "order": 24,
+  "hint": "point at the bench \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 101.6
+  }
+}

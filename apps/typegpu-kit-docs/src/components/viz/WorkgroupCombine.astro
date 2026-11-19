@@ -1,0 +1,137 @@
+---
+import Choice from './Choice.astro';
+---
+
+<figure class="viz" data-viz="workgroup-combine">
+  <p class="viz-title">Eight invocations combine their values step by step</p>
+  <svg
+    viewBox="0 0 640 250"
+    role="img"
+    tabindex="0"
+    aria-label="Eight invocations combining their values step by step, for a reduce or a scan"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="op" options={['reduce', 'scan']} value="scan" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Tap a value in the last row, or use the arrow keys, to light the values that reach it. Each row is one step between barriers.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    cursor: pointer;
+  }
+
+  svg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<script>
+  import { choice, each, onKeys, statusLine } from './figure.ts';
+  import { badge, fitWidth, svg, text } from './svg.ts';
+
+  const VALUES = [3, 1, 4, 1, 5, 9, 2, 6];
+  const LANES = VALUES.length;
+  const STEPS = [1, 2, 4];
+
+  /** A row of the ladder: its label and, for each lane, the lanes of the row above it adds. */
+  interface Row {
+    readonly label: string;
+    readonly from: readonly (readonly number[])[];
+  }
+
+  /** The top of row `r`. */
+  const y = (r: number) => 4 + r * 42;
+  const lanes = (from: (lane: number) => number[]) => VALUES.map((_, lane) => from(lane));
+
+  function rowsOf(op: 'reduce' | 'scan'): Row[] {
+    const steps =
+      op === 'reduce'
+        ? STEPS.toReversed().map((stride) => ({
+            label: `stride ${stride}`,
+            from: lanes((lane) => (lane < stride ? [lane, lane + stride] : [lane])),
+          }))
+        : STEPS.map((reach) => ({
+            label: `reach ${reach}`,
+            from: lanes((lane) => (lane >= reach ? [lane - reach, lane] : [lane])),
+          }));
+    const last =
+      op === 'reduce'
+        ? { label: 'read lane 0', from: lanes(() => [0]) }
+        : { label: 'lane before', from: lanes((lane) => (lane > 0 ? [lane - 1] : [])) };
+    return [{ label: 'values', from: lanes(() => []) }, ...steps, last];
+  }
+
+  each('workgroup-combine', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    let chosen = 5;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const rows = rowsOf(op.value);
+        // Each row's values, and the lanes that reach the chosen one, from the last row up
+        const values: number[][] = [VALUES];
+        for (const row of rows.slice(1)) {
+          const above = values.at(-1)!;
+          values.push(row.from.map((from) => from.reduce((sum, lane) => sum + above[lane], 0)));
+        }
+        const live = rows.map(() => new Set<number>());
+        live.at(-1)!.add(chosen);
+        for (let r = rows.length - 1; r > 0; r--) {
+          for (const lane of live[r]) for (const from of rows[r].from[lane]) live[r - 1].add(from);
+        }
+
+        const left = 84;
+        const column = (width - left) / LANES;
+        const x = (lane: number) => left + column * (lane + 0.5);
+        rows.forEach((row, r) => {
+          text(figure, 0, y(r) + 12.5, row.label);
+          row.from.forEach((from, lane) => {
+            const adds = from.length > 1 || from[0] !== lane;
+            for (const source of from) {
+              const lit = live[r].has(lane) && live[r - 1].has(source);
+              svg('line', {
+                x1: x(source),
+                y1: y(r - 1) + 18,
+                x2: x(lane),
+                y2: y(r),
+                stroke: lit ? 'var(--viz-accent)' : 'var(--viz-line)',
+                ...(adds ? {} : { 'stroke-dasharray': '2 3' }),
+              }, figure);
+            }
+          });
+          values[r].forEach((value, lane) => badge(figure, x(lane), y(r), value, live[r].has(lane)));
+        });
+
+        const last = rows.length - 1;
+        for (let lane = 0; lane < LANES; lane++) {
+          const hit = svg('rect', { x: x(lane) - column / 2, y: y(last) - 6, width: column, height: 30, fill: 'transparent' }, figure);
+          hit.addEventListener('click', () => choose(lane));
+        }
+
+        const result = values[last][chosen];
+        const sources = op.value === 'reduce' ? VALUES : VALUES.slice(0, chosen);
+        status.textContent =
+          sources.length === 0
+            ? `Invocation 0 gets 0, the identity`
+            : `Invocation ${chosen} gets ${sources.join(' + ')} = ${result}`;
+        return y(last) + 26;
+      },
+      360,
+    );
+
+    const choose = (lane: number) => {
+      chosen = lane;
+      draw();
+    };
+    const op = choice<'reduce' | 'scan'>(root, 'op', () => draw());
+    onKeys(figure, { arrow: (dx, dy) => choose((chosen + Math.sign(dx + dy) + LANES) % LANES) });
+    draw();
+  });
+</script>

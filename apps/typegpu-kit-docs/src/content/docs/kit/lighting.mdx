@@ -1,0 +1,873 @@
+---
+title: Lighting
+description: A sun, a sky, fog and point lights, and the shading your own shaders call.
+modules: [kit/lighting, kit/shading, kit/materials]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import LitSphere from '../../../components/viz/LitSphere.astro';
+import PointLights from '../../../components/viz/PointLights.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Shadow from '../../../components/viz/Shadow.astro';
+import Cascades from '../../../components/viz/Cascades.astro';
+
+<Module id="kit/lighting" />
+
+Copying a light loop into each fragment shader duplicates work. Capturing lights as constants creates pipelines when lights move or are added. Store the sun, sky, fog and point lights as data in a lighting. Fill it into each pipeline and call `shading.shade(material, point)`.
+
+<Hidden card="spider">
+  <LitSphere />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { meshes } from '@typegpu/kit/geometry';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const ball = meshes.unindexed(meshes.sphere());
+const vertex = tgpu.vertexFn({
+  in: { i: d.builtin.vertexIndex },
+  out: { position: d.builtin.position, world: d.vec3f, normal: d.vec3f },
+})(({ i }) => {
+  'use gpu';
+  const corner = ball.vertexAt(i);
+  const position = cameras.toClip(corner.position);
+  return { position, world: corner.position, normal: corner.normal };
+});
+// ---cut---
+import { lighting, materials, shading, table } from '@typegpu/kit';
+
+const lamps = table.create(root, lighting.PointLight, {
+  capacity: 16,
+  defaults: { ...lighting.WHITE },
+});
+lamps.add({ position: [1.5, 1, 1], color: [1, 0.6, 0.3], intensity: 3, range: 5 });
+const light = lighting.create(root, {
+  settings: { sunDirection: [0.4, 1, 0.3], sunIntensity: 2 },
+  points: { table: lamps },
+});
+
+const fragment = tgpu.fragmentFn({
+  in: { world: d.vec3f, normal: d.vec3f },
+  out: d.vec4f,
+})(({ world, normal }) => {
+  'use gpu';
+  const brick = materials.glossy(d.vec3f(0.62, 0.24, 0.16), 0.4);
+  return d.vec4f(shading.shade(brick, shading.pointAt(world, normal)), 1);
+});
+
+const pipeline = root
+  .pipe(view.inject())
+  .pipe(light.inject())
+  .createRenderPipeline({ vertex, fragment, targets: { format: 'rgba16float' } });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    lamps.flush(); // uploads lamps changed since the last frame
+    // Record passes here
+  }),
+);
+```
+
+<Rules>
+
+- **What shade adds** `shade` sums ambient sky light, sunlight past its [shadow](#shadows), live point lights and emission, and applies fog last. The result is linear and can exceed 1 for [bloom and tone mapping](/kit/finish/). Every channel stays at or below 65 504, the largest half float.
+- **The camera** `shading.pointAt` reads the kit's `cameras.current` to find the direction toward the eye. Fill the camera into the pipeline too.
+- **Cost** A lighting without a shadow or point lights holds only its settings uniform, so shading a surface of your own, such as a raymarched field, takes one small buffer.
+- **Other light** Light from a panorama or a sky goes through the ambient hook as an [environment](/kit/environment/). Supply other baked or changing light through it too. See [Light from textures](/recipes/light-from-textures/).
+- **Units** Intensity 1 lights a white matte surface facing the light to about 1, with no exposure, so daylight and lamps share units. Lights omit 1/π; divide intensities from a renderer that keeps it by π.
+
+</Rules>
+
+## What a surface is made of
+
+<Module id="kit/materials" />
+
+A **material** uses glTF's metallic-roughness model, with linear colour, roughness, metallic factor, emission and occlusion. Presets run on the CPU as well as the GPU.
+
+| Preset                     |                                                                     |
+| -------------------------- | ------------------------------------------------------------------- |
+| `matte(color)`             | Diffuse reflection for chalk, clay and cloth.                       |
+| `glossy(color, roughness)` | A dielectric with a highlight, such as paint, plastic or wet stone. |
+| `metal(color, roughness)`  | Tints its reflections and has no diffuse colour.                    |
+| `glow(color, strength)`    | Gives off `strength` times `color`, and reflects almost nothing.    |
+
+Make a material with a preset, then assign the fields you change:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { materials } from '@typegpu/kit';
+// ---cut---
+const ember = (heat: number) => {
+  'use gpu';
+  const lit = materials.matte(d.vec3f(0.3, 0.1, 0.05));
+  lit.emission = d.vec3f(1, 0.4, 0.1) * heat;
+  return lit;
+};
+```
+
+<Rules>
+
+- **Struct literals** Build a `shading.Material` and a `shading.Point` this way, never with a struct literal such as `shading.Material({ color, roughness, … })`. Both structs gain fields only at their end, each off at zero, and a literal stops compiling when one is added. Copy one you were given with `shading.Material(m)` or `shading.Point(p)` before assigning to it.
+- **Screen colours** Convert screen colours to linear light first with `srgbToLinear` from `@typegpu/color`.
+- **Occlusion** `occlusion` is the share of ambient light that reaches the surface, from 0 in a crevice to 1 in the open. `hemisphere` and an environment's ambient apply it; presets set 1.
+- **The point** A `shading.Point` gives the shading position in world space, unit `normal` and `view` toward the eye, and `uv` and `uv1` coordinates, the second from a mesh's `uvs1`. `shading.pointAt(position, normal)` normalizes the normal and sets both to zero, and `shading.Point()` is all zeros. An instance's [`material` function](/kit/instances/#kinds) receives mesh UV coordinates.
+- **Model textures** Apply model textures with `materials.textured`, `mappedNormal` and `masked`. `textured` reads occlusion from the red channel of glTF's occlusion texture. See [mesh-pool textures](/kit/mesh-pool/#textures).
+- **Small highlights** A smooth surface's highlight can be smaller than a pixel and sparkle as it moves. `materials.antialiased(material, normal)` widens roughness where the normal turns within a pixel. Kit renderers apply it unless their `specularAntialiasing` option is `false`; call it in your own fragment shaders.
+
+</Rules>
+
+## Point lights
+
+<PointLights />
+
+`points` reads lights from a [table](/kit/table/) you own or from a [function](#lights-a-function-gives). Without `points`, the shader has no point-light loop. A table's fields start at zero, so give it `lighting.WHITE` as `defaults`: white, intensity 1 and range 10.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { lighting, table } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const lamps = table.create(root, lighting.PointLight, {
+  capacity: 16,
+  defaults: { ...lighting.WHITE },
+});
+const light = lighting.create(root, { points: { table: lamps } });
+
+const torch = lamps.add({ position: [0, 2, 0], color: [1, 0.55, 0.2], intensity: 4 });
+lamps.fields.position.set(torch, 0.5, 2, 0);
+lamps.remove(torch);
+```
+
+- Call `lamps.flush()` each frame before shading. Flush and destroy the table yourself.
+- A light falls off with the inverse square of distance, eased to zero at `range`.
+- `shading.falloff` and `shading.beam` run on the CPU as well as in shaders, so code outside shaders gets the GPU's numbers for how much of a light reaches a point, before shadows.
+
+### Lights your kernels move
+
+A table of `lighting.MovingPointLight` keeps positions on the GPU for kernels to write. The balls in the figure use this. A kernel writes them through `lamps.gpu`, and the CPU finds slots with `lamps.slotOf(id)`.
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { lighting, table } from '@typegpu/kit';
+const root = await tgpu.init();
+const time = root.createUniform(d.f32);
+// ---cut---
+const { MovingPointLight } = lighting;
+const lamps = table.create(root, MovingPointLight, {
+  capacity: 64,
+  defaults: { ...lighting.WHITE },
+});
+const light = lighting.create(root, { points: { table: lamps } });
+
+const circle = tgpu.computeFn({ workgroupSize: [64], in: { id: d.builtin.globalInvocationId } })(({
+  id,
+}) => {
+  'use gpu';
+  if (id.x >= lamps.gpu.span()) return;
+  const angle = time.$ + d.f32(id.x);
+  lamps.gpu.device.$[id.x].position = d.vec3f(std.cos(angle) * 4, 2, std.sin(angle) * 4);
+});
+const circling = root.createComputePipeline({ compute: circle });
+```
+
+- A position supplied to `add` or `write` overwrites the kernel's. Colour and intensity updates leave it unchanged.
+- The CPU can't read a moving light's position back.
+
+### Lights a function gives
+
+<ExampleFigure
+  example="fireworks"
+  controls={['rate', 'light', 'lights alive']}
+  caption="Click the sky to launch a shell, change the rate, or lower burst light. Each flash lights the castle and the smoke, and the lake reflects it; the readout counts live lights."
+/>
+
+If another buffer already stores lights, supply `points.light`, a `'use gpu'` function that returns a `lighting.Light` per slot, and `count`, the slots to visit. A range of 0 disables a slot. Use `pipe` to fill its dependencies. These flashes read their [particles](/kit/particles/) directly without a table or copy:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import { particles } from '@typegpu/kit';
+import { lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.flat(root, { size: { width: 320, height: 180 }, height: 18 });
+const flashes = particles.create(root, view, {
+  capacity: 64,
+  step: 1 / 60,
+});
+// ---cut---
+const lightOf = (slot: number) => {
+  'use gpu';
+  const flash = flashes.particle(slot);
+  return lighting.Light({
+    position: flash.position,
+    range: std.select(d.f32(0), 320, flashes.alive(slot)),
+    color: flash.color.xyz,
+    intensity: std.exp(-flash.age * 3) * flash.size * flash.size,
+  });
+};
+const light = lighting.create(root, {
+  points: { light: lightOf, count: flashes.span },
+});
+```
+
+Particles lit in a kernel, such as smoke beside the flashes, read `shading.incoming(position)` from a pipeline filled with `light.inject()`: the sun past its shadow, each point light through `attenuation` and the mean sky, arriving from every direction. Multiply a colour by it.
+
+To light them by the point lights without the sun, fill `shading.sunShadow` with 0 on their pipeline alone. The fireworks' smoke shows only in the bursts' light this way, while the moon still lights the lake:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock, lighting, particles, shading, Particle } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 4, height: 3 }, target: [0, 0, 0], distance: 5 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const light = lighting.create(root);
+// ---cut---
+const sunless: shading.SunShadowHook = () => {
+  'use gpu';
+  return d.f32(0);
+};
+
+const smoke = particles.create(root, view, {
+  capacity: 1024,
+  step: sim.step,
+  update: tgpu
+    .fn((puff: Particle) => {
+      'use gpu';
+      let next = Particle(puff);
+      next.color = d.vec4f(shading.incoming(puff.position) * 0.6, puff.color.w);
+      return next;
+    })
+    .pipe(light.inject())
+    .with(shading.sunShadow, sunless),
+});
+```
+
+The mean sky still arrives, as `skyIntensity` sets it.
+
+### Only the lights that reach
+
+Every lit pixel visits each light slot: up to a table's highest live slot, or `count` slots of a function. Out-of-range lights still cost loads and a distance test, so size tables to the lights you use. If many lights each cover a small area, supply `points.candidates` to visit only slots that may reach the point.
+
+A [neighbour grid](/kit/grid/) with `sight` at least the longest light range finds nearby lamps in 27 cells:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import * as grid from '@typegpu/kit/grid';
+import { lighting, table } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const lamps = table.create(root, lighting.PointLight, {
+  capacity: 64,
+  defaults: { ...lighting.WHITE, color: [1, 0.8, 0.6], range: 8 },
+});
+const cells = grid.create(root, {
+  ...lamps.live(),
+  low: d.vec3f(-40, 0, -40),
+  size: d.vec3f(80, 8, 80),
+  sight: 8, // must cover every lamp's range
+  item: d.u32,
+  position: lamps.gpu.position,
+  itemOf: (i) => {
+    'use gpu';
+    return d.u32(i);
+  },
+});
+
+const light = lighting.create(root, {
+  points: { table: lamps, candidates: cells.candidates() },
+});
+```
+
+<Rules>
+
+- **Each frame** Call `lamps.flush()` and then `cells.sort(pass)` in a compute pass before shading.
+- **The candidates** `cells.candidates()` returns nine ranges covering the surrounding cells. Its `range` and `slot` add two storage buffers to each shading stage.
+- **Beyond sight** Lights beyond `sight` can be missed.
+- **Repeated slots** Repeating a slot in candidates adds its light twice.
+- **Your own candidates** Custom candidates are a `grid.Candidates`: `ranges`, a `range(position, r)` function returning `first` and `count`, and `slot(index)` to map indices to light slots. They also work with a light function. For a single list, return one range with `lighting.Span({ first: 0, count })`.
+
+</Rules>
+
+## Spot lights
+
+A spot light is a point light with a cone. A table of `lighting.SpotLight` gives every light an `aim` and a `cone`, so points and spots share one table, one loop and one candidate list:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { lighting, table } from '@typegpu/kit';
+
+const lamps = table.create(root, lighting.SpotLight, {
+  capacity: 32,
+  defaults: { ...lighting.WHITE_SPOT },
+});
+const light = lighting.create(root, { points: { table: lamps } });
+
+const lamp = lamps.add({
+  position: [0, 7, 3],
+  aim: [0, -1, -0.4], // any length
+  cone: lighting.cone(0.18, 0.24), // inner and outer half-angles in radians
+  color: [1, 0.92, 0.8],
+  intensity: 60,
+  range: 16,
+});
+lamps.fields.aim.set(lamp, 0.2, -1, -0.4);
+lamps.add({ position: [4, 1, 0], intensity: 2 }); // the default cone: a point light
+```
+
+<Rules>
+
+- **The cone** Light is full inside the inner half-angle and falls to none at the outer one, as in glTF. `lighting.cone(inner, outer)` stores glTF's scale and offset, and runs on the CPU and in shaders.
+- **The white spot** `lighting.WHITE_SPOT` aims straight down with the cone `[0, 1]`, which lights every direction.
+- **Cost** The loop reads a light's aim and cone only once its range test passes.
+- **Moving spots** `lighting.MovingSpotLight` moves only the position to the device part.
+- **A light function** `points.spot` takes a function that returns a `lighting.Spot`, a `Light` with `aim` and `cone`, beside `count` or `candidates`.
+- **The beam** `shading.beam(toLight, aim, cone)` gives the share of a spot light along `toLight`, a unit direction from the point towards the light.
+
+</Rules>
+
+## Changing the light
+
+`light.settings` is a `lighting.Settings` uniform containing sun, sky and fog values. `patch` uploads supplied fields. A moving sun can update once per frame, and the [shadow](#shadows) follows a new `sunDirection` at its next `record`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+const light = lighting.create(root, { shadow: {} });
+const t = 0.6;
+// ---cut---
+const direction: [number, number, number] = [Math.cos(t), Math.sin(t), 0.3];
+
+light.settings.patch({
+  sunDirection: direction,
+  sunColor: [1, 0.7, 0.45],
+  fogDensity: 0.04,
+  fogFalloff: 0.3,
+});
+```
+
+Its fields, with their values in `lighting.defaults`:
+
+| Field           | Default               | Sets                                                         |
+| --------------- | --------------------- | ------------------------------------------------------------ |
+| `sunDirection`  | `[0.4, 1, 0.3]`       | The direction towards the sun, of any length.                |
+| `sunColor`      | `[1, 1, 1]`           | The sun's linear colour.                                     |
+| `sunIntensity`  | `1`                   | A factor on `sunColor`.                                      |
+| `skyTop`        | `[0.2, 0.26, 0.36]`   | The linear colour of the sky from directly above.            |
+| `skyBottom`     | `[0.06, 0.05, 0.045]` | The linear colour of the ground from directly below.         |
+| `skyIntensity`  | `1`                   | A factor on `skyTop` and `skyBottom`.                        |
+| `skyReflection` | `1`                   | A factor on sky reflections, over `skyIntensity`.            |
+| `fogColor`      | `[0.55, 0.62, 0.7]`   | The fog's linear colour.                                     |
+| `fogDensity`    | `0`                   | Fog per world unit at y = 0.                                 |
+| `fogFalloff`    | `0`                   | How fog density falls with height.                           |
+| `fogStart`      | `0`                   | The distance from the eye, in world units, where fog begins. |
+
+<Rules>
+
+- **Slider values** Shaders normalize the direction and multiply colours by their intensities. Pass slider values directly.
+- **Zero direction** A zero direction turns the sun off and leaves the shadow where it was.
+- **Time of day** [`environment.sunAt(hour, latitude, declination)`](/kit/environment/#daylight) gives the sun's direction at an hour of the day, and `environment.sunColor(direction)` its colour through the air.
+- **Fog height** `fogDensity` falls by a factor of e per `1 / fogFalloff` units of height. A falloff of 0 gives uniform fog. Negative falloff is treated as 0.
+- **Fog start** `fogStart` keeps a near island clear while the far sea hazes.
+- **Sky reflection** `skyReflection` above 1 brightens glass and clear-plastic rims without changing matte surfaces.
+- **Fixed options** `points`, `shadow`, `pointShadow` and `shading` are fixed at creation.
+
+</Rules>
+
+## Your own shading
+
+<Module id="kit/shading" />
+
+`shade` calls five functions, which the `shading` options replace:
+
+| Slot                  | Called                             | Type                      | Its arguments                           | Default               |
+| --------------------- | ---------------------------------- | ------------------------- | --------------------------------------- | --------------------- |
+| `shading.reflect`     | For the sun and each point light   | `shading.ReflectHook`     | `material, point, direction, radiance`  | `shading.pbr`         |
+| `shading.ambient`     | Once, for the light from elsewhere | `shading.AmbientHook`     | `material, point`                       | `shading.hemisphere`  |
+| `shading.fog`         | Last, for the air before the eye   | `shading.FogHook`         | `point`                                 | `shading.heightFog`   |
+| `shading.sunShadow`   | Once, for how much sun reaches     | `shading.SunShadowHook`   | `point`                                 | `shading.sunShadowed` |
+| `shading.attenuation` | For each point light in range      | `shading.AttenuationHook` | `point, toLight, distance, range, slot` | `shading.reaching`    |
+
+<Rules>
+
+- **`reflect` and `ambient`** return linear `d.v3f` colours. `direction` is a unit vector toward the light. `radiance` is colour times intensity and attenuation, with the shadow also applied to the sun.
+- **`fog`** returns a `shading.Air`: `added`, the light the air between the eye and the point adds, and `through`, the share of the point's light it lets through, per channel. `shade` returns `color * through + added`. Water that swallows red faster than blue lets less red through.
+- **`sunShadow`** returns 0 for shadow and 1 for full sunlight. Values above 1 can represent focused light. See [your own sun shadow](#your-own-sun-shadow).
+- **`attenuation`** returns the share of a light's intensity reaching the point. The loop reads the light's colour and calls `reflect` only where it is above 0. `reaching` multiplies `shading.falloff(distance, range)`, `shading.beamOf(toLight, slot)` and, where that is above 0, `shading.lampShadowed(point, toLight, distance, slot)`. Use `slot` to read data of your own, such as a flicker per light or a cookie texture.
+
+</Rules>
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { lighting, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const toon: shading.ReflectHook = (material, point, direction, radiance) => {
+  'use gpu';
+  const lit = std.step(0.3, std.dot(point.normal, direction));
+  return material.color * radiance * lit;
+};
+
+const horizon: shading.FogHook = (point) => {
+  'use gpu';
+  const away = std.saturate(point.view.y * -4 + 0.5);
+  const air = std.mix(d.vec3f(0.9, 0.6, 0.4), d.vec3f(0.4, 0.55, 0.8), away);
+  const hidden = shading.haze(point);
+  return shading.Air({ added: air * hidden, through: d.vec3f(1 - hidden) });
+};
+
+const light = lighting.create(root, {
+  shading: { reflect: toon, fog: horizon },
+  settings: { fogDensity: 0.02, fogFalloff: 0.2 },
+});
+```
+
+<Rules>
+
+- **Haze** `shading.haze(point)` is how much the lighting's height fog hides the point, from 0 to 1. `heightFog` adds `fogColor` by it and lets `1 - haze` through; add a colour of your own, as above.
+- **Settings** `shading.settings()` reads sun, sky and fog values from `light.settings`. Changing a value needs no new pipeline.
+- **Matte shading** `shading.lambert` omits highlights for cheaper shading on phones and flat-shaded art. It tints all reflection with the surface colour, including metals.
+- **Ambient light** `shading.surrounded(material, point, irradiance, reflection)` combines diffuse and reflected light for an ambient hook of your own. It applies the material's `occlusion` to the reflected light only. See [lightmaps](/recipes/light-from-textures/#lightmaps).
+- **Reflection direction** `shading.reflectionOf(point, roughness)` returns the direction to sample reflected light along.
+- **Ambient terms** `shading.reflectance` and `shading.specularOcclusion` are the terms `surrounded` uses.
+- **Parts of shade** `shading.unfogged`, `direct`, `sun` and `towardsSun` are the parts of `shade`, for shaders that combine them differently.
+
+</Rules>
+
+### A hook for one renderer
+
+Every pipeline built from `light.inject()` binds the resources its hooks read. A hook passed to `lighting.create` reaches every lit renderer, so a `fog` that reads a ground paint texture and its uniforms adds those bindings to every figure and prop pipeline too. Each stage has 8 storage and 12 uniform buffers to share, so give a hook that only some renderers need to those renderers alone:
+
+```ts
+const ground = terrain.renderer().pipe((cfg) => cfg.with(shading.fog, paintedFog));
+```
+
+Renderer `pipe` runs after the lighting, so its fill replaces the lighting's. Fill your own pipelines the same way, `root.pipe(light.inject()).with(shading.reflect, shading.lambert)`. [Pipelines](/kit/pipelines/#bindings-per-stage) lists what each pipeline binds.
+
+### Clear surfaces
+
+Glass that hides only a tenth of its background can still show full-strength highlights and sky reflections. Use `shading.shadeClear(material, point, opacity)` for this behavior. It returns premultiplied colour for [`pipelines.blend.over`](/kit/pipelines/):
+
+```ts twoslash
+import { d } from 'typegpu';
+import { materials, shading } from '@typegpu/kit';
+// ---cut---
+const pane = (world: d.v3f, normal: d.v3f) => {
+  'use gpu';
+  const glass = materials.glossy(d.vec3f(0.8, 0.9, 1), 0.05);
+  return shading.shadeClear(glass, shading.pointAt(world, normal), 0.1);
+};
+```
+
+- `opacity` scales the diffuse light, the emission and the light the fog adds; the reflected light is added whole. `w` is `opacity`.
+- A metal reflects all it shows, so `opacity` only fades its fog.
+- An [instances](/kit/instances/#glass) renderer with `blend: 'clear'` shades through it.
+
+## Shadows
+
+<Hidden card="robot-arm">
+  <Shadow />
+</Hidden>
+
+Without shadows, a floating block can appear to rest on the floor. A lighting with a `shadow` group creates `light.shadow`, which records depth from the sun. Add each caster to it as you add drawings to the scene, and record it each frame before the passes that shade:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float' },
+  depth: { format: 'depth24plus' },
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+const light = lighting.create(root, {
+  settings: { sunDirection: [-0.6, 1, -0.7] },
+  shadow: { extent: 9 },
+});
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const renderer = things.renderer();
+const drawn = scene.add(renderer);
+const cast = light.shadow.add(renderer);
+
+frames.animate(
+  frames.create(root, (frame) => {
+    things.flush();
+    light.shadow.record(frame, cast);
+    scene.record(frame, drawn);
+  }),
+);
+```
+
+<Rules>
+
+- **Casters** `light.shadow.add(renderer)` builds depth pipelines with bias against self-shadowing. `cast.destroy()` removes the caster and frees its per-view resources.
+- **Compiling** `await light.initAsync()` while loading compiles every caster added to its shadows. Include the lighting in the list for [`pipelines.compile`](/kit/pipelines/) to compile it with the scene's other pipelines.
+- **Coverage** The map covers a square `extent` world units wide, centred on `center`. Outside it, surfaces are lit. Wider coverage spreads each texel over more ground: Blockfall covers its well with 2048 texels across 16 units, about 1/128 of a block per texel.
+- **Direction** The shadow follows `sunDirection`. A direction written to `light.settings` turns it at its next `record`. Call `aim(direction)` to cast from elsewhere.
+- **The type** `light.shadow` exists in the type only when the options give a shadow. A function of your own that takes such a lighting types it `lighting.Shadowed`, or `lighting.PointShadowed` for [lamp shadows](#point-and-spot-shadows).
+- **Timing** Time the pass with a [profiler](/kit/profiler/) as `record(frame, casters, { timestampWrites: shadow.writes() })`. A frame that draws no cascade writes the timer from an empty compute pass.
+- **Memory** A layer of the map takes `size² × 2` bytes in `depth16unorm` and `size² × 4` in the other formats.
+
+</Rules>
+
+### Cascades fitted to the view
+
+<ExampleFigure
+  example="stampede"
+  controls={['follow']}
+  caption="Click a horse to ride beside it. Its legs cast sharp shadows from the nearest cascade while the trees on the far slopes cast theirs from the last."
+/>
+
+One square sharp enough for a horse's legs covers a few dozen metres. Give the shadow an `eye` and it splits the view into `cascades`, each a layer of one map. The nearest covers the first metres in front of the camera, and each later one covers more ground with the same texels. `record` fits them to the camera each frame:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float' },
+  depth: { format: 'depth24plus' },
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+const view = cameras.orbit(root, { size: surface, target: [0, 1, 0], distance: 12 });
+const light = lighting.create(root, {
+  settings: { sunDirection: [0.6, 0.35, 0.3] },
+  shadow: { eye: view, cascades: 3, far: 120 },
+});
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const renderer = things.renderer();
+const drawn = scene.add(renderer);
+const cast = light.shadow.add(renderer);
+
+frames.animate(
+  frames.create(root, (frame) => {
+    view.update(frame.dt);
+    things.flush();
+    light.shadow.record(frame, cast); // a depth pass per cascade
+    scene.record(frame, drawn);
+  }),
+);
+```
+
+- `eye` takes a camera with a CPU view: `cameras.orbit`, `cameras.flat` or `cameras.custom`. Update it before `record`.
+- The split after cascade `k` lies at `far × (k / cascades)²`, 11% and 44% of `far` for three. `splits: [0.08, 0.3]` places them as fractions of `far` instead.
+- `record` fits a sphere around each slice of the view and snaps its centre to whole texels. The sphere keeps its size as the camera turns, so shadow edges hold still.
+- `reach` is how far each cascade reaches towards the sun beyond its slice. A caster farther towards the sun casts nothing.
+- `cascades`, `far` and `splits` need an `eye`, and `extent` and `center` take none. Type checking refuses the other combinations, and `create` throws for them. `cascades: 1` fits one map to the view.
+
+<Cascades />
+
+Casters draw once per cascade through the pipelines a single map builds. An [instances](/kit/instances/#culling) renderer with `cull: true` culls every cascade in one pair of dispatches. Shading picks the first cascade whose square holds the point and switches cascades without a blend, unless [a hook of your own](#your-own-sun-shadow) blends them. [A finished look for model scenes](/recipes/lit-models/) sizes two cascades for a scene of glTF models.
+
+### Drawing less
+
+`record` clears and draws every cascade each frame. Casters that hold still under a still sun draw the same depth again. Pass `redraw` to choose the cascades that draw this frame. The others keep the layer they drew last:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, instances, lighting, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+const light = lighting.create(root, { shadow: { extent: 16 } });
+const cast = light.shadow.add(things.renderer());
+// ---cut---
+// Set when a caster moves, from your own game state
+let stirred = true;
+
+frames.create(root, (frame) => {
+  light.shadow.record(frame, cast, { redraw: () => stirred });
+  stirred = false;
+});
+```
+
+A cascade draws anyway the first time `record` runs and whenever its place changes: when a fitted shadow's eye moves, when the sun turns, after `aim`, `follow`, `setExtent`, `setFar` or `resize`, and after a frame with the shadow off. A skipped cascade shows casters where they stood when it last drew.
+
+Casters that never move, such as terrain or a reef, need no state of their own. A `redraw` that always answers `false` draws the shadow once and again only when its place changes:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, instances, lighting, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const rocks = instances.create(root, pool, { capacity: 1024 });
+const light = lighting.create(root, { shadow: { extent: 16 } });
+const cast = light.shadow.add(rocks.renderer());
+// ---cut---
+const still = { redraw: () => false };
+
+frames.create(root, (frame) => {
+  light.shadow.record(frame, cast, still);
+});
+```
+
+### Placing cascades yourself
+
+`record` places the cascades with the shadow's `fit`, a function on the CPU. The default, `lighting.fitSlices`, is the sphere around each slice described above. A fit of your own writes a cube for each cascade in the sun's light space, whose axes are `right`, `up` and `sun`, and returns whether it placed them. Each cascade also reaches `reach` beyond its cube towards the sun.
+
+This fit widens each cube and moves it on a coarse grid, so it holds still while the view moves inside it. With `redraw: () => false`, a cascade then draws only when the view crosses a line of its grid:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 1, height: 1 }, target: [0, 0, 0], distance: 6 });
+// ---cut---
+const held: lighting.CascadeFit = (input, places) => {
+  if (!lighting.fitSlices(input, places)) return false;
+  for (const place of places) {
+    place.radius *= 1.3;
+    // Whole texels, a tenth of the layer apart, so the slice stays inside the cube
+    const step = ((place.radius * 2) / input.size) * Math.floor(input.size / 10);
+    place.x = Math.round(place.x / step) * step;
+    place.y = Math.round(place.y / step) * step;
+    place.z = Math.round(place.z / step) * step;
+  }
+  return true;
+};
+const light = lighting.create(root, {
+  shadow: { eye: view, cascades: 3, fit: held },
+});
+```
+
+- The fit runs on each `record`, after `aim` and after `setFar`, and writes into the same `places` each time.
+- Snap each centre across the sun to whole texels of its layer, as `fitSlices` does, or shadow edges crawl as the cascade moves.
+- A fit that returns false lights every point, as a shadow does before its eye has a view.
+
+### Your own casters
+
+Add a custom caster as a drawing to `light.shadow`. Supply a `Vertex` with a clip-space `position`, an `at` function producing it and a `draw` function. The shadow fills the kit's `cameras.current` with the sun's view, so scene vertex functions cast without changes:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, type Frame } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import { lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+const light = lighting.create(root, { shadow: {} });
+declare const frame: Frame;
+// ---cut---
+const statue = meshes.unindexed(meshes.box());
+const Corner = d.struct({ position: d.vec4f });
+
+const cast = light.shadow.add({
+  Vertex: Corner,
+  at: (vertexIndex: number, _instanceIndex: number) => {
+    'use gpu';
+    const world = statue.vertexAt(vertexIndex).position + d.vec3f(0, 1, 0);
+    return Corner({ position: cameras.toClip(world) });
+  },
+  draw: (pass) => pass.draw(statue.vertexCount),
+});
+
+light.shadow.record(frame, cast); // each frame
+```
+
+<Rules>
+
+- **Depth only** Depth-only drawings need neither `pixelOf` nor `color`, and build no fragment stage. With `pixelOf` and `depthOf`, a drawing can supply another point's depth, as [impostors](/kit/impostors/) do.
+- **Cutouts** A drawing with `cutout`, such as a sprite whose texture is clear around its figure, casts the figure's shadow. The shadow pass runs `cutout` alone, so the same drawing goes into the shadow map even when its `pixelOf` reads the lighting.
+- **Masked instances** Instances cut out by masked meshes or by their kind's [`coverage`](/kit/instances/#kinds) cast through it the same way, at their own depth.
+- **Indices and fills** Supply an index buffer as `indices` for `drawIndexed` and fill shader dependencies with `inject()`.
+
+</Rules>
+
+### Your own sun shadow
+
+`shade` takes the share of sunlight at a point from the `sunShadow` hook. The default, `shading.sunShadowed`, compares the point with the map: it moves the point `lift` texels along its normal, makes 1, 4 or 9 comparisons as `filter` sets, and returns their mean, from 0 in shadow to 1 in light. A hook of your own can change that share. The fishtank multiplies `shading.sunShadowed(point)` by its caustics. This one blends each cascade into the next across its edge, and the last one into sunlight, so the shadow fades out past the last cascade instead of ending at a line:
+
+```ts twoslash
+import { std, tgpu } from 'typegpu';
+import { cameras, lighting, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 1, height: 1 }, target: [0, 0, 0], distance: 6 });
+// ---cut---
+const blended: shading.SunShadowHook = (point) => {
+  'use gpu';
+  const at = shading.cascadeOf(point); // index -1 outside every cascade
+  const lit = shading.cascadeShadowed(point, at.index);
+  if (at.edge <= 0) return lit;
+  return std.mix(lit, shading.cascadeShadowed(point, at.index + 1), at.edge);
+};
+const light = lighting.create(root, {
+  shadow: { eye: view, cascades: 3 },
+  shading: { sunShadow: blended },
+});
+```
+
+- `cascadeOf(point)` returns the first cascade holding the point, inset by the filter's half width and `lift`, and an `edge` rising from 0 to 1 over the outer 10% of its square.
+- `cascadeShadowed(point, index)` filters cascade `index`. It returns 1 for a point outside that cascade and for an index outside the cascades, so the last cascade blends into sunlight.
+- `shading.sunShare(point)` returns what the hook gives, for shaders that don't call `shade`. The [domino run](/examples/dominoes/)'s dust brightens in sunlight with it.
+
+### Turning shadows off
+
+The `shadow` group's `enabled` callback turns the shadow on and off each frame, as for other [pass descriptions](/kit/passes/). A quality menu can change its value without a second lighting:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const menu = { shadows: true };
+const light = lighting.create(root, { shadow: { enabled: () => menu.shadows } });
+```
+
+- While it is off, `record` records no pass, culling lists stay empty and `shading.sunShadowed` returns 1 without sampling the map.
+- The map and pipelines stay allocated, so shadows draw on the first frame after it turns on.
+
+### Resizing a shadow map
+
+`resize(size)` replaces the map between frames:
+
+- Give `light.shadow.part` to the lit description as `shared: { shadow: light.shadow.part }`, which puts it in a [shared layout](/kit/bindings/). Create that description before any other pipeline that shades.
+- When a pass of your own also reads the map, share it once with [`bindings.share`](/kit/bindings/#sharing) and give the result to the description.
+- The next frame then makes one bind group and no pipelines. The shadow's own passes don't read the map, so they need no group.
+- Without a shared layout, shading pipelines bind the map as fixed resources, and `resize` throws before it changes anything.
+
+### Point and spot shadows
+
+<ExampleFigure
+  example="night-market"
+  controls={['shadows', 'wind']}
+  values={{ dof: false }}
+  caption="Turn shadows off to let the lamps shine through the table onto the cobbles beneath it. The seller's lamp throws the potions' shadows along the table. Raise the wind to swing the lantern under the string of lights; its shadows swing with it."
+/>
+
+A `pointShadow` group creates `light.pointShadow`, which gives up to `count` lights of the lighting's table a shadow each. `cast` picks the lights:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { instances, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 1, 0], distance: 12 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float' },
+  depth: { format: 'depth24plus' },
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+import { lighting, table } from '@typegpu/kit';
+
+const lamps = table.create(root, lighting.SpotLight, {
+  capacity: 16,
+  defaults: { ...lighting.WHITE_SPOT },
+});
+const light = lighting.create(root, { points: { table: lamps }, pointShadow: { count: 2 } });
+const fire = lamps.add({ position: [0, 0.8, 0], color: [1, 0.45, 0.15], intensity: 8, range: 14 });
+const sign = lamps.add({
+  position: [3, 4, 1],
+  aim: [0, -1, 0.3],
+  cone: lighting.cone(0.3, 0.45),
+  intensity: 30,
+  range: 10,
+});
+light.pointShadow.cast([fire, sign]); // six faces for the fire, one layer for the sign
+
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const renderer = things.renderer();
+const drawn = scene.add(renderer);
+const casters = light.pointShadow.add(renderer);
+
+frames.animate(
+  frames.create(root, (frame) => {
+    things.flush();
+    lamps.flush();
+    light.pointShadow.record(frame, casters); // seven depth passes
+    scene.record(frame, drawn);
+  }),
+);
+```
+
+<Rules>
+
+- **Layers** Each shadow holds six layers of one `texture_depth_2d_array`.
+- **Casting** `cast(lights)` gives a shadow to each light in the list, at most `count`. A light that already casts keeps its shadow, a light left out frees its own, and a new one takes a free shadow. Casting the same lights again writes nothing, so you can cast from the lamps nearest the eye every frame.
+- **Views** A spot whose outer half-angle is at most 60° draws one layer, a perspective view along its aim. A wider spot or a point light draws six faces. Each face covers 90° plus the filter's half width, so the filter at a face's edge stays inside that face.
+- **Placement** `record` places each shadow at its light's row in the table, so a light moved on the CPU needs no other call. A removed light frees its shadow.
+- **Near and far** Near is 2% of the light's `range` and far is `range`.
+- **Shared options** `filter`, `format`, `bias`, `enabled` and `resize` work as the sun's do. `lift` moves the shaded point along its normal by that many texels at its distance from the light. Give the lit description `shared: { pointShadow: light.pointShadow.part }` to resize without new pipelines.
+- **Memory** A layer takes `size² × 2` bytes in `depth16unorm` and `size² × 4` in the other formats.
+
+</Rules>
+
+The default `attenuation`, `shading.reaching`, multiplies in `shading.lampShadowed(point, toLight, distance, slot)`, which a hook of your own can call too. For each light in range, shading compares its slot with each of the `count` shadows. A shadowed light picks a face from the direction to the point, takes one matrix product and makes the filter's comparisons.
+
+#### Lights that hold still
+
+Each layer is a depth pass that draws every caster, so seven layers cost seven passes each frame. A lamp that holds still over casters that hold still draws the same layers again. Pass `redraw` to choose the lights that draw this frame. The others keep the layers they drew last:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, instances, lighting, meshPool, table } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+const lamps = table.create(root, lighting.SpotLight, { capacity: 16 });
+const light = lighting.create(root, { points: { table: lamps }, pointShadow: { count: 4 } });
+const casters = light.pointShadow.add(things.renderer());
+// ---cut---
+// Lamps with a caster that moved within their range this frame, from your own game state
+const stirred = new Set<unknown>();
+
+frames.create(root, (frame) => {
+  lamps.flush();
+  light.pointShadow.record(frame, casters, { redraw: (lamp) => stirred.has(lamp) });
+  stirred.clear();
+});
+```
+
+- A light draws anyway on the frame it gains a shadow, when its row moves, turns or changes range, after `resize`, and after a frame with the shadows off.
+- A light whose flicker jitters its position draws every frame; flicker its intensity alone to keep its layers.
+- A frame that draws no layer writes a timer passed in `timestampWrites` from an empty compute pass, so a [profiler](/kit/profiler/) timer can stay on `record`.
+
+## Tearing down
+
+Call `light.destroy()` when nothing draws with its resources. It frees the shadow maps and their drawing resources. A table of lights is yours to destroy.
+
+## Limits
+
+<Rules>
+
+- **Culling** Without `candidates`, every shaded pixel visits each light slot. There is no tile or cluster culling.
+- **Clear coat** `shadeClear` is exact for dielectrics and metals. It approximates intermediate metallic values.
+- **One lighting** A pipeline reads one lighting, the one piped last. Two lightings in one frame, such as a lit room seen through a window, need two sets of pipelines.
+- **Depth precision** A fixed map's depth spans twice `reach`. At an extent of 20, a `depth16unorm` step is about 0.001 world units. A cascade's depth spans its sphere's width plus `reach`.
+- **Cascade reach** Cascades fit the camera's view, not the casters. A caster beyond `reach` towards the sun casts nothing, and nothing beyond `far` is shadowed.
+- **Fixed filter** The filter is fixed at creation. A menu offering different filters needs a separate lighting for each.
+- **Shadow casters** Only lights placed on the CPU cast. `lighting.create` throws for `pointShadow` without `points.table`, or with a table of `lighting.MovingPointLight` or `MovingSpotLight`.
+- **Layer cost** Each layer that draws draws all its casters: six passes for a point light and one for a narrow spot.
+- **Shadow count** `count` is at most 42 at WebGPU's minimum of 256 layers. Shading compares every in-range light with every shadow, so its cost grows with `count`.
+
+</Rules>

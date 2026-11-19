@@ -1,0 +1,158 @@
+---
+title: Coroutines
+description: Functions that pause at yield* and resume when your frame calls the scheduler.
+modules: [kit/coroutines]
+---
+
+import CoroutineSteps from '../../../components/viz/CoroutineSteps.astro';
+import CoroutineTimeline from '../../../components/viz/CoroutineTimeline.astro';
+
+A door may open half a second after its switch, a level may load while the game draws, or a pick may wait for the GPU. A frame loop needs flags and timers to track these tasks. A **coroutine** pauses at `yield*` and resumes when your frame calls the scheduler. An `async` function can resume between frames.
+
+<CoroutineSteps />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { coroutines, frames } from '@typegpu/kit';
+const root = await tgpu.init();
+declare function onSwitch(press: () => void): void;
+// ---cut---
+const door = { open: 0 };
+const scheduler = coroutines.create();
+
+function* openDoor() {
+  yield* coroutines.seconds(0.5);
+
+  while (door.open < 1) {
+    const frame = yield* coroutines.nextFrame;
+    door.open = Math.min(door.open + frame.dt * 2, 1);
+  }
+}
+
+onSwitch(() => scheduler.start(openDoor()));
+
+frames.create(root, (frame) => {
+  scheduler.run(frame); // resumes every coroutine whose wait is over
+  // ... your passes draw the door at door.open
+});
+```
+
+Coroutines run only when you call `scheduler.run(frame)`. Place the call where their work belongs in the frame.
+
+## Waits
+
+| Wait                    | Resumes with       | When                                                                            |
+| ----------------------- | ------------------ | ------------------------------------------------------------------------------- |
+| `coroutines.nextFrame`  | the frame          | at the next frame's `run`                                                       |
+| `coroutines.frames(n)`  | the frame          | `n` frames later                                                                |
+| `coroutines.seconds(s)` | the frame          | once the scheduler's `time` has advanced by `s`                                 |
+| `coroutines.budget(ms)` | the frame          | in the same frame while it has run for less than `ms` since resuming, else next |
+| `scheduler.start(p)`    | `p`'s return value | when `p` finishes; its error is thrown here                                     |
+| `coroutines.until(p)`   | `p`'s value        | at the first `run` after promise `p` settles; a rejection is thrown here        |
+
+- A wait that could never resume, such as `coroutines.seconds(NaN)`, throws when you make it.
+- Each `frames(n)`, `seconds(s)` or `budget(ms)` call allocates a wait. Create it outside a hot loop. Resuming through a shared wait allocates nothing.
+- `seconds` counts `frame.time` unless you pass `coroutines.create({ time })`. Pass `time: () => sim.time` to count a [fixed step's](/kit/clock/#fixed-step) time, so timed waits stop while the game is paused.
+- `budget` measures the wall clock, `performance.now()` unless you pass `now`.
+
+:::caution[Always `yield*`]
+`yield* fetch(url)` is a type error because a promise is not a wait. Wrap it: `yield* coroutines.until(fetch(url))`. A bare `yield` is also a type error.
+:::
+
+## Coroutines that wait on coroutines
+
+A started coroutine is also a wait. `yield* scheduler.start(pick(x, y))` resumes with what `pick` returns, as `await` does. Here `pick` asks the [picker](/kit/picker/) for the candidate under a point and waits for its [readback](/kit/readback/):
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { coroutines, frames, type picker } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const hits: picker.Picker;
+declare function select(candidate: number): void;
+// ---cut---
+const scheduler = coroutines.create();
+let point: [number, number] | undefined;
+
+const loop = frames.create(root, (frame) => {
+  scheduler.run(frame); // before the passes, so a pick asked for here is recorded below
+
+  const compute = frame.encoder.beginComputePass();
+  if (point) hits.pick(compute, ...point);
+  point = undefined;
+  compute.end();
+  hits.result.capture(frame); // after the pass that picks
+  // ... your render passes
+});
+
+function* pick(x: number, y: number) {
+  point = [x, y];
+  return yield* coroutines.until(hits.result.next()); // a frame or two later
+}
+
+function* game() {
+  const candidate = yield* scheduler.start(pick(10, 20));
+  //    ^?
+  yield* coroutines.seconds(0.5);
+  if (candidate !== null) select(candidate);
+}
+
+const main = scheduler.start(game());
+main.cancel(); // runs finally blocks and disposes `using` resources
+```
+
+- `start` returns a coroutine with `status`, `result`, `error` and `cancel()`. Its status is `running`, `done`, `failed` or `cancelled`.
+- A coroutine started by a running one starts in the same frame, at once if its starter yields it, as `game` does.
+- One waiting on another resumes in the frame the other finishes.
+
+<CoroutineTimeline />
+
+## A wait of your own
+
+`coroutines.until(promise)` and `coroutines.deferred()`, which a callback resolves or rejects, cover most waits. `coroutines.wait` makes one from these members:
+
+| Member                | Called                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| `ready(frame, since)` | at every `run` until it returns true                                                             |
+| `value(frame)`        | optionally, once it is ready; the coroutine resumes with what it returns, or else with the frame |
+| `begin(frame)`        | optionally, in the frame a coroutine yields it, once per coroutine                               |
+| `leave()`             | optionally, when a coroutine waiting on it is cancelled                                          |
+
+`since` holds the `index` of the frame where the coroutine yielded and the scheduler's `time` then, which `clock(frame)` reads for a later frame. It also holds `resumedAt`, the start of its last resume, and `now()`, the wall clock. One wait can serve many coroutines, as `nextFrame` does, and resuming through it allocates nothing:
+
+```ts twoslash
+import { coroutines } from '@typegpu/kit';
+// ---cut---
+const flag = { set: false };
+const raised = coroutines.wait({ ready: () => flag.set });
+```
+
+## Errors
+
+If a coroutine throws, the frame and other coroutines continue. `run` doesn't throw.
+
+- A coroutine waiting on it gets the error at its `yield*`, as `await` does.
+- If no coroutine waits on it, `onError` reports the error. It defaults to `reportError`, which reports an uncaught error without throwing, or to `console.error` where `reportError` is missing.
+- A wait that throws, in `begin`, `ready` or `value`, throws at the coroutine's `yield*`, and so does a bare `yield` of something that isn't a wait.
+
+## Cancelling
+
+- `coroutine.cancel()` closes the generator at once. It runs `finally` blocks and disposes `using` resources. Its wait gets a `leave` call, and coroutines waiting on it get an error.
+- `scheduler.destroy()` cancels everything. A coroutine started after that comes back cancelled.
+- A coroutine that starts another and immediately waits on it with `yield* scheduler.start(child())` owns that child. Cancelling the owner cancels the child first. In the figure, cancelling `game` runs `pick`'s `finally`, then `game`'s.
+- Any other waiter only stops waiting. Cancelling a coroutine that waits on a promise leaves the promise's work running.
+
+:::caution[No `yield*` in a `finally` that cancelling runs]
+A cancelled coroutine never resumes, so a `yield*` in a `finally` ends that block there. The scheduler reports it through `onError`, skips the rest of the block, and still runs the cleanup around it.
+:::
+
+## What coroutines are not for
+
+- Order work inside a frame with call order.
+- Check a [cadence](/kit/clock/#cadences) beside a pass for work such as GI every fourth frame. A coroutine can't reach a pass opened later.
+- Connect modules through their arguments. No module requires coroutines.
+
+## Limits
+
+- A stack trace from a resumed coroutine shows the scheduler's `run`, not where the coroutine was started.
+- Copies in a coroutine read last frame's results if `run` comes before the passes, or this frame's results if it comes after them. Nothing warns if placing `run` earlier adds a frame of delay.
+- A coroutine has no owner unless its starter yields it immediately. Otherwise, cancelling the starter leaves it running. Cancel it in the starter's `finally`.

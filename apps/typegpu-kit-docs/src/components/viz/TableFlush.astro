@@ -1,0 +1,149 @@
+---
+---
+
+<figure class="viz" data-viz="table-flush">
+  <p class="viz-title">A flush uploads only the ranges that changed</p>
+  <svg role="img" aria-label="Changed table fields and ranges uploaded by flush"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="add">Add</button>
+    <button data-action="remove">Remove</button>
+    <button data-action="flush">Flush</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Click cells, add or remove rows, then flush. Outlines mark changed fields, and the highlight marks uploaded cells.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, each } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+  import { createProgram, SLOTS, type Field } from './TableFlush.program.ts';
+
+  const LABEL = 72;
+  const ROW = 20;
+  const GAP = 3;
+  const LINE = 15;
+
+  each('table-flush', (root) => {
+    const figure = root.querySelector('svg')!;
+    const program = createProgram();
+
+    const draw = fitWidth(figure, (width) => {
+      const cell = Math.min(48, Math.floor((width - LABEL) / SLOTS));
+      const x = (slot: number) => LABEL + slot * cell;
+      const top = { host: 34, device: 34 + ROW + 26, live: 34 + 3 * ROW + 2 * GAP + 26 + 20 };
+
+      for (let slot = 0; slot < SLOTS; slot++) {
+        text(figure, x(slot) + (cell - GAP) / 2, 12, String(slot), { 'text-anchor': 'middle' });
+      }
+
+      text(figure, 0, top.host - 6, 'host', { class: 'strong' });
+      text(figure, 0, top.device - 6, 'device', { class: 'strong' });
+
+      const rows: [Field, number][] = [
+        ['tint', top.host],
+        ['position', top.device],
+        ['health', top.device + ROW + GAP],
+      ];
+
+      for (const [field, y] of rows) {
+        text(figure, 0, y + 14, field);
+
+        for (let slot = 0; slot < SLOTS; slot++) {
+          const alive = program.alive(slot);
+          const key = `${slot}:${field}`;
+          const pending = program.changed(key);
+
+          const shape = svg('rect', {
+            x: x(slot) + 0.5,
+            y: y + 0.5,
+            width: cell - GAP - 1,
+            height: ROW - 1,
+            rx: 2,
+            fill: program.uploaded(key) ? stipple(figure, 'var(--viz-c)', 0.5) : alive ? stipple(figure, 'var(--viz-d)', 0.25) : 'none',
+            'fill-opacity': program.uploaded(key) ? 0.45 : 1,
+            stroke: pending ? 'var(--viz-accent)' : 'var(--viz-line)',
+            'stroke-width': pending ? 2 : 1,
+            'stroke-opacity': alive || pending ? 1 : 0.5,
+            ...(alive ? { cursor: 'pointer' } : {}),
+          }, figure);
+
+          if (alive) {
+            shape.addEventListener('click', () => {
+              program.write(slot, field);
+              draw();
+            });
+          }
+        }
+      }
+
+      // The live bits: one u32 word holds 32 slots, so an upload of it covers all of them
+      text(figure, 0, top.live + 9, 'live');
+      for (let slot = 0; slot < SLOTS; slot++) {
+        svg('rect', {
+          x: x(slot) + (cell - GAP) / 2 - 4.5,
+          y: top.live,
+          width: 9,
+          height: 9,
+          rx: 2,
+          fill: program.alive(slot) ? stipple(figure, 'var(--viz-d)', 0.5) : 'none',
+          stroke: program.uploaded('live') ? 'var(--viz-c)' : 'var(--viz-line)',
+        }, figure);
+      }
+
+      const spanY = top.live + 24;
+      text(figure, 0, spanY + 4, 'span');
+      svg('line', {
+        x1: LABEL,
+        x2: Math.max(LABEL, x(program.span) - GAP),
+        y1: spanY,
+        y2: spanY,
+        stroke: program.uploaded('span') ? 'var(--viz-c)' : 'var(--viz-line)',
+        'stroke-width': 2,
+      }, figure);
+
+      const lines = program.uploads;
+      const logY = spanY + 34;
+      text(figure, 0, logY, lines.length > 0 ? 'last flush' : 'last flush uploaded nothing', {
+        class: 'strong',
+      });
+      lines.forEach(([part, slots, fields, bytes], i) => {
+        const y = logY + (i + 1) * LINE;
+        text(figure, 0, y, part);
+        text(figure, LABEL, y, slots);
+        text(figure, LABEL + 92, y, fields);
+        text(figure, LABEL + SLOTS * cell - GAP, y, bytes, { 'text-anchor': 'end' });
+      });
+
+      return logY + Math.max(lines.length, 1) * LINE + 6;
+    });
+
+    action(root, 'add', () => {
+      program.add();
+      draw();
+    });
+
+    action(root, 'remove', () => {
+      program.remove();
+      draw();
+    });
+
+    action(root, 'flush', () => {
+      program.flush();
+      draw();
+    });
+
+    for (let i = 0; i < 9; i++) program.add();
+    program.flush();
+    program.remove(2);
+    program.remove(6);
+    program.flush();
+    program.write(1, 'tint');
+    program.write(7, 'tint');
+    program.write(4, 'position');
+    program.write(5, 'health');
+    program.add();
+    program.flush();
+    draw();
+  });
+</script>

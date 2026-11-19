@@ -1,0 +1,141 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="domino-chain">
+  <p class="viz-title">A wave of falls along a line of dominoes</p>
+  <svg viewBox="0 0 640 330" role="img" aria-label="Side view of falling dominoes and angle curves for the first four"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Slider inline name="carry" label="carry" min={0.35} max={1} step={0.01} value={0.85} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Lower <code>carry</code> to slow the wave; near 0.4 it stops, shown at quarter speed. Dots mark collisions that transfer spin, and curves show the first four angles as later dominoes accelerate to a steady pace.
+  </figcaption>
+</figure>
+
+<script>
+  import { HEIGHT, SPACING, THICKNESS } from 'typegpu-kit-examples/dominoes/layout.ts';
+  import { TIP } from 'typegpu-kit-examples/dominoes/topple.ts';
+  import { line, STEP } from './fall.ts';
+  import { action, animation, each, slider, statusLine } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  /** Seconds the figure shows, how many dominoes it draws, and how many it plots. */
+  const END = 0.6;
+  const SHOWN = 8;
+  const PLOTTED = 4;
+  const SLOW = 4;
+  const COLOURS = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)', 'var(--viz-e)'];
+  const DEGREES = 180 / Math.PI;
+
+  interface Run {
+    /** Each step's angles, for the dominoes drawn. */
+    readonly angles: Float32Array[];
+    /** The step at which each plotted domino first strikes the next. */
+    readonly strikes: number[];
+    /** Dominoes a second, once the wave runs steadily. */
+    readonly pace: number;
+  }
+
+  /** The line's fall with `carry`: its first steps, drawn, and its pace, from a longer line. */
+  const run = (carry: number): Run => {
+    const drawn = line(SHOWN + 2, carry);
+    const angles: Float32Array[] = [];
+    const strikes: number[] = Array.from({ length: PLOTTED }, () => -1);
+    for (let k = 0; k <= Math.ceil(END / STEP); k++) {
+      angles.push(Float32Array.from(drawn.dominoes.slice(0, SHOWN), (domino) => domino.angle));
+      drawn.dominoes.slice(0, PLOTTED).forEach((domino, i) => {
+        if (strikes[i] === -1 && domino.hit > 0) strikes[i] = k;
+      });
+      drawn.step();
+    }
+
+    const long = line(32, carry);
+    const passed: number[] = [];
+    while (passed.length <= 30 && long.time < 20) {
+      long.step();
+      if (long.dominoes[passed.length].angle >= Math.PI / 4) passed.push(long.time);
+    }
+    const pace = passed.length <= 30 ? 0 : 20 / (passed[30] - passed[10]);
+    return { angles, strikes, pace };
+  };
+
+  each('domino-chain', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    let time = 0;
+    const carry = slider(root, 'carry', (value) => {
+      fall = run(value);
+      shown.redraw();
+    }, (value) => value.toFixed(2));
+    let fall = run(carry.valueAsNumber);
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const step = Math.min(Math.round(time / STEP), fall.angles.length - 1);
+        const angles = fall.angles[step];
+
+        const scale = Math.min((width - 24) / (SHOWN * SPACING + 2), 16);
+        const ground = HEIGHT * scale + 18;
+        const left = (width - (SHOWN * SPACING - SPACING + THICKNESS) * scale) / 2;
+        svg('line', { x1: 0, x2: width, y1: ground, y2: ground, stroke: 'var(--viz-line)' }, figure);
+        for (let i = 0; i < SHOWN; i++) {
+          const angle = angles[i];
+          const px = left + (i * SPACING + THICKNESS) * scale;
+          const corner = (x: number, y: number) =>
+            `${px + (x * Math.cos(angle) + y * Math.sin(angle)) * scale},${ground - (-x * Math.sin(angle) + y * Math.cos(angle)) * scale}`;
+          const colour = COLOURS[i] ?? 'var(--viz-muted)';
+          svg('polygon', {
+            points: [corner(-THICKNESS, 0), corner(0, 0), corner(0, HEIGHT), corner(-THICKNESS, HEIGHT)].join(' '),
+            fill: i < PLOTTED ? stipple(figure, colour, 0.5) : stipple(figure), 'fill-opacity': i < PLOTTED ? 0.35 : 1,
+            stroke: colour,
+          }, figure);
+          if (i < PLOTTED) text(figure, px - (THICKNESS / 2) * scale, ground + 14, String(i), { 'text-anchor': 'middle', fill: colour });
+        }
+
+        const plot = { left: 40, top: ground + 36, right: width - 14, height: 170 };
+        const x = (seconds: number) => plot.left + (seconds / END) * (plot.right - plot.left);
+        const y = (radians: number) => plot.top + plot.height - (radians * DEGREES / 90) * plot.height;
+        svg('path', { d: `M${plot.left},${plot.top}V${plot.top + plot.height}H${plot.right}`, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+        for (const degrees of [0, 45, 90]) {
+          text(figure, plot.left - 6, y(degrees / DEGREES) + 4, `${degrees}°`, { 'text-anchor': 'end' });
+        }
+        for (const seconds of [0, 0.2, 0.4, 0.6]) {
+          const anchor = seconds === END ? 'end' : 'middle';
+          text(figure, x(seconds), plot.top + plot.height + 15, `${seconds} s`, { 'text-anchor': anchor });
+        }
+        svg('line', { x1: plot.left, x2: plot.right, y1: y(TIP), y2: y(TIP), stroke: 'var(--viz-line)', 'stroke-dasharray': '2 3' }, figure);
+        text(figure, plot.right, y(TIP) - 5, 'TIP', { 'text-anchor': 'end' });
+
+        for (let i = 0; i < PLOTTED; i++) {
+          const points = fall.angles.map((at, k) => `${x(k * STEP)},${y(at[i])}`).join(' ');
+          svg('polyline', { points, fill: 'none', stroke: COLOURS[i], 'stroke-width': 1.5 }, figure);
+          const struck = fall.strikes[i];
+          if (struck >= 0) {
+            svg('circle', { cx: x(struck * STEP), cy: y(fall.angles[struck][i]), r: 3.5, fill: COLOURS[i] }, figure);
+          }
+        }
+        svg('line', { x1: x(time), x2: x(time), y1: plot.top, y2: plot.top + plot.height, stroke: 'var(--viz-accent)', 'stroke-opacity': 0.5 }, figure);
+
+        status.textContent =
+          fall.pace > 0
+            ? `carry ${carry.valueAsNumber.toFixed(2)}: the wave settles at ${fall.pace.toFixed(1)} dominoes a second, ${((fall.pace * SPACING) / 100).toFixed(2)} m/s.`
+            : `carry ${carry.valueAsNumber.toFixed(2)}. The wave stops.`;
+        return plot.top + plot.height + 24;
+      },
+      320,
+    );
+
+    const shown = animation(root, {
+      step(dt) {
+        time += dt / SLOW;
+        if (time > END + 0.1) time = 0;
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+  });
+</script>

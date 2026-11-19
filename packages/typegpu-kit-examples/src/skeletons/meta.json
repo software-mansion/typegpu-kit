@@ -1,0 +1,12 @@
+{
+  "title": "Skeletons",
+  "category": "animation",
+  "description": "300 CC0 KayKit skeletons use four characters on one rig, in a walled courtyard at night. The glTF reader loads their skin and animation clips, the flinch from KayKit Character Animations. A state machine on the GPU makes them rise, wander, taunt, fight, fall and rise again, and its hooks start each clip. An attacker finds the nearest skeleton through a neighbour grid, turns on it and steps in, and the one its blow lands on flinches on an additive layer over whatever it is doing. One kernel computes every pose's joints, and vertex shaders skin the meshes as they draw. A low moon casts their long shadows across flagstones that a material hook paints, and twelve braziers along the wall light them, point lights from a function that flickers each flame. Particle streams send up tapered flames, embers, and smoke lit by the braziers alone.",
+  "line": "300 skinned skeletons waking, wandering, fighting, flinching and falling in a moonlit courtyard, every clip started on the GPU.",
+  "order": 21,
+  "features": ["indirect-first-instance"],
+  "hint": "drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 9
+  }
+}

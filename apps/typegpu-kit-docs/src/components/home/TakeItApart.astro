@@ -1,0 +1,561 @@
+---
+import { BLOCKS, render } from './code.ts';
+import './code.css';
+
+const NUMBERS = BLOCKS.map((_, k) => BLOCKS.length - k);
+---
+
+<section class="frame not-content" data-home="take-it-apart" data-viz="take-it-apart">
+  <div class="stage home-code">
+    <canvas class="stack" aria-hidden="true"></canvas>
+    <svg class="leaders" aria-hidden="true"><polyline></polyline><circle r="2.5"></circle></svg>
+    <div class="badges" aria-hidden="true">{NUMBERS.map((number) => <i>{number}</i>)}</div>
+    <div class="left">
+      <header class="intro" data-phase="build">
+        <h2 id="take-it-apart">Take it apart</h2>
+        <p class="build">
+          The stack is built again a module at a time, from the bottom up.
+        </p>
+        <p class="play">
+          The stack is whole. Drag a number, or click a plate or a module's name to take it out.
+        </p>
+        <p class="flat">
+          Each code block adds a module to this flock. With WebGPU, the stack beside it shows
+          each module's output.
+        </p>
+      </header>
+      <div class="panel">
+        {
+          BLOCKS.map((block, k) => (
+            <section class:list={['block', { removable: block.removable }]} data-part={block.part}>
+              <header>
+                <i class="no">{k + 1}</i>
+                {block.removable ? (
+                  <button class="mark" type="button" aria-pressed="false" disabled>
+                    {block.module}
+                  </button>
+                ) : (
+                  <b>{block.module}</b>
+                )}
+                <span>{block.says}</span>
+              </header>
+              <p class="tells" aria-hidden="true"><span>{block.tells}</span></p>
+              <pre><code set:html={render(block.code)} /></pre>
+            </section>
+          ))
+        }
+      </div>
+    </div>
+    <p class="tag" aria-hidden="true"><b></b><span></span></p>
+  </div>
+</section>
+
+<script>
+  import { veil } from '../site/veil.ts';
+
+  // Imported here, so a browser without WebGPU loads none of it
+  const sections = [...document.querySelectorAll<HTMLElement>('[data-home="take-it-apart"]')];
+  if (navigator.gpu && sections.length > 0) {
+    // The stage waits under a veil, cells a little coarser on a large screen, for its stack
+    const cell = Math.max(3, Math.ceil(innerWidth / 480));
+    const curtains = sections.map((section) =>
+      veil(section.querySelector<HTMLElement>('.stage')!, { cell }),
+    );
+    void import('./runtime.ts').then(({ register }) => {
+      sections.forEach((section, k) => register('take-it-apart', section, curtains[k]));
+    });
+  }
+</script>
+
+<style>
+  /* The hero, the build, then the frame's code beside its stack, while the scroll passes. */
+  .frame {
+    position: relative;
+    margin-top: 0;
+  }
+
+  .stage {
+    position: relative;
+  }
+
+  canvas.stack,
+  .leaders,
+  .badges,
+  .tag {
+    display: none;
+  }
+
+  .left {
+    max-width: var(--measure);
+  }
+
+  .intro h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: clamp(24px, 2.3vw, 32px);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+
+  .intro p {
+    margin: var(--s-2) 0 0;
+    color: var(--text-2);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .intro .build,
+  .intro .play {
+    display: none;
+  }
+
+  .panel {
+    margin-top: var(--s-4);
+    font-size: 12px;
+  }
+
+  .no {
+    min-width: 1.6em;
+    padding: 1px 4px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text-2);
+    font: 500 11px/1.3 var(--font-mono);
+    font-style: normal;
+    text-align: center;
+  }
+
+  .block {
+    margin: 0;
+    padding: 3px 0 4px 12px;
+    border-left: 2px solid var(--rule);
+    transition: border-color 0.12s;
+  }
+
+  .block + .block {
+    border-top: 2px solid var(--ground);
+  }
+
+  .block header {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    font: 1em/1.5 var(--font-mono);
+  }
+
+  .block header b,
+  .mark {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .block header span {
+    color: var(--muted);
+  }
+
+  .block pre {
+    margin: 0;
+    padding: 0;
+    overflow-x: auto;
+    border: 0;
+    background: none;
+    color: var(--text-2);
+    font: 1em/1.55 var(--font-mono);
+    white-space: pre;
+  }
+
+  .mark {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 500;
+    opacity: 1;
+    cursor: auto;
+  }
+
+  .panel :global(.line) {
+    display: inline-block;
+    transition: opacity 0.2s;
+  }
+
+  /* With WebGPU: a stage the scroll holds still, the stack drawn on it. */
+  :global(:root.home-staged) .frame {
+    position: relative;
+    width: 100vw;
+    height: 650svh;
+    margin-inline: calc(50% - 50vw);
+    background: var(--ground);
+  }
+
+  :global(:root.home-staged) .stage {
+    position: sticky;
+    top: 0;
+    width: 100vw;
+    height: 100svh;
+    min-height: 640px;
+    overflow: hidden;
+    background: var(--ground);
+    cursor: grab;
+    touch-action: pan-y;
+    user-select: none;
+  }
+
+  /* Without the GPU after all, the stage shows its markup */
+  :global(:root:not(.home-staged)) .stage > :global(canvas.veil) {
+    display: none;
+  }
+
+  /* Once running, the stage is fixed while held (runtime.ts): Safari on a phone shakes a sticky
+     element whose content changes every frame as the page scrolls, and a fixed one it doesn't. */
+  :global(:root.home-staged) .stage[data-pin='held'] {
+    position: fixed;
+    left: 0;
+  }
+
+  :global(:root.home-staged) .stage[data-pin='past'] {
+    position: absolute;
+    top: auto;
+    bottom: 0;
+    left: 0;
+  }
+
+  :global(:root.home-staged) canvas.stack,
+  :global(:root.home-staged) .leaders {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .leaders {
+    pointer-events: none;
+    overflow: visible;
+    opacity: 0;
+  }
+
+  .leaders polyline {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .leaders circle {
+    fill: var(--accent-high);
+  }
+
+  /* The heading over the build and the frame's code, left of the stack. */
+  :global(:root.home-staged) .left {
+    position: absolute;
+    top: calc(var(--sl-nav-height) + 3%);
+    bottom: 2.5%;
+    left: 3.5%;
+    display: flex;
+    flex-direction: column;
+    width: min(40vw, 41rem);
+    max-width: none;
+    margin: 0;
+    opacity: 0;
+    visibility: hidden;
+    cursor: auto;
+    pointer-events: auto;
+  }
+
+  :global(:root.home-staged) .intro .flat {
+    display: none;
+  }
+
+  /* The build's line and the play's share a place, so the panel under them holds still */
+  :global(:root.home-staged) .intro {
+    display: grid;
+  }
+
+  :global(:root.home-staged) .intro .build,
+  :global(:root.home-staged) .intro .play {
+    display: block;
+    grid-area: 2 / 1;
+    transition:
+      opacity 0.2s,
+      visibility 0.2s;
+  }
+
+  :global(:root.home-staged) .intro[data-phase='build'] .play,
+  :global(:root.home-staged) .intro[data-phase='play'] .build {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  /* The frame's code fills the column under the heading and scrolls in itself where it runs longer */
+  :global(:root.home-staged) .panel {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    font-size: clamp(10.5px, 1.25vh, 12px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    scrollbar-color: var(--rule-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  :global(:root.home-staged) .panel.live {
+    overflow-y: auto;
+    pointer-events: auto;
+  }
+
+  :global(:root.home-staged) .panel.below {
+    mask-image: linear-gradient(to top, transparent, black 24px);
+  }
+
+  :global(:root.home-staged) .panel.above {
+    mask-image: linear-gradient(to bottom, transparent, black 24px);
+  }
+
+  :global(:root.home-staged) .panel.above.below {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 24px,
+      black calc(100% - 24px),
+      transparent
+    );
+  }
+
+  :global(:root.home-staged) .block.pending {
+    display: none;
+  }
+
+  :global(:root.home-staged) .block {
+    animation: arrive 0.3s ease-out;
+  }
+
+  @keyframes arrive {
+    from {
+      opacity: 0;
+      translate: -10px 0;
+    }
+  }
+
+  .tells {
+    display: none;
+  }
+
+  /* The step's sentence opens under its block's header and closes as the next step comes */
+  :global(:root.home-staged) .tells {
+    display: grid;
+    grid-template-rows: 0fr;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-2);
+    font: 14px/1.45 var(--font-sans);
+    opacity: 0;
+    transition:
+      grid-template-rows 0.25s,
+      padding 0.25s,
+      opacity 0.25s;
+  }
+
+  :global(:root.home-staged) .tells > span {
+    min-height: 0;
+  }
+
+  :global(:root.home-staged) .block.telling .tells {
+    grid-template-rows: 1fr;
+    padding: 2px 0 6px;
+    opacity: 1;
+  }
+
+  :global(:root.home-staged) .block pre {
+    overflow: visible;
+  }
+
+  :global(:root.home-staged) .block header span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global(:root.home-staged) .mark {
+    cursor: pointer;
+  }
+
+  :global(:root.home-staged) .panel.live .mark {
+    text-decoration: underline 1px var(--rule-strong);
+    text-underline-offset: 3px;
+    transition:
+      color 0.12s,
+      text-decoration-color 0.12s;
+  }
+
+  :global(:root.home-staged) .mark:hover,
+  :global(:root.home-staged) .mark:focus-visible {
+    color: var(--accent-high);
+    text-decoration-color: var(--accent);
+  }
+
+  /* What a click does, beside the module the pointer is on, on the stack or on its name */
+  @media (hover: hover) {
+    :global(:root.home-staged) .panel.live .block.removable header::after {
+      content: 'click to take out';
+      flex: none;
+      margin-left: auto;
+      color: var(--accent);
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+
+    :global(:root.home-staged) .panel.live .block.removable.out header::after {
+      content: 'click to put back';
+    }
+
+    :global(:root.home-staged) .panel.live .block.removable.aimed header::after,
+    :global(:root.home-staged) .panel.live .block.removable header:has(.mark:hover)::after {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(:root.home-staged) .block {
+      animation: none;
+    }
+  }
+
+  :global(:root.home-staged) .mark:focus-visible {
+    outline: 1px solid var(--accent-high);
+    outline-offset: 3px;
+  }
+
+  /* The modules' numbers, on the plates and on the code. */
+  :global(:root.home-staged) .badges {
+    position: absolute;
+    inset: 0;
+    display: block;
+    pointer-events: none;
+  }
+
+  .badges i {
+    position: absolute;
+    top: 0;
+    left: 0;
+    min-width: 1.6em;
+    padding: 1px 4px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text-2);
+    font: 500 11px/1.3 var(--font-mono);
+    font-style: normal;
+    text-align: center;
+    translate: calc(-100% - 10px) -50%;
+    opacity: 0;
+  }
+
+  .badges i.empty {
+    border-style: dashed;
+    color: var(--muted);
+  }
+
+  .badges i.pointed,
+  .block.pointed .no {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+
+  .block.pointed {
+    border-left-color: var(--accent);
+    background: linear-gradient(90deg, var(--accent-low), transparent 70%);
+  }
+
+  .block.pointed header b {
+    color: var(--accent-high);
+  }
+
+  .block.out .mark {
+    text-decoration: line-through;
+    text-decoration-color: var(--accent);
+    opacity: 0.5;
+  }
+
+  .block.out header span {
+    opacity: 0.5;
+  }
+
+  .panel.out-grid :global(.line[data-needs~='grid']),
+  .panel.out-lit :global(.line[data-needs~='lit']),
+  .panel.out-shadow :global(.line[data-needs~='shadow']),
+  .panel.out-bloom :global(.line[data-needs~='bloom']) {
+    text-decoration: line-through;
+    text-decoration-color: var(--accent);
+    opacity: 0.38;
+  }
+
+  /* The plate's tag, beside it while the pointer is on it in the hero. */
+  :global(:root.home-staged) .tag {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    gap: 2px;
+    width: max-content;
+    max-width: 300px;
+    margin: 0;
+    translate: -100% -50%;
+    text-align: right;
+    font: 12px/1.35 var(--font-mono);
+    opacity: 0;
+    transition: opacity 0.12s;
+    pointer-events: none;
+  }
+
+  .tag b {
+    color: var(--accent-high);
+    font-weight: 500;
+  }
+
+  .tag span {
+    color: var(--text-2);
+  }
+
+  .tag.out span {
+    color: var(--accent);
+  }
+
+  /* Phones: the stack above, the code below it. */
+  @media (max-width: 56em) {
+    :global(:root.home-staged) .frame {
+      height: 600svh;
+    }
+
+    :global(:root.home-staged) .left {
+      top: 48%;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      padding: var(--s-4) 5% 0;
+      border-top: 1px solid var(--rule);
+      background: var(--ground);
+    }
+
+    :global(:root.home-staged) .panel {
+      flex: 1;
+      min-height: 0;
+      padding-bottom: var(--s-6);
+      overflow: auto;
+      font-size: 11px;
+      touch-action: pan-y;
+    }
+
+    :global(:root.home-staged) .block pre {
+      overflow-x: auto;
+    }
+
+    .intro p {
+      font-size: 14px;
+    }
+  }
+</style>

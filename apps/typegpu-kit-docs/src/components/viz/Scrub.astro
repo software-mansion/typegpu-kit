@@ -1,0 +1,66 @@
+---
+import Slider from './Slider.astro';
+import { COUNT, SPAN } from './Scrub.scene.ts';
+---
+
+<figure class="viz" data-viz="scrub">
+  <p class="viz-title">A blast of {COUNT} sparks, computed from the time alone</p>
+  <canvas aria-label="A blast of sparks drawn at the moment the scrubber picks"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Slider name="time" label="since the blast" min={SPAN[0]} max={SPAN[1]} step={0.01} value={0.3} unit=" s" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the time back and forth. Each of the {COUNT} sparks is computed from its index and the time alone, so a moment looks the same however you reach it.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, each, live, reducedMotion, slider } from './figure.ts';
+
+  /** Seconds of dark after the last spark before the blast plays again. */
+  const REST = 0.4;
+  const format = (seconds: number) => seconds.toFixed(2);
+
+  each('scrub', (figure) => {
+    const input = slider(
+      figure,
+      'time',
+      (seconds) => {
+        if (!shown.scene) return;
+        shown.play(false);
+        shown.update((scene) => (scene.time = seconds));
+      },
+      format,
+    );
+    const output = input.closest('label')!.querySelector('output')!;
+    const [start, end] = [Number(input.min), Number(input.max)];
+
+    const shown = live(figure, () => import('./Scrub.scene.ts'), undefined, {
+      animate: true,
+      grade: 1,
+      play: action(figure, 'play'),
+      playing: !reducedMotion(),
+      ready: (scene) => void (scene.time = input.valueAsNumber),
+      onFrame(frame, { scene }) {
+        if (frame.dt === 0) return;
+        let seconds = scene.time + frame.dt;
+        if (seconds > end + REST) seconds = start;
+        scene.time = seconds;
+        const shownSeconds = Math.min(seconds, end);
+        input.value = String(shownSeconds);
+        output.textContent = format(shownSeconds);
+      },
+    });
+  });
+</script>
+
+<style>
+  canvas {
+    display: block;
+    width: 100%;
+    height: clamp(240px, 30vw, 340px);
+    margin: 0;
+    border-radius: 0;
+  }
+</style>

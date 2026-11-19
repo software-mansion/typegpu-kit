@@ -1,0 +1,94 @@
+---
+title: Data on the GPU
+description: Keep objects as rows in buffers, move them on the GPU on a fixed step, and read results back without waiting.
+readFirst:
+  page: concepts/how-the-kit-works
+  for: for the frame and the seven rules every module follows
+---
+
+import TableParts from '../../../components/viz/TableParts.astro';
+
+A game with four thousand enemies can't upload each one's position every frame. The kit keeps every object as a row in a GPU buffer. The CPU writes the few fields it owns when they change, kernels move the rest, and one pipeline draws them all. What the CPU needs to know comes back a frame or two later, without stalling the frame.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare function score(points: number): void;
+// ---cut---
+import { clock, counters, frames, table } from '@typegpu/kit';
+
+const STEP = 1 / 60;
+const sim = clock.fixedStep({ step: STEP });
+const Enemy = table.define('Enemy', {
+  host: { radius: d.f32 }, // written by the CPU
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 }, // by kernels
+});
+const enemies = table.create(root, Enemy, {
+  capacity: 4096,
+  defaults: { radius: 0.5, health: 10 },
+});
+const falls = counters.create(root, ['falls']);
+
+const crowd = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+  gid,
+}) => {
+  'use gpu';
+  const i = gid.x;
+  if (!enemies.gpu.alive(i)) return;
+  const enemy = enemies.gpu.device.$[i];
+  enemy.position += enemy.velocity * STEP;
+  if (enemy.position.y < -10 && enemy.health > 0) {
+    enemy.health = 0;
+    falls.add.falls(1);
+  }
+});
+const crowding = root.createComputePipeline({ compute: crowd });
+
+frames.create(root, (frame) => {
+  const fell = falls.take(); // what kernels counted, a frame or two ago
+  if (fell?.falls) score(fell.falls);
+  enemies.flush(); // the CPU's changes, uploaded once
+
+  const compute = frame.encoder.beginComputePass();
+  compute.setPipeline(crowding);
+  for (let i = sim.update(frame.dt); i > 0; i--) compute.dispatchWorkgroups(64);
+  compute.end();
+
+  falls.capture(frame);
+});
+```
+
+## Rows
+
+A [table](/kit/table/) splits each row into the fields the CPU writes and the fields kernels write. The CPU's fields have a mirror on the CPU, so a write costs no GPU call, and `flush` uploads only the rows that changed. Shaders read either part through the table's `gpu` members, as `enemies.gpu.position(i)`, or through the definition, as `Enemy.position(i)`, in code that serves any table of `Enemy`.
+
+A field kernels move belongs in the device part. In the host part, the next flush of its row would overwrite the kernel's motion with the CPU's stale copy:
+
+<TableParts />
+
+The kit's own pools are tables or work the same way:
+
+- Every object [instances](/kit/instances/) draw is a row of its kind's table, which your kernels can read and move.
+- A [particle](/kit/particles/) system keeps its particles in a pool, started by CPU bursts or by `emit` from any kernel.
+- [Machines](/kit/machines/) run a state machine for each row on the GPU, with the state in the rows.
+- [Point and spot lights](/kit/lighting/#point-lights) are rows of a table that the lighting reads.
+
+## Only what is alive
+
+Rows come and go, so a buffer has gaps. [Live lists](/kit/live-lists/) compact the live rows of each group into a list on the GPU and write the count into an indirect draw, so a draw covers only the live rows, with no CPU readback. Particles draw through them, and so can your own tables, grouped by a field such as `species`.
+
+## A fixed step
+
+State that evolves, such as positions and velocities, stays on the GPU and advances in fixed steps. [`clock.fixedStep`](/kit/clock/) turns each frame's time into a whole number of steps, and a kernel that captures the step length needs no time uploaded. The result is the same at 30 or 144 frames a second. Particles, machines and the flow field in [Write a module](/tutorials/write-a-module/) step this way.
+
+## Settings that change
+
+A module's settings live in a uniform it returns, such as `glow.settings`. Upload them when a setting changes, not every frame. `patch` uploads only the fields you pass, as in `glow.settings.patch({ threshold: 0.8 })`; `write` uploads every field. Values that change every frame, such as a camera's, go in a uniform of their own, so a change of exposure doesn't upload the view again.
+
+## Results back
+
+The CPU reads GPU results without waiting for them. A read is copied into a staging buffer during a frame and mapped later, so the answer arrives a frame or two after the work:
+
+- [Counters](/kit/counters/) count what kernels report, such as kills or contacts. They only increase, so a late read loses nothing.
+- [Readback](/kit/readback/) returns a buffer's contents, such as the fish tank's bites.
+- The [picker](/kit/picker/) returns what is under the pointer.

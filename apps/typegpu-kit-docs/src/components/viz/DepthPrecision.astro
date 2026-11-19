@@ -1,0 +1,296 @@
+---
+import Choice from './Choice.astro';
+
+const nears = [0.01, 0.1, 1].map((value) => ({ value, label: `${value} m` }));
+---
+
+<figure class="viz" data-viz="depth-precision">
+  <p class="viz-title">The depth values a 32-bit float can hold, by distance from the eye</p>
+  <svg
+    class="viz-keys"
+    viewBox="0 0 720 330"
+    aria-label="The values a float depth target can hold, as ticks along the distance from the eye, under standard and reversed depth, and two surfaces 2 cm apart magnified below them"
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="near" label="near plane" options={nears} value={0.1} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the two surfaces along the axis, then pull the near plane in. Each tick stands for a million of the values a <code>depth32float</code> target can hold.
+  </figcaption>
+</figure>
+
+<script>
+  import type { Kind } from './DepthPrecision.program.ts';
+  import { clamp } from '../home/geometry.ts';
+  import { choice, each, onKeys, whenNear } from './figure.ts';
+  import { CHAR, fitWidth, onStroke, stipple, svg, text } from './svg.ts';
+
+  /** Float values a tick of the rows stands for. */
+  const EVERY = 1_000_000;
+  /** The distances the axis shows, in metres, and the far plane. */
+  const AXIS = [0.01, 1000] as const;
+  const FAR = 1000;
+  const DECADES = [0.01, 0.1, 1, 10, 100, 1000];
+  /** Metres between the two surfaces, and across the magnified strip around them. */
+  const GAP = 0.02;
+  const WINDOW = 0.2;
+  /** Where the surfaces start, in metres from the eye. */
+  const OPENING = 400;
+  /** How far towards each plane the surfaces go, as a factor of its distance. */
+  const REACH = [2, 0.95] as const;
+
+  /** The figure width from which names sit beside their rows, and the columns they take. */
+  const WIDE = 620;
+  const NAMES = 78;
+  const SIDE = 170;
+  /** Room at a row's ends for the depth its plane holds. */
+  const EDGE = 14;
+  const ROW = 26;
+  /** A magnified strip: its ticks, then the lane where each surface meets the depth it stores. */
+  const COMB = 22;
+  const LANE = 18;
+  /** The closest ticks a strip draws apart, in pixels. Closer, it prints a tone. */
+  const FINEST = 3;
+
+  const SKY = 'var(--viz-b)';
+  const BAD = 'var(--viz-bad)';
+  const KEPT = 'var(--viz-d)';
+  const HALO = { stroke: 'var(--ground)', 'stroke-width': 4, 'paint-order': 'stroke' };
+
+  /** A length in the unit that keeps it short. */
+  const length = (metres: number, digits = 2) => {
+    const [scale, unit] =
+      metres < 1e-3 ? [1e6, 'µm'] : metres < 1e-2 ? [1e3, 'mm'] : metres < 1 ? [100, 'cm'] : [1, 'm'];
+    return `${Number((metres * scale).toPrecision(digits))} ${unit}`;
+  };
+
+  /** To the half pixel, where a hairline stays sharp. */
+  const crisp = (x: number) => Math.round(x * 2) / 2;
+
+  each('depth-precision', (root) => {
+    const figure = root.querySelector('svg')!;
+
+    whenNear(root, async () => {
+      const { createProgram, KINDS } = await import('./DepthPrecision.program.ts');
+      const program = createProgram({ near: 0.1, far: FAR });
+      choice<string>(root, 'near', (value) => {
+        program.clip(Number(value), FAR);
+        combs = undefined;
+        move(at);
+        draw();
+      });
+
+      /** Where the nearer surface is, in metres from the eye. */
+      let at = OPENING;
+      let combs: Record<Kind, readonly number[]> | undefined;
+      // What the last layout placed, in SVG units
+      let span = { left: 0, right: 1 };
+      let rows = { top: 0, bottom: 0, grip: 0 };
+      let lens = { left: 0, right: 1, top: 0, strips: [0, 0], wide: true, width: 0 };
+      const marks = svg('g');
+      // Labels over the handle's line
+      const over = svg('g');
+      const ground = svg('rect', { fill: 'transparent', style: 'touch-action: pan-y; cursor: ew-resize' });
+
+      const x = (distance: number) =>
+        span.left + (Math.log(distance / AXIS[0]) / Math.log(AXIS[1] / AXIS[0])) * (span.right - span.left);
+      const distanceAt = (px: number) =>
+        AXIS[0] * (AXIS[1] / AXIS[0]) ** ((px - span.left) / (span.right - span.left));
+
+      /** Text centred on `centre`, moved in from the figure's edges. */
+      const centred = (parent: Element, centre: number, y: number, content: string, attributes = {}) => {
+        const half = (content.length * CHAR) / 2 + 2;
+        const middle = clamp(centre, half, lens.width - half);
+        return text(parent, middle, y, content, { 'text-anchor': 'middle', ...attributes });
+      };
+
+      /** The surfaces on the axis, and the strip that magnifies them under each depth. */
+      const mark = () => {
+        marks.replaceChildren();
+        const handle = crisp(x(at));
+        svg('line', { x1: handle, x2: handle, y1: rows.top - 6, y2: rows.grip, stroke: 'var(--viz-accent)' }, marks);
+        for (const edge of [lens.left, lens.right]) {
+          svg(
+            'line',
+            { x1: handle, y1: rows.grip, x2: edge, y2: lens.top, stroke: 'var(--viz-accent)', 'stroke-opacity': 0.45 },
+            marks,
+          );
+        }
+        svg(
+          'line',
+          { x1: lens.left, x2: lens.right, y1: lens.top, y2: lens.top, stroke: 'var(--viz-accent)', 'stroke-opacity': 0.45 },
+          marks,
+        );
+        svg('circle', { cx: handle, cy: rows.grip, r: 5, fill: 'var(--ground)', stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, marks);
+        svg('circle', { cx: handle, cy: rows.grip, r: 2, fill: 'var(--viz-a)' }, marks);
+
+        const from = at + GAP / 2 - WINDOW / 2;
+        const across = lens.right - lens.left;
+        const place = (distance: number) => lens.left + ((distance - from) / WINDOW) * across;
+        const surfaces = [at, at + GAP];
+        const [first, second] = surfaces.map((surface) => crisp(place(surface)));
+
+        const where = text(marks, lens.left, lens.top + 17, '');
+        svg('tspan', { fill: 'var(--viz-a)' }, where).textContent = length(at, 3);
+        svg('tspan', {}, where).textContent = ' from the eye';
+        const rule = lens.top + 22.5;
+        svg('path', { d: `M${first},${rule + 3}v-3H${second}v3`, fill: 'none', stroke: 'var(--viz-a)' }, marks);
+        centred(marks, (first + second) / 2, lens.top + 17, `${length(GAP)} apart`, { fill: 'var(--viz-a)' });
+
+        KINDS.forEach((kind, k) => {
+          const top = lens.strips[k];
+          const floor = top + COMB;
+          const foot = top + COMB + LANE;
+          const step = program.step(kind, at);
+          const same = !program.apart(kind, at, GAP);
+          const colour = same ? BAD : KEPT;
+
+          // The depths in view: each a tick, or a tone where they are closer than pixels
+          const pitch = (step / WINDOW) * across;
+          if (pitch < FINEST) {
+            svg('rect', { x: lens.left, y: top, width: across, height: COMB, fill: stipple(figure, SKY, 0.5) }, marks);
+          } else {
+            const ticks = program
+              .values(kind, from, from + WINDOW, Math.ceil(across / FINEST))
+              .map((value) => `M${crisp(place(value))},${top}v${COMB}`);
+            svg('path', { d: ticks.join(''), stroke: SKY, 'stroke-opacity': 0.75, fill: 'none' }, marks);
+          }
+          svg('line', { x1: lens.left, x2: lens.right, y1: floor + 0.5, y2: floor + 0.5, stroke: 'var(--viz-line)' }, marks);
+
+          // Each surface, and the depth it rounds to
+          const held = surfaces.map((surface) => place(program.distance(kind, program.stored(kind, surface))));
+          [first, second].forEach((surface, i) => {
+            const inside = held[i] >= lens.left && held[i] <= lens.right;
+            const to = crisp(clamp(held[i], lens.left + 2, lens.right - 2));
+            if (inside && Math.abs(to - surface) > 1) {
+              svg('line', { x1: to, x2: to, y1: top, y2: floor, stroke: colour, 'stroke-width': 2 }, marks);
+            }
+            svg('line', { x1: surface, x2: surface, y1: top - 4, y2: floor, stroke: 'var(--ground)', 'stroke-width': 5 }, marks);
+            svg('line', { x1: surface, x2: surface, y1: top - 4, y2: floor, stroke: 'var(--viz-a)', 'stroke-width': 1.5 }, marks);
+            svg('line', { x1: surface, y1: floor, x2: to, y2: foot - 3, stroke: colour, 'stroke-width': 1.5 }, marks);
+            if (inside) {
+              svg('rect', { x: to - 3, y: foot - 6, width: 6, height: 6, fill: colour }, marks);
+            } else {
+              const out = held[i] < lens.left ? 1 : -1;
+              svg('path', { d: `M${to + out * 6},${foot - 8}L${to},${foot - 3}l${out * 7},1`, fill: 'none', stroke: colour, 'stroke-width': 1.5 }, marks);
+            }
+          });
+
+          const result = same ? 'one depth for both' : 'a depth each';
+          const spacing = `depths ${length(step)} apart`;
+          if (lens.wide) {
+            text(marks, 0, top + 15, kind, { class: 'strong' });
+            text(marks, lens.right + 16, top + 13, result, { fill: colour });
+            text(marks, lens.right + 16, top + 29, spacing);
+          } else {
+            text(marks, 0, top - 10, kind, { class: 'strong' });
+            const line = text(marks, lens.right, top - 10, '', { 'text-anchor': 'end' });
+            svg('tspan', { fill: colour }, line).textContent = result;
+            svg('tspan', {}, line).textContent = ` · ${spacing}`;
+          }
+        });
+      };
+
+      const draw = fitWidth(
+        figure,
+        (width) => {
+          const wide = width >= WIDE;
+          span = { left: wide ? NAMES + EDGE : EDGE, right: width - EDGE };
+          combs ??= { standard: program.ticks('standard', EVERY), reversed: program.ticks('reversed', EVERY) };
+          lens.width = width;
+          over.replaceChildren();
+
+          // The axis: the planes named over the distances
+          const axis = 30.5;
+          const planes = [program.near, program.far];
+          centred(figure, x(planes[0]), 10, 'near', { fill: 'var(--text-2)' });
+          centred(figure, x(planes[1]), 10, 'far', { fill: 'var(--text-2)' });
+          let rules = `M${span.left},${axis}H${span.right}`;
+          for (const decade of DECADES) {
+            centred(figure, x(decade), 24, `${decade} m`);
+            rules += `M${crisp(x(decade))},${axis}v5`;
+            for (let part = 2; part < 10 && decade < AXIS[1]; part++) rules += `M${crisp(x(decade * part))},${axis}v2`;
+          }
+          svg('path', { d: rules, stroke: 'var(--viz-muted)', 'stroke-opacity': 0.7, fill: 'none' }, figure);
+
+          const [from, to] = planes.map((plane) => crisp(x(plane)));
+          let y = axis + 10;
+          const tops = KINDS.map((kind) => {
+            if (!wide) {
+              text(figure, 0, y + 11, kind, { class: 'strong' });
+              y += 18;
+            } else {
+              text(figure, 0, y + ROW / 2 + 4, kind, { class: 'strong' });
+            }
+            const top = y;
+            const middle = top + ROW / 2 + 4;
+
+            // Where two depths in a row lie farther apart than the surfaces, the surfaces fight
+            const fights: [number, number][] = [];
+            for (let px = from; px < to; px++) {
+              if (program.step(kind, distanceAt(px + 0.5)) <= GAP) continue;
+              const last = fights.at(-1);
+              if (last?.[1] === px) last[1] = px + 1;
+              else fights.push([px, px + 1]);
+            }
+            for (const [start, end] of fights) {
+              svg('rect', { x: start, y: top, width: end - start, height: ROW, fill: stipple(figure, BAD, 0.25) }, figure);
+            }
+
+            const drawn = new Set(combs![kind].map((tick) => crisp(x(tick))));
+            const comb = [...drawn].map((tick) => `M${tick},${top}v${ROW}`).join('');
+            svg('path', { d: comb, stroke: SKY, 'stroke-opacity': 0.85, fill: 'none' }, figure);
+            svg('line', { x1: from, x2: to, y1: top + ROW + 0.5, y2: top + ROW + 0.5, stroke: 'var(--viz-line)' }, figure);
+
+            const zone = fights.at(-1);
+            if (zone) {
+              const before = Math.max(...[...drawn].filter((tick) => tick < zone[0]));
+              const said = [`${length(GAP)} apart fight`, `${length(GAP)} fight`].find(
+                (words) => zone[0] - 8 - words.length * CHAR > before + 8,
+              );
+              if (said) text(over, zone[0] - 8, middle, said, { 'text-anchor': 'end', fill: BAD, ...HALO });
+            }
+
+            // The depth each plane holds
+            const ends = kind === 'standard' ? ['0', '1'] : ['1', '0'];
+            text(figure, from - 5, middle, ends[0], { 'text-anchor': 'end', fill: SKY });
+            text(figure, to + 5, middle, ends[1], { fill: SKY });
+
+            y += ROW + 10;
+            return top;
+          });
+
+          rows = { top: tops[0], bottom: y - 10, grip: y };
+          const top = rows.grip + 34;
+          const first = top + (wide ? 34 : 50);
+          const pitch = COMB + LANE + (wide ? 12 : 30);
+          lens = {
+            left: wide ? NAMES + EDGE : 0,
+            right: wide ? width - SIDE : width,
+            top,
+            strips: [first, first + pitch],
+            wide,
+            width,
+          };
+
+          Object.entries({ x: 0, y: 0, width, height: rows.grip + 12 }).forEach(([name, value]) =>
+            ground.setAttribute(name, String(value)),
+          );
+          figure.append(marks, over, ground);
+          mark();
+          return first + pitch + COMB + LANE + 2;
+        },
+        340,
+      );
+
+      const move = (next: number) => {
+        at = clamp(next, program.near * REACH[0], program.far * REACH[1]);
+        mark();
+      };
+      onStroke(figure, [[ground, (point) => move(distanceAt(point.x))]]);
+      onKeys(figure, { arrow: (dx, dy) => move(distanceAt(x(at) + (dx - dy) * 4)) }, 'arrow keys move the surfaces');
+
+      draw();
+    });
+  });
+</script>

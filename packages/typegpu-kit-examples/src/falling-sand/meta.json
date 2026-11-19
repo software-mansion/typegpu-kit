@@ -1,0 +1,11 @@
+{
+  "title": "Falling sand",
+  "category": "simulations",
+  "description": "The GPU steps sand, water, lava, wood and crystal cell by cell. Lava, fire, crystals and particle embers light the cave through @typegpu/radiance-cascades. Water tints the light, and walls and steam reflect it. Crystals dim as sand buries them. Bloom adds glow, and events count cooled lava and burning wood.",
+  "line": "Sand, water and lava falling cell by cell through a cave lit by its own glow.",
+  "order": 11,
+  "hint": "drag to paint \u00b7 choose a material in the panel",
+  "poster": {
+    "seconds": 8
+  }
+}

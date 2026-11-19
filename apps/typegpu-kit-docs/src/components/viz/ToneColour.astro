@@ -1,0 +1,121 @@
+---
+import Slider from './Slider.astro';
+import { FULL, LABEL, ROWS } from './ToneColour.scene.ts';
+---
+
+<figure class="viz" data-viz="tone-colour" data-full={FULL} data-label={LABEL} data-rows={ROWS}>
+  <p class="viz-title">Trail density through a tone curve and a colour ramp</p>
+  <div class="plot">
+    <svg
+      viewBox="0 0 640 310"
+      role="img"
+      aria-label="Trail density mapped through a tone curve and colour ramp"
+    ></svg>
+    <canvas></canvas>
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="density" label="density" min={0} max={30} step={0.1} value={2} />
+    <Slider inline name="gain" label="GAIN" min={0.05} max={3} step={0.05} value={0.6} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise <code>GAIN</code> to brighten faint threads while compressing dense hubs. The strips compare the same cross-section using flat amber or a curve and ramp that distinguish threads by brightness and colour.
+  </figcaption>
+</figure>
+
+<style>
+  .plot {
+    position: relative;
+  }
+
+  canvas {
+    position: absolute;
+    margin: 0;
+    border-radius: 0;
+  }
+</style>
+
+<script>
+  import { each, live, slider } from './figure.ts';
+  import { CHAR, fitWidth, svg, text } from './svg.ts';
+
+  const MOST = 30;
+  const LEFT = 34;
+  const TOP = 22;
+  const PLOT = 130;
+  /** Where the ramp's row starts, and the height of each row. */
+  const STRIPS = TOP + PLOT + 30;
+  const ROW = 40;
+
+  const percent = (value: number, of: number) => `${(value / of) * 100}%`;
+
+  each('tone-colour', (root) => {
+    const [FULL, LABEL, ROWS] = [root.dataset.full, root.dataset.label, root.dataset.rows].map(Number) as [number, number, number];
+    const HEIGHT = STRIPS + ROWS * ROW;
+    const figure = root.querySelector('svg')!;
+    const canvas = root.querySelector('canvas')!;
+    const densityInput = slider(root, 'density', () => draw(), (value) => value.toFixed(1));
+    const gainInput = slider(root, 'gain', () => draw(), (value) => value.toFixed(2));
+    const toneOf = (density: number) => {
+      const gain = gainInput.valueAsNumber;
+      return Math.log(1 + density * gain) / Math.log(1 + FULL * gain);
+    };
+
+    const plot = fitWidth(
+      figure,
+      (width) => {
+        const plotWidth = width - LEFT - 8;
+        const x = (density: number) => LEFT + (density / MOST) * plotWidth;
+        const y = (value: number) => TOP + PLOT - (Math.min(value, 1.25) / 1.25) * PLOT;
+
+        canvas.style.left = percent(LEFT, width);
+        canvas.style.top = percent(STRIPS, HEIGHT);
+        canvas.style.width = percent(plotWidth, width);
+        canvas.style.height = percent(ROWS * ROW, HEIGHT);
+
+        svg('path', { d: `M${LEFT},${TOP}V${TOP + PLOT}H${LEFT + plotWidth}`, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+        svg('line', { x1: LEFT, x2: LEFT + plotWidth, y1: y(1), y2: y(1), stroke: 'var(--viz-line)', 'stroke-dasharray': '2 3' }, figure);
+        text(figure, LEFT - 6, y(1) + 4, '1', { 'text-anchor': 'end' });
+        text(figure, LEFT - 6, TOP + PLOT + 4, '0', { 'text-anchor': 'end' });
+        text(figure, LEFT + plotWidth, TOP + PLOT + 16, `density ${MOST}`, { 'text-anchor': 'end' });
+        text(figure, x(FULL), TOP + PLOT + 16, 'FULL', { 'text-anchor': 'middle' });
+
+        const curve = (f: (density: number) => number) => {
+          const points: string[] = [];
+          for (let i = 0; i <= 120; i++) points.push(`${x((i / 120) * MOST)},${y(f((i / 120) * MOST))}`);
+          return points.join(' ');
+        };
+        svg('polyline', { points: curve((d) => Math.min(d, 1)), fill: 'none', stroke: 'var(--viz-b)', 'stroke-dasharray': '4 3', 'stroke-width': 1.5 }, figure);
+        svg('polyline', { points: curve(toneOf), fill: 'none', stroke: 'var(--viz-accent)', 'stroke-width': 2 }, figure);
+        text(figure, x(1) + 6, y(1) - 6, 'saturate(density)', { fill: 'var(--viz-b)' });
+        text(figure, LEFT + plotWidth, y(toneOf(MOST)) - 8, 'tone', { 'text-anchor': 'end', style: 'fill: var(--viz-accent)' });
+
+        const density = densityInput.valueAsNumber;
+        const picked = toneOf(density);
+        svg('line', { x1: x(density), x2: x(density), y1: y(picked), y2: TOP + PLOT, stroke: 'var(--text)', 'stroke-dasharray': '1 2' }, figure);
+        svg('circle', { cx: x(density), cy: y(picked), r: 4, fill: 'var(--text)' }, figure);
+        text(figure, 0, 12, `density ${density.toFixed(1)} → tone ${picked.toFixed(2)}`, { class: 'strong' });
+
+        const labels = ['ramp: tone 0 to 1', 'saturate(density): all one amber', 'tone and ramp: lace, threads, hub'];
+        labels.forEach((label, row) => {
+          const fits = label.length * CHAR < plotWidth;
+          text(figure, LEFT, STRIPS + row * ROW + LABEL * ROW - 4, fits ? label : label.split(':')[0], { class: 'strong' });
+        });
+        return HEIGHT;
+      },
+      320,
+    );
+
+    const draw = () => {
+      plot();
+      shown.update((scene) =>
+        scene.set(gainInput.valueAsNumber, Math.min(toneOf(densityInput.valueAsNumber), 1)),
+      );
+    };
+
+    plot();
+    const shown = live(root, () => import('./ToneColour.scene.ts'), undefined, {
+      ready: (scene) =>
+        scene.set(gainInput.valueAsNumber, Math.min(toneOf(densityInput.valueAsNumber), 1)),
+    });
+  });
+</script>

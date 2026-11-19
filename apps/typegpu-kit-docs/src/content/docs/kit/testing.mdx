@@ -1,0 +1,337 @@
+---
+title: Testing
+description: Check what a module records in plain Node, then compile its WGSL on a real device.
+modules: [kit/testing]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import RecordingLog from '../../../components/viz/RecordingLog.astro';
+
+A GPU module can record a dispatch in the wrong pass, submit unexpectedly or generate invalid WGSL. `recordingRoot()` lets a test inspect recorded commands in Node. It creates a TypeGPU root on a stand-in device that stores WGSL and logs commands without executing them.
+
+<RecordingLog />
+
+```ts twoslash
+import { recordingRoot } from '@typegpu/kit/testing';
+
+const { root, log, bytes } = recordingRoot();
+//            ^?
+```
+
+## The log
+
+<Rules>
+
+- **`shaders`** The WGSL of every shader module, in creation order.
+- **`events`** `begin-compute`, `dispatch`, `end-compute`, `begin-render`, `draw`, `copy-buffer`, `submit` and more.
+- **`state`** `set-pipeline` and `set-bind-group` for each `setPipeline` and `setBindGroup` a pass receives, in order. A draw with the same pipeline as the draw before it adds none.
+- **`writes`** Every `queue.writeBuffer`, in order, with its buffer, offset and size in bytes.
+- **Counts** `buffers`, `textures`, `views`, `bindGroups`, `samplers`, `querySets` and `pipelines`: how many of each the device created, and `counts()` all seven at once. `submissions`: the queue submissions.
+- **`blocking`** The pipelines created without `…Async`, each of which holds the thread until it compiles. A frame that adds one compiled what [`pipelines.compile`](/kit/pipelines/) should have while loading.
+- **`alive()`** The buffers, textures and query sets created and not yet destroyed, as `[Buffer "label"]`, in creation order. Pass `{ uniforms: false }` to omit uniform buffers.
+- **`bytes(buffer)`** A TypeGPU buffer's or `GPUBuffer`'s contents after the queue writes and the copies and clears submitted so far. It returns the bytes themselves, so a test can write into them what a kernel would have, such as a counter.
+- **First use** TypeGPU makes GPU objects the first time something uses them, so the counts grow when a module first records, not when you create it.
+- **Features** `recordingRoot({ features: ['timestamp-query'] })` reports device features, for code that branches on them.
+- **Errors** Resolution errors, including missing fills, throw as usual. The recording device also throws immediately for errors a GPU reports later. These include missing usage flags, writes or copies out of bounds or not aligned to 4 bytes, a second pending `mapAsync`, submitting with an open pass and submitting a destroyed buffer.
+
+</Rules>
+
+## A test
+
+```ts twoslash
+import { recordingRoot } from '@typegpu/kit/testing';
+import type { TgpuComputePass, TgpuRenderCommands, TgpuRoot } from 'typegpu';
+import { expect, it } from 'vitest';
+declare function createFlowField(
+  root: TgpuRoot,
+  options: {
+    count: number;
+    step: number;
+    format: GPUTextureFormat;
+    size: { width: number; height: number };
+  },
+): {
+  initAsync(): Promise<void>;
+  step(pass: TgpuComputePass): void;
+  draw(pass: TgpuRenderCommands): void;
+};
+// ---cut---
+it('records steps and a draw into the caller’s passes', async () => {
+  const { root, log } = recordingRoot();
+  const field = createFlowField(root, {
+    count: 1000,
+    step: 1 / 60,
+    format: 'bgra8unorm',
+    size: { width: 64, height: 32 },
+  });
+  await field.initAsync();
+  expect(log.pipelines).toBe(3);
+
+  const target = root.createTexture({ size: [64, 32], format: 'bgra8unorm' }).$usage('render');
+  const encoder = root.createCommandEncoder();
+  const compute = encoder.beginComputePass();
+  field.step(compute);
+  field.step(compute);
+  compute.end();
+  const pass = encoder.beginRenderPass({ colorAttachments: { view: target } });
+  field.draw(pass);
+  pass.end();
+  encoder.submit();
+
+  expect(log.events).toEqual([
+    'begin-compute',
+    'dispatch',
+    'dispatch',
+    'end-compute',
+    'begin-render',
+    'draw',
+    'end-render',
+    'submit',
+  ]);
+  expect(log.pipelines).toBe(3); // nothing compiled mid-frame
+});
+```
+
+Also check `log.shaders` for unwanted WGSL, such as `read_write` storage in a vertex shader. Inspect upload sizes in `log.writes` or contents through `bytes`. Use `log.submissions` to check that only your frame submits:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { table } from '@typegpu/kit';
+import { recordingRoot } from '@typegpu/kit/testing';
+import { expect, it } from 'vitest';
+const Enemy = table.define('Enemy', { host: { radius: d.f32 } });
+// ---cut---
+it('uploads a radius at flush, without a submit', () => {
+  const { root, log, bytes } = recordingRoot();
+  const enemies = table.create(root, Enemy, { capacity: 64 });
+  const id = enemies.add({ radius: 0.5 });
+  enemies.fields.radius.set(id, 2);
+  enemies.flush();
+
+  const radii = new Float32Array(bytes(enemies.buffers.host!).buffer);
+  expect(radii[enemies.slotOf(id)]).toBe(2);
+  expect(log.submissions).toBe(0); // flush writes through the queue and never submits
+});
+```
+
+## A frame without a canvas
+
+Code that draws to the screen takes a [`Surface`](/kit/web/#drawing-to-it). `offscreenSurface(root, { width, height, format })` provides one backed by a texture on a recording or real root. Tests can run the same scene frames without a canvas.
+
+```ts twoslash
+import { frames, type Frame, type Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ frame(frame: Frame): void }>;
+// ---cut---
+import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+
+const { root } = recordingRoot();
+const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+const scene = await createScene(root, surface);
+
+frames.create(root, (frame) => scene.frame(frame)).run(0);
+```
+
+- `setSize({ width, height })` replaces the texture, as a canvas does on a new layout; [targets](/kit/targets/) that follow the surface rebuild at their next `fit()`. It takes the same [fixed size](/kit/web/#a-fixed-size) as a canvas surface's `setSize`.
+- `surface.texture` is the WebGPU texture the frames draw into. It can be copied from, so a test on a real GPU can read its pixels. A `source` option takes a [target](/kit/targets/)'s texture, not this one.
+- `pixelRatio` is 1 unless you give one, such as `pixelRatio: 3` for a scene that draws hairlines on a phone.
+- It pauses and resumes like a canvas surface, so a test can [stage](/kit/hosting/#a-host-of-your-own) a scene on it or host one.
+
+### Frames by hand
+
+`steppedSchedule()` lets a test run animation frames requested by a host or `animate`. `step(0, 16)` runs one at 0 ms and the next at 16 ms. `waiting` reports whether a frame is requested.
+
+```ts twoslash
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { recordingRoot, steppedSchedule } from '@typegpu/kit/testing';
+const { root } = recordingRoot();
+// ---cut---
+const display = steppedSchedule();
+const steps: number[] = [];
+const loop = frames.create(root, ({ dt }) => steps.push(dt));
+const animation = frames.animate(loop, { schedule: display });
+
+display.step(0, 16, 32); // steps is [0, 0.016, 0.016]
+animation.destroy();
+display.waiting; // false: a destroyed animation asks for no frame
+```
+
+### Models with images
+
+Node and dawn.node have no `createImageBitmap`, so a [mesh pool](/kit/mesh-pool/) can't decode a glTF model's images and `add` throws. Give the scene a `decode` option that it hands to `meshPool.create`, and pass a stub from the test, such as a white pixel for every image; the page leaves it out:
+
+```ts twoslash
+import type { Frame, Surface } from '@typegpu/kit';
+import type { images } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+  options?: { decode?: images.Decode },
+): Promise<{ frame(frame: Frame): void }>;
+// ---cut---
+import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+
+const { root } = recordingRoot();
+const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+const white = { width: 1, height: 1, pixels: new Uint8Array([255, 255, 255, 255]) };
+const scene = await createScene(root, surface, { decode: async () => white });
+```
+
+The scene calls `meshPool.create(root, { capacity: 32, decode: options.decode })`. A model whose images are already `{ width, height, pixels }` needs no `decode`, so a test can also swap each image for the white pixel before `add`.
+
+## A steady frame creates nothing
+
+Nothing should allocate during a frame. Run a couple of frames so TypeGPU's first-use objects exist, then take the counts, run more and compare:
+
+```ts twoslash title="scene.test.ts"
+import { frames, type Frame, type Surface } from '@typegpu/kit';
+import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+import type { TgpuRoot } from 'typegpu';
+import { expect, it } from 'vitest';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ frame(frame: Frame): void }>;
+// ---cut---
+it('creates nothing in a steady frame', async () => {
+  const { root, log } = recordingRoot();
+  const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+  const scene = await createScene(root, surface);
+  const loop = frames.create(root, (frame) => scene.frame(frame));
+
+  loop.run(0);
+  loop.run(1 / 60);
+  const before = log.counts();
+
+  loop.run(2 / 60);
+  loop.run(3 / 60);
+  expect(log.counts()).toEqual(before);
+});
+```
+
+- A frame after a resize creates the new [targets](/kit/targets/) and the bind groups that read them, so take the counts once the size has settled.
+- Counts include only GPU objects. They omit JS allocations such as the handle returned by `.with(...)`. [Bind groups at setup](/concepts/modules/#recording-methods), then set the pipeline on the pass during a frame.
+
+## Destroy frees what it made
+
+A module's `destroy()` frees its textures, non-uniform buffers and query sets. Take `log.alive({ uniforms: false })` before the module is made, run some frames, destroy it and compare:
+
+```ts twoslash title="glow.test.ts"
+import { frames, type Frame, type Surface } from '@typegpu/kit';
+import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+import type { TgpuRoot } from 'typegpu';
+import { expect, it } from 'vitest';
+declare function createGlow(
+  root: TgpuRoot,
+  surface: Surface,
+): { record(frame: Frame): void; destroy(): void };
+// ---cut---
+it('frees what it made when destroyed', () => {
+  const { root, log } = recordingRoot();
+  const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+  const before = log.alive({ uniforms: false });
+  const glow = createGlow(root, surface);
+  const loop = frames.create(root, (frame) => glow.record(frame));
+
+  for (let i = 0; i < 10; i++) loop.run(i / 60);
+
+  glow.destroy();
+  expect(log.alive({ uniforms: false })).toEqual(before);
+});
+```
+
+- Run frames first: TypeGPU makes most objects on first use, and a resize makes new [targets](/kit/targets/).
+- The surface is borrowed, so it stays alive, and is in `before`.
+
+## On a real GPU
+
+A recording root resolves WGSL without compiling it. Add `*.test.gpu.ts` tests on dawn.node to catch compiler errors and check shader results. Create their roots with `gpuRoot()` from `@typegpu/kit/testing/dawn`:
+
+```ts twoslash title="compile.test.gpu.ts"
+import { frames, type Frame, type Surface } from '@typegpu/kit';
+import { offscreenSurface } from '@typegpu/kit/testing';
+import { gpuRoot } from '@typegpu/kit/testing/dawn';
+import type { TgpuRoot } from 'typegpu';
+import { it } from 'vitest';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ frame(frame: Frame): void }>;
+// ---cut---
+it('runs the flow field on a real device', async () => {
+  const root = await gpuRoot();
+  const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+  const scene = await createScene(root, surface); // Dawn compiles the WGSL here
+
+  frames.create(root, (frame) => scene.frame(frame)).run(0); // and validates the frame here
+}); // fails here on any uncaptured WebGPU error, and destroys the device
+```
+
+<Rules>
+
+- **Features** `gpuRoot({ features })` throws when the adapter lacks one of `features`, so a test never runs a fallback it didn't mean to. `optionalFeatures` are requested where the adapter has them, `limits` are the device's required limits, and `dawn` holds flags for the Dawn instance, such as `'enable-dawn-features=allow_unsafe_apis'`.
+- **Errors** Call it inside a test: when the test ends, any uncaptured WebGPU error fails it, and the device is destroyed. A test that expects errors takes them first with `takeErrors()`, which waits for the queue and returns the errors so far:
+
+</Rules>
+
+```ts twoslash
+import { gpuRoot } from '@typegpu/kit/testing/dawn';
+import { expect } from 'vitest';
+const root = await gpuRoot();
+// ---cut---
+expect((await root.takeErrors()).join('\n')).toMatch(/bindGroupLayoutCount \(5\)/);
+```
+
+<Rules>
+
+- **Without a GPU** On a machine without a GPU, such as a CI runner, `gpuRoot({ dawn: ['backend=null'] })` uses Dawn's null backend. It compiles WGSL and validates every call at the default limits, and executes nothing, so a test that reads results needs a real adapter.
+- **GPU tests** GPU tests run one file at a time. They catch WGSL compiler errors, binding and format limits, and incorrect shader results. To count pipelines, events and submissions on a GPU, use gpu-debug's `instrument`.
+- **Warnings** Both levels load `@typegpu/kit/testing/warnings`, which fails any test during which TypeGPU warned, such as about `>>` on a `u32`. To let some through, a setup file of your own calls `failOnWarnings({ allow: [/deprecated/] })` from `@typegpu/kit/testing/failOnWarnings` instead and disposes of what it returns in `afterAll`, which puts `console.warn` back.
+
+</Rules>
+
+### In your own project
+
+For `@typegpu/kit/testing/dawn`, install its optional peers, `webgpu` for dawn.node and `vitest`, as dev dependencies. `@typegpu/kit/testing/warnings` and `@typegpu/kit/testing/failOnWarnings` need only `vitest`. pnpm 11 stops an install at a build script it hasn't been told about, and `webgpu` has one, which only clears macOS's quarantine flag from a downloaded dawn.node. Allow it, or deny it:
+
+```yaml title="pnpm-workspace.yaml"
+allowBuilds:
+  webgpu: false
+```
+
+Run both levels from one config:
+
+```ts title="vitest.config.ts"
+import typegpu from 'unplugin-typegpu/vite';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  plugins: [typegpu()],
+  test: {
+    setupFiles: ['@typegpu/kit/testing/warnings'],
+    projects: [
+      { extends: true, test: { name: 'unit', include: ['tests/**/*.test.ts'] } },
+      {
+        extends: true,
+        test: {
+          name: 'gpu',
+          include: ['tests/**/*.test.gpu.ts'],
+          pool: 'forks',
+          fileParallelism: false, // one GPU file at a time
+        },
+      },
+    ],
+  },
+});
+```
+
+## Limits
+
+- A recording root keeps no texture contents, so a test that reads pixels runs on `gpuRoot()`.
+- A recording root reports WebGPU's default limits. Pass `recordingRoot({ limits })` to reach a size guard. A device method it lacks throws, naming the method; run that test on `gpuRoot()`.
+- Maps on a recording root complete in a microtask. To test code that depends on readback taking several frames, use a stand-in that delays mapping.

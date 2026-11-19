@@ -1,0 +1,135 @@
+---
+import Choice from './Choice.astro';
+import { examples, KINDS, PIPES, piping } from './Inject.program.ts';
+
+const pipes = piping(examples.member.names);
+---
+
+<figure class="viz" data-viz="inject">
+  <p class="viz-title">The resources a pipeline binds when two instances fill it</p>
+  <svg viewBox="0 0 640 250" role="img" aria-label="Resources bound when two instances fill a pipeline"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="kind" options={KINDS} value="member" />
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="pipes" options={PIPES.map((value) => ({ value, label: pipes[value] }))} value="ab" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Choose what the shader reads and which instances fill the pipeline. A member binds its own instance whatever is piped; a placeholder binds the last instance piped.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each, whenNear } from './figure.ts';
+  import { createProgram, examples, PIPES, piping, type Kind, type Pipes } from './Inject.program.ts';
+  import { plate, stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  const MIN_WIDTH = 320;
+
+  const bad = { style: 'fill: var(--viz-bad)' };
+
+  function bindingBox(figure: SVGSVGElement, x: number, y: number, label: string, on: boolean) {
+    const width = label.length * CHAR + 20;
+    svg('rect', {
+      x: x - width / 2,
+      y,
+      width,
+      height: 24,
+      rx: 2,
+      fill: on ? stipple(figure, 'var(--viz-accent)', 0.5) : 'none',
+      'fill-opacity': on ? 0.2 : 0,
+      stroke: on ? 'var(--viz-accent)' : 'var(--viz-line)',
+    }, figure);
+    text(figure, x, y + 16, label, { 'text-anchor': 'middle', class: 'strong' });
+  }
+
+  function link(figure: SVGSVGElement, x1: number, y1: number, x2: number, y2: number, state: 'bound' | 'lost' | 'off') {
+    if (state === 'off') return;
+    const middle = (y1 + y2) / 2;
+    svg('path', {
+      d: `M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}`,
+      fill: 'none',
+      stroke: state === 'bound' ? 'var(--viz-accent)' : 'var(--viz-muted)',
+      'stroke-width': 1,
+      'stroke-dasharray': state === 'bound' ? 'none' : '4 3',
+    }, figure);
+    svg('circle', { cx: x2, cy: y2, r: 2, fill: state === 'bound' ? 'var(--viz-accent)' : 'var(--viz-line)' }, figure);
+  }
+
+  function code(names: readonly [string, string], pipes: Pipes) {
+    const order = { ab: names, ba: [names[1], names[0]], a: [names[0]], none: [] }[pipes];
+    return ['root', ...order.map((name) => `pipe(${name}.inject())`)].join('.');
+  }
+
+  each('inject', (root) => {
+    const figure = root.querySelector('svg')!;
+    let program: ReturnType<typeof createProgram> | undefined;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        if (!program) return 0;
+        const kind = kindChoice.value;
+        const pipes = pipeChoice.value;
+
+        const example = examples[kind];
+        const result = program.outcome(kind, pipes);
+        const piped: number[] = { ab: [0, 1], ba: [0, 1], a: [0], none: [] }[pipes];
+        const center = width / 2;
+        const spread = Math.min(width / 4, 150);
+        const xs = [center - spread, center + spread];
+
+        text(figure, 0, 14, code(example.names, pipes), { class: 'strong' });
+
+        example.names.forEach((name, i) => {
+          bindingBox(figure, xs[i], 34, name, piped.includes(i));
+          text(figure, xs[i], 74, example.what, { 'text-anchor': 'middle' });
+        });
+
+        const member = kind === 'member';
+        const accessorY = 112;
+        const accessorXs = member ? xs : [center];
+        example.accessors.forEach((name, i) => {
+          const filled = member || result.bound.length > 0;
+          bindingBox(figure, accessorXs[i], accessorY, name, filled);
+        });
+        if (!member) text(figure, center, accessorY + 40, 'placeholder', { 'text-anchor': 'middle' });
+
+        example.names.forEach((_, i) => {
+          const to = member ? xs[i] : center;
+          const state = member ? 'bound' : !piped.includes(i) ? 'off' : result.bound.includes(i) ? 'bound' : 'lost';
+          link(figure, xs[i], 80, to, accessorY, state);
+        });
+
+        const pipelineY = 178;
+        const filled = result.error === undefined;
+        accessorXs.forEach((x) => link(figure, x, accessorY + 24, center, pipelineY, filled ? 'bound' : 'lost'));
+        const box = Math.min(width - 2, Math.max(220, example.reads.length * CHAR + 24));
+        plate(figure, center - box / 2, pipelineY, box - 4, 40, { depth: 3 });
+        text(figure, center, pipelineY + 16, 'pipeline', { 'text-anchor': 'middle', class: 'strong' });
+        text(figure, center, pipelineY + 32, example.reads, { 'text-anchor': 'middle' });
+
+        const said = result.error
+          ? result.error
+          : `binds ${result.bound.map((i) => `${example.names[i]}'s`).join(' and ')} ${kind === 'hook' ? 'uniform' : 'rows'}`;
+        text(figure, center, pipelineY + 62, said, result.error ? { ...bad, 'text-anchor': 'middle' } : { 'text-anchor': 'middle', class: 'strong' });
+
+        return pipelineY + 70;
+      },
+      MIN_WIDTH,
+    );
+
+    const kindChoice = choice<Kind>(root, 'kind', (kind) => {
+      const names = piping(examples[kind].names);
+      for (const pipes of PIPES) pipeChoice.relabel(pipes, names[pipes]);
+      draw();
+    });
+    const pipeChoice = choice<Pipes>(root, 'pipes', () => draw());
+
+    // Each pairing resolves a pipeline, so wait until the figure is near
+    whenNear(root, () => {
+      program = createProgram();
+      draw();
+    });
+  });
+</script>

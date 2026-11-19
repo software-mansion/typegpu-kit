@@ -1,0 +1,8 @@
+{
+  "title": "Classroom",
+  "category": "worlds",
+  "description": "A classroom in the afternoon, a low sun through its windows and six ceiling lamps. The sun's light and shadow are computed live. The rest is baked in Blender's Cycles onto the model's second uv set, TEXCOORD_1. One lightmap holds the sky's light through the windows and the sun's bounce, and another holds the lamps' light with its soft shadows and bounce. Each stores the logarithm of the light per channel and is unpacked into light at load. An ambient occlusion map on the same set is read as glTF's occlusion texture. The lightmaps light the reflections as well as the diffuse light, and the sun's shadow map draws once, since nothing moves. For the dust in the air, a grid of cells along the view samples the sun's shadow at a few spread points a frame, keeps each cell's earlier samples at their positions from the frame before, and sums the light in front of every pixel. Four thousand motes drift on Perlin noise and glint where the sun reaches them. Toggles turn off the baked daylight, leaving the live sky's, the baked occlusion, the lamps and the dust. Its floor tiles by KHR_texture_transform. TAA and bloom finish the frame. The room is Christophe Seux's Classroom from the Blender demo files, CC0, simplified and baked for the kit.",
+  "line": "Blender's Classroom, its daylight and lamps baked on a second uv set, sunbeams through its dust.",
+  "order": 2,
+  "hint": "drag to orbit · wheel to zoom"
+}

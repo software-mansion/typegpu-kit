@@ -1,0 +1,47 @@
+---
+title: Baker
+description: Bake a 'use gpu' function of a texel's position into a texture, in your encoder or compute pass.
+modules: [kit/baker]
+---
+
+import BakedTexels from '../../../components/viz/BakedTexels.astro';
+
+Some textures are a function of position: a sunset behind the dominoes, food that a slime mould smells, a slider's distance field, the shadows props cast on a floor. Computing such a function in every shader that reads it costs too much, so you bake it into a texture when its inputs change. `baker.create` takes the function and the texture, and writes every texel in your frame.
+
+<BakedTexels />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+import { d, std } from 'typegpu';
+import { baker } from '@typegpu/kit';
+
+const rings = root
+  .createTexture({ size: [256, 256], format: 'rgba16float' })
+  .$usage('storage', 'sampled');
+const sun = root.createUniform(d.vec2f, d.vec2f(0.5));
+
+const baking = baker.create(root, rings, {
+  texel: (uv) => {
+    'use gpu';
+    const distance = std.length(uv - sun.$);
+    return d.vec4f(distance, std.fract(distance * 8), 0, 1);
+  },
+});
+
+frames.create(root, (frame) => {
+  baking.record(frame.encoder); // after `sun` moves
+});
+```
+
+- `texel` receives `uv` from 0 to 1 across the texture from its top-left corner, at the centre of the texel it returns, and the array layer.
+- It can read buffers, uniforms and textures, and carry fills with `pipe`, as the jelly world's floor reads its props: `tgpu.fn(cast).pipe(world.inject())`.
+- `record` writes the first mip level. Record [`mipmaps`](/kit/mipmaps/) after it for the smaller ones.
+
+A texture with `storage` usage fills in a compute pass, the one you give or one of its own on the encoder. A texture without it, such as an `rgba8unorm-srgb` one that no kernel can write, fills in a render pass per array layer, so `record` takes the encoder.
+
+## Limits
+
+- The texture holds floats, and `texel` returns a `vec4f`; a format with fewer channels keeps the first ones.

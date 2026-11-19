@@ -1,0 +1,115 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+
+interface Props {
+  /** What each thread works on, in the singular. Default `agent`. */
+  noun?: string;
+}
+
+const { noun = 'agent' } = Astro.props;
+---
+
+<figure class="viz" data-viz="workgroups" data-noun={noun}>
+  <p class="viz-title">A dispatch covers every {noun} in whole workgroups</p>
+  <svg
+    viewBox="0 0 640 220"
+    role="img"
+    aria-label={`Workgroup threads mapped to ${noun} slots, including excess threads past the buffer end`}
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="count" label={`${noun}s`} min={1} max={40} value={21} />
+    <Choice name="size" label="workgroup size" options={[4, 8, 16]} value={8} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Change the {noun} count or workgroup size to see dispatch round up to whole workgroups. The bounds check <code>if (gid.x &gt;= count) return</code> stops extra threads before buffer access.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each, slider } from './figure.ts';
+  import { stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  each('workgroups', (root) => {
+    const figure = root.querySelector('svg')!;
+    const noun = root.dataset.noun ?? 'agent';
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const count = countInput.valueAsNumber;
+        const size = Number(sizeChoice.value);
+        const groups = Math.ceil(count / size);
+        const cell = Math.min(24, Math.floor((width - 16) / Math.max(size, 8)) - 2);
+        const span = size * cell + 12;
+        const perLine = Math.max(1, Math.floor((width + 12) / (span + 12)));
+        const lineHeight = cell * 2 + 46;
+
+        const call = `dispatchWorkgroups(Math.ceil(${count} / ${size})) = ${groups} × ${size} threads`;
+        const words = call.length * CHAR <= width ? call : `${groups} workgroups × ${size} threads`;
+        text(figure, 0, 13, words, { class: 'strong' });
+        const top = 30;
+
+        for (let g = 0; g < groups; g++) {
+          const gx = (g % perLine) * (span + 12);
+          const gy = top + Math.floor(g / perLine) * lineHeight;
+          svg('rect', { x: gx + 0.5, y: gy + 14, width: span - 1, height: cell + 12, rx: 2, fill: stipple(figure), stroke: 'var(--viz-line)' }, figure);
+          text(figure, gx + 2, gy + 10, `workgroup ${g}`);
+
+          for (let t = 0; t < size; t++) {
+            const gid = g * size + t;
+            const x = gx + 6 + t * cell;
+            const y = gy + 20;
+            const runs = gid < count;
+            svg('rect', {
+              x: x + 1, y, width: cell - 2, height: cell, rx: 2,
+              fill: runs ? stipple(figure, 'var(--viz-d)', 0.5) : 'none', 'fill-opacity': runs ? 0.22 : 0,
+              stroke: runs ? 'var(--viz-d)' : 'var(--viz-bad)', 'stroke-dasharray': runs ? '' : '3 2',
+            }, figure);
+            if (String(gid).length * CHAR <= cell - 2) {
+              text(figure, x + cell / 2, y + cell / 2 + 4, String(gid), {
+                'text-anchor': 'middle', style: `fill: var(${runs ? '--text' : '--viz-bad'})`,
+              });
+            }
+
+            const by = gy + 20 + cell + 12;
+            if (runs) {
+              svg('rect', { x: x + 1, y: by, width: cell - 2, height: 8, rx: 2, fill: stipple(figure, 'var(--viz-c)', 0.5) }, figure);
+            } else {
+              text(figure, x + cell / 2, by + 8, '×', { 'text-anchor': 'middle', style: 'fill: var(--viz-bad)' });
+            }
+          }
+        }
+
+        const lines = Math.ceil(groups / perLine);
+        let legendY = top + lines * lineHeight + 4;
+        let x = 0;
+        /** A key, on the next line when it doesn't fit on this one. */
+        const key = (label: string, mark: (x: number, y: number) => void) => {
+          const wide = 18 + label.length * CHAR;
+          if (x > 0 && x + wide > width) {
+            x = 0;
+            legendY += 20;
+          }
+          mark(x, legendY);
+          text(figure, x + 18, legendY + 1, label);
+          x += wide + 18;
+        };
+        key('runs', (kx, ky) =>
+          svg('rect', { x: kx, y: ky - 9, width: 12, height: 12, rx: 2, fill: stipple(figure, 'var(--viz-d)', 0.5), stroke: 'var(--viz-d)' }, figure),
+        );
+        key('returns at once', (kx, ky) =>
+          svg('rect', { x: kx, y: ky - 9, width: 12, height: 12, rx: 2, fill: 'none', stroke: 'var(--viz-bad)', 'stroke-dasharray': '3 2' }, figure),
+        );
+        key(`${/^[aeiou]/.test(noun) ? 'an' : 'a'} ${noun} in the buffer, ${count} in all`, (kx, ky) =>
+          svg('rect', { x: kx, y: ky - 6, width: 12, height: 8, rx: 2, fill: stipple(figure, 'var(--viz-c)', 0.5) }, figure),
+        );
+        return legendY + 8;
+      },
+      300,
+    );
+
+    const countInput = slider(root, 'count', () => draw());
+    const sizeChoice = choice(root, 'size', () => draw());
+    draw();
+  });
+</script>

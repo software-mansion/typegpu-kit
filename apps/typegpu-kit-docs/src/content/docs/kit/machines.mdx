@@ -1,0 +1,269 @@
+---
+title: State machines
+description: Define states and transitions once, then run them per row on the GPU or per machine on the CPU.
+modules: [kit/machines]
+---
+
+import GaitMachine from '../../../components/viz/GaitMachine.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A horse may walk, gallop, graze or bolt. Tracking this by hand requires a state field, a start time and transition checks each step. Weighted choices need cumulative probabilities, and gait changes need separate speed thresholds to prevent flicker. A **state machine** defines the states and their transitions. Run it per GPU row with `machines.create` or on the CPU with `machines.run`.
+
+<Hidden card="stampede">
+  <GaitMachine />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { clock } from '@typegpu/kit';
+const root = await tgpu.init();
+const sim = clock.fixedStep({ step: 1 / 60 });
+declare function paceOf(i: number): number;
+declare function calm(i: number): boolean;
+// ---cut---
+import { machines } from '@typegpu/kit';
+
+const faster = (speed: number) => (i: number) => {
+  'use gpu';
+  return paceOf(i) > speed;
+};
+const slower = (speed: number) => (i: number) => {
+  'use gpu';
+  return paceOf(i) < speed;
+};
+const startled = { to: 'bolting', on: 'startle' } as const;
+
+export const Gait = machines.define('Gait', {
+  events: ['startle'],
+  states: {
+    walking: {
+      next: [
+        startled,
+        { to: 'galloping', when: faster(5.2) },
+        { to: 'grazing', when: calm, rate: 0.03 },
+      ],
+    },
+    galloping: { next: [startled, { to: 'walking', when: slower(4.2) }] },
+    grazing: { next: [startled, { to: 'walking', after: 4, rate: 1 / 3 }] },
+    bolting: { next: [{ to: 'galloping', after: 2 }] },
+  },
+});
+
+const gaits = machines.create(root, Gait, { capacity: 8192, step: sim.step });
+```
+
+<Rules>
+
+- **Conditions** A transition requires all its conditions to hold. `on` checks an event, `after` checks time in the state, and `chance` or `rate` checks a random roll. `when`, a shader function of the row, runs last. The first matching transition runs, at most once per step.
+- **Start state** Machines start in the first state. A state is a number, a literal in WGSL: `Gait.galloping` is 1.
+- **Two thresholds** `galloping` leaves below 4.2 m/s and `walking` above 5.2, so a horse between them keeps its gait instead of flickering.
+- **Chances** Chance transitions take consecutive shares of one roll per step. Values of `0.05`, `0.15` and `0.3` take 5, 15 and 30 % of the rolls. Later transitions get the remaining rolls. If none match, the state rolls again next step.
+- **Rates** A `rate` matches once per `1 / rate` seconds on average, independent of step length. A calm walking horse starts grazing every 33 s on average. A grazing horse waits at least 4 s, then resumes walking after another 3 s on average.
+- **Shared transitions** A transition declared outside the definition, like `startled`, needs `as const` so its target stays a name.
+- **Where to define** The definition needs no root. Define it where its guards and hooks reach the resources they read, such as inside the factory that makes the herd, so they call the herd's members.
+- **Errors** TypeScript rejects a target or an event the definition doesn't declare, and a state named like a number or one of the definition's members, such as `state` or `start`. `define` throws for those too, and for a negative delay, chances past 1, or a chance and a rate on one transition.
+
+</Rules>
+
+## Every step
+
+`gaits.gpu` holds members bound to these rows. Shaders read a row's state with `gaits.gpu.state(i)` and its seconds in it with `gaits.gpu.since(i)`, and compute shaders send an event with `gaits.gpu.send.startle(i)`. A pipeline that reads them needs no fill.
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { clock, frames, machines } from '@typegpu/kit';
+const root = await tgpu.init();
+const STEP = 1 / 60;
+const COUNT = 8192;
+declare const cruise: { $: number };
+declare const thunder: { $: d.v2f };
+declare function placeOf(i: number): d.v2f;
+const startled = { to: 'bolting', on: 'startle' } as const;
+const Gait = machines.define('Gait', {
+  events: ['startle'],
+  states: {
+    walking: { next: [startled] },
+    galloping: { next: [startled] },
+    grazing: {},
+    bolting: {},
+  },
+});
+const sim = clock.fixedStep({ step: STEP });
+const gaits = machines.create(root, Gait, { capacity: COUNT, step: sim.step });
+// ---cut---
+const gait = gaits.gpu;
+const move = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+  gid,
+}) => {
+  'use gpu';
+  const i = gid.x;
+  if (i >= COUNT) return;
+
+  let wanted = cruise.$;
+  if (gait.state(i) === Gait.grazing) wanted = 0;
+  if (gait.state(i) === Gait.bolting) wanted = 15.5;
+  // ... ease the horse's pace towards wanted, and move it
+  if (std.distance(placeOf(i), thunder.$) < 30) gait.send.startle(i);
+});
+const movement = root.createComputePipeline({ compute: move });
+
+frames.create(root, (frame) => {
+  const pass = frame.encoder.beginComputePass();
+  for (let s = sim.update(frame.dt); s > 0; s--) {
+    pass.setPipeline(movement);
+    pass.dispatchWorkgroups(COUNT / 64);
+    gaits.step(pass);
+  }
+  pass.end();
+});
+```
+
+`step(pass)` updates every live row once. A newly started row runs only its state's `enter`. Other rows advance their time by one step and check transitions. A transition runs the old state's `exit`, changes the state and runs its `enter`. Both hooks are shader functions of the row. Put ongoing state work in your own kernels, as `move` does by branching on `gait.state(i)`.
+
+The [skeletons](/examples/skeletons/) run 300 machines this way. Each `enter` rolls the next action's length or destination, writes its motion to the skeleton's row and starts its clip with the [poses](/kit/poses/#kernels-driving-poses) verbs. An attacker's `enter` walks a [neighbour grid](/kit/grid/) to turn on the nearest skeleton.
+
+<Rules>
+
+- **Members** Guards and hooks read the definition's members, such as `Gait.state(i)`, which the step fills with its rows. They can't read `gaits.gpu`, because the step binds the rows read-write.
+- **State in hooks** `Gait.state(i)` reads the old state in `exit` and the new one in `enter`. A transition to the state it leaves runs both and starts `since` from 0.
+- **Time in guards** In a guard, `Gait.since(i)` reads time before this step. `after` compares against time including this step.
+- **Events** An event lasts until the row's next step, which handles or drops it. Events sent after a frame's last step wait for the next frame. A hook's event to its own row reaches the next step. An event to another row may reach this step or the next.
+- **Other rows** A guard or hook that reads another row's state reads it before or after that row's step.
+- **Delays** `after` rounds delays up to whole steps. A 4 s delay at 1/60 s takes 240 steps. Use `after: (i) => …` for a per-row delay in seconds, evaluated every step.
+- **Rolls** A state with chances or rates rolls once a step from `randf`, seeded by row and step. Pass `roll(i, tick)` to draw it another way, such as from a blue-noise texture.
+- **Random numbers** `Gait.roll(i)` draws a number in [0, 1) from `roll` in guards, hooks and `after` functions. An `after` function runs every step, so a delay rolled there changes each step. For a fixed random delay, roll in `enter`, store the result in a field and read it from `after`.
+- **Fills** What `pipe(fill)` fills also reaches `alive` and `roll`, which share the step's pipeline with guards and hooks. Members of instances need no fill.
+- **Empty slots** `alive` skips the slots without a row. A table gives it with its capacity and span, so a step runs no thread above the span: `machines.create(root, Gait, { ...horses.live(), step: sim.step })`.
+- **Reading back** Read `rows` back for a test or a display of your own.
+
+</Rules>
+
+## Work in one state
+
+`move` runs for every horse and branches on its state. A group of 32 lanes executes a state's branch whenever any of its rows uses that state. Scattered bolting horses therefore make nearly every group execute the bolt branch. Pass `lists` to collect rows by state each step, and dispatch a kernel over one state's list.
+
+```ts twoslash
+import { frames, clock, machines } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const STEP = 1 / 60;
+const COUNT = 8192;
+declare function flee(i: number): void;
+const Gait = machines.define('Gait', {
+  events: ['startle'],
+  states: { walking: {}, galloping: {}, grazing: {}, bolting: {} },
+});
+const sim = clock.fixedStep({ step: STEP });
+// ---cut---
+const gaits = machines.create(root, Gait, {
+  capacity: COUNT,
+  step: sim.step,
+  lists: [Gait.bolting],
+});
+const bolting = gaits.listed!;
+const bolt = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= bolting.count(0)) return;
+  flee(bolting.slot(0, gid.x)); // ... away from the thunder
+});
+const fleeing = root.createComputePipeline({ compute: bolt });
+
+frames.create(root, (frame) => {
+  const pass = frame.encoder.beginComputePass();
+  for (let s = sim.update(frame.dt); s > 0; s--) {
+    gaits.step(pass);
+    pass.setPipeline(fleeing);
+    bolting.dispatch(pass, 0);
+  }
+  pass.end();
+});
+```
+
+- `gaits.listed` is a set of [live lists](/kit/live-lists/). Each step fills it with the rows in the states they end the step in, in no order.
+- `listed.dispatch(pass, k)` runs the pipeline set on the pass over the list from the most recent step, in workgroups of 64 threads. A thread past `listed.count(k)` returns, and the rest find their row with `listed.slot(k, i)`.
+- Each list uses one word per row. At most 256 states can have lists.
+
+## Starting rows
+
+Rows sit in the first state without running its `enter`. `start(slot, state?)` puts a row in a state as you add it, and its `enter` runs at the next step. The stampede starts its whole herd galloping this way.
+
+- A start skips the old state's `exit` and drops the row's waiting events, from the CPU or from kernels.
+- The next `step` uploads starts and events with `queue.writeBuffer`. Consecutive started slots use one write. Call `flush()` before the frame's steps when a frame may draw without stepping.
+- With `kernelStarts: true`, compute shaders can start rows with `gaits.gpu.start(i, Gait.bolting)`. The row applies the start at its next step. A kernel start takes precedence over a CPU start in the same step.
+
+## On the CPU
+
+A definition with plain functions for guards and hooks runs on the CPU with `machines.run`. The horses in the figure above run this way, and a step allocates nothing.
+
+```ts twoslash
+import { frames, machines } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const actors: { lasts: number }[];
+declare function idle(i: number): void;
+declare function wander(i: number): void;
+declare function play(i: number, clip: 'taunt' | 'attack'): void;
+// ---cut---
+const lasted = (i: number) => actors[i].lasts; // seconds, set as each state starts
+const stood = [
+  { to: 'walking', after: lasted, chance: 0.7 },
+  { to: 'idling', after: lasted },
+] as const;
+
+const Doing = machines.define('Doing', {
+  states: {
+    waking: { next: stood },
+    idling: { enter: idle, next: stood },
+    walking: {
+      enter: wander,
+      next: [
+        { to: 'taunting', after: lasted, chance: 0.15 },
+        { to: 'attacking', after: lasted, chance: 0.3 },
+        { to: 'idling', after: lasted },
+      ],
+    },
+    taunting: { enter: (i) => play(i, 'taunt'), next: stood },
+    attacking: { enter: (i) => play(i, 'attack'), next: stood },
+  },
+});
+
+const doing = machines.run(Doing, { count: 300 });
+frames.create(root, (frame) => doing.step(frame.dt));
+```
+
+- An event sent from a hook reaches the step after.
+- A delay matches at the first step that reaches it. The next state counts time from that step, so each timed transition can add up to one step of delay.
+- In React, `subscribe` drives a game's flow: `useSyncExternalStore(flow.subscribe, () => flow.state())`.
+- `random` draws the rolls, `Math.random` by default. Pass a seeded one for tests that repeat.
+
+## On the GPU and on the CPU
+
+|                                  | `machines.create`                                                                                                                                  | `machines.run`                                |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Machines                         | a row a slot, `capacity` of them; `alive` skips some                                                                                               | `count`, which all step                       |
+| Guards, hooks, `after` functions | `'use gpu'` functions of the slot                                                                                                                  | plain functions of the index                  |
+| Time in a state                  | whole steps of the `step` given to `create`                                                                                                        | the seconds each `step(dt)` adds              |
+| The first state                  | rows sit in it without its `enter`                                                                                                                 | its `enter` runs at the first step            |
+| Rolls                            | `randf` or your `roll(i, tick)`, from a tick `random()` starts; `Gait.roll(i)` in guards and hooks                                                 | `random()`                                    |
+| State and time                   | `gaits.gpu.state(i)`, `gaits.gpu.since(i)` in shaders                                                                                              | `state(i)`, `since(i)`                        |
+| Events                           | `send` on the CPU, `gaits.gpu.send` in compute shaders                                                                                             | `send`                                        |
+| Starts                           | `start(slot)` on the CPU, read once the next step or `flush()` uploads it; `gaits.gpu.start(i, state)` in compute shaders, read from the next step | `start(i)`, read at once, telling `subscribe` |
+
+## Limits
+
+<Rules>
+
+- **No nesting** A definition is flat, with no nested states, concurrent regions or history states.
+- **One transition** One transition a step, so a chain of three takes three steps.
+- **31 events** At most 31 events a definition; a row holds them as bits until its next step.
+- **Step length** On the GPU, `after` and `since` count steps of the `step` the rows were created with, compiled into the transitions. Steps recorded at another length read wrong.
+- **Dead rows** On the GPU, a slot keeps its row's last state when the row dies. Start the slot again for the next row in it, from the CPU or a kernel.
+- **Seeding** On the GPU, rows started from the CPU begin their rolls at a tick `random` draws, `Math.random` by default, so two runs roll alike only with a seeded one.
+- **One instance** A definition's functions, such as `Gait.state(i)`, read one `machines.create` instance in a pipeline, the last piped in. Each instance's `gpu` members read its own rows, so one kernel reads two.
+- **Bindings** The step pipeline uses 2 to 7 storage buffers and at most one uniform. These hold the rows and the CPU's starts and events, and as needed the kernels' events and starts, the roll ticks, and the lists and their counts. Of the 8 storage bindings WebGPU guarantees per stage, this leaves 1 to 6 for guards and hooks.
+
+</Rules>

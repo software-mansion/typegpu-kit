@@ -1,0 +1,11 @@
+{
+  "title": "Fireworks",
+  "category": "worlds",
+  "description": "Particle shells burst over a castle on a lake. Each burst leaves a flash that is a point light for the castle and the hills, and the smoke takes the same light from every side. The water only reflects the bursts. A second set of passes draws the scene through a mirrored camera, and the water samples that picture through its ripples. The exposure adapts like an eye: a volley darkens the picture, and the exposure rises again afterwards. The castle and pines are from Kenney's Castle Kit and Nature Kit (CC0).",
+  "line": "Each burst is a point light over a castle reflected in a lake.",
+  "order": 6,
+  "hint": "click the sky to fire a shell \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 11
+  }
+}

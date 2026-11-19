@@ -1,0 +1,870 @@
+---
+// A module's card, by the questions a reader has: each call with its own arguments, options and
+// result, then where the module sits in a frame, what it holds and what it connects to. A name in
+// a call leads to its definition on the card
+import {
+  capital,
+  cardOf,
+  counted,
+  fieldOf,
+  kinds,
+  meanings,
+  prose,
+  roles,
+  sentence,
+  type Fact,
+  type Links,
+} from '../../contracts/facets.ts';
+import type { Handle, Options } from '../../contracts/contract.ts';
+import type { Label } from '../../contracts/signature.ts';
+import { examples } from '../../examples/examples.ts';
+import Call from './Call.astro';
+import {
+  callId,
+  hrefOf,
+  memberHref,
+  moduleById,
+  referenceOf,
+  typeHrefs,
+  typeId,
+  type ModuleContract,
+} from './modules.ts';
+import SheetParts from './SheetParts.astro';
+import SheetTable, { type Row } from './SheetTable.astro';
+import { exampleHref, pageHref, READING } from './urls.ts';
+
+interface Props {
+  module: ModuleContract;
+  modules: readonly ModuleContract[];
+  /** Name the module and give its summary, for a page that covers several. */
+  named?: boolean;
+}
+
+const { module, modules, named = false } = Astro.props;
+
+const card = cardOf(module, modules);
+const types = typeHrefs(module, modules, card);
+const links: Links = {
+  module: (id) => hrefOf(modules, moduleById(modules, id)),
+  // The web host runs every example page
+  example: (key) =>
+    key === 'hosts/web'
+      ? { href: exampleHref(), title: 'every example page' }
+      : {
+          href: exampleHref(key),
+          title: examples.find((example) => example.key === key)?.title ?? key,
+        },
+  member: (method) => memberHref(module, card, method),
+};
+
+const { lines, labels, rest } = card.signature;
+const id = referenceOf(module);
+const reading = pageHref(READING);
+
+/** The roles its calls show, in the order the key beside Calls explains. */
+const shownRoles = (Object.keys(roles) as (keyof typeof roles)[]).filter((role) =>
+  labels.some((label) => label.role === role),
+);
+
+const fieldsOf = (table: Options): Row[] =>
+  table.fields.map((field) => ({ ...field, id: typeId(module, table.name, field.name) }));
+const membersOf = (handle: Handle): Row[] =>
+  handle.members.map((member) => {
+    const takes = card.options.find((table) =>
+      table.takenBy.includes(`${handle.name}.${member.name}`),
+    );
+    return {
+      id: typeId(module, handle.name, member.name),
+      name: member.signature ?? member.name,
+      optional: member.optional,
+      type: member.type,
+      doc: member.doc,
+      opens: takes && typeId(module, takes.name),
+    };
+  });
+// Each options table and each result sits under the first call that takes or returns it
+const placed = new Set<Options | Handle>();
+const blocks = lines.map((line, at) => {
+  const first = lines.findIndex((each) => each.name === line.name) === at;
+  const args: Label[] = [];
+  for (const { label } of line.tokens) {
+    if (label && label.role !== 'returns' && !args.includes(label)) args.push(label);
+  }
+  const result = line.tokens.find((token) => token.label?.role === 'returns')?.label;
+  const handles = card.handles.filter(
+    (handle) =>
+      !placed.has(handle) &&
+      handle.from.includes(line.name) &&
+      new RegExp(`\\b${handle.name}\\b`).test(line.tokens.at(-1)!.text),
+  );
+  const options = first ? card.options.filter((table) => table.takenBy.includes(line.name)) : [];
+  for (const each of [...handles, ...options]) placed.add(each);
+  return { line, first, args, result, options, handles };
+});
+/** The options the methods of a result take, inside its fold. */
+const nested = new Map(
+  card.handles.map((handle) => {
+    const tables = card.options.filter(
+      (table) => !placed.has(table) && table.takenBy.some((by) => by.startsWith(`${handle.name}.`)),
+    );
+    for (const table of tables) placed.add(table);
+    return [handle, tables] as const;
+  }),
+);
+const unplaced = [...card.options, ...card.handles].filter((each) => !placed.has(each));
+
+const usedBy = card.facts.find((fact) => fact.key === 'usedBy');
+
+/** The methods that record, by what each records into, in the order the module lists them. */
+const lanesOf = (fact: Fact) => {
+  const lanes = new Map<string, string[]>();
+  for (const pair of fact.pairs ?? []) {
+    lanes.set(pair.pill.text, [...(lanes.get(pair.pill.text) ?? []), pair.method]);
+  }
+  return [...lanes];
+};
+const into: Record<string, string> = {
+  compute: 'A compute pass you opened',
+  render: 'A render pass you opened',
+  encoder: "The frame's encoder",
+  frame: 'The frame',
+};
+---
+
+<section class="sheet" id={id} aria-label={module.namespace} data-pagefind-weight="0.5">
+  <header class="name">
+    <div class="identity">
+      <p class="title"><code>{`kit.${module.namespace}`}</code></p>
+      <span class="pill" data-facet="kind" title={capital(kinds[module.kind])} data-pagefind-ignore>
+        {module.kind}
+      </span>
+      {
+        module.unstable && (
+          <a
+            class="pill"
+            data-facet="exception"
+            href={`${reading}#stability`}
+            title={meanings.stability}
+            data-pagefind-ignore
+          >
+            unstable
+          </a>
+        )
+      }
+      <a class="how" href={`${reading}#the-card`} data-pagefind-ignore>How to read this card</a>
+    </div>
+    {
+      named && (
+        <p class="summary" data-pagefind-ignore>
+          <SheetParts parts={prose(module.summary)!} links={links} />
+        </p>
+      )
+    }
+  </header>
+
+  {
+    blocks.length > 0 && (
+      <Fragment>
+        <h3 class="part">
+          Calls
+          {shownRoles.length > 0 && (
+            <span class="legend" data-pagefind-ignore>
+              {shownRoles.map((role) => (
+                <span data-role={role}>
+                  <i />
+                  {roles[role]}
+                </span>
+              ))}
+            </span>
+          )}
+        </h3>
+        <div class="calls">
+          {blocks.map(({ line, first, args, result, options, handles }) => (
+            <div class="call">
+              <h4 class="line" id={first ? callId(module, line.name) : undefined}>
+                <Call module={module} card={card} line={line} links={links} rows={[...args, result]} />
+              </h4>
+              {(args.length > 0 || result) && (
+                <dl class="args">
+                  {args.map((label, key) => {
+                    const needs = label.module && moduleById(modules, label.module).namespace;
+                    return (
+                      <div data-key={key} data-role={label.role}>
+                        <dt>
+                          <code>{label.text}</code>
+                        </dt>
+                        <dd>
+                          {needs && (
+                            <a class="pill" data-facet="needs" href={links.module(label.module!)}>
+                              {needs}
+                            </a>
+                          )}{' '}
+                          {label.words && <SheetParts parts={prose(label.words)!} links={links} />}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                  {result && (
+                    <div data-key={args.length} data-role="returns">
+                      <dt>
+                        <span class="arrow" aria-hidden="true">
+                          →
+                        </span>
+                        <code>{result.text}</code>
+                      </dt>
+                      <dd>
+                        <SheetParts parts={prose(result.words)!} links={links} />
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              {options.length + handles.length > 0 && (
+                <div class="folds">
+                  {options.map((table) => (
+                    <SheetTable
+                      id={typeId(module, table.name)}
+                      what="takes"
+                      name={table.name}
+                      aside={[fieldOf(table), counted(table.fields.length, 'field')]
+                        .filter(Boolean)
+                        .join(' · ')}
+                      rows={fieldsOf(table)}
+                      open={lines.length === 1 && options.length === 1 && table.fields.length <= 6}
+                      links={links}
+                      types={types}
+                    />
+                  ))}
+                  {handles.map((handle) => (
+                    <SheetTable
+                      id={typeId(module, handle.name)}
+                      what="returns"
+                      name={handle.name}
+                      aside={counted(handle.members.length, 'member')}
+                      rows={membersOf(handle)}
+                      links={links}
+                      types={types}
+                    >
+                      {nested.get(handle)!.map((table) => (
+                        <SheetTable
+                          id={typeId(module, table.name)}
+                          what="takes"
+                          name={table.name}
+                          aside={[
+                            ...new Set(table.takenBy.map((by) => by.split('.').slice(1).join('.'))),
+                            counted(table.fields.length, 'field'),
+                          ].join(' · ')}
+                          rows={fieldsOf(table)}
+                          links={links}
+                      types={types}
+                        />
+                      ))}
+                    </SheetTable>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+          {rest.length > 0 && (
+            <p class="rest">
+              and <code>{rest.join(', ')}</code>
+            </p>
+          )}
+          {unplaced.length > 0 && (
+            <div class="folds">
+              {unplaced.map((each) =>
+                'fields' in each ? (
+                  <SheetTable
+                    id={typeId(module, each.name)}
+                    what="takes"
+                    name={each.name}
+                    aside={`${each.takenBy.join(', ')} · ${counted(each.fields.length, 'field')}`}
+                    rows={fieldsOf(each)}
+                    links={links}
+                    types={types}
+                  />
+                ) : (
+                  <SheetTable
+                    id={typeId(module, each.name)}
+                    what="returns"
+                    name={each.name}
+                    aside={`${each.from.join(', ')} · ${counted(each.members.length, 'member')}`}
+                    rows={membersOf(each)}
+                    links={links}
+                    types={types}
+                  />
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      </Fragment>
+    )
+  }
+
+  {
+    card.groups.map((group) => (
+      <Fragment>
+        <h3 class="part" data-pagefind-ignore>
+          {group.label}
+        </h3>
+        <dl class="facts">
+          {group.facts.map((fact) => (
+            <div
+              class:list={['row', { exception: fact.exception }]}
+              data-facet={fact.facet}
+              data-row={fact.key}
+            >
+              <dt class="label">
+                <a href={`${reading}#${fact.key}`} title={meanings[fact.key as keyof typeof meanings]}>
+                  {fact.label}
+                </a>
+              </dt>
+              <dd>
+                {fact.value && (
+                  <p class="value">
+                    <SheetParts parts={fact.value} links={links} />
+                  </p>
+                )}
+                {fact.pairs && (
+                  <ul class="lanes">
+                    {lanesOf(fact).map(([lane, methods]) => (
+                      <li>
+                        <span class="pill" data-facet="records" title={into[lane] ?? lane}>
+                          {lane}
+                        </span>
+                        <span class="methods">
+                          {methods.map((method) => {
+                            const href = memberHref(module, card, method);
+                            return href ? (
+                              <a href={href}>
+                                <code>{method}</code>
+                              </a>
+                            ) : (
+                              <code>{method}</code>
+                            );
+                          })}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {fact.entries && (
+                  <ul class="entries">
+                    {fact.entries.map((entry) => (
+                      <li>
+                        <p class="value">
+                          <SheetParts parts={entry.value} links={links} />
+                        </p>
+                        {entry.note && (
+                          <p class="note">
+                            <SheetParts parts={sentence(entry.note)} links={links} />
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {fact.note && (
+                  <p class="note">
+                    <SheetParts parts={sentence(fact.note)} links={links} />
+                  </p>
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </Fragment>
+    ))
+  }
+
+  {
+    card.exports.length > 0 && (
+      <Fragment>
+        <h3 class="part">Exports</h3>
+        <dl class="exports">
+          {card.exports.map((fact) => (
+            <div data-row={fact.key}>
+              <dt class="label" data-pagefind-ignore>
+                {fact.label}
+              </dt>
+              <dd>
+                {/* A space between names, so search and screen readers read them apart */}
+                {(fact.value ?? []).map((part) => (
+                  <Fragment>
+                    <SheetParts parts={[part]} links={links} />{' '}
+                  </Fragment>
+                ))}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        {module.structs.length > 0 && (
+          <div class="folds">
+            {module.structs.map((struct) => (
+              <SheetTable
+                id={typeId(module, struct.name)}
+                what="schema"
+                name={struct.name}
+                aside={counted(struct.fields.length, 'field')}
+                rows={struct.fields.map((field) => ({
+                  ...field,
+                  id: typeId(module, struct.name, field.name),
+                }))}
+                links={links}
+                types={types}
+              />
+            ))}
+          </div>
+        )}
+      </Fragment>
+    )
+  }
+
+  {
+    usedBy && (
+      <p class="used" data-pagefind-ignore>
+        <span class="label">used by</span>
+        <span class="examples">
+          <SheetParts parts={usedBy.value!} links={links} />
+        </span>
+      </p>
+    )
+  }
+</section>
+
+<script>
+  // A name in a call and the row that explains it light together
+  for (const call of document.querySelectorAll<HTMLElement>('.sheet .call')) {
+    const light = (key: string | undefined) => {
+      for (const each of call.querySelectorAll<HTMLElement>('[data-key]')) {
+        each.classList.toggle('lit', key !== undefined && key !== '-1' && each.dataset.key === key);
+      }
+    };
+    call.addEventListener('pointerover', (event) => {
+      light((event.target as Element).closest<HTMLElement>('[data-key]')?.dataset.key);
+    });
+    call.addEventListener('pointerleave', () => light(undefined));
+  }
+
+  // What the address names shows, also when it is a folded table or a row inside one
+  const reveal = () => {
+    const target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
+    if (!target?.closest('.sheet')) return;
+    let fold = target.closest<HTMLDetailsElement>('details');
+    let opened = false;
+    while (fold) {
+      opened ||= !fold.open;
+      fold.open = true;
+      fold = fold.parentElement?.closest<HTMLDetailsElement>('details') ?? null;
+    }
+    if (opened) target.scrollIntoView();
+  };
+  addEventListener('hashchange', reveal);
+  // A link to the address the page is already at changes no hash
+  addEventListener('click', (event) => {
+    if ((event.target as Element).closest('a[href^="#reference-"]')) setTimeout(reveal);
+  });
+  reveal();
+</script>
+
+<style>
+  .sheet {
+    scroll-margin-top: 6rem;
+    container: sheet / inline-size;
+    padding: var(--s-4) var(--s-5) var(--s-5);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+  }
+
+  .sheet code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+
+  .identity {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2) var(--s-3);
+  }
+
+  .name .title {
+    margin: 0;
+    color: var(--text);
+    font: 500 12px/20px var(--font-mono);
+  }
+
+  .summary {
+    max-width: var(--measure);
+    margin: var(--s-2) 0 0;
+    color: var(--text-2);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .summary :global(code) {
+    color: var(--text);
+    font: 13.5px var(--font-mono);
+  }
+
+  .how {
+    margin-left: auto;
+    color: var(--muted);
+    font: 400 13px/20px var(--font-sans);
+    text-decoration: none;
+  }
+
+  .how:hover {
+    color: var(--accent-high);
+    text-decoration: underline;
+  }
+
+  .label {
+    color: var(--muted);
+    font: 500 11px/22px var(--font-mono);
+  }
+
+  .part {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    margin: var(--s-5) 0 var(--s-2);
+    color: var(--text-2);
+    font: 500 11px/16px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .part::after {
+    content: '';
+    flex: 1;
+    order: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-4);
+    order: 2;
+    color: var(--muted);
+    font: 400 12px/16px var(--font-sans);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend i {
+    width: 16px;
+    height: 4px;
+    border-bottom: 1.5px var(--role-style) var(--role);
+  }
+
+  .legend [data-role='returns'] i {
+    border-bottom-width: 4px;
+  }
+
+  /* One call: its line, what each argument is, then what it takes and returns in full. */
+
+  .call {
+    display: grid;
+    gap: var(--s-2);
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--rule);
+    scroll-margin-top: 6rem;
+  }
+
+  .line:target {
+    background: var(--accent-low);
+  }
+
+  /* A name in a call that leads somewhere on the card keeps its underline and takes the accent
+     when pointed at. */
+  .label a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .label a:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .lanes a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .lanes a:hover {
+    color: var(--accent-high);
+  }
+
+  .line :global(.arg.lit),
+  .args > div:global(.lit) {
+    background: color-mix(in oklab, var(--role, var(--text-2)) 14%, transparent);
+  }
+
+  .call:last-child {
+    border-bottom: 0;
+  }
+
+  .line {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0;
+    scroll-margin-top: 7rem;
+    color: var(--text);
+    font: 400 14.5px/26px var(--font-mono);
+  }
+
+  .args {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px var(--s-5);
+    margin: 0;
+  }
+
+  .args > div {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    padding-left: var(--s-3);
+    border-left: 2px solid color-mix(in oklab, var(--role) 75%, transparent);
+    transition: background-color 0.12s;
+  }
+
+  .args dt {
+    display: flex;
+    gap: var(--s-2);
+    color: var(--text);
+    font: 400 13px/22px var(--font-mono);
+  }
+
+  .args dd {
+    margin: 0;
+    color: var(--text-2);
+    font: 400 14.5px/22px var(--font-sans);
+  }
+
+  .args dd :global(code) {
+    color: var(--text);
+    font: 13px var(--font-mono);
+  }
+
+  .arrow {
+    color: var(--muted);
+  }
+
+  .rest {
+    margin: var(--s-2) 0 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  .rest code {
+    color: var(--text-2);
+    font: 13px var(--font-mono);
+  }
+
+  .folds {
+    display: grid;
+    gap: var(--s-2);
+    margin-top: var(--s-1);
+    padding-left: var(--s-4);
+  }
+
+  /* The facts, a row each: its label, its value, and the words on it beside the value where the
+     card is wide. */
+
+  .facts {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    margin: 0;
+  }
+
+  .row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    gap: var(--s-1) 0;
+    padding: var(--s-2) 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .row:last-child {
+    border-bottom: 0;
+  }
+
+  .row dt {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    height: 22px;
+    color: color-mix(in oklab, var(--dot, var(--muted)) 80%, var(--muted));
+  }
+
+  .row dt::before {
+    content: '';
+    flex: none;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--dot, var(--rule-control));
+  }
+
+  .row dd {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    gap: var(--s-1) var(--s-5);
+    align-items: baseline;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .row dd > :only-child,
+  .entries {
+    grid-column: 1 / -1;
+  }
+
+  .value {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-1) var(--s-2);
+    min-height: 22px;
+    margin: 0;
+    color: var(--text);
+    font: 400 13.5px/22px var(--font-mono);
+  }
+
+  .row.exception .value {
+    color: var(--f-exception);
+  }
+
+  .lanes,
+  .entries {
+    display: grid;
+    gap: var(--s-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .lanes li {
+    display: grid;
+    grid-template-columns: 4.6rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--s-3);
+    margin: 0;
+  }
+
+  .lanes .pill {
+    justify-content: center;
+  }
+
+  .methods {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--s-3);
+    color: var(--text);
+    font: 400 13.5px/22px var(--font-mono);
+  }
+
+  .entries li {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    gap: var(--s-1) var(--s-5);
+    align-items: baseline;
+    margin: 0;
+  }
+
+  /* Words on a fact, and on a row of a folded table (SheetTable.astro). */
+  .sheet :global(.note) {
+    margin: 0;
+    color: var(--text-2);
+    font: 400 14px/22px var(--font-sans);
+  }
+
+  .sheet :global(.note code) {
+    color: var(--text);
+    font: 12.5px var(--font-mono);
+  }
+
+  .exports {
+    display: grid;
+    gap: var(--s-2);
+    margin: 0;
+  }
+
+  .exports > div {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    align-items: baseline;
+  }
+
+  .exports dd {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    margin: 0;
+    color: var(--text);
+    font: 400 13.5px/22px var(--font-mono);
+  }
+
+  .used {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    margin: var(--s-4) 0 0;
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--rule);
+  }
+
+  .examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--s-3);
+  }
+
+  @container sheet (max-width: 639px) {
+    .row dd,
+    .entries li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .exports > div,
+    .used {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .folds,
+    .args {
+      padding-left: var(--s-3);
+    }
+
+    .line {
+      font-size: 13px;
+      line-height: 24px;
+    }
+
+    .args {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+
+    .args > div + div {
+      margin-top: var(--s-1);
+    }
+  }
+</style>

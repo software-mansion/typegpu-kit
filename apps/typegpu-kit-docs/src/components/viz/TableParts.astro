@@ -1,0 +1,176 @@
+---
+---
+
+<figure class="viz" data-viz="table-parts">
+  <p class="viz-title">The same flush in one struct and in a table</p>
+  <svg viewBox="0 0 640 290" role="img" aria-label="Rows of two layouts while a kernel moves x and the CPU writes two tints: in one struct the upload puts x back, in a table x stays"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="hit">Hit rows 1 and 6</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Hit rows 1 and 6 while a kernel moves every row. The flush uploads the rows between them.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, animation, each } from './figure.ts';
+  import { createProgram, FADE, HEALTH, RADIUS, ROWS, type Layout } from './TableParts.program.ts';
+  import { fitWidth, svg, text } from './svg.ts';
+
+  /** Below this width the two layouts stack. */
+  const WIDE = 620;
+  const GAP = 28;
+  const INDEX = 18;
+  const TINT = 38;
+  const NUMBER = 54;
+  /** Between a table's two buffers. */
+  const SPLIT = 10;
+  const HEAD = 22;
+  const ROW = 22;
+  const TOP = 38;
+  const HEIGHT = TOP + HEAD + ROWS * ROW + 46;
+
+  const HOST = 'var(--viz-c)';
+  const DEVICE = 'var(--viz-b)';
+  const BAD = 'var(--viz-bad)';
+
+  /** A line of text whose first word is in `color`. */
+  const said = (figure: SVGElement, x: number, y: number, word: string, color: string, rest: string) => {
+    const line = svg('text', { x, y }, figure);
+    svg('tspan', { fill: color }, line).textContent = word;
+    svg('tspan', {}, line).textContent = ` ${rest}`;
+  };
+
+  function table(figure: SVGSVGElement, layout: Layout, left: number, top: number, width: number, time: number) {
+    const gap = layout.split ? SPLIT : 0;
+    const plate = left + INDEX;
+    const right = left + width;
+    const hostEnd = plate + TINT + NUMBER;
+    const track = hostEnd + gap + 10;
+    const trackEnd = right - NUMBER - 6;
+    const rows = top + TOP + HEAD;
+    const middle = (row: number) => rows + row * ROW + ROW / 2;
+    const bottom = rows + ROWS * ROW;
+
+    text(figure, left, top + 11, layout.name, { class: 'strong' });
+    if (layout.split) {
+      text(figure, plate, top + 30, 'host · CPU', { fill: HOST });
+      text(figure, hostEnd + gap, top + 30, 'device · kernels', { fill: DEVICE });
+    } else {
+      text(figure, plate, top + 30, 'one buffer · CPU and kernels');
+    }
+
+    const buffers: (readonly [number, number])[] = layout.split
+      ? [[plate, hostEnd], [hostEnd + gap, right]]
+      : [[plate, right]];
+    for (const [from, to] of buffers) {
+      svg('rect', {
+        x: from + 0.5, y: top + TOP + 0.5, width: to - from - 1, height: bottom - top - TOP,
+        rx: 2, fill: 'none', stroke: 'var(--viz-line)',
+      }, figure);
+      for (let row = 0; row < ROWS; row++) {
+        const y = rows + row * ROW + 0.5;
+        svg('line', { x1: from + 1, x2: to - 1, y1: y, y2: y, stroke: 'var(--viz-line)', 'stroke-opacity': row ? 0.45 : 1 }, figure);
+      }
+    }
+
+    const heading = top + TOP + 15;
+    const host = layout.split ? { fill: HOST } : {};
+    const device = layout.split ? { fill: DEVICE } : {};
+    text(figure, plate + 8, heading, 'tint', host);
+    text(figure, hostEnd - 8, heading, 'radius', { 'text-anchor': 'end', ...host });
+    text(figure, track, heading, 'x', device);
+    text(figure, right - 8, heading, 'health', { 'text-anchor': 'end', ...device });
+
+    const upload = layout.uploads.at(-1);
+    const fresh = upload ? Math.max(1 - (time - upload.at) / FADE, 0) : 0;
+
+    for (let row = 0; row < ROWS; row++) {
+      const y = middle(row);
+      const written = upload !== undefined && upload.rows.includes(row);
+
+      text(figure, left + INDEX - 8, y + 4, String(row), { 'text-anchor': 'end' });
+      svg('rect', {
+        x: plate + 8, y: y - 6, width: 12, height: 12, rx: 2,
+        fill: layout.flashed(row) ? 'var(--viz-accent)' : 'var(--viz-d)',
+        stroke: HOST, 'stroke-width': 1.5, 'stroke-opacity': written ? fresh : 0,
+      }, figure);
+      text(figure, hostEnd - 8, y + 4, String(RADIUS), { 'text-anchor': 'end', fill: 'var(--text-2)' });
+      text(figure, right - 8, y + 4, String(HEALTH), { 'text-anchor': 'end', fill: 'var(--text-2)' });
+      svg('line', { x1: track, x2: trackEnd, y1: y, y2: y, stroke: 'var(--viz-line)' }, figure);
+    }
+
+    const at = (value: number) => track + value * (trackEnd - track);
+    const put = new Set<number>();
+    for (const overwrite of layout.overwrites) {
+      const y = middle(overwrite.row);
+      const fade = Math.max(1 - (time - overwrite.at) / FADE, 0);
+      put.add(overwrite.row);
+
+      svg('line', {
+        x1: at(overwrite.from), x2: at(overwrite.to), y1: y, y2: y,
+        stroke: BAD, 'stroke-width': 1.5, 'stroke-opacity': fade,
+      }, figure);
+      svg('circle', {
+        cx: at(overwrite.from), cy: y, r: 4,
+        fill: 'var(--ground)', stroke: BAD, 'stroke-opacity': fade,
+      }, figure);
+    }
+    for (let row = 0; row < ROWS; row++) {
+      svg('circle', {
+        cx: at(layout.xs[row * layout.xStride]), cy: middle(row), r: 4,
+        fill: put.has(row) ? BAD : DEVICE,
+      }, figure);
+    }
+
+    if (upload) {
+      const [first, last] = upload.rows;
+      svg('rect', {
+        x: plate + 3.5, y: middle(first) - ROW / 2 + 3.5,
+        width: (layout.split ? hostEnd : right) - plate - 7, height: (last - first + 1) * ROW - 6,
+        rx: 2, fill: 'none', stroke: HOST, 'stroke-dasharray': '3 3', 'stroke-opacity': 0.4 + 0.6 * fresh,
+      }, figure);
+
+      const span = first === last ? `row ${first}` : `rows ${first} to ${last}`;
+      said(figure, plate, bottom + 20, 'flush', HOST, `uploads ${span}, ${upload.bytes} B`);
+    }
+    said(
+      figure, plate, bottom + 38, 'x',
+      layout.overwritten > 0 ? BAD : DEVICE,
+      `went back to the CPU's value ${layout.overwritten}×`,
+    );
+  }
+
+  each('table-parts', (root) => {
+    const figure = root.querySelector('svg')!;
+    const program = createProgram();
+    for (let i = 0; i < 90; i++) program.frame(1 / 60);
+
+    const draw = fitWidth(figure, (width) => {
+      const wide = width >= WIDE;
+      const span = wide ? (width - GAP) / 2 : width;
+
+      program.layouts.forEach((layout, l) =>
+        table(figure, layout, wide ? l * (span + GAP) : 0, wide ? 0 : l * (HEIGHT + 20), span, program.time),
+      );
+      return wide ? HEIGHT : 2 * HEIGHT + 20;
+    });
+
+    const shown = animation(root, {
+      step: program.step,
+      draw,
+      play: action(root, 'play'),
+      destroy: program.destroy,
+    });
+
+    action(root, 'hit', () => {
+      program.hit(1, 6);
+
+      // Paused, the hit still runs one frame, so its upload shows
+      if (shown.playing) return;
+      program.frame(0);
+      shown.redraw();
+    });
+  });
+</script>

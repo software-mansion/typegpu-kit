@@ -1,0 +1,420 @@
+---
+import Slider from './Slider.astro';
+
+interface Props {
+  mode: 'cells' | 'lean';
+}
+
+const { mode } = Astro.props;
+const label =
+  mode === 'cells'
+    ? "Items in a grid of cells, one item's three ranges of three cells, and the sorted slots each range covers"
+    : "Every item in a dense box, with the mean offset of the neighbours each walk kept, for the grid's walk and for a walk from the corner";
+---
+
+<figure class="viz" data-viz="grid-walk" data-mode={mode}>
+  <p class="viz-title">{mode === 'cells' ? "One item's walk through its 3×3 cells, in visit order" : "Neighbour lean under the grid's walk and a corner-first walk"}</p>
+  <svg viewBox="0 0 640 360" role="img" tabindex={mode === 'cells' ? 0 : undefined} aria-label={label}></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    {
+      mode === 'cells' ? (
+        <>
+          <Slider inline name="stop" label="stop after" min={1} max={16} value={6} />
+          <button data-action="turn">Turn again</button>
+        </>
+      ) : (
+        <>
+          <Slider name="density" label="items per cell" min={2} max={40} value={16} />
+          <Slider inline name="stop" label="stop after" min={4} max={32} value={8} />
+        </>
+      )
+    }
+  </div>
+  <figcaption class="viz-caption">
+    {
+      mode === 'cells' ? (
+        <>
+          <b class="viz-try">Try</b> Tap an item or choose <em>Turn again</em> to change its walk through a box one cell deep. The grid visits its 3×3 cells as sorted ranges and numbers the neighbours within sight in visit order, up to <em>stop after</em>.
+        </>
+      ) : (
+        <>
+          <b class="viz-try">Try</b> Reduce the population or raise the stopping count to shrink the bias from starting in a corner.
+          Arrows magnify mean neighbour offsets sixfold in this one-cell-deep box; the grid stays near zero,
+          while the corner-first walk points toward the corner.
+        </>
+      )
+    }
+  </figcaption>
+</figure>
+
+<style>
+
+  svg[tabindex] {
+    cursor: pointer;
+  }
+
+  svg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<script>
+  import { action, animation, each, fail, note, slider, statusLine, whenNear } from './figure.ts';
+  import { pageGpu } from './gpu.ts';
+  import {
+    cellOf,
+    createProgram,
+    keptOf,
+    SIGHT,
+    type Point,
+    type Program,
+    type Walk,
+    type WalkOptions,
+  } from './GridWalk.program.ts';
+  import { CHAR, fitWidth, pointIn, stipple, svg, text } from './svg.ts';
+
+  /** How much longer the lean's arrows are drawn than the offsets they show. */
+  const GAIN = 6;
+  const LEAN = { cols: 10, rows: 6, most: 40 };
+
+  const signed = (value: number) => `${value < 0 ? '−' : '+'}${Math.abs(value).toFixed(3)}`;
+  const vector = ([x, y]: Point) => `x ${signed(x)}, y ${signed(y)}`;
+
+  /** Walks one at a time, the newest settings last, and asks for a draw after each. */
+  function walker(program: Program, settings: () => WalkOptions, done: (walk: Walk) => void) {
+    let busy = false;
+    let again = false;
+
+    return async function walk(): Promise<void> {
+      if (busy) {
+        again = true;
+        return;
+      }
+
+      busy = true;
+      try {
+        do {
+          again = false;
+          done(await program.walk(settings()));
+        } while (again);
+      } finally {
+        busy = false;
+      }
+    };
+  }
+
+  function arrow(parent: Element, from: Point, to: Point, color: string) {
+    const [dx, dy] = [to[0] - from[0], to[1] - from[1]];
+    const length = Math.hypot(dx, dy);
+    svg('line', { x1: from[0], y1: from[1], x2: to[0], y2: to[1], stroke: color, 'stroke-width': 1 }, parent);
+    if (length < 1) return;
+
+    const [ux, uy] = [dx / length, dy / length];
+    const head = Math.min(8, length);
+    const back = [to[0] - ux * head, to[1] - uy * head];
+    const corners = [
+      to,
+      [back[0] - uy * head * 0.5, back[1] + ux * head * 0.5],
+      [back[0] + uy * head * 0.5, back[1] - ux * head * 0.5],
+    ];
+    svg('polygon', { points: corners.map((corner) => corner.join(',')).join(' '), fill: color }, parent);
+  }
+
+  /** The box's cells as thin lines, from (x0, y0), `cell` units a side. */
+  function cellLines(parent: Element, x0: number, y0: number, cell: number, cols: number, rows: number) {
+    svg('rect', { x: x0, y: y0, width: cols * cell, height: rows * cell, fill: 'none', stroke: 'var(--rule-strong)' }, parent);
+    for (let c = 1; c < cols; c++) {
+      svg('line', { x1: x0 + c * cell, x2: x0 + c * cell, y1: y0, y2: y0 + rows * cell, stroke: 'var(--viz-line)', 'stroke-opacity': 0.6 }, parent);
+    }
+    for (let r = 1; r < rows; r++) {
+      svg('line', { x1: x0, x2: x0 + cols * cell, y1: y0 + r * cell, y2: y0 + r * cell, stroke: 'var(--viz-line)', 'stroke-opacity': 0.6 }, parent);
+    }
+  }
+
+  async function cells(root: HTMLElement, figure: SVGSVGElement, status: Element, program: Program) {
+    const { cols, rows, points } = program;
+    const stop = slider(root, 'stop', () => void walk().catch(stopped));
+    let seed = 0;
+    let latest: Walk | undefined;
+
+    let chosen = points.reduce(
+      (best, point, i) =>
+        Math.hypot(point[0] - cols / 2, point[1] - rows / 2) <
+        Math.hypot(points[best][0] - cols / 2, points[best][1] - rows / 2)
+          ? i
+          : best,
+      0,
+    );
+
+    let box = { x: 0, y: 0, cell: 1 };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const cell = Math.min(Math.floor((width - 2) / cols), 60);
+        const x0 = Math.round((width - cell * cols) / 2);
+        const y0 = 1;
+        box = { x: x0, y: y0, cell };
+        const at = ([x, y]: Point): Point => [x0 + x * cell, y0 + y * cell];
+        const boxBottom = y0 + rows * cell;
+        const ink = stipple(figure, 'var(--viz-b)', 0.125);
+        cellLines(figure, x0, y0, cell, cols, rows);
+
+        const walk = latest;
+        if (!walk || walk.count === 0) return boxBottom + 1;
+
+        const { sorted } = walk;
+        const own = points[chosen];
+        const [hx] = cellOf(own, cols, rows);
+        const visits = walk.visits[chosen] ?? [];
+        const order = new Map(visits.map((slot, n) => [slot, n + 1]));
+        const kept = new Set(keptOf(walk, points, chosen));
+        const inSight = (slot: number) =>
+          slot !== chosen && Math.hypot(points[slot][0] - own[0], points[slot][1] - own[1]) <= SIGHT;
+
+        const walked = (walk.rows[chosen] ?? [])
+          .map((row, r) => ({ ...row, r }))
+          .filter((row) => row.count > 0)
+          .map((row) => ({ ...row, y: cellOf(points[sorted[row.first]], cols, rows)[1] }));
+        const left = Math.max(hx - 1, 0);
+        const right = Math.min(hx + 1, cols - 1);
+
+        for (const row of walked) {
+          const [bx, by] = at([left, row.y]);
+          svg('rect', {
+            x: bx, y: by, width: (right - left + 1) * cell, height: cell,
+            fill: ink,
+            stroke: 'var(--viz-b)', 'stroke-opacity': 0.5,
+          }, figure);
+          text(figure, bx + 4, by + cell - 5, `range ${row.r}`, { style: 'fill: var(--viz-b)' });
+        }
+
+        const [cx, cy] = at(own);
+        svg('circle', {
+          cx, cy, r: SIGHT * cell, fill: 'none',
+          stroke: 'var(--viz-accent)', 'stroke-dasharray': '4 3',
+        }, figure);
+
+        for (const slot of sorted) {
+          const [px, py] = at(points[slot]);
+          const n = order.get(slot);
+          if (slot === chosen) {
+            svg('circle', { cx: px, cy: py, r: 5, fill: 'var(--accent-high)' }, figure);
+          } else if (kept.has(slot)) {
+            svg('circle', { cx: px, cy: py, r: 4, fill: 'var(--viz-d)' }, figure);
+          } else if (n !== undefined && inSight(slot)) {
+            svg('circle', { cx: px, cy: py, r: 3.5, fill: 'var(--ground-2)', stroke: 'var(--viz-b)', 'stroke-width': 1.5 }, figure);
+          } else {
+            svg('circle', { cx: px, cy: py, r: 2.5, fill: 'var(--viz-muted)', 'fill-opacity': n === undefined ? 0.45 : 1 }, figure);
+          }
+          if (n !== undefined && slot !== chosen && inSight(slot)) {
+            text(figure, px + 5, py - 4, String(n), kept.has(slot) ? { class: 'strong' } : {});
+          }
+        }
+
+        // Every sorted slot, the walk's ranges lit, then the ranges up close with the walk's order
+        const barY = boxBottom + 30;
+        const slotWidth = (width - 2) / sorted.length;
+        const lit = (k: number) => walked.some((row) => k >= row.first && k < row.first + row.count);
+        text(figure, 1, barY - 8, `sorted slots, ${sorted.length}`, { class: 'strong' });
+        sorted.forEach((slot, k) => {
+          svg('rect', {
+            x: 1 + k * slotWidth, y: barY, width: Math.max(slotWidth - 0.6, 0.6), height: 10,
+            fill: stipple(figure, slot === chosen ? 'var(--accent-high)' : lit(k) ? 'var(--viz-b)' : 'var(--viz-line)', 0.5),
+          }, figure);
+        });
+
+        const segments = walked.toSorted((a, b) => a.first - b.first);
+        const total = segments.reduce((sum, row) => sum + row.count, 0);
+        const gap = 14;
+        const step = Math.min(26, (width - 2 - gap * (segments.length - 1)) / total);
+        const zoomY = barY + 46;
+        let zx = 1 + (width - 2 - step * total - gap * (segments.length - 1)) / 2;
+
+        for (const row of segments) {
+          const from = zx;
+          for (let k = row.first; k < row.first + row.count; k++) {
+            const slot = sorted[k];
+            const n = order.get(slot);
+            const active = slot === chosen || kept.has(slot);
+            svg('rect', { x: zx + 0.5, y: zoomY, width: step - 1, height: 18, rx: 2, fill: 'none', stroke: slot === chosen ? 'var(--accent)' : kept.has(slot) ? 'var(--viz-d)' : 'var(--rule-strong)' }, figure);
+            const label = slot === chosen ? '' : String(n ?? '');
+            if (label && label.length * CHAR + 2 <= step) {
+              text(figure, zx + step / 2, zoomY + 13, label, { 'text-anchor': 'middle', fill: slot === chosen ? 'var(--accent-high)' : active ? 'var(--viz-d)' : 'var(--muted)' });
+            }
+            zx += step;
+          }
+
+          const bx0 = 1 + row.first * slotWidth;
+          const bx1 = 1 + (row.first + row.count) * slotWidth;
+          svg('polygon', {
+            points: `${bx0},${barY + 10} ${bx1},${barY + 10} ${zx},${zoomY} ${from},${zoomY}`,
+            fill: ink, stroke: 'var(--rule-strong)',
+          }, figure);
+
+          const words = [`range ${row.r} · ${row.first} to ${row.first + row.count - 1}`, `range ${row.r}`, String(row.r)];
+          const fits = words.find((word) => word.length * CHAR <= zx - from) ?? '';
+          text(figure, (from + zx) / 2, zoomY + 32, fits, { 'text-anchor': 'middle' });
+          zx += gap;
+        }
+
+        return zoomY + 38;
+      },
+      300,
+    );
+
+    const view = animation(root, { draw, destroy: () => program.destroy() });
+
+    const tell = (walk: Walk) => {
+      const visits = walk.visits[chosen] ?? [];
+      const own = points[chosen];
+      const inSight = visits.filter(
+        (slot) => slot !== chosen && Math.hypot(points[slot][0] - own[0], points[slot][1] - own[1]) <= SIGHT,
+      ).length;
+      status.textContent = `item ${chosen}: met ${visits.length - 1} others, ${inSight} within sight, kept ${walk.kept[chosen] ?? 0}`;
+    };
+
+    const walk = walker(
+      program,
+      () => ({ stop: stop.valueAsNumber, seed }),
+      (done) => {
+        latest = done;
+        tell(done);
+        view.redraw();
+      },
+    );
+
+    const stopped = (error: unknown) => {
+      view.destroy();
+      fail(root, error);
+    };
+
+    const choose = (item: number) => {
+      chosen = item;
+      if (latest) tell(latest);
+      view.redraw();
+    };
+
+    figure.addEventListener('click', (event) => {
+      const p = pointIn(figure, event);
+      const at = ([x, y]: Point) => Math.hypot(box.x + x * box.cell - p.x, box.y + y * box.cell - p.y);
+      const alive = latest?.sorted ?? [];
+      const nearest = alive.reduce((best, slot) => (at(points[slot]) < at(points[best]) ? slot : best), alive[0] ?? 0);
+      if (alive.length > 0 && at(points[nearest]) < 20) choose(nearest);
+    });
+
+    // The arrow keys step through the items in sorted order
+    figure.addEventListener('keydown', (event) => {
+      const sorted = latest?.sorted;
+      const turn = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!sorted || turn === undefined) return;
+      event.preventDefault();
+      const k = sorted.indexOf(chosen);
+      choose(sorted[(k + turn + sorted.length) % sorted.length]);
+    });
+
+    action(root, 'turn', () => {
+      seed += 1;
+      void walk().catch(stopped);
+    });
+
+    await walk().catch(stopped);
+  }
+
+  async function lean(root: HTMLElement, figure: SVGSVGElement, status: Element, program: Program) {
+    const { cols, rows, points } = program;
+    const density = slider(root, 'density', () => void walk().catch(stopped));
+    const stop = slider(root, 'stop', () => void walk().catch(stopped));
+    let latest: Walk | undefined;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const cell = Math.min(Math.floor((width - 2) / cols), 48);
+        const x0 = Math.round((width - cell * cols) / 2);
+        const y0 = 1;
+        const at = ([x, y]: Point): Point => [x0 + x * cell, y0 + y * cell];
+        cellLines(figure, x0, y0, cell, cols, rows);
+
+        const walk = latest;
+        if (walk) {
+          const dots = svg('g', { fill: 'var(--viz-muted)', 'fill-opacity': 0.5 }, figure);
+          for (let i = 0; i < walk.count; i++) {
+            const [px, py] = at(points[i]);
+            svg('circle', { cx: px, cy: py, r: 1.4 }, dots);
+          }
+
+          const middle = at([cols / 2, rows / 2]);
+          const scale = cell * GAIN;
+          svg('circle', {
+            cx: middle[0], cy: middle[1], r: 0.25 * scale,
+            fill: 'none', stroke: 'var(--viz-line)', 'stroke-dasharray': '3 3',
+          }, figure);
+          text(figure, middle[0] + 0.25 * scale * 0.72 + 3, middle[1] + 0.25 * scale * 0.72 + 10, '0.25 cell');
+
+          const tip = ([x, y]: Point): Point => [middle[0] + x * scale, middle[1] + y * scale];
+          arrow(figure, middle, tip(walk.corner), 'var(--viz-c)');
+          arrow(figure, middle, tip(walk.mean), 'var(--viz-b)');
+        }
+
+        const legendY = y0 + rows * cell + 20;
+        const key = (x: number, color: string, words: string) => {
+          svg('line', { x1: x, x2: x + 16, y1: legendY - 4, y2: legendY - 4, stroke: color, 'stroke-width': 1 }, figure);
+          text(figure, x + 22, legendY, words, { class: 'strong' });
+        };
+        key(x0, 'var(--viz-b)', "the grid's walk");
+        key(x0 + Math.max(150, cell * cols / 2), 'var(--viz-c)', 'from the corner');
+        return legendY + 6;
+      },
+      300,
+    );
+
+    const view = animation(root, { draw, destroy: () => program.destroy() });
+
+    const walk = walker(
+      program,
+      () => ({ count: density.valueAsNumber * cols * rows, stop: stop.valueAsNumber }),
+      (done) => {
+        latest = done;
+        status.textContent = `${done.count} items, mean offset in cells: grid ${vector(done.mean)}; corner ${vector(done.corner)}`;
+        view.redraw();
+      },
+    );
+
+    const stopped = (error: unknown) => {
+      view.destroy();
+      fail(root, error);
+    };
+
+    await walk().catch(stopped);
+  }
+
+  each('grid-walk', (root) =>
+    whenNear(root, async () => {
+      const figure = root.querySelector('svg')!;
+      const status = statusLine(root);
+      const gpu = await pageGpu();
+      if (!gpu.root) {
+        figure.style.display = 'none';
+        note(root, gpu.why);
+        return;
+      }
+
+      if (root.dataset.mode === 'cells') {
+        await cells(root, figure, status, await createProgram({ root: gpu.root }));
+      } else {
+        const { cols, rows, most } = LEAN;
+        const program = await createProgram({
+          root: gpu.root,
+          cols,
+          rows,
+          capacity: most * cols * rows,
+          visits: 1,
+        });
+        await lean(root, figure, status, program);
+      }
+    }),
+  );
+</script>

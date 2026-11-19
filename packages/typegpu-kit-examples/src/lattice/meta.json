@@ -1,0 +1,8 @@
+{
+  "title": "Lattice",
+  "category": "techniques",
+  "description": "Thin beams turn over a sky as embers rise through them. One pass description makes every drawing write colour, depth and motion. TAA blends each frame with the last, and resolves a scene drawn at a lower scale up to the canvas.",
+  "line": "Thin beams turning over a sky, embers rising through them, smoothed over frames with TAA.",
+  "order": 30,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

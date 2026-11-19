@@ -1,0 +1,193 @@
+---
+title: Lines
+description: Polylines with joins, caps and dashes, a whole set in one draw.
+modules: [kit/lines, kit/polylines]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import Lines from '../../../components/viz/Lines.astro';
+
+<Module id="kit/lines" />
+
+WebGPU's line primitive is one pixel wide and aliased, so paths, contours, graphs and outlines need triangles. Building those triangles on the CPU means new vertices whenever a point moves, and corners that crack at sharp turns. A set of **lines** stores points in a buffer and shapes every segment on the GPU, with joins and caps. One draw renders the whole set, and each pixel's coverage comes from its distance to the line, so blended edges stay smooth with or without MSAA.
+
+<Hidden card="survey-model">
+  <Lines />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+// ---cut---
+import { lines } from '@typegpu/kit';
+
+const paths = lines.create(root, { capacity: 2, length: 64 });
+const canvas = passes.create(root, surface).pipe(view.inject());
+const drawn = canvas.add(paths.drawing);
+
+// A spiral, wider towards its end
+const spiral = new Float32Array(64 * 3);
+const widths = new Float32Array(64);
+for (let i = 0; i < 64; i++) {
+  const angle = i * 0.3;
+  spiral.set([Math.cos(angle) * i * 0.04, i * 0.02, Math.sin(angle) * i * 0.04], i * 3);
+  widths[i] = 0.02 + i * 0.002;
+}
+paths.write(0, spiral, { width: widths, color: [0.3, 0.8, 1, 1] });
+paths.write(1, [-2, 0, 0, 2, 0, 0], { width: 0.05 });
+
+frames.animate(frames.create(root, (frame) => canvas.record(frame, drawn)));
+```
+
+- `write(line, positions, options)` replaces a line with x, y and z values and keeps at most `length` points. `width` and `color` take one value for the line or one per point. `write(line, [])` empties it.
+- `canvas.add(paths.drawing)` builds the set's pipeline into a [pass description](/kit/passes/), shaped for the camera the description injects. Lines with fewer than two points draw nothing.
+- Each set's options fix its pipeline, so lines with other joins, caps, units or blending go in another set.
+- `paths.shown` sets how many lines the draw covers, lines 0 to `shown - 1`. Size `capacity` for the most lines a scene can hold, and set `shown` as their number changes, so the lines past it cost no vertices.
+
+## Points from kernels
+
+A kernel writes points with `setPoint(line, i, point)` and counts with `setCount(line, count)`. `write` fills each point's `along` with its distance from the first point; a kernel fills it itself, or leaves it 0 when nothing reads it. The [survey model](/examples/survey-model/) traces 41 contour rings in a kernel this way and draws them in one draw.
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { lines } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const waves = lines.create(root, { capacity: 16, length: 128 });
+
+const trace = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 16 * 128) return;
+  const line = std.intdiv(gid.x, d.u32(128));
+  const i = gid.x % 128;
+  const x = d.f32(i) / 127 - 0.5;
+  const position = d.vec3f(x * 8, std.sin(x * 12 + d.f32(line)) * 0.4, d.f32(line) * 0.3);
+  waves.setPoint(
+    line,
+    i,
+    lines.ControlPoint({ position, width: 0.04, color: d.vec4f(1), along: x }),
+  );
+  if (i === 0) waves.setCount(line, 128);
+});
+const tracing = root.createComputePipeline({ compute: trace });
+```
+
+Record the kernel before the pass that draws the set. `pointAt(line, i)` and `held(line)` read the set back in other shaders.
+
+## Points from a function
+
+Set `point` to a `'use gpu'` function to evaluate each point as the lines draw, with no buffer. `count` returns how many points a line holds, `length` by default. A curve that changes with time then needs only a uniform:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { lines } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const time = root.createUniform(d.f32);
+
+const rings = lines.create(root, {
+  capacity: 8,
+  length: 96,
+  closed: true,
+  point: (line, i) => {
+    'use gpu';
+    const angle = (d.f32(i) / 96) * Math.PI * 2;
+    const radius = 1 + d.f32(line) * 0.3 + std.sin(angle * 5 + time.$) * 0.05;
+    return lines.ControlPoint({
+      position: d.vec3f(std.cos(angle), 0, std.sin(angle)) * radius,
+      width: 0.03,
+      color: d.vec4f(0.9, 0.7, 0.3, 1),
+      along: 0,
+    });
+  },
+});
+```
+
+`closed: true` joins each line's last point to its first. A function that reads another module carries that module's fills, as in `point: tgpu.fn(curve).pipe(noise.inject())`.
+
+## Width
+
+Widths are in world units by default, so lines narrow with distance like the things around them. With `units: 'points'`, widths are in points of the pass's [`passes.viewport`](/kit/passes/#pixels-and-points), so a 1-point hairline, a graph or an outline keeps its size at any distance and on any display.
+
+A line narrower than `minWidth` points, 1 by default, is drawn that wide. A blended line fades by how much narrower it is, so a far line fades and doesn't break into dots. `minWidth: { pixels: 1 }` gives the least width in pixels instead, so a hairline stays one pixel wide on a 2x display, where a point is two.
+
+## Shading and dashes
+
+`shade(fragment)` returns premultiplied colour for each pixel. The `lines.Fragment` it receives holds the line, its colour, `along`, how far `across` the line the pixel lies, the `coverage` to multiply alpha by and a tube's `normal` for lighting. `lines.dash(fragment, on, off)` returns antialiased dashes measured in the units of `along`:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { lines, lighting, materials, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+const light = lighting.create(root);
+// ---cut---
+const enamel = (fragment: lines.Fragment) => {
+  'use gpu';
+  const point = shading.pointAt(fragment.position, fragment.normal);
+  const lit = shading.shade(materials.glossy(fragment.color.xyz, 0.4), point);
+  const alpha = fragment.coverage * lines.dash(fragment, 0.2, 0.1);
+  return d.vec4f(lit * alpha, alpha);
+};
+
+const tubes = lines.create(root, {
+  capacity: 4,
+  length: 32,
+  shade: tgpu.fn(enamel).pipe(light.inject()),
+});
+```
+
+## Blending and depth
+
+`blend` decides how a set reaches its targets:
+
+<Rules>
+
+- **Blended** `over`, the default, and `add` blend in draw order and test depth without writing it. Draw them after opaque drawings.
+- **Opaque** `opaque` writes depth, so lines hide one another and cast [shadows](/kit/lighting/). In a multisampled description, coverage turns into samples; elsewhere edges are cut at half coverage, and TAA smooths them. Into depth alone, such as a shadow map, a line keeps its own width, without `minWidth` or its antialiased edge.
+- **Translucent** `translucent` draws into the [translucency targets](/kit/passes/#translucent-drawings), in any order.
+
+</Rules>
+
+Lines write every output the description lists. A segment that crosses the near plane, under standard or reversed depth, is cut there with no cap.
+
+## Joins and caps
+
+`join` shapes the corners between segments: `lines.joins.round`, `.miter` or `.bevel`. `miterLimit` sets how long a miter grows, in half widths, before it bends back. `startCap` and `endCap` shape each line's first and last points: `lines.caps.round`, `.square`, `.butt`, `.arrow`, `.triangle` or `.wedge`. A round cap is six triangles, and a round join three on each side, so a segment takes 16 triangles in a set with round shapes and 12 in one without. Lines of two points never join, so only their caps count.
+
+## Lines in your own shaders
+
+<Module id="kit/polylines" />
+
+`@typegpu/kit/geometry` shapes the lines. `polylineVariableWidth(A, B, C, D, vertexIndex, triangles)` places one vertex of the segment from `B` to `C` on the screen, given the points before and after it, with their radii. `lineSegmentIndices(triangles)` lists the triangles of one segment. `triangles` counts the triangles in each half of a join or cap; lines uses 3 for round shapes and 2 otherwise. A shader of your own can draw lines with them, and a join or cap is a `'use gpu'` function with the signature of `lines.joins.round`.
+
+## What it's made of
+
+| Part     |                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------- |
+| `points` | A storage buffer of `capacity * length` points, line `l` in the `length` slots from `l * length`. |
+| `counts` | A storage buffer of each line's point count.                                                      |
+| indices  | An index buffer of one segment's triangles, which every instance of the draw reuses.              |
+
+Each point takes 48 bytes, so 41 lines of 192 points take 369 KiB. A set with `point` has neither buffer; one with `count` has no count buffer.
+
+## Limits
+
+<Rules>
+
+- **Closed lines** `closed` holds for a whole set. Mixing closed and open lines takes two sets.
+- **Facing** Lines are shaped on the screen, so they always face the camera. A line lying on a surface seen at a low angle sinks into it by up to half its width; lift it by that much.
+- **Length** All lines in a set hold at most `length` points. Size it for the longest.
+- **Repeated points** A repeated point ends the line there with `endCap` and starts it again with `startCap`. Unless both caps are round, write only points that moved.
+- **Motion** Motion for TAA follows the camera. Points that move, written by a kernel or the CPU, carry no motion of their own.
+- **Point functions** `point` runs up to four times for each of a segment's 14 or 18 vertices, and again for motion. Write an expensive curve into the set's buffer from a kernel instead.
+
+</Rules>

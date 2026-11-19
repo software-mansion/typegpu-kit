@@ -1,0 +1,86 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import Highlights from '../../components/site/Highlights.astro';
+import LiveGrid from '../../components/site/LiveGrid.astro';
+import Starters from '../../components/site/Starters.astro';
+import Pull from '../../components/pull/Pull.astro';
+import { categories } from 'typegpu-kit-examples';
+import { examples } from '../../examples/examples.ts';
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Examples',
+    description: 'Every example, drawn live on this page. Open one to play it.',
+    tableOfContents: false,
+    wide: true,
+  }}
+>
+  <nav class="gallery-nav not-content" aria-label="Example categories">
+    <a href="#highlights">Highlights</a>
+    <a href="#start">Start from these</a>
+    {categories.map(({ name, title }) => <a href={`#${name}`}>{title}</a>)}
+  </nav>
+  <section id="highlights" class="highlights">
+    <h2>Highlights</h2>
+    <div class="edge">
+      <Pull vessel="pack" lean={0.16} class="edge-pack" />
+    </div>
+    <Highlights />
+  </section>
+  <section id="start">
+    <h2>Start from these</h2>
+    <p class="category-line">
+      Five examples to read first, each with the file to open and the page that explains it.
+    </p>
+    <Starters />
+  </section>
+  {categories.map(({ name, title, line }) => (
+    <section id={name}>
+      <h2>{title}</h2>
+      <p class="category-line">{line}</p>
+      <LiveGrid ask level={3} keys={examples.filter((example) => example.category === name).map((example) => example.key)} />
+    </section>
+  ))}
+</StarlightPage>
+
+<style>
+  .gallery-nav {
+    align-items: center;
+  }
+
+  .highlights {
+    margin-bottom: var(--s-7);
+  }
+
+  /* A pack behind the cards, its top showing over them */
+  .edge {
+    position: relative;
+    height: 0;
+  }
+
+  .edge :global(.edge-pack) {
+    position: absolute;
+    right: 8%;
+    bottom: -140px;
+    width: 176px;
+    height: 254px;
+  }
+
+  .highlights :global(.frame) {
+    position: relative;
+    z-index: 1;
+  }
+
+  @media (max-width: 34rem) {
+    .edge :global(.edge-pack) {
+      bottom: -78px;
+      width: 122px;
+      height: 176px;
+    }
+  }
+
+  .category-line {
+    color: var(--muted);
+  }
+</style>

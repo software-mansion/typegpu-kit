@@ -1,0 +1,8 @@
+{
+  "title": "Spider",
+  "category": "animation",
+  "description": "A spider walks over hills toward the ground under the pointer. FABRIK chains solve its legs, and springs move its body, both using pmndrs/math on the CPU. The GPU generates fractal Perlin terrain with @typegpu/noise and bakes it into a mesh. A single readback lets the feet land on the drawn triangles.",
+  "line": "A spider walking over GPU-made hills, its legs solved with pmndrs/math.",
+  "order": 23,
+  "hint": "point at the ground \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

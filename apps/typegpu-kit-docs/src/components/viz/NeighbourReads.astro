@@ -1,0 +1,175 @@
+---
+import Choice from './Choice.astro';
+---
+
+<figure class="viz" data-viz="neighbour-reads">
+  <p class="viz-title">Every row takes its left neighbour's value, one thread at a time</p>
+  <svg viewBox="0 0 640 176" role="img" aria-label="Rows that read their left neighbour in place, or from last step's copy, in a shuffled thread order"></svg>
+  <p class="viz-status" aria-live="polite" style="--lines: 2"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="step">Step</button>
+    <button data-action="shuffle">Shuffle order</button>
+    <Choice
+      name="reads"
+      label="read"
+      options={[
+        { value: 'in place', label: 'in place' },
+        { value: 'copy', label: "last step's copy" },
+      ]}
+      value="in place"
+    />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Shuffle the order. In place, a red row read a neighbour that an earlier thread had already written. From last step's copy, every order leaves the same rows.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, animation, choice, each, plural, reducedMotion, statusLine } from './figure.ts';
+  import { createProgram, ROWS, type Reads } from './NeighbourReads.program.ts';
+  import { badge, fitWidth, stipple, svg, text } from './svg.ts';
+
+  /** Room at each end for the read that wraps from the last row to the first. */
+  const EDGE = 12;
+  const MAX_PITCH = 96;
+  const GAP = 6;
+  const CELL = 50;
+  const TOP = 18;
+  /** Between the two rows: a thread's badge, the read that enters it and its write below. */
+  const BAND = 34;
+  const BADGE = 18;
+  const BELOW = TOP + CELL + BAND;
+  const HEIGHT = BELOW + CELL + 24;
+  const TURN = 4;
+
+  const READ = 'var(--viz-b)';
+  const WRITE = 'var(--viz-c)';
+  const LATE = 'var(--viz-bad)';
+  const IDLE = 'var(--viz-muted)';
+
+  const ordinal = (n: number) => `${n}${['th', 'st', 'nd', 'rd'][n > 3 ? 0 : n]}`;
+
+  each('neighbour-reads', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const program = createProgram();
+    // How many of the step's threads the picture has run
+    let ran = ROWS;
+
+    const draw = fitWidth(figure, (width) => {
+      const { before, threads } = program.step;
+      const copy = program.reads === 'copy';
+      const walking = ran < ROWS;
+      const pitch = Math.min(MAX_PITCH, (width - 2 * EDGE) / ROWS);
+      const wide = pitch - GAP;
+      const left = (row: number) => EDGE + row * pitch + GAP / 2;
+      const middle = (row: number) => left(row) + wide / 2;
+      const end = EDGE * 2 + ROWS * pitch;
+      const line = TOP + CELL + BAND / 2;
+
+      const lane = (y: number, name: string, note = '') => {
+        const label = text(figure, left(0), y, '');
+        svg('tspan', { 'letter-spacing': '0.08em' }, label).textContent = name.toUpperCase();
+        svg('tspan', { dx: 8, fill: 'var(--text-2)' }, label).textContent = note;
+      };
+
+      /** A row's value, as a number over a bar; `edge` outlines it, and a row that is `gone` is faint. */
+      const cell = (row: number, y: number, value: number, color: string, edge = 'var(--viz-line)', gone = false) => {
+        const x = left(row);
+        const bar = y + CELL - 6 - (value / ROWS) * (CELL - 24);
+        const box = { x: x + 0.5, y: y + 0.5, width: wide - 1, height: CELL - 1, rx: 2, fill: 'none', stroke: edge };
+        svg('rect', gone ? { ...box, 'stroke-dasharray': '3 3' } : box, figure);
+        svg('rect', { x: x + 3, y: bar, width: wide - 6, height: y + CELL - 3 - bar, fill: stipple(figure, color, gone ? 0.25 : 0.5) }, figure);
+        svg('line', { x1: x + 3, x2: x + wide - 3, y1: bar, y2: bar, stroke: color }, figure);
+        text(figure, middle(row), y + 14, String(value), { 'text-anchor': 'middle', style: `fill: ${color}` });
+      };
+
+      lane(10, copy ? "last step's copy" : 'rows', copy ? 'read' : 'before the step');
+      before.forEach((value, row) => cell(row, TOP, value, copy ? READ : IDLE, undefined, !copy));
+
+      threads.forEach(({ row, from, value, late }, at) => {
+        const done = at < ran;
+        const now = walking && at === ran - 1;
+        const weight = now ? 2 : 1.25;
+
+        if (done) {
+          // The read, into the thread: from above, where its neighbour holds what it held as the
+          // step began, or from the row below once a thread has written it
+          const x = left(from) + wide - 5;
+          const y = late ? BELOW : TOP + CELL;
+          const bend = late ? line + TURN : line - TURN;
+          const into = middle(row) - BADGE / 2;
+          const tap = `M${x},${y}V${bend}Q${x},${line} ${x + TURN},${line}`;
+          // The first row's neighbour is the last, so its read leaves at one end and enters at the other
+          const d = from < row ? `${tap}H${into}` : `${tap}H${end}M0,${line}H${into}`;
+          svg('path', { d, fill: 'none', stroke: late ? LATE : READ, 'stroke-width': weight }, figure);
+          svg('circle', { cx: x, cy: y, r: 2, fill: late ? LATE : READ }, figure);
+          // The write, into the row below
+          svg('line', { x1: middle(row), x2: middle(row), y1: line + BADGE / 2, y2: BELOW, stroke: late ? LATE : WRITE, 'stroke-width': weight }, figure);
+        }
+
+        badge(svg('g', done ? {} : { opacity: 0.4 }, figure), middle(row), line - BADGE / 2, at + 1, now);
+        cell(
+          row,
+          BELOW,
+          done ? value : before[row],
+          !done ? IDLE : late ? LATE : WRITE,
+          now ? 'var(--viz-accent)' : done && late ? LATE : undefined,
+        );
+      });
+
+      lane(BELOW + CELL + 18, 'rows', copy ? 'written' : 'read and written');
+      text(figure, left(ROWS - 1) + wide, BELOW + CELL + 18, '1–8 thread order', { 'text-anchor': 'end' });
+
+      const thread = threads[ran - 1];
+      const late = threads.filter((other) => other.late).length;
+      if (!walking) {
+        status.textContent = copy
+          ? 'No thread writes the copy, so any order leaves these rows.'
+          : `${plural(late, 'thread')} read a row already written this step. Other orders leave other rows.`;
+      } else if (!thread) {
+        status.textContent = 'The step begins.';
+      } else {
+        const what = thread.late ? ', which an earlier thread wrote this step' : copy ? ' from the copy' : ', not yet written this step';
+        status.textContent = `The ${ordinal(ran)} thread reads ${thread.value}${what}.`;
+      }
+      return HEIGHT;
+    });
+
+    const walk = animation(root, {
+      every: 0.32,
+      step() {
+        ran += 1;
+        if (ran === ROWS) walk.play(false);
+      },
+      draw,
+      playing: false,
+      destroy: () => program.destroy(),
+    });
+
+    /** Shows the step the program just ran, thread by thread. */
+    const show = () => {
+      const still = reducedMotion();
+      ran = still ? ROWS : 0;
+      walk.play(!still);
+      walk.redraw();
+    };
+
+    action(root, 'step', () => {
+      program.advance();
+      show();
+    });
+
+    action(root, 'shuffle', () => {
+      program.shuffle();
+      program.restart();
+      show();
+    });
+
+    choice<Reads>(root, 'reads', (reads) => {
+      program.reads = reads;
+      program.restart();
+      show();
+    });
+  });
+</script>

@@ -1,0 +1,12 @@
+{
+  "title": "Jelly world",
+  "category": "worlds",
+  "description": "A port of TypeGPU's Jelly Slider, after Voicu Apostol's design, where a jelly bends on its slotted tray until a critter pulls the lever and a candy lawn grows around it with seventeen more. Drag the jelly to stretch it, carry a critter or pull the lever yourself, and turn the view with the secondary button or two fingers and zoom with the wheel or a pinch.",
+  "line": "A ray-marched jelly slider on a tray, until a critter pulls the lever and a candy world grows around it.",
+  "order": 1,
+  "features": ["timestamp-query"],
+  "hint": "drag the jelly to stretch or squash it",
+  "poster": {
+    "seconds": 13
+  }
+}

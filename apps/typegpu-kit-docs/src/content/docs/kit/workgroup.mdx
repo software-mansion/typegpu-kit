@@ -1,0 +1,88 @@
+---
+title: Workgroup reduce and scan
+description: Combine one value from every invocation of a compute workgroup into a single result, or into a running result for each of them.
+modules: [kit/workgroup]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import WorkgroupCombine from '../../../components/viz/WorkgroupCombine.astro';
+
+The invocations of a workgroup often need one answer from all of them: the average brightness of their samples, the box around their points, or where each writes in a packed list. Each answer takes an array in workgroup memory, a loop of steps and a barrier between them. `workgroup.reduce` and `workgroup.scan` write that loop once, for any **monoid**: a schema, an `identity` value and a `combine` function.
+
+<WorkgroupCombine />
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const points = root.createReadonly(d.arrayOf(d.vec3f, 256));
+const kept = root.createMutable(d.arrayOf(d.vec3f, 256));
+// ---cut---
+import { workgroup } from '@typegpu/kit';
+
+const SIZE = 256;
+const Box = workgroup.bounds(d.vec3f);
+const enclose = workgroup.reduce(Box, SIZE);
+const offset = workgroup.scan(workgroup.sum(d.u32), SIZE);
+const box = root.createMutable(Box.schema);
+
+const pack = tgpu.computeFn({
+  workgroupSize: [SIZE],
+  in: { lid: d.builtin.localInvocationIndex },
+})(({ lid }) => {
+  'use gpu';
+  const point = points.$[lid];
+  const above = point.y >= 0;
+  let mine = Box.identity(); // every invocation calls both, adding nothing if below
+  if (above) mine = Box.schema({ low: point, high: point });
+  const around = enclose(mine, lid);
+  const at = offset(std.select(d.u32(0), d.u32(1), above), lid); // above ones before it
+  if (above) kept.$[at] = d.vec3f(point);
+  if (lid === 0) box.$ = Box.schema(around);
+});
+```
+
+## Monoids
+
+- `sum(schema)` adds from zero. A struct or an array adds field by field, so one reduction sums several quantities.
+- `min(schema)` and `max(schema)` compare scalars, and vectors per component, from the highest or lowest value the schema holds.
+- `bounds(schema)` keeps `{ low, high }`, the `min` and `max` of the points it is given.
+
+Write your own as `{ schema, identity, combine }`, with `'use gpu'` functions. This one finds the brightest sample, and the lowest index on a tie:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { workgroup } from '@typegpu/kit';
+// ---cut---
+const Sample = d.struct({ value: d.f32, at: d.u32 });
+
+const brightest: workgroup.Monoid<typeof Sample> = {
+  schema: Sample,
+  identity: () => {
+    'use gpu';
+    return Sample({ value: -1, at: 0 });
+  },
+  combine: (a, b) => {
+    'use gpu';
+    if (a.value > b.value || (a.value === b.value && a.at < b.at)) return Sample(a);
+    return Sample(b);
+  },
+};
+```
+
+`combine` must be associative, and also commutative for `reduce`, which combines the invocations out of order. `identity` and `combine` also run on the CPU, so a test can fold the values the kernel combined and compare.
+
+## Calling the functions
+
+<Rules>
+
+- **Results** `reduce(monoid, size)` and `scan(monoid, size)` return a function of `(value, lid)` for kernels of `size` invocations, with `lid` the `localInvocationIndex`. `reduce` returns the combination of every value to every invocation. `scan` returns the combination of the values before the invocation, and `identity()` to the first. Combine it with `value` to include the invocation's own.
+- **Every invocation** Every invocation of the workgroup calls the function, before any of them returns. Barriers wait for all of them, so one that skips the call stalls or corrupts the rest. An invocation with nothing to add passes `monoid.identity()`.
+- **Workgroup memory** Each call to `reduce` or `scan` declares its own array of `size` values in workgroup memory. The function can run several times in one kernel.
+
+</Rules>
+
+## Limits
+
+- `size` is a power of two.
+- The array takes `size` values of the schema from the workgroup memory WebGPU guarantees, 16 384 bytes. `sum` over 64 invocations of nine `vec4f` takes 9 216.
+- The functions combine within one workgroup. Combine the results of several workgroups in a later dispatch, or with atomics.

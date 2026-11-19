@@ -1,0 +1,53 @@
+---
+import { exampleHref } from '../site/urls.ts';
+
+const page = `${exampleHref('lattice')}?debug`;
+---
+
+<figure class="viz" data-viz="debug-panel">
+  <iframe title="The lattice example with the GPU debug panel open" data-src={page}></iframe>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="run" hidden>Run the example</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Hover a column to freeze the graphs, then press <strong>capture</strong> to record the next frame. The <a href={page}>lattice example</a> has its panel open at the bottom left.
+  </figcaption>
+</figure>
+
+<style>
+  iframe {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    min-height: 24rem;
+    border: 0;
+    border-radius: 2px;
+    background: var(--ground);
+  }
+
+  .viz-controls:has([hidden]) {
+    display: none;
+  }
+</style>
+
+<script>
+  import { action, each, reducedMotion, whenNear } from './figure.ts';
+
+  each('debug-panel', (root) => {
+    const frame = root.querySelector('iframe')!;
+    const start = () => {
+      if (!frame.src) frame.src = frame.dataset.src!;
+    };
+
+    if (!reducedMotion()) {
+      whenNear(root, start);
+      return;
+    }
+
+    const run = action(root, 'run', () => {
+      run.hidden = true;
+      start();
+    });
+    run.hidden = false;
+  });
+</script>

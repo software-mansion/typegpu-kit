@@ -1,0 +1,391 @@
+---
+import { PAGE_TITLE_ID, rooted } from '../site/urls.ts';
+import logo from '../../assets/logo.svg?raw';
+import softwareMansion from '../../assets/software-mansion.svg?raw';
+import { MANAGER_KEY, MANAGERS } from '../site/managers.ts';
+import Pull from '../pull/Pull.astro';
+
+interface Props {
+  title: string;
+  tagline?: string | undefined;
+  actions: readonly {
+    text: string;
+    link: string;
+    variant?: string | undefined;
+    attrs?: Record<string, string | number | boolean> | undefined;
+  }[];
+}
+
+const { title, tagline, actions } = Astro.props;
+const KIT = '@typegpu/kit';
+const ADD = Object.fromEntries(MANAGERS.map((manager) => [manager.name, manager.add]));
+---
+
+{/* Lays the page out for the GPU before its first paint, so it doesn't jump when the runtime
+    starts; the runtime takes it off again if the GPU doesn't start. */}
+<script is:inline>
+  if ('gpu' in navigator) {
+    document.documentElement.classList.add('home-staged');
+  }
+</script>
+
+<header class="home" data-home-hero>
+  <div class="box">
+    <div class="title">
+      <a class="by" href="https://swmansion.com/">
+        Created by
+        <span class="badge" role="img" aria-label="Software Mansion"
+          ><Fragment set:html={softwareMansion} /></span
+        >
+      </a>
+      <h1 id={PAGE_TITLE_ID}>
+        <span class="sr-only">{title}</span>
+        <span class="lockup" aria-hidden="true"
+          ><Fragment set:html={logo} /><canvas class="plate"></canvas></span
+        >
+      </h1>
+      {tagline && <p class="tagline" set:html={tagline} />}
+      {
+        actions.length > 0 && (
+          <div class="actions" data-pagefind-ignore>
+            {actions.map(({ text, link, variant, attrs }) =>
+              link === '/examples/' ? (
+                <span class="examples">
+                  <a class="btn" href={rooted(link)} {...attrs}>
+                    {text}
+                  </a>
+                  <Pull vessel="box" class="pedestal-box" />
+                </span>
+              ) : (
+                <a class:list={['btn', { primary: variant === 'primary' }]} href={rooted(link)} {...attrs}>
+                  {text}
+                </a>
+              ),
+            )}
+          </div>
+        )
+      }
+      <pre class="install"><code id="home-install">{`${ADD.npm} ${KIT}`}</code></pre>
+      {/* Says it with the package manager the reader picked in an install block, on any page. */}
+      <script is:inline define:vars={{ key: MANAGER_KEY, add: ADD, kit: KIT }}>
+        const chosen = add[localStorage.getItem(key) ?? ''];
+        if (chosen) document.getElementById('home-install').textContent = `${chosen} ${kit}`;
+      </script>
+      <p class="hint">The kit draws the frame on the right. Scroll to see it built.</p>
+    </div>
+  </div>
+</header>
+
+{/* Inline, on this page alone, as a `:root:has()` rule would restyle all of every page at any
+    change in it. The classes are Starlight's own (theme.css lists them) and the header's. */}
+<style is:inline>
+  :root.home-staged .header {
+    border-bottom-color: color-mix(
+      in oklab,
+      var(--rule) calc(var(--home-bar, 0) * 100%),
+      transparent
+    );
+    background: color-mix(in oklab, var(--ground) calc(var(--home-bar, 0) * 100%), transparent);
+  }
+
+  /* No room for the mark at the top, where the hero's lockup is. With WebGPU the lockup goes up into
+     it (runtime.ts); without, it comes in once the lockup has left the screen. */
+  .header .mark {
+    /* The mark's width, 72 of its pixels, and the bar's gap. */
+    margin-right: calc(-72px - var(--s-5));
+    visibility: hidden;
+  }
+
+  .header .mark.handed {
+    visibility: visible;
+  }
+
+  /* Header.astro's phone gap. */
+  @media (max-width: 49.99em) {
+    .header .mark {
+      margin-right: calc(-72px - var(--s-3));
+    }
+  }
+
+  /* The sections make room before the mark fades in, and close up after it has faded out. */
+  :root:not(.home-staged) .header .mark {
+    opacity: 0;
+    transition:
+      opacity 0.15s ease,
+      margin-right 0.3s ease 0.1s,
+      visibility 0s 0.4s;
+  }
+
+  :root:not(.home-staged) .header .mark.handed {
+    margin-right: 0;
+    opacity: 1;
+    transition:
+      margin-right 0.3s ease,
+      opacity 0.2s ease 0.2s,
+      visibility 0s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root:not(.home-staged) .header .mark,
+    :root:not(.home-staged) .header .mark.handed {
+      transition: none;
+    }
+  }
+
+  /* No section is this page's, and the rail's light wouldn't follow the sections as they move. */
+  :root.home-staged .header .rail {
+    display: none;
+  }
+
+  :root.home-staged .main-frame {
+    padding-top: 0;
+  }
+
+  :root.home-staged main > .content-panel:first-child {
+    padding-top: 0;
+  }
+
+  .main-pane {
+    overflow-x: clip;
+  }
+</style>
+
+<script>
+  import { plate } from '../site/lockup.ts';
+
+  const staged = () => document.documentElement.classList.contains('home-staged');
+  const hero = document.querySelector<HTMLElement>('[data-home-hero]');
+  const lockup = hero?.querySelector<HTMLElement>('.lockup');
+  const svg = lockup?.querySelector('svg');
+  const printed = lockup?.querySelector<HTMLCanvasElement>('canvas.plate');
+
+  if (lockup && svg && printed && !staged()) {
+    void plate(printed, svg, { over: hero?.querySelector<HTMLElement>('.title') ?? lockup });
+  }
+
+  // And the header's mark comes in while the lockup is off the screen
+  const mark = document.querySelector<HTMLElement>('.header .mark');
+  if (lockup && mark) {
+    new IntersectionObserver(([entry]) => {
+      if (entry && !staged()) mark.classList.toggle('handed', !entry.isIntersecting);
+    }).observe(lockup);
+  }
+</script>
+
+<style>
+  .home {
+    position: relative;
+    z-index: 2;
+    padding: calc(var(--sl-nav-height) + var(--s-6)) 0 var(--s-7);
+  }
+
+  /* The lockup in whole CSS pixels a logo pixel, so its cells stay square, and the title spaced in
+     them. */
+  .title {
+    --pixel: 4px;
+    max-width: 30rem;
+  }
+
+  .by {
+    display: flex;
+    gap: var(--s-3);
+    align-items: center;
+    width: max-content;
+    margin-bottom: calc(6 * var(--pixel));
+    color: var(--muted);
+    font-size: 14px;
+    text-decoration: none;
+    transition: color 0.12s;
+  }
+
+  .by:hover {
+    color: var(--text);
+  }
+
+  .badge :global(svg) {
+    display: block;
+    width: auto;
+    height: 44px;
+  }
+
+
+  h1 {
+    margin: 0;
+    line-height: 0;
+  }
+
+  .lockup {
+    position: relative;
+    display: block;
+    width: max-content;
+  }
+
+  .lockup :global(svg) {
+    display: block;
+    width: auto;
+    height: calc(31 * var(--pixel));
+  }
+
+  .plate {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+  }
+
+  .tagline {
+    margin: calc(6 * var(--pixel)) 0 0;
+    color: var(--text-2);
+    font-size: clamp(17px, 1.4vw, 20px);
+    line-height: 1.4;
+  }
+
+  /* Under the buttons, quiet beside them */
+  .install {
+    width: max-content;
+    max-width: 100%;
+    margin: var(--s-4) 0 0;
+    overflow-x: auto;
+    color: var(--muted);
+    font: 13px/1.5 var(--font-mono);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+    align-items: end;
+    margin-top: var(--s-5);
+  }
+
+  /* A small box standing on the Examples button, a find rather than a feature */
+  .examples {
+    position: relative;
+    display: inline-flex;
+    isolation: isolate;
+  }
+
+  .examples .btn {
+    position: relative;
+    z-index: 1;
+    background: var(--ground);
+  }
+
+  /* Room for the box whenever the cards are on, so the buttons stay put once it is opened or gone */
+  :global(:root[data-cards]) .actions {
+    margin-top: 76px;
+  }
+
+  .examples :global(.pedestal-box) {
+    position: absolute;
+    bottom: calc(100% - 8px);
+    left: 50%;
+    z-index: 2;
+    width: 112px;
+    height: 84px;
+    translate: -50% 0;
+  }
+
+  /* A sentence a line, clear of the stack. */
+  .hint {
+    display: none;
+    max-width: 38ch;
+    margin: var(--s-5) 0 0;
+    color: var(--muted);
+    font: 12px/1.5 var(--font-mono);
+    transition: opacity 0.15s;
+  }
+
+  .tagged .hint {
+    opacity: 0;
+  }
+
+  /* Over the stage: the hero holds no room, and the title stands where the stage is while the stage
+     holds still. */
+  :global(:root.home-staged) .home {
+    position: sticky;
+    top: 0;
+    /* Its own formatting context, so the page's margins don't collapse through it and push the stage down */
+    display: flow-root;
+    height: 0;
+    margin: 0;
+    padding: 0;
+  }
+
+  :global(:root.home-staged) .box {
+    position: absolute;
+    top: 0;
+    left: calc(50% - 50vw);
+    width: 100vw;
+    height: 100svh;
+    min-height: 640px;
+    pointer-events: none;
+  }
+
+  /* Fixed with the stage once it is held (runtime.ts), as Safari on a phone shakes a sticky one */
+  :global(:root.home-staged) .home[data-pinned] .box {
+    position: fixed;
+    left: 0;
+  }
+
+  /* Centred down the stage, by margins rather than a transform, which would hold the pull's dialog */
+  :global(:root.home-staged) .title {
+    position: absolute;
+    inset-block: 0;
+    left: 4.5%;
+    height: fit-content;
+    margin-block: auto;
+    width: min(28vw, 30rem);
+    max-width: none;
+    pointer-events: auto;
+  }
+
+  :global(:root.home-staged) .hint {
+    display: block;
+  }
+
+  /* The ink, drawn under the title once the stage is live, takes over from the SVGs as they fade */
+  .live .lockup :global(svg),
+  .live .badge :global(svg) {
+    visibility: hidden;
+    opacity: 0;
+    transition:
+      opacity 0.5s ease,
+      visibility 0s 0.5s;
+  }
+
+  /* Large screens: a step up, as the stage beside it grows. */
+  @media (min-width: 100em) and (min-height: 54em) {
+    .title {
+      --pixel: 5px;
+    }
+  }
+
+  /* Phones: the stack above, the title below it. */
+  @media (max-width: 56em) {
+    :global(:root.home-staged) .title {
+      top: auto;
+      bottom: 4%;
+      left: 5%;
+      width: 90%;
+    }
+
+    :global(:root.home-staged) .hint {
+      display: none;
+    }
+
+    .title {
+      --pixel: 3px;
+    }
+
+    :global(:root[data-cards]) .actions {
+      margin-top: 68px;
+    }
+
+    .examples :global(.pedestal-box) {
+      width: 100px;
+      height: 76px;
+    }
+  }
+</style>

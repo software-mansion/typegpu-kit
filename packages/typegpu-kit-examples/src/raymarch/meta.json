@@ -1,0 +1,8 @@
+{
+  "title": "Raymarch",
+  "category": "techniques",
+  "description": "Five balls merge into a cube in a single raymarching pass. A 'use gpu' function supplies a distance field built with @typegpu/sdf. Rays come from the orbit camera, and @typegpu/color supplies Oklab colours. The final pass applies post-processing, and FXAA smooths edges.",
+  "line": "Balls melting into a cube, a distance field marched per pixel, its edges smoothed with FXAA.",
+  "order": 31,
+  "hint": "drag to orbit · wheel to zoom"
+}

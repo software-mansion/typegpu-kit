@@ -1,0 +1,179 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="runtime-lanes">
+  <p class="viz-title">Scene frames, app UI and sent closures on three runtimes</p>
+  <svg viewBox="0 0 640 150" role="img" aria-label="Scene frames, UI work and sent closures across three runtimes"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Choice name="on" label="on" options={['worker', 'ui', 'js']} value="worker" />
+    <Slider inline name="frame" label="scene frame" min={1} max={14} step={0.1} value={3.7} unit=" ms" />
+    <Slider inline name="ui" label="app UI" min={0.5} max={10} step={0.5} value={3} unit=" ms" />
+    <button data-action="send">send</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise the scene frame above 8.33 ms, one vsync at 120 Hz. On <code>'ui'</code> the app drops frames. On a worker the UI keeps running, and <code>missed()</code> counts the frames the scene missed. Press <code>send</code> to run a closure when the scene runtime is free.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, animation, choice, each, slider, statusLine } from './figure.ts';
+  import {
+    createProgram,
+    LANES,
+    VSYNC,
+    type Lane,
+    type Placement,
+    type Program,
+  } from './RuntimeLanes.program.ts';
+  import { stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  const LEFT = 84;
+  /** Laid out in CSS pixels, so a phone shows less time rather than smaller text. */
+  const PER_MS = 6;
+  const SLOWDOWN = 25;
+  /** The model time the readouts count over. */
+  const WINDOW = 500;
+  const TOP = 18;
+  const LANE = 30;
+  const laneY = (lane: Lane) => TOP + 18 + LANES.indexOf(lane) * LANE;
+
+  const NAMES: Record<Lane, string> = { js: 'JS thread', ui: 'UI runtime', worker: 'worker' };
+  const IDLE: Record<Lane, string> = { js: 'React, the hook', ui: '', worker: 'idle' };
+  const FILL = {
+    scene: 'var(--viz-b)',
+    app: 'var(--viz-d)',
+    relay: 'var(--viz-e)',
+    send: 'var(--viz-c)',
+  } as const;
+  const LEGEND = [
+    ['scene frame', FILL.scene],
+    ['app UI', FILL.app],
+    ['sent closure', FILL.send],
+    ['dropped or missed', ''],
+  ] as const;
+
+  each('runtime-lanes', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const frame = slider(root, 'frame', (ms) => (program.frame = ms));
+    const ui = slider(root, 'ui', (ms) => (program.ui = ms));
+
+    const start = (on: Placement) => {
+      const next = createProgram({ on, frame: frame.valueAsNumber, ui: ui.valueAsNumber });
+      next.advance(WINDOW);
+      return next;
+    };
+    const on = choice<Placement>(root, 'on', (placement) => {
+      program.destroy();
+      program = start(placement);
+      shown.redraw();
+    });
+    let program: Program = start(on.value);
+
+    const draw = fitWidth(figure, (width) => {
+      const { now } = program;
+      const x = (t: number) => width - (now - t) * PER_MS;
+      const from = now - (width - LEFT) / PER_MS;
+      const bottom = laneY('worker') + 14;
+      const scene: Lane = program.on;
+
+      text(figure, 0, 12, 'vsync', { class: 'strong' });
+      for (let k = Math.ceil(from / VSYNC); k * VSYNC <= now; k++) {
+        const at = x(k * VSYNC);
+        svg('line', { x1: at, x2: at, y1: 4, y2: bottom, stroke: 'var(--viz-line)', 'stroke-dasharray': '2 3' }, figure);
+      }
+
+      for (const lane of LANES) {
+        const y = laneY(lane);
+        text(figure, 0, y + 4, NAMES[lane], lane === scene ? { class: 'strong' } : {});
+        svg('line', { x1: LEFT, x2: width, y1: y, y2: y, stroke: 'var(--viz-line)', 'stroke-opacity': 0.4 }, figure);
+        const busy = program.blocks.some((block) => block.lane === lane && block.end > from);
+        if (!busy && IDLE[lane]) text(figure, LEFT + 6, y + 4, IDLE[lane]);
+      }
+
+      for (const block of program.blocks) {
+        if (block.end < from || block.start > now) continue;
+        const x1 = Math.max(x(block.start), LEFT);
+        const x2 = x(Math.min(block.end, now));
+        const y = laneY(block.lane);
+        svg('rect', {
+          x: x1, y: y - 7, width: Math.max(x2 - x1, 1.5), height: 14, rx: 2,
+          fill: stipple(figure, FILL[block.kind], block.kind === 'scene' ? 0.5 : 0.25),
+          stroke: FILL[block.kind],
+          ...(block.reads ? { stroke: FILL.send, 'stroke-width': 2 } : {}),
+        }, figure);
+
+        // animate's dt in ms, where it fits, so 8 and 17 tell 120 Hz from 60
+        const dt = block.dt === undefined ? '' : String(Math.round(block.dt * 1000));
+        if (dt && x2 - x1 >= dt.length * CHAR + 4) {
+          text(figure, (x1 + x2) / 2, y + 4, dt, { 'text-anchor': 'middle', style: 'fill: var(--text-2)' });
+        }
+      }
+
+      for (const mark of program.marks) {
+        if (mark.at < from) continue;
+        text(figure, x(mark.at), laneY(mark.lane) - 9, '×', { 'text-anchor': 'middle', style: 'fill: var(--viz-bad)' });
+      }
+
+      for (const sent of program.sends) {
+        if (sent.at < from && (sent.ran ?? now) < from) continue;
+        const y1 = laneY('ui');
+        if (sent.at >= from) svg('circle', { cx: x(sent.at), cy: y1, r: 3.5, fill: FILL.send }, figure);
+        if (sent.ran === undefined) continue;
+        svg('line', {
+          x1: Math.max(x(sent.at), LEFT), y1, x2: Math.max(x(sent.ran), LEFT), y2: laneY(scene),
+          stroke: FILL.send, 'stroke-width': 1.5,
+        }, figure);
+      }
+
+      let lx = 0;
+      let ly = bottom + 22;
+      for (const [label, fill] of LEGEND) {
+        const wide = 16 + label.length * CHAR + 18;
+        if (lx > 0 && lx + wide > width) {
+          lx = 0;
+          ly += 18;
+        }
+        if (fill) {
+          svg('rect', { x: lx, y: ly - 9, width: 10, height: 10, rx: 2, fill: stipple(figure, fill, 0.5), stroke: fill }, figure);
+        } else {
+          text(figure, lx + 5, ly, '×', { 'text-anchor': 'middle', style: 'fill: var(--viz-bad)' });
+        }
+        text(figure, lx + 16, ly, label);
+        lx += wide;
+      }
+
+      const stats = program.stats(WINDOW);
+      const missed = program.on === 'worker' ? `missed() ${stats.missed}` : 'no relay';
+      const last = program.sends.at(-1);
+      const read = last?.read === undefined ? '' : ` · send read ${(last.read - last.at).toFixed(1)} ms after`;
+      status.textContent =
+        `scene ${Math.round(stats.hz)} frames/s · app UI dropped ${stats.dropped} of ${stats.shown} · ${missed}${read}`;
+
+      return ly + 8;
+    }, 300);
+
+    const shown = animation(root, {
+      step(dt) {
+        program.advance((dt * 1000) / SLOWDOWN);
+      },
+      draw,
+      play: action(root, 'play'),
+      destroy: () => program.destroy(),
+    });
+
+    // Paused, a send runs the model on until a frame reads it, so it shows
+    action(root, 'send', () => {
+      program.send();
+      if (!shown.playing) {
+        const sent = program.sends.at(-1)!;
+        for (let i = 0; i < 12 && sent.read === undefined; i++) program.advance(VSYNC / 2);
+      }
+      shown.redraw();
+    });
+  });
+</script>

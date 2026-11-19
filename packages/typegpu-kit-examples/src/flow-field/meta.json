@@ -1,0 +1,10 @@
+{
+  "title": "Flow field",
+  "category": "techniques",
+  "description": "65 536 particles drift across the screen, each turning to the angle of the Perlin noise under it and glowing in the colour of its heading. The Write a module tutorial writes it as a module and a scene.",
+  "line": "65 536 particles, each steered by the Perlin noise under it.",
+  "order": 32,
+  "poster": {
+    "quality": 65
+  }
+}

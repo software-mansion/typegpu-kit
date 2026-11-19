@@ -1,0 +1,12 @@
+{
+  "title": "SPH sculpt",
+  "category": "simulations",
+  "description": "An island of plasticine you dig and build on, ray traced in compute through an 8-bit distance field with seven mips. The kit's lighting shades it with soft wrapped light, cone-traced shadows and occlusion under a golden-hour sky baked into an environment, and FXAA smooths its edges. A spring feeds SPH water, sorted into the kit's neighbour grid each step. Only the grid's blocks near water rebuild the surface the rays meet.",
+  "line": "Dig channels in clay and watch water from a spring flow downhill.",
+  "order": 16,
+  "features": ["texture-formats-tier1"],
+  "hint": "drag to dig \u00b7 hold Shift to build \u00b7 right-drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 16
+  }
+}

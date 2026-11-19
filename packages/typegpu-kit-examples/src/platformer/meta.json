@@ -1,0 +1,10 @@
+{
+  "title": "Platformer",
+  "category": "games",
+  "description": "Pixel art at 16 texels a tile is printed on paper cards under a desk lamp. Each card casts a soft shadow on the cards behind it, and its cut edges catch the light. Every layer and sprite moves by whole texels, and the print scales the art up with square texels. Hero physics runs on the CPU at 120 Hz. The GPU moves critters, counts their contacts as events and reads them back. A coroutine removes collected coins from a table. Particles add dust and sparkles.",
+  "line": "Pixel art printed on paper cards, critters moved on the GPU.",
+  "order": 28,
+  "hint": "arrows or A D move \u00b7 space jumps, longer when held",
+  "card": { "demo": [2.2] },
+  "poster": { "seconds": 2.62 }
+}

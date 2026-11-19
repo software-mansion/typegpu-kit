@@ -1,0 +1,83 @@
+---
+// A call as a card or a strip writes it, in runs that wrap whole. A name leads to its module's page
+// or its definition on the card, and an argument takes its role's underline
+import type { Card, Links } from '../../contracts/facets.ts';
+import { runsOf, type Label, type Line } from '../../contracts/signature.ts';
+import { tokenHrefs, type ModuleContract } from './modules.ts';
+
+interface Props {
+  module: ModuleContract;
+  card: Card;
+  line: Line;
+  links: Links;
+  /**
+   * The labels of the rows under the call, in order: each argument's `data-key` is its row. A call
+   * without rows names each argument in its tooltip instead.
+   */
+  rows?: readonly (Label | undefined)[];
+}
+
+const { module, card, line, links, rows } = Astro.props;
+const hrefs = tokenHrefs(module, card, line);
+---
+
+{
+  runsOf(line.tokens).map((run) => (
+    <span class="run">
+      {run.map((token) => {
+        const href = token.label?.module
+          ? links.module(token.label.module)
+          : hrefs[line.tokens.indexOf(token)];
+        const text = href ? <a href={href}>{token.text}</a> : token.text;
+        return token.label ? (
+          <code
+            class="arg"
+            data-role={token.label.role}
+            data-key={rows?.indexOf(token.label)}
+            title={rows ? undefined : token.label.words}
+          >
+            {text}
+          </code>
+        ) : href ? (
+          // The options object: no row of its own, its table under the call
+          <code class="arg" data-role="takes">
+            {text}
+          </code>
+        ) : (
+          <code>{text}</code>
+        );
+      })}
+    </span>
+  ))
+}
+
+<style>
+  .run {
+    display: flex;
+    max-width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+
+  .arg {
+    border-radius: 2px;
+    transition: background-color 0.12s;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--accent-high);
+  }
+</style>

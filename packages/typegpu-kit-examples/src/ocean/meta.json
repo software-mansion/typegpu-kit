@@ -1,0 +1,8 @@
+{
+  "title": "Ocean",
+  "category": "simulations",
+  "description": "A near gale at dusk on an open sea. Four 512² FFT cascades of a JONSWAP wind sea and swell are evolved, inverse-transformed and packed into mipmapped textures every frame. A clipmap of eleven levels displaces the surface, and the fragment shader filters slopes and their moments, so distant waves turn into roughness instead of sparkle. The water's body is shaded after the Atlas water model as Ethan Truong's GodotOceanWaves (MIT) implements it: a dark albedo lit by the sun and sky, and the sun scattered through the backs of raised waves. Foam forms where the horizontal deformation compresses the crests, and a persistent buffer keeps it as lace behind them. The sky comes from Hillaire's atmosphere lookup tables and a volumetric cloud deck, which an environment bakes into the water's reflections, and bloom and the final pass finish the frame. The eye stands still above the swell; the sun runs from below the horizon to 60°.",
+  "line": "A near gale at dusk: FFT waves, foam on the crests and a low sun under the deck.",
+  "order": 12,
+  "hint": "drag to look around"
+}

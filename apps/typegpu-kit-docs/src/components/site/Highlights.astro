@@ -1,0 +1,37 @@
+---
+import { highlights } from 'typegpu-kit-examples';
+import LiveGrid from './LiveGrid.astro';
+
+interface Props {
+  /** Card heading level. Set it one below the enclosing heading. Default 3. */
+  level?: 2 | 3;
+}
+
+const { level = 3 } = Astro.props;
+---
+
+<LiveGrid ask feature level={level} keys={highlights.map((example) => example.key)} />
+{
+  Astro.slots.has('default') && (
+    <div class="more">
+      <slot />
+    </div>
+  )
+}
+
+<style>
+  .more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3) var(--s-5);
+    align-items: center;
+    justify-content: space-between;
+    margin-top: var(--s-5);
+    color: var(--muted);
+    font-size: var(--sl-text-sm);
+  }
+
+  .more > :global(*) {
+    margin: 0;
+  }
+</style>

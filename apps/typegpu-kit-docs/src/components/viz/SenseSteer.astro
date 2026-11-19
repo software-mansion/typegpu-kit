@@ -1,0 +1,177 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="sense-steer">
+  <p class="viz-title">An agent senses the trail at three points and turns</p>
+  <svg
+    viewBox="0 0 640 300"
+    role="img"
+    aria-label="Agent sensing three trail positions and turning toward the strongest"
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Slider inline name="angle" label="sensor angle" min={5} max={90} value={30} unit="°" />
+    <Slider inline name="distance" label="sensor distance" min={1} max={8} step={0.5} value={4} unit=" cells" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Widen the angle to switch between threads, or shorten the distance to follow bends. The agent turns toward its strongest sensor.
+  </figcaption>
+</figure>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, each, slider } from './figure.ts';
+  import { stipple, fitWidth, seeded, svg, text } from './svg.ts';
+
+  const COLUMNS = 40;
+  const ROWS = 18;
+  /** The agent's turn and step, in radians and cells, and steps a second. */
+  const TURN = Math.PI / 4;
+  const SPEED = 0.5;
+  const RATE = 10;
+  const TRACK = 60;
+
+  /** Threads of trail across the patch: where each runs at `x`, its strength and its width. */
+  const THREADS = [
+    { at: (x: number) => 5 + 2.5 * Math.sin(x * 0.22 + 0.5), strength: 1, width: 1 },
+    { at: (x: number) => 12 + 3 * Math.sin(x * 0.15 + 2), strength: 0.7, width: 1.3 },
+    { at: (x: number) => 9 + 0.35 * (x - 20) + Math.sin(x * 0.4), strength: 0.45, width: 0.8 },
+  ];
+
+  each('sense-steer', (root) => {
+    const figure = root.querySelector('svg')!;
+    const random = seeded(7);
+
+    const trail = new Float32Array(COLUMNS * ROWS);
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLUMNS; x++) {
+        let value = 0.04 * random();
+        for (const thread of THREADS) {
+          const off = (y + 0.5 - thread.at(x + 0.5)) / thread.width;
+          value += thread.strength * Math.exp(-off * off * 0.5);
+        }
+        trail[y * COLUMNS + x] = Math.min(value, 1);
+      }
+    }
+
+    /** The trail at a point, blended between the nearest cells, as the GPU's sampler reads it. */
+    const at = (x: number, y: number) => {
+      const fx = clamp(x - 0.5, 0, COLUMNS - 1);
+      const fy = clamp(y - 0.5, 0, ROWS - 1);
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const x1 = Math.min(x0 + 1, COLUMNS - 1);
+      const y1 = Math.min(y0 + 1, ROWS - 1);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      const row = (r: number) =>
+        trail[r * COLUMNS + x0] * (1 - tx) + trail[r * COLUMNS + x1] * tx;
+      return row(y0) * (1 - ty) + row(y1) * ty;
+    };
+
+    const agent = { x: 3, y: 9, heading: -0.3 };
+    let track: [number, number][] = [];
+    const respawn = () => {
+      agent.x = 2 + random() * 6;
+      agent.y = 3 + random() * (ROWS - 6);
+      agent.heading = (random() - 0.5) * 1.2;
+      track = [];
+    };
+
+    const angleInput = slider(root, 'angle', () => shown.redraw());
+    const distanceInput = slider(root, 'distance', () => shown.redraw());
+
+    /** What each sensor reads, and which way the agent turns: -1 left, 1 right, 0 on. */
+    const sense = () => {
+      const angle = (angleInput.valueAsNumber * Math.PI) / 180;
+      const reach = distanceInput.valueAsNumber;
+      const sensors = [-angle, 0, angle].map((offset) => {
+        const x = agent.x + Math.cos(agent.heading + offset) * reach;
+        const y = agent.y + Math.sin(agent.heading + offset) * reach;
+        return { x, y, value: at(x, y) };
+      });
+      const [left, ahead, right] = sensors.map((sensor) => sensor.value) as [number, number, number];
+      let turn = 0;
+      if (ahead < left && ahead < right) turn = 2;
+      else if (left > ahead && left > right) turn = -1;
+      else if (right > ahead && right > left) turn = 1;
+      return { sensors, turn };
+    };
+
+    const step = () => {
+      const { turn } = sense();
+      const side = turn === 2 ? (random() < 0.5 ? -1 : 1) : turn;
+      agent.heading += side * TURN * (0.5 + random());
+      agent.x += Math.cos(agent.heading) * SPEED;
+      agent.y += Math.sin(agent.heading) * SPEED;
+      track.push([agent.x, agent.y]);
+      if (track.length > TRACK) track.shift();
+      const outside = agent.x < 0 || agent.x > COLUMNS || agent.y < 1.5 || agent.y > ROWS - 1.5;
+      if (outside) respawn();
+    };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const cell = width / COLUMNS;
+        const top = cell * 3;
+        const px = (x: number) => x * cell;
+        const py = (y: number) => top + y * cell;
+
+        for (let y = 0; y < ROWS; y++) {
+          for (let x = 0; x < COLUMNS; x++) {
+            svg('rect', {
+              x: px(x), y: py(y), width: cell + 0.5, height: cell + 0.5,
+              fill: stipple(figure, 'var(--viz-muted)', Math.round(trail[y * COLUMNS + x] * 8) / 8),
+            }, figure);
+          }
+        }
+
+        if (track.length > 1) {
+          svg('polyline', {
+            points: track.map(([x, y]) => `${px(x)},${py(y)}`).join(' '),
+            fill: 'none', stroke: 'var(--text)', 'stroke-opacity': 0.5, 'stroke-width': 1.5, 'stroke-dasharray': '2 3',
+          }, figure);
+        }
+
+        const { sensors, turn } = sense();
+        const strongest = turn === 2 ? -1 : turn + 1;
+        const names = ['left', 'ahead', 'right'];
+        sensors.forEach((sensor, i) => {
+          svg('line', {
+            x1: px(agent.x), y1: py(agent.y), x2: px(sensor.x), y2: py(sensor.y),
+            stroke: 'var(--text)', 'stroke-opacity': 0.6, 'stroke-dasharray': '3 3',
+          }, figure);
+          svg('circle', {
+            cx: px(sensor.x), cy: py(sensor.y), r: Math.max(4, cell * 0.45),
+            fill: i === strongest ? 'var(--viz-accent)' : 'var(--ground-2)', stroke: 'var(--text)', 'stroke-width': 1.5,
+          }, figure);
+        });
+
+        const hx = Math.cos(agent.heading);
+        const hy = Math.sin(agent.heading);
+        svg('line', {
+          x1: px(agent.x), y1: py(agent.y), x2: px(agent.x) + hx * cell * 1.6, y2: py(agent.y) + hy * cell * 1.6,
+          stroke: 'var(--text)', 'stroke-width': 2,
+        }, figure);
+        svg('circle', { cx: px(agent.x), cy: py(agent.y), r: Math.max(4, cell * 0.4), fill: 'var(--text)' }, figure);
+
+        const below = py(ROWS) + cell * 3 + 14;
+        const readings = sensors.map((sensor, i) => `${names[i]} ${sensor.value.toFixed(2)}`).join('  ');
+        text(figure, 0, below, readings, { class: 'strong' });
+        const words = ['turns left', 'goes on', 'turns right', 'ahead is weakest: turns either way'][turn + 1];
+        text(figure, 0, below + 18, words, { style: 'fill: var(--viz-accent)' });
+        return below + 26;
+      },
+      320,
+    );
+
+    const shown = animation(root, {
+      step,
+      every: 1 / RATE,
+      draw,
+      play: action(root, 'play'),
+    });
+  });
+</script>

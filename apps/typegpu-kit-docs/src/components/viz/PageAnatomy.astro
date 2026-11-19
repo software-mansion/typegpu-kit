@@ -1,0 +1,204 @@
+---
+// A module page in miniature, each part beside what it is for
+const parts = [
+  { part: 'title', name: 'What it is.', says: 'One sentence, under the kind of page and where the index holds it.' },
+  { part: 'strip', name: 'At a glance.', says: 'The import, the main call and the facts that differ from a plain module.' },
+  { part: 'prose', name: 'The problem.', says: 'What the module solves, before any API.' },
+  { part: 'figure', name: 'A figure you can operate.', says: 'Its caption says what to try.' },
+  { part: 'code', name: 'The module in use.', says: 'One block, typechecked against the kit.' },
+  { part: 'sections', name: 'Sections.', says: 'In the order you meet them: setup, each frame, edge cases, teardown.' },
+  { part: 'card', name: 'Reference.', says: 'The card with every call, option, member and fact.' },
+];
+---
+
+<figure class="viz" data-viz="page-anatomy">
+  <ol>
+    {
+      parts.map(({ part, name, says }, i) => (
+        <li>
+          <span class="badge">{i + 1}</span>
+          <span class="mini" data-part={part} aria-hidden="true">
+            {part === 'title' && (
+              <Fragment>
+                <i class="tag" />
+                <i class="head" />
+                <i class="line" />
+              </Fragment>
+            )}
+            {part === 'strip' && [0, 1, 2, 3].map(() => <i class="pair" />)}
+            {part === 'prose' && [0, 1, 2].map(() => <i class="line" />)}
+            {part === 'figure' && (
+              <Fragment>
+                <i class="plate" />
+                <i class="keys" />
+              </Fragment>
+            )}
+            {part === 'code' && [0, 1, 2, 3].map(() => <i class="line" />)}
+            {part === 'sections' && (
+              <Fragment>
+                <i class="head" />
+                <i class="line" />
+                <i class="line" />
+                <i class="head" />
+                <i class="line" />
+              </Fragment>
+            )}
+            {part === 'card' && <i class="box" />}
+          </span>
+          <span class="says">
+            <b>{name}</b> {says}
+          </span>
+        </li>
+      ))
+    }
+  </ol>
+  <figcaption class="viz-caption">
+    Read down to the block of code to decide whether you want the module. The rest is for when you
+    use it.
+  </figcaption>
+</figure>
+
+<style>
+  ol {
+    display: grid;
+    grid-template-columns: auto minmax(88px, 240px) minmax(0, 1fr);
+    gap: 0 var(--s-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+    margin: 0;
+  }
+
+  /* The parts stack into one page: a hairline around the column, none between its parts. */
+  .mini {
+    display: grid;
+    gap: 5px;
+    padding: 9px 12px;
+    border-inline: 1px solid var(--rule-strong);
+  }
+
+  li:first-child .mini {
+    padding-top: 14px;
+    border-top: 1px solid var(--rule-strong);
+  }
+
+  li:last-child .mini {
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .mini i {
+    display: block;
+    height: 3px;
+    background: var(--rule-strong);
+  }
+
+  .mini .line:nth-child(odd) {
+    width: 92%;
+  }
+
+  .mini .line:last-child {
+    width: 60%;
+  }
+
+  .mini .tag {
+    width: 22%;
+    height: 7px;
+    border: 1px solid var(--accent);
+    background: none;
+  }
+
+  .mini .head {
+    width: 44%;
+    height: 7px;
+    background: var(--text-2);
+  }
+
+  [data-part='strip'] {
+    gap: 0;
+  }
+
+  .mini .pair {
+    height: 9px;
+    border-top: 1px solid var(--rule-strong);
+    background: linear-gradient(var(--muted), var(--muted)) 0 4px / 14% 2px no-repeat,
+      linear-gradient(var(--text-2), var(--text-2)) 22% 4px / 52% 2px no-repeat;
+  }
+
+  .mini .pair:last-child {
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .mini .plate {
+    height: 44px;
+    border: 1px solid var(--rule-strong);
+    background: var(--screen-door) 0 0 / 8px 8px;
+    opacity: 0.6;
+  }
+
+  .mini .keys {
+    width: 40%;
+    height: 7px;
+    border: 1px solid var(--rule-control);
+    background: none;
+  }
+
+  [data-part='code'] {
+    padding-left: 26px;
+    background: linear-gradient(var(--rule-strong), var(--rule-strong)) 14px 50% / 2px 76% no-repeat;
+  }
+
+  [data-part='code'] .line:nth-child(2) {
+    width: 70%;
+    margin-left: 10%;
+  }
+
+  .mini .box {
+    height: 46px;
+    border: 1px solid var(--rule-control);
+    background:
+      linear-gradient(var(--rule-strong), var(--rule-strong)) 8px 8px / 30% 3px no-repeat,
+      linear-gradient(var(--rule-strong), var(--rule-strong)) 8px 20px / 70% 3px no-repeat,
+      linear-gradient(var(--rule-strong), var(--rule-strong)) 8px 32px / 52% 3px no-repeat;
+  }
+
+  .badge {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--rule-control);
+    border-radius: 2px;
+    color: var(--text);
+    font: 500 11px/1 var(--font-mono);
+  }
+
+  .says {
+    padding: var(--s-2) 0;
+    color: var(--text-2);
+    font: 400 15px/1.5 var(--font-sans);
+  }
+
+  .says b {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  @media (max-width: 30rem) {
+    ol {
+      grid-template-columns: auto 88px minmax(0, 1fr);
+      gap: 0 var(--s-3);
+    }
+
+    .says {
+      font-size: 14px;
+    }
+  }
+</style>

@@ -1,0 +1,157 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="domino-count">
+  <p class="viz-title">One tap, from the GPU push to the CPU's count</p>
+  <svg viewBox="0 0 640 280" role="img" aria-label="Tap, GPU push, dominoes passing 45 degrees and delayed CPU count"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="tap" label="tap before frame" min={1} max={6} value={2} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Move the tap to change the readback delay without changing the fall. Each column is one frame at 60 frames per second, and the CPU receives captures at 10 Hz.
+  </figcaption>
+</figure>
+
+<script>
+  import { HEIGHT, THICKNESS } from 'typegpu-kit-examples/dominoes/layout.ts';
+  import { createProgram, type Column } from './CountersTimeline.program.ts';
+  import { line } from './fall.ts';
+  import { each, fail, slider, statusLine } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const COLUMNS = 24;
+  const LEFT = 82;
+  /** Room on the right for the lanes' CPU and GPU labels. */
+  const RIGHT = 30;
+  /** Steps of the fall in a frame: 1/120 s each, at 60 frames a second. */
+  const STEPS = 2;
+
+  const ROW = { tap: 34, compute: 66, 'domino 0': 104, counter: 146, capture: 172, latest: 210 };
+  const TALL = 228;
+
+  /** Per frame after the push, the first domino's angle, and how many dominoes passed 45° in it. */
+  const fall = (() => {
+    const dominoes = line(40);
+    const angles: number[] = [];
+    const fallen: number[] = [];
+    let passed = 0;
+    for (let f = 0; f < COLUMNS; f++) {
+      for (let k = 0; k < STEPS; k++) dominoes.step();
+      const now = dominoes.dominoes.filter((domino) => domino.angle >= Math.PI / 4).length;
+      fallen.push(now - passed);
+      passed = now;
+      angles.push(dominoes.dominoes[0].angle);
+    }
+    return { angles, fallen };
+  })();
+
+  each('domino-count', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    let columns: readonly Column[] = [];
+    let tapped = 2;
+    let generation = 0;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const count = Math.max(16, Math.min(COLUMNS, Math.floor((width - LEFT - RIGHT) / 22)));
+        const cell = (width - LEFT - RIGHT) / count;
+        const x = (f: number) => LEFT + f * cell + cell / 2;
+        const shown = columns.slice(0, count);
+
+        svg('rect', { x: 0, y: ROW.compute - 16, width, height: ROW.capture - ROW.compute + 30, rx: 2, fill: stipple(figure) }, figure);
+        text(figure, width - 6, ROW.compute - 4, 'GPU', { 'text-anchor': 'end' });
+        text(figure, width - 6, ROW.tap + 4, 'CPU', { 'text-anchor': 'end' });
+        text(figure, width - 6, ROW.latest + 4, 'CPU', { 'text-anchor': 'end' });
+        for (const [lane, y] of Object.entries(ROW)) text(figure, 6, y + 4, lane === 'capture' ? 'readback' : lane, { class: 'strong' });
+
+        let read: number | undefined;
+        shown.forEach((column, f) => {
+          const cx = x(f);
+          if (f % 2 === 0) text(figure, cx, 12, String(f), { 'text-anchor': 'middle' });
+          const since = f - tapped;
+
+          if (f === tapped) {
+            svg('path', { d: `M${cx - cell / 2},${ROW.tap - 8}v16`, stroke: 'var(--viz-a)', 'stroke-width': 2 }, figure);
+            svg('circle', { cx: cx - cell / 2, cy: ROW.tap, r: 5, fill: 'none', stroke: 'var(--viz-a)' }, figure);
+            svg('rect', { x: cx - cell / 2 + 2, y: ROW.compute - 8, width: cell - 4, height: 16, rx: 2, fill: stipple(figure, 'var(--viz-accent)', 0.5) }, figure);
+            text(figure, cx + cell / 2 + 4, ROW.compute + 4, 'pick, then push', { style: 'fill: var(--viz-a)' });
+          }
+
+          const angle = since < 0 ? 0 : fall.angles[since];
+          const scale = Math.min(cell * 0.12, 3.4);
+          const px = cx + (THICKNESS / 2) * scale;
+          const py = ROW['domino 0'] + (HEIGHT / 2) * scale;
+          const corner = (cx0: number, cy0: number) =>
+            `${px + (cx0 * Math.cos(angle) + cy0 * Math.sin(angle)) * scale},${py - (-cx0 * Math.sin(angle) + cy0 * Math.cos(angle)) * scale}`;
+          svg('polygon', {
+            points: [corner(-THICKNESS, 0), corner(0, 0), corner(0, HEIGHT), corner(-THICKNESS, HEIGHT)].join(' '),
+            fill: since < 0 ? 'none' : stipple(figure, 'var(--viz-accent)', 0.5),
+            stroke: since < 0 ? 'var(--viz-muted)' : 'var(--viz-accent)',
+          }, figure);
+
+          const before = shown[f - 1];
+          if (!before || before.counters.stomps !== column.counters.stomps) {
+            text(figure, cx, ROW.counter + 4, String(column.counters.stomps), { 'text-anchor': 'middle', class: column.counters.stomps ? 'strong' : '' });
+          }
+
+          const { copy } = column;
+          if (copy) {
+            const holds = column.counters.stomps > 0;
+            svg('circle', { cx, cy: ROW.capture, r: 3, fill: holds ? 'var(--viz-c)' : 'var(--viz-muted)' }, figure);
+            svg('rect', {
+              x: cx - 3, y: ROW.capture - 6, width: Math.min((copy.until - column.index) * cell, width - RIGHT - cx + 3), height: 12, rx: 2,
+              fill: holds ? stipple(figure, 'var(--viz-c)', 0.5) : stipple(figure, 'var(--viz-muted)', 0.5),
+              stroke: holds ? 'var(--viz-c)' : 'var(--viz-line)',
+            }, figure);
+          }
+
+          const now = column.latest?.stomps;
+          const was = before?.latest?.stomps;
+          if (now !== undefined && now !== was) {
+            const first = now > 0 && read === undefined;
+            if (first) read = f;
+            text(figure, cx, ROW.latest + 4, String(now), { 'text-anchor': 'middle', class: first ? 'strong' : '', ...(first ? { style: 'fill: var(--viz-b)' } : {}) });
+          } else if (now === undefined && before === undefined) {
+            text(figure, cx, ROW.latest + 4, 'none', { 'text-anchor': 'middle' });
+          }
+        });
+
+        const counted = shown.findIndex((column) => column.counters.stomps > 0);
+        if (read !== undefined && counted >= 0) {
+          svg('path', { d: `M${x(counted)},${ROW.latest + 12}H${x(read)}`, stroke: 'var(--viz-b)', 'stroke-dasharray': '2 3' }, figure);
+          status.textContent = `The first domino passes 45° in frame ${counted}. latest reads ${shown[read].latest!.stomps} in frame ${read}, ${read - counted} frames later.`;
+        } else {
+          status.textContent = `The first domino starts to tip in frame ${tapped}, the frame after the tap.`;
+        }
+        return TALL;
+      },
+      320,
+    );
+
+    /** Runs the frames again with the tap before frame `at`, and draws them. */
+    const run = async (at: number) => {
+      const mine = ++generation;
+      const program = createProgram({ hz: 10, latency: 2 });
+      try {
+        for (let f = 0; f < COLUMNS; f++) {
+          const fallen = f >= at ? fall.fallen[f - at] : 0;
+          if (fallen > 0) program.add('stomps', fallen);
+          await program.step();
+        }
+      } finally {
+        program.destroy();
+      }
+      if (mine !== generation) return;
+      tapped = at;
+      columns = program.columns;
+      draw();
+    };
+
+    const tap = slider(root, 'tap', (value) => void run(value).catch((error: unknown) => fail(root, error)));
+    return run(tap.valueAsNumber);
+  });
+</script>

@@ -1,0 +1,59 @@
+---
+title: Mipmaps
+description: Fill a texture's mip levels in your encoder, each texel combining a 2×2 block of the level above.
+modules: [kit/mipmaps]
+---
+
+import MipLevels from '../../../components/viz/MipLevels.astro';
+
+A texture you draw into, such as an atlas or a depth buffer, has only its first level. Sampling it small needs the smaller levels averaged from it, and an occlusion test needs each level to keep the farthest depth under it, so one texel answers for a whole block of the screen. `mipmaps.create` fills the levels from your `'use gpu'` function of each 2×2 block, in the encoder or compute pass of your frame.
+
+<MipLevels />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+import { mipmaps } from '@typegpu/kit';
+
+const depth = root
+  .createTexture({ size: [1280, 720], format: 'depth32float' })
+  .$usage('render', 'sampled');
+// Half the depth's size, rounded up to powers of two, so every level halves evenly. A screen
+// coordinate `uv` reads it at `uv * [640, 360] / [1024, 512]`
+const farthest = root
+  .createTexture({ size: [1024, 512], format: 'r32float', mipLevelCount: 11 })
+  .$usage('storage', 'sampled');
+const pyramid = mipmaps.create(root, farthest, { combine: mipmaps.largest, source: depth });
+
+frames.create(root, (frame) => {
+  // ... the depth prepass
+  const compute = frame.encoder.beginComputePass();
+  pyramid.record(compute);
+  // ... the kernel that culls what the depth hides
+  compute.end();
+});
+```
+
+## Combining
+
+`combine` takes the block's four texels as `vec4f`, left to right and then top to bottom, and returns the texel below them. The module exports three:
+
+- `mipmaps.mean` averages them, the filter for textures you sample.
+- `mipmaps.largest` and `mipmaps.smallest` keep the largest or smallest per channel, such as the farthest depth with depth that grows away from the eye.
+
+A function of your own can weigh the texels by their alpha, so empty texels around a cutout leave its colour alone.
+
+## Levels and passes
+
+Level 0 is yours to draw or write, and `record` fills level 1 and on from it. With `source`, `record` fills level 0 too, from that texture's blocks. A source larger than two texels per texel of level 0 leaves its far part out; one smaller repeats its last row and column.
+
+Levels fill as a [baker](/kit/baker/)'s texture does: one dispatch per level for a texture with `storage` usage, and otherwise a render pass per level and array layer, such as for the `rgba8unorm-srgb` atlas of [impostors](/kit/impostors/). Both fill every array layer of a level.
+
+`create` makes a bind group per level of its texture. `of(texture, source)` fills another texture of the same format and usage through the same pipeline, with bind groups of its own, such as the other texture of a pair. For a [target](/kit/targets/) that a resize replaces, call `of` through [`memo`](/kit/targets/#following-new-textures) with the current texture, so a resize makes bind groups and no pipeline.
+
+## Limits
+
+- The texture holds floats: a `float` or `unfilterable-float` sample type.
+- A level of odd size leaves the last row or column of the level above out. Size the texture in powers of two for blocks that cover every texel.

@@ -1,0 +1,293 @@
+---
+
+---
+
+<figure class="viz" data-viz="taa-samples">
+  <p class="viz-title">One edge, sampled at a new spot in every pixel each frame and blended over the cycle</p>
+  <svg class="viz-keys" viewBox="0 0 720 180" aria-label="The same pixels crossed by an edge, three times: this frame's stepped picture with its sample point, the samples the history holds, and the resolved picture with a smooth edge"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="step">Step</button>
+    <button data-action="move">Move the edge</button>
+    <button data-action="scale" aria-pressed="false">Draw at two thirds</button>
+  </div>
+  <figcaption class="viz-caption"><b class="viz-try">Try</b> Move the edge, or drag it sideways. It writes no motion here, so the pixels in coral find old samples that no longer match their neighbours and throw them out. Draw at two thirds to see the resolve rebuild the same edge from fewer pixels.</figcaption>
+</figure>
+
+<style>
+  svg {
+    touch-action: pan-y;
+    cursor: ew-resize;
+  }
+
+  @media (max-width: 30rem) {
+    .viz-status {
+      --lines: 2;
+    }
+  }
+</style>
+
+<script>
+  import type { Program } from './TaaSamples.program.ts';
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, each, onKeys, plural, statusLine, toggle, whenNear } from './figure.ts';
+  import { CHAR, fitWidth, pointIn, stipple, svg, text } from './svg.ts';
+
+  /** The figure width from which the three views sit side by side. */
+  const WIDE = 600;
+  const GAP = 24;
+  /** Room over a view for its name. */
+  const TOP = 20;
+  /** Seconds a frame takes while playing. */
+  const FRAME = 0.24;
+  /** Tones a pixel prints, as dither densities. */
+  const TONES = 16;
+  /** Where the edge may cross the middle row, clear of the loupe's sides, and where Move puts it. */
+  const REACH = [2.5, 6.5] as const;
+  const PLACES = [3.75, 5.75] as const;
+  /** Output pixels the edge moves before a drag draws a frame. */
+  const NUDGE = 0.1;
+
+  interface Panel {
+    readonly x: number;
+    readonly y: number;
+    /** The width of an output pixel. */
+    readonly cell: number;
+  }
+
+  each('taa-samples', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+
+    whenNear(root, async () => {
+      const { createProgram, shade, THROWN, WIDTH, HEIGHT } = await import('./TaaSamples.program.ts');
+
+      let program: Program;
+      /** Starts a history a few cycles in, so the picture opens settled. */
+      const start = (scaled: boolean, at: number) => {
+        program = createProgram({ scaled, edge: { at } });
+        const frames = Math.max(3 * program.phases + 2, 40);
+        for (let i = 0; i < frames; i++) program.step();
+      };
+      start(false, PLACES[0]);
+
+      let panels: readonly Panel[] = [];
+
+      const draw = fitWidth(
+        figure,
+        (width) => {
+          const { drawn, edge, phases } = program;
+          const scaled = drawn.width < WIDTH;
+          const wide = width >= WIDE;
+          let height: number;
+          if (wide) {
+            const cell = Math.floor((width - 2 * GAP) / 3 / WIDTH);
+            const step = (width - 1 - cell * WIDTH) / 2;
+            panels = [0, 1, 2].map((k) => ({ x: Math.round(k * step), y: TOP, cell }));
+            height = TOP + cell * HEIGHT + 1;
+          } else {
+            // The two pictures side by side, over the samples at full width
+            const small = Math.floor((width - 16) / 2 / WIDTH);
+            const big = Math.min(Math.floor((width - 1) / WIDTH), 40);
+            const below = TOP + small * HEIGHT + 16 + TOP;
+            panels = [
+              { x: 0, y: TOP, cell: small },
+              { x: 0, y: below, cell: big },
+              { x: width - 1 - small * WIDTH, y: TOP, cell: small },
+            ];
+            height = below + big * HEIGHT + 1;
+          }
+          const [frame, samples, resolved] = panels;
+
+          /** A picture's pixels, `columns` across the view, as dither. */
+          const picture = (panel: Panel, values: Float32Array, columns: number) => {
+            const size = (panel.cell * WIDTH) / columns;
+            values.forEach((value, i) => {
+              const tone = Math.round(clamp(shade(value)) * TONES) / TONES;
+              if (tone === 0) return;
+              const x = Math.round((i % columns) * size);
+              const y = Math.round(Math.floor(i / columns) * size);
+              svg(
+                'rect',
+                {
+                  x: panel.x + x + 0.5,
+                  y: panel.y + y + 0.5,
+                  width: Math.round(((i % columns) + 1) * size) - x,
+                  height: Math.round((Math.floor(i / columns) + 1) * size) - y,
+                  fill: stipple(figure, 'var(--text-2)', tone),
+                },
+                figure,
+              );
+            });
+          };
+
+          /** The rules between a view's pixels, `columns` across it. */
+          const rules = (panel: Panel, columns: number, colour = 'var(--viz-line)') => {
+            const size = (panel.cell * WIDTH) / columns;
+            const across = panel.cell * WIDTH;
+            const down = panel.cell * HEIGHT;
+            let d = '';
+            for (let i = 0; i <= columns; i++) d += `M${panel.x + Math.round(i * size) + 0.5},${panel.y + 0.5}v${down}`;
+            for (let i = 0; i * size <= down; i++) d += `M${panel.x + 0.5},${panel.y + Math.round(i * size) + 0.5}h${across}`;
+            svg('path', { d, stroke: colour, fill: 'none' }, figure);
+          };
+
+          /** Where the edge crosses a view's top and bottom. */
+          const crossing = (panel: Panel) => {
+            const lean = (edge.slope * HEIGHT) / 2;
+            return {
+              x1: panel.x + (edge.at - lean) * panel.cell + 0.5,
+              y1: panel.y + 0.5,
+              x2: panel.x + (edge.at + lean) * panel.cell + 0.5,
+              y2: panel.y + panel.cell * HEIGHT + 0.5,
+            };
+          };
+
+          /** The pixels whose history the clamp threw out this frame. */
+          const thrown = (panel: Panel) => {
+            program.rejected.forEach((cut, i) => {
+              if (cut < THROWN) return;
+              svg(
+                'rect',
+                {
+                  x: panel.x + (i % WIDTH) * panel.cell + 2.5,
+                  y: panel.y + Math.floor(i / WIDTH) * panel.cell + 2.5,
+                  width: panel.cell - 4,
+                  height: panel.cell - 4,
+                  fill: 'none',
+                  stroke: 'var(--viz-bad)',
+                  'stroke-width': 1.5,
+                },
+                figure,
+              );
+            });
+          };
+
+          // This frame: a flat colour a drawn pixel, taken at the one point the jitter put in each
+          const grid = scaled ? 'var(--viz-b)' : 'var(--viz-line)';
+          text(figure, frame.x, 11, 'this frame');
+          if (scaled) text(figure, frame.x + 11 * CHAR, 11, `${drawn.width} × ${drawn.height}`, { fill: grid });
+          picture(frame, program.source, drawn.width);
+          rules(frame, drawn.width, grid);
+          const size = (frame.cell * WIDTH) / drawn.width;
+          const { point } = program;
+          for (let i = 0; i < program.source.length; i++) {
+            svg(
+              'circle',
+              {
+                cx: frame.x + ((i % drawn.width) + point.x) * size + 0.5,
+                cy: frame.y + (Math.floor(i / drawn.width) + point.y) * size + 0.5,
+                r: frame.cell < 24 ? 2 : 2.5,
+                fill: 'var(--viz-accent)',
+                stroke: 'var(--ground)',
+                'paint-order': 'stroke',
+              },
+              figure,
+            );
+          }
+
+          // The samples the history still holds, over the shape itself
+          text(figure, samples.x, samples.y - 9, `samples of the last ${phases} frames`);
+          const line = crossing(samples);
+          svg(
+            'path',
+            {
+              d: `M${samples.x + 0.5},${line.y1}H${line.x1}L${line.x2},${line.y2}H${samples.x + 0.5}Z`,
+              fill: stipple(figure, 'var(--viz-line)', 0.25),
+            },
+            figure,
+          );
+          rules(samples, WIDTH);
+          if (scaled) rules(samples, drawn.width, grid);
+          svg('line', { ...line, stroke: 'var(--text-2)' }, figure);
+          thrown(samples);
+          const radius = samples.cell < 24 ? 1.5 : 2;
+          for (const dot of program.dots()) {
+            const colour = dot.fresh ? 'var(--viz-accent)' : dot.hit ? 'var(--text)' : 'var(--viz-muted)';
+            svg(
+              'circle',
+              {
+                cx: samples.x + dot.x * samples.cell + 0.5,
+                cy: samples.y + dot.y * samples.cell + 0.5,
+                r: dot.hit ? radius : radius - 0.5,
+                fill: dot.hit ? colour : 'var(--ground)',
+                stroke: dot.hit ? 'none' : colour,
+                opacity: Math.min(0.3 + dot.share * 8, 1).toFixed(2),
+              },
+              figure,
+            );
+          }
+
+          // The blend: each pixel settles to the share of its samples that landed on the shape
+          text(figure, resolved.x, 11, 'resolved');
+          if (scaled) text(figure, resolved.x + 9 * CHAR, 11, `${WIDTH} × ${HEIGHT}`);
+          picture(resolved, program.resolved, WIDTH);
+          rules(resolved, WIDTH);
+          thrown(resolved);
+
+          const count = program.rejected.reduce((sum, cut) => sum + (cut < THROWN ? 0 : 1), 0);
+          const frameOf = `Frame ${program.phase + 1} of the ${phases}-frame cycle.`;
+          const said = count
+            ? `${frameOf} ${plural(count, 'pixel')} threw out old samples.`
+            : frameOf;
+          if (status.textContent !== said) status.textContent = said;
+          return height;
+        },
+        300,
+      );
+
+      const shown = animation(root, {
+        step: () => program.step(),
+        every: FRAME,
+        draw,
+        play: action(root, 'play'),
+      });
+
+      /** Draws a frame now, so a change shows at once. */
+      const step = () => {
+        program.step();
+        shown.redraw();
+      };
+      action(root, 'step', () => {
+        shown.play(false);
+        step();
+      });
+
+      /** Puts the edge at `at`, and draws a frame once it has moved far enough to show. */
+      let stepped: number = PLACES[0];
+      const move = (at: number) => {
+        program.edge.at = clamp(at, REACH[0], REACH[1]);
+        if (Math.abs(program.edge.at - stepped) < NUDGE) return shown.redraw();
+        stepped = program.edge.at;
+        step();
+      };
+      action(root, 'move', () => move(program.edge.at < (PLACES[0] + PLACES[1]) / 2 ? PLACES[1] : PLACES[0]));
+
+      toggle(action(root, 'scale'), (on) => {
+        const { at } = program.edge;
+        program.destroy();
+        start(on, at);
+        shown.redraw();
+      });
+
+      let held: { readonly x: number; readonly at: number; readonly cell: number } | undefined;
+      figure.addEventListener('pointerdown', (event) => {
+        const { x, y } = pointIn(figure, event);
+        const panel = panels.find(
+          (view) => x >= view.x && x <= view.x + view.cell * WIDTH && y >= view.y && y <= view.y + view.cell * HEIGHT,
+        );
+        if (!panel) return;
+        held = { x, at: program.edge.at, cell: panel.cell };
+        figure.setPointerCapture(event.pointerId);
+      });
+      figure.addEventListener('pointermove', (event) => {
+        if (held) move(held.at + (pointIn(figure, event).x - held.x) / held.cell);
+      });
+      figure.addEventListener('pointerup', () => (held = undefined));
+      figure.addEventListener('pointercancel', () => (held = undefined));
+      onKeys(figure, { arrow: (dx) => move(program.edge.at + dx * 0.25) }, 'arrow keys move the edge');
+    });
+  });
+</script>

@@ -1,0 +1,99 @@
+<figure class="viz" data-viz="radix-passes">
+  <p class="viz-title">Eight keys sorted by ones digit, then by tens digit</p>
+  <svg
+    viewBox="0 0 640 160"
+    role="img"
+    tabindex="0"
+    aria-label="Eight keys with their payload sorted by the ones digit, then by the tens digit"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Tap a key, or use the arrow keys, to follow it and its payload letter through the passes. Keys with the same digit keep the order the last pass left them, so the two 42s never swap.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    cursor: pointer;
+  }
+
+  svg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<script>
+  import { each, onKeys, statusLine } from './figure.ts';
+  import { badge, fitWidth, svg, text } from './svg.ts';
+
+  const KEYS = [42, 17, 35, 12, 47, 32, 15, 42];
+  const PAYLOAD = 'abcdefgh';
+  const PASSES = [
+    { label: 'keys', digit: undefined },
+    { label: 'by ones', digit: 1 },
+    { label: 'by tens', digit: 10 },
+  ];
+
+  /** Each row's order, as indices into `KEYS`, after a stable sort by the row's digit. */
+  const rows: number[][] = [];
+  for (const { digit } of PASSES) {
+    const above = rows.at(-1) ?? KEYS.map((_, i) => i);
+    const of = (i: number) => Math.floor(KEYS[i] / (digit ?? 1)) % 10;
+    rows.push(digit === undefined ? above : above.toSorted((a, b) => of(a) - of(b)));
+  }
+
+  /** The top of row `r`. */
+  const y = (r: number) => 4 + r * 56;
+
+  each('radix-passes', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    let chosen = 0;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const left = 72;
+        const column = (width - left) / KEYS.length;
+        const x = (slot: number) => left + column * (slot + 0.5);
+        rows.forEach((order, r) => {
+          text(figure, 0, y(r) + 12.5, PASSES[r].label);
+          order.forEach((item, slot) => {
+            const lit = item === chosen;
+            if (r > 0) {
+              svg('line', {
+                x1: x(rows[r - 1].indexOf(item)),
+                y1: y(r - 1) + 32,
+                x2: x(slot),
+                y2: y(r),
+                stroke: lit ? 'var(--viz-accent)' : 'var(--viz-line)',
+              }, figure);
+            }
+            badge(figure, x(slot), y(r), KEYS[item], lit);
+            text(figure, x(slot), y(r) + 30, PAYLOAD[item], {
+              'text-anchor': 'middle',
+              fill: lit ? 'var(--accent-high)' : 'var(--viz-muted)',
+            });
+            const hit = svg('rect', { x: x(slot) - column / 2, y: y(r) - 4, width: column, height: 40, fill: 'transparent' }, figure);
+            hit.addEventListener('click', () => choose(item));
+          });
+        });
+
+        const slots = rows.map((order) => order.indexOf(chosen)).join(' → ');
+        status.textContent = `Key ${KEYS[chosen]} with payload ${PAYLOAD[chosen]} moves through slots ${slots}`;
+        return y(rows.length - 1) + 36;
+      },
+      360,
+    );
+
+    const choose = (item: number) => {
+      chosen = item;
+      draw();
+    };
+    onKeys(figure, {
+      arrow: (dx, dy) => choose((chosen + Math.sign(dx + dy) + KEYS.length) % KEYS.length),
+    });
+    draw();
+  });
+</script>

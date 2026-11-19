@@ -1,0 +1,41 @@
+---
+import Choice from './Choice.astro';
+import Loupe from './Loupe.astro';
+import { COLORS, FILTERS, LEVELS } from './Images.scene.ts';
+---
+
+<figure class="viz" data-viz="images">
+  <p class="viz-title">One sand image on a plane to the horizon</p>
+  <div class="viz-screen">
+    <canvas aria-label="A plane of gravelly sand stretching to the horizon"></canvas>
+    <Loupe at={[0.5, 0.26]} />
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="levels" label="mips" options={LEVELS} value={LEVELS[0]} />
+    <Choice name="filter" label="anisotropy" options={FILTERS} value={FILTERS[0]} />
+    <Choice name="color" label="color" options={COLORS} value={COLORS[0]} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Turn mips off to see the distant sand turn grainy. At 1× anisotropy, it blurs where the ground is seen at a slant. Read as <code>linear</code>, the colour bytes come out washed out.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each, live } from './figure.ts';
+  import type { Color, Filter, Levels } from './Images.scene.ts';
+
+  each('images', (figure) => {
+    const show = () => {
+      shown.update((scene) =>
+        scene.show({ levels: levels.value, filter: filter.value, color: color.value }),
+      );
+    };
+    const levels = choice<Levels>(figure, 'levels', show);
+    const filter = choice<Filter>(figure, 'filter', show);
+    const color = choice<Color>(figure, 'color', show);
+    const shown = live(figure, () => import('./Images.scene.ts'), undefined, {
+      ready: (scene) =>
+        scene.show({ levels: levels.value, filter: filter.value, color: color.value }),
+    });
+  });
+</script>

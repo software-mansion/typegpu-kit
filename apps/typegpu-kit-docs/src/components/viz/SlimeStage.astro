@@ -1,0 +1,37 @@
+---
+import type { Stage } from './SlimeStage.scene.ts';
+
+interface Props {
+  stage: Stage;
+}
+
+const { stage } = Astro.props;
+const label: Record<Stage, string> = {
+  specks: 'A blob of orange specks at the middle of the agar, spreading outward',
+  spread: 'A ring of soft orange trails spreading outward from the middle of the agar and fading',
+  sensing: 'Orange trails gathering into a network of threads that spreads across the agar',
+  food: 'A network of orange threads joining pale points of food on the agar',
+};
+---
+
+<figure class="viz" data-viz="slime-stage" data-stage={stage}>
+  <canvas aria-label={label[stage]}></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="restart">Start again</button>
+  </div>
+  <figcaption class="viz-caption"><slot /></figcaption>
+</figure>
+
+<script>
+  import { action, each, live } from './figure.ts';
+  import type { Stage } from './SlimeStage.scene.ts';
+
+  const scene = () => import('./SlimeStage.scene.ts');
+
+  each('slime-stage', (figure) => {
+    const stage = figure.dataset.stage as Stage;
+    const shown = live(figure, scene, { stage }, { animate: true, play: action(figure, 'play') });
+    action(figure, 'restart', () => shown.update((held) => held.restart()));
+  });
+</script>

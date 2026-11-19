@@ -1,0 +1,39 @@
+---
+import { MAX, RANGE, START } from './PointLights.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="point-lights">
+  <p class="viz-title">Point lights ride balls that one kernel moves</p>
+  <canvas aria-label="Moving point lights illuminating a floor and three balls"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Slider name="lights" min={1} max={MAX} value={START} />
+    <Slider name="range" min={1} max={8} step={0.5} value={RANGE} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Change range to set where light falls to zero. Each ball carries a row of a <code>lighting.MovingPointLight</code> table, and one kernel moves balls and lights without CPU position writes.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, each, live, slider } from './figure.ts';
+
+  each('point-lights', (figure) => {
+    const lights = slider(figure, 'lights', (count) => {
+      shown.update((scene) => scene.count(count));
+    });
+    const range = slider(figure, 'range', (value) => {
+      shown.update((scene) => scene.range(value));
+    });
+    const shown = live(figure, () => import('./PointLights.scene.ts'), undefined, {
+      animate: true,
+      grade: 1,
+      play: action(figure, 'play'),
+      ready(scene) {
+        scene.count(lights.valueAsNumber);
+        scene.range(range.valueAsNumber);
+      },
+    });
+  });
+</script>

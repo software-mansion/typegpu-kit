@@ -1,0 +1,15 @@
+{
+  "title": "Censer",
+  "category": "simulations",
+  "description": "A bronze censer hangs on a long chain and breathes incense from its vents. On the CPU, its heavy body swings rigid on three short chains and a long one, in small position-based steps: lift it over the pivot and the chain falls slack, drop it and the chain snaps taut. Drag it to throw it, and a gentle swing returns once you leave it alone. The smoke is a 3D grid of air stepped on the GPU after Crane, Llamas and Tariq's chapter in GPU Gems 3, with MacCormack advection, vorticity confinement and a multigrid pressure solve. The moving censer pushes the air, which carries the smoke on a grid twice as fine. At 120 Hz, each frame records half a step. Each step lights the smoke from one key light through itself and the censer, and each frame marches it at half resolution in steps that shorten at its edges, skipping empty bricks of air, before laying it over the censer by depth. The embers inside light the smoke near the lid. The smoke setting scales what the vents breathe out, from a faint thread to a billowing cloud.",
+  "line": "Incense smoke curls from a swinging censer, simulated and lit on the GPU.",
+  "order": 13,
+  "features": ["texture-formats-tier1"],
+  "card": {
+    "emission": 2
+  },
+  "poster": {
+    "seconds": 6.5
+  },
+  "hint": "drag the censer to swing it \u00b7 drag elsewhere to orbit \u00b7 wheel to zoom"
+}

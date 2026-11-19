@@ -1,0 +1,47 @@
+---
+interface Props {
+  /** Replaces the caption, which otherwise points into How the kit works. */
+  caption?: string;
+}
+
+const { caption } = Astro.props;
+---
+
+<figure class="viz" data-viz="ripple">
+  <canvas aria-label="Rings rippling out from the middle, with or without glow"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="glow" aria-pressed="false">Glow</button>
+  </div>
+  <figcaption class="viz-caption">
+    {
+      caption ?? (
+        <>
+          <b class="viz-try">Try</b> Turn on <em>Glow</em> to add the bloom from <a href="#a-module-borrows">A module borrows</a>. This is the frame this page builds.
+        </>
+      )
+    }
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    height: clamp(140px, 20vw, 220px);
+  }
+</style>
+
+<script>
+  import { action, each, live, toggle } from './figure.ts';
+
+  each('ripple', (figure) => {
+    const glow = toggle(action(figure, 'glow'), (on) => {
+      shown.update((scene) => scene.glow(on));
+    });
+    const shown = live(
+      figure,
+      () => import('./Ripple.scene.ts'),
+      {},
+      { animate: true, grade: 1, play: action(figure, 'play'), ready: (scene) => scene.glow(glow.on) },
+    );
+  });
+</script>

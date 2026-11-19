@@ -1,0 +1,225 @@
+---
+title: Depth of field
+description: Blur by distance from a focus, with near objects spreading over what is sharp behind them.
+modules: [kit/dof]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A lens is sharp at one distance. In front of it and behind it, each point spreads into a disc, the circle of confusion, that grows with the distance from the focus. Blurring by distance needs a radius at each pixel, and a blur that spreads a near object over what is sharp behind it while a far one never bleeds onto what is in front.
+
+<Hidden card="night-market">
+  <ExampleFigure
+    example="night-market"
+    controls={['dof', 'aperture']}
+    caption="The potions stay sharp while the lights behind them blur into discs. Tap the seller or the street to pull the focus there: the potions blur and spread over what is behind them. Turn depth of field off to compare."
+  />
+</Hidden>
+
+`dof.create` reads the picture and a depth of it and records 4 passes:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+// ---cut---
+import { bloom, dof, finish } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth32float', sampled: true },
+});
+const blur = dof.create(root, view, {
+  source: () => screen.textures.hdr,
+  depth: () => screen.textures.depth,
+  settings: { focus: 4, aperture: 0.03 },
+});
+const glow = bloom.create(root, { source: blur });
+const final = finish.create(root, { format: surface.format, source: blur, glow });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    screen.fit();
+    // the scene, into hdr and depth
+
+    blur.record(frame);
+    glow.record(frame);
+    final.record(frame, surface.view(frame));
+  }),
+);
+```
+
+<Rules>
+
+- **Order** Record it after [TAA](/kit/taa/), with `source: aa`, and before bloom. Bloom reading `blur.output` turns out-of-focus highlights into glowing discs.
+- **Radius** The radius is a fraction of the picture height, negative in front of the focus and positive behind it. By default it is the thin-lens circle, `0.5 × aperture × k × (1 / focus − 1 / distance)`, where `k` is half the camera's vertical [projection scale](/kit/cameras/), its focal length over the sensor height. `limit` caps it.
+- **Units** `aperture` and the distances share world units. A 50 mm lens at f/2 in a scene in metres opens 0.025. Larger openings make a scene look smaller, as a macro lens does.
+- **Depth** `depth` can be any size and is read by UV. A multisampled depth can't be read, so draw a single-sampled depth prepass, as hex isle does at half resolution under its MSAA scene. Radius edges then step at the prepass's resolution.
+- **Turning it off** To turn it off, skip `record` and give bloom and the final pass the picture it read. Point their `source` at a function that picks one.
+- **Timing** `record` takes the frame or an encoder. `record(frame, { timestampWrites })` times the 4 passes under one [profiler](/kit/profiler/) timer.
+
+</Rules>
+
+| Field      | Default |                                                             |
+| ---------- | ------- | ----------------------------------------------------------- |
+| `focus`    | `10`    | Distance in focus, in world units along the view direction. |
+| `aperture` | `0.05`  | Diameter of the lens opening, in world units.               |
+| `limit`    | `0.02`  | Largest blur radius, as a fraction of the picture height.   |
+
+## Pulling focus
+
+`blur.aim(x, y)` focuses on what the depth holds at a point of the picture, from 0 to 1 over it, such as under a tap. `pull` sets how fast the focus gets there, per second:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, targets, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth32float', sampled: true },
+});
+declare const frame: Frame;
+// ---cut---
+import { dof } from '@typegpu/kit';
+
+const blur = dof.create(root, view, {
+  source: () => screen.textures.hdr,
+  depth: () => screen.textures.depth,
+  pull: 5,
+});
+
+// On a tap, at a point of the picture
+blur.aim(0.5, 0.5);
+
+// Each frame
+blur.record(frame);
+```
+
+- The next `record` reads the distance at the aimed point, and each `record` from then on moves `settings.focus` towards it on the GPU by the frame's `dt`, in one more compute pass. Nothing is read back.
+- Each second closes `1 - e^-pull` of the way, as [`clock.ease`](/kit/clock/#easing-towards-a-goal) does, evenly in blur rather than in distance, so a pull from far to near looks as smooth as one from near to far. Without `pull`, the focus jumps.
+- `settings.focus` sets the focus until the first `aim`. A `radius` of your own reads the moving focus with `dof.focus()`.
+- With an encoder in place of the frame, give the seconds yourself, `blur.record(encoder, { dt })`.
+
+## Your own radius
+
+`radius(distance, uv)` replaces the thin lens. It is a `'use gpu'` function that returns the signed radius, and it carries its fills with `pipe`. Three functions work only inside it:
+
+- `dof.thinLens(distance, focus)` returns the thin-lens radius with the settings' aperture.
+- `dof.focus()` returns the distance in focus, which follows `aim`.
+- `dof.distanceAt(uv)` returns the distance along the view direction to what the depth holds at a point of the picture, from [`cameras.distanceOf`](/kit/cameras/#what-shaders-read).
+
+[Hex isle](/examples/hex-isle/) uses both, through a uniform that picks one. By default it blurs above and below a band, so the island looks like a miniature:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, targets } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 640, height: 360 },
+  target: [0, 0, 0],
+  distance: 6,
+});
+const screen = targets.create(
+  root,
+  { width: 640, height: 360 },
+  {
+    hdr: { format: 'rgba16float', sampled: true },
+    depth: { format: 'depth32float', sampled: true },
+  },
+);
+// ---cut---
+import { dof } from '@typegpu/kit';
+
+const cursor = root.createUniform(d.vec2f, d.vec2f(0.5));
+
+// Focus on whatever is under the pointer
+const underCursor = (distance: number, _uv: d.v2f) => {
+  'use gpu';
+  return dof.thinLens(distance, dof.distanceAt(cursor.$));
+};
+
+// A miniature: sharp in a band, blurred above it and in front below it
+const tiltShift = (_distance: number, uv: d.v2f) => {
+  'use gpu';
+  const away = uv.y - 0.54;
+  return std.sign(-away) * std.max(std.abs(away) - 0.07, 0) * 0.06;
+};
+
+const blur = dof.create(root, view, {
+  source: () => screen.textures.hdr,
+  depth: () => screen.textures.depth,
+  radius: underCursor,
+});
+```
+
+- Write the pointer into `cursor` as it moves, in picture coordinates from 0 to 1. The focus jumps to each new surface. To ease it, [pull the focus](#pulling-focus) with `aim` instead.
+- The radius runs once per half-resolution texel and once per pixel, so keep it cheap.
+
+## Seeing the radius
+
+Depth of field keeps its blur radius where a final pass's [grade](/kit/finish/#grading) can't read it. `dof.circle(uv)` reads it through `blur.part`, shared as in [Another target](/kit/finish/#another-target). This grade tints the near field orange and the far field blue:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { bindings, dof, finish } from '@typegpu/kit';
+declare const root: Parameters<typeof finish.create>[0];
+declare const blur: dof.Dof;
+// ---cut---
+const shared = bindings.share(root, { blur: blur.part }); // before `finish.create`
+
+const focusBand = (color: d.v3f, uv: d.v2f) => {
+  'use gpu';
+  const radius = dof.circle(uv);
+  const tint = std.select(d.vec3f(1, 0.45, 0.1), d.vec3f(0.1, 0.45, 1), radius > 0);
+  return std.mix(color, tint, std.saturate(std.abs(radius) * 100));
+};
+const focusView = finish.create(root, {
+  format: 'bgra8unorm',
+  source: blur,
+  grade: tgpu.fn(focusBand).pipe(blur.inject()),
+});
+// Set `shared.group()` on the pass before `focusView.draw`
+```
+
+## What the passes do
+
+<Rules>
+
+1. **Prepare** At half resolution. Averages 2 × 2 pixels and stores the radius at the nearest of their depths in alpha.
+2. **Tiles** At a sixteenth of each side. Each texel holds the largest radius in its 16 × 16 pixels.
+3. **Gather** At half resolution. Scales rings of taps, 3 rings for 49 taps or 2 for 25, to the largest radius in the tiles that a circle of `limit` can reach. A tap behind the focus counts where the smaller of its circle and the centre's reaches the centre, so what is sharp keeps its edge. A tap in front counts where its own circle reaches, and lays over the rest by how much of the disc such taps cover, so a blurred foreground spreads over a sharp background. Where the largest radius is under half a texel, it copies the centre.
+4. **Composite** At full resolution. Adds the source's detail above the half-resolution picture back onto the blur where the radius is under a pixel, fading out by 3 pixels, and where no near field covers it.
+
+</Rules>
+
+| Pass      | Textures                                     | Samplers | Uniforms                  |
+| --------- | -------------------------------------------- | -------- | ------------------------- |
+| Prepare   | source, depth                                | 0        | settings, regions, camera |
+| Tiles     | half-resolution picture                      | 0        | regions                   |
+| Gather    | half-resolution picture, tiles               | 0        | settings, regions         |
+| Composite | source, half-resolution picture, blur, depth | 1        | settings, regions, camera |
+
+No pass binds storage. `radius` adds what it reads, such as the cursor's uniform, to the prepare and the composite. After an `aim`, a one-thread compute pass before the prepare reads the depth under the aimed point, moves the focus in a storage buffer and copies it into the settings.
+
+## What it's made of
+
+| Part                         |                                                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `blur.settings`              | Focus, aperture and limit, a uniform.                                                                             |
+| `blur.output`, `blur.region` | Full-size `rgba16float` picture with depth of field and its region. Read each frame because resizing replaces it. |
+| `blur.part`                  | The half-resolution picture and its regions, for `dof.circle`.                                                    |
+| `blur.aim`                   | Pulls the focus to what is at a point of the picture.                                                             |
+
+## Limits
+
+- Depth of field reads one depth per pixel. A translucent drawing, which writes no depth, and anything the depth leaves out take the radius of what is behind them.
+- Out-of-focus highlights are always discs.
+- Under `cameras.flat`, `dof.thinLens` has no meaning. Give `radius` a function of your own.
