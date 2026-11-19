@@ -20,7 +20,7 @@ catalogs:
     '@types/react': ~19.3.0
     react: 19.3.1
     react-native: 0.88.1
-    react-native-webgpu: 0.21.1
+    react-native-webgpu: 0.21.4
     react-native-worklets: 0.13.1
   test:
     vitest: ^5.1.1
