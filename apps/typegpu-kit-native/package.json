@@ -27,7 +27,7 @@
     "expo-status-bar": "~58.0.5",
     "react": "catalog:native",
     "react-native": "catalog:native",
-    "react-native-gesture-handler": "~3.3.0",
+    "react-native-gesture-handler": "~3.5.0",
     "react-native-nitro-image": "0.15.2",
     "react-native-nitro-modules": "0.37.2",
     "react-native-reanimated": "4.7.2",
