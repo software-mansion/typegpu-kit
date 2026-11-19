@@ -1,0 +1,502 @@
+---
+title: Poses
+description: Play a character's animations on its skeleton and blend between them on the GPU each frame.
+modules: [kit/poses]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Poses from '../../../components/viz/Poses.astro';
+
+A skinned character binds vertices to joints such as hips, knees and hands. A **pose** plays a clip. Each frame, a kernel computes its joint transforms. An instance kind with a `pose` follows those joints in both the colour and shadow passes.
+
+<Poses />
+
+```ts twoslash
+import { cameras, passes, targets, type Frame } from '@typegpu/kit';
+import { gltf } from '@typegpu/kit';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 1, 0],
+  distance: 8,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  { hdr: { format: 'rgba16float' }, depth: { format: 'depth24plus' } },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const pool = meshPool.create(root, { capacity: 64 });
+declare const knightFile: ArrayBuffer;
+declare const clipFile: ArrayBuffer;
+declare const frame: Frame;
+declare const now: number;
+// ---cut---
+import { poses } from '@typegpu/kit';
+
+const knight = gltf.read(knightFile);
+const moves = gltf.read(clipFile); // clips made for the same rig
+const figures = poses.create(
+  root,
+  knight.skin!,
+  { idle: poses.clip(moves, 'Idle'), walk: poses.clip(moves, 'Walking') },
+  { capacity: 256 },
+);
+
+const Guard = instances.define('Guard', {
+  host: { pose: d.u32 },
+  pose: (guard) => {
+    'use gpu';
+    return guard.pose;
+  },
+});
+
+const guards = instances.create(root, pool, { kind: Guard, capacity: 64 });
+const renderer = guards.renderer().pipe(figures.inject());
+const drawn = scene.add(renderer);
+const cast = light.shadow.add(renderer);
+
+const pose = figures.add('idle', 0);
+guards.add(pool.add(knight), { position: [2, 0, 0], pose });
+
+// Blend from idle to walking over a third of a second
+figures.play(pose, 'walk', now, { fade: 0.3 });
+
+// After guards.flush(), before shadow and scene passes
+const pass = frame.encoder.beginComputePass();
+figures.animate(pass, now);
+pass.end();
+```
+
+Record poses before the passes that draw them. You can share a compute pass with [culling](/kit/instances/#culling). Await `figures.initAsync()` alongside the drawing passes. Otherwise the first `animate` compiles the kernel and stalls on WebKit.
+
+## Clips
+
+<Rules>
+
+- **Creating** Pass the skin from [`gltf.read`](/kit/gltf/#skins-and-clips) to `poses.create(root, skin, clips, options)`. Key `clips` by the names you use in `add` and `play`.
+- **Finding a clip** `poses.clip(file, name)` finds a clip in what `gltf.read` returns. A name the file lacks throws with the file's clip names.
+- **Shared rigs** Clips address joints by name, so clips for one rig can animate all characters using that rig.
+- **Baking** The CPU bakes each clip at `hz` keys per second for every joint. A pose interpolates between the two surrounding keys. Linear, step and cubic source keys all use this bake.
+- **Unanimated joints** Joints not animated by a clip stay at rest. Channels for missing nodes are skipped.
+- **Errors** `create` throws if a clip moves no joints or addresses a name shared by two joints. It also throws if a skin exceeds 256 joints or lists children before parents.
+
+</Rules>
+
+## Playing
+
+<Rules>
+
+- **Add and play** `figures.add(clip, time, { speed, from, loop, mix })` returns a `poses.Id` for an instance's `pose`. `figures.play` takes the same options with `layer`, `fade` and `weight`.
+- **Options** `speed` defaults to 1 for normal playback. Use 0 to hold or a negative value to play backward. `loop` defaults to `true`; `false` holds the clip at its end. `from` is the starting offset in seconds and defaults to 0. `fade` also defaults to 0, and `add` ignores it.
+- **One clock** Use the same clock for `time` and `animate`.
+- **Reading time** Read `figures.seconds` for a footstep or a hit frame in your own logic, and `figures.duration` to time a hit or the end of a clip played once.
+
+</Rules>
+
+## Lines
+
+Walking and running clips blended by speed need their feet in step. A **line** is an entry of two or more clips that play at one shared phase, mixed by a number:
+
+```ts twoslash
+import { gltf, poses } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const knight: gltf.ModelData;
+declare const clip: (name: string) => poses.ClipData;
+declare const now: number;
+declare const speed: number;
+// ---cut---
+const figures = poses.create(
+  root,
+  knight.skin!,
+  { idle: clip('Idle'), moving: [clip('Walking'), clip('Running')] },
+  { capacity: 64 },
+);
+const pose = figures.add('idle', now);
+
+// When the character starts moving
+figures.play(pose, 'moving', now, { fade: 0.25 });
+
+// Every frame, from its speed in metres per second
+figures.mix(pose, Math.min(Math.max((speed - 0.8) / 2.2, 0), 1), now);
+```
+
+- `mix` 0 plays the first clip, 1 the second and 1.5 halfway between the second and the third. Only the two clips around it are sampled.
+- The cycle lasts the clips' durations mixed by `mix`. A change of `mix` keeps the phase, so the feet don't skip. A call with the value the line has writes nothing.
+- The clips must put the same foot down at the same share of their cycles. [Shift](#adapting-clips) one that starts on a different step before passing it.
+- `from` counts seconds of the cycle at the starting `mix`. `speed` and `loop` act on the cycle. A line fades to and from clips and other lines as a clip does.
+
+## Layers and masks
+
+A **layer** plays a clip over the base on some joints alone, such as an arm holding a [lantern](#things-held) while the rest of the body stands or walks. Name up to three layers at creation. Each moves the subtrees of the joints it names:
+
+<ExampleFigure
+  example="night-market"
+  values={{ dof: false }}
+  caption="The seller holds her lantern on a layer masked to her right arm, and raises it while the customer is at her table. Tap either of them to wave on a layer masked to the spine. The lantern's layer comes after it, so the seller waves her free hand and keeps the lantern."
+/>
+
+```ts twoslash
+import { gltf, poses } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const mage: gltf.ModelData;
+declare const clip: (name: string) => poses.ClipData;
+declare const raised: poses.ClipData;
+declare const waveLeft: poses.ClipData;
+declare const now: number;
+// ---cut---
+const figures = poses.create(
+  root,
+  mage.skin!,
+  { idle: clip('Idle_B'), hold: clip('Holding_A'), raise: raised, wave: waveLeft },
+  {
+    capacity: 64,
+    layers: { wave: { joints: ['spine'] }, lantern: { joints: ['upperarm.r'] } },
+  },
+);
+const seller = figures.add('idle', now);
+figures.play(seller, 'hold', now, { layer: 'lantern' });
+
+// When a customer comes to the table
+figures.play(seller, 'raise', now, { layer: 'lantern', fade: 0.6 });
+
+// When she is tapped, wave once; the lantern's layer still holds her right arm
+figures.play(seller, 'wave', now, { layer: 'wave', loop: false, fade: 0.35 });
+
+// When the wave ends, to give the upper body back to the base
+figures.stop(seller, now, { layer: 'wave', fade: 0.5 });
+```
+
+<Rules>
+
+- **Blending** A layer replaces the pose beneath it inside its mask, by its weight. Layers apply in the order of `layers`, after the base. A joint outside every mask keeps the base's placement exactly.
+- **Clips on a layer** A clip on a layer moves only the joints in its mask, so a lean the clip makes above the mask is lost. KayKit's `Waving` leans from the hips; [`poses.lean`](#adapting-clips) turns the spine by that lean before the clip plays on the spine.
+- **Mask joints** `joints` defaults to every joint. A name the skin lacks throws with the skin's joint list. `create` also throws for more than three layers or a layer named `base`.
+- **Fades** A layer that played nothing, or was stopped, fades in from the pose beneath. `stop` fades it back out. A fade cut short by `play` or `stop` goes on from the share the layer shows. The base can't stop; play another clip on it.
+- **Weights** Use `weigh` for a weight you change continuously. `play` takes `weight` too; without it a layer keeps the weight it has, which starts at 1.
+- **Layer argument** Every method takes the layer as `layer` in its last argument, the base when you leave it out.
+
+</Rules>
+
+## Adding a layer
+
+An **additive** layer adds how its clip moves away from the clip's first key to whatever lies beneath. Breathing, a flinch or a recoil plays the same over a walk, a stand or a wave. The [night market](/examples/night-market/)'s seller and customer breathe this way:
+
+```ts twoslash
+import { gltf, poses } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const knight: gltf.ModelData;
+declare const clip: (name: string) => poses.ClipData;
+declare const now: number;
+// ---cut---
+const figures = poses.create(
+  root,
+  knight.skin!,
+  { idle: clip('Idle'), breathe: clip('Breathe') },
+  { capacity: 64, layers: { chest: { joints: ['spine'], add: true } } },
+);
+const pose = figures.add('idle', now);
+figures.play(pose, 'breathe', now, { layer: 'chest', from: Math.random() * 3 });
+figures.weigh(pose, 0.7, { layer: 'chest' });
+```
+
+- A clip's first key is its reference, so an additive clip needs no second bake, and one clip can play on both kinds of layer.
+- Rotations turn by the difference from the first key, positions add theirs and scales multiply by their ratio, all by the layer's weight.
+- A clip played once holds its last key. One that doesn't end where it starts keeps adding its last difference until you `stop` it.
+
+## Adapting clips
+
+These functions return new clips on the CPU, to pass to `poses.create`. The night market lines up a run with a walk, leans a wave onto the spine and mirrors it for the other hand:
+
+```ts twoslash
+import { gltf, poses } from '@typegpu/kit';
+declare const mage: gltf.ModelData;
+declare const moves: gltf.ModelData;
+// ---cut---
+const skin = mage.skin!;
+const stand = poses.clip(moves, 'Idle_A');
+// Start the run where its left foot lands, as the walk's does at its start
+const run = poses.shift(poses.clip(moves, 'Running_A'), 0.08);
+// The wave's lean from the hips, kept on the spine for a layer masked to it
+const wave = poses.lean(poses.clip(moves, 'Waving'), skin, 'spine', { from: stand });
+// The same wave with the left hand
+const waveLeft = poses.mirror(wave, (joint) =>
+  joint.replace(/\.([rl])$/, (_, side: string) => (side === 'r' ? '.l' : '.r')),
+);
+const hand = poses.sample(wave.channels[0], 0.5); // a rotation, [x, y, z, w]
+```
+
+- `shift(clip, by)` starts a looping clip `by` seconds in.
+- `lean(clip, skin, top, { from })` keeps the channels of `top` and the joints beneath it, and turns `top` as the joints above it turn in the clip, measured from the first key of `from`, the rest pose by default.
+- `mirror(clip, opposite, { across })` moves each channel to the joint `opposite` names and reflects it across the plane `across` points out of, `'x'` by default. The rig's sides must be mirror images.
+- `shift` and `lean` resample what they change into linear keys at `hz`, 30 by default.
+- `sample(channel, time)` returns a channel's value as `create` bakes it, with slerped rotations and cubic splines, for keys you author yourself.
+
+## Kernels driving poses
+
+A crowd's kernels already know each member's speed and mood. They can start, stop and mix clips themselves through GPU verbs that mirror the methods. Give them indices from `figures.clips` and `figures.layers`, and pipe `figures.inject()` into the pipeline:
+
+```ts twoslash
+import { poses } from '@typegpu/kit';
+import { d, std, tgpu, type TgpuComputePass } from 'typegpu';
+const root = await tgpu.init();
+declare const figures: poses.Poses<'moving' | 'hold' | 'raise', 'arm'>;
+declare const pass: TgpuComputePass;
+declare const now: number;
+const COUNT = 300;
+const speeds = root.createReadonly(d.arrayOf(d.f32, COUNT));
+const raising = root.createMutable(d.arrayOf(d.u32, COUNT));
+const posesOf = root.createReadonly(d.arrayOf(d.u32, COUNT));
+// ---cut---
+const { base, arm } = figures.layers;
+const { raise } = figures.clips;
+
+const pace = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (i >= COUNT) return;
+  const pose = posesOf.$[i];
+  // Stand at 0, walk at 1 and run at 2
+  poses.mix(pose, std.clamp(speeds.$[i] / 0.8, 0, 2), base);
+  // Once, the frame a member's flag goes up
+  if (raising.$[i] === 1) {
+    raising.$[i] = 0;
+    poses.play(pose, raise, arm, 0.45, 0);
+  }
+});
+
+const pacing = root.pipe(figures.inject()).createComputePipeline({ compute: pace });
+
+// Every frame, before animate in the same pass
+pass.setPipeline(pacing);
+pass.dispatchWorkgroups(Math.ceil(COUNT / 64));
+figures.animate(pass, now);
+```
+
+<Rules>
+
+- **The verbs** `poses.play(id, clip, layer, fade, from)` loops a clip from `from` seconds, and `poses.once(id, clip, layer, fade)` plays it once from its start. `poses.stop(id, layer, fade)`, `poses.mix(id, value, layer)` and `poses.weigh(id, weight, layer)` match the methods, and `poses.seconds(id, layer)` reads the time into the clip or cycle.
+- **Arguments** Each verb takes the pose, the method's arguments without the time, then the layer and the rest. Layer 0 is the base, which `poses.stop` leaves playing, and a verb on a layer past 3 changes nothing.
+- **Speed** Kernels play at speed 1.
+- **Recording order** Record the kernels before `animate`. They start clips at the time that frame's `animate` writes, and their changes show in the same frame.
+- **Machines** A [machine](/kit/machines/)'s `enter` and `exit` hooks can call the verbs, as in the [skeletons](/examples/skeletons/).
+- **One driver** Give each pose its plays from the CPU or from kernels. The CPU doesn't see what kernels play, so a later `figures.play` fades from the last clip the CPU played.
+
+</Rules>
+
+## Every frame
+
+- Each vertex blends four joint matrices.
+- A kind's `deform` runs on the posed vertex. Normals rotate with the pose.
+- With `cull: true`, each instance row, including held items, uses the sphere around its mesh's bind-pose box. If a pose extends beyond it, as a lying body can, supply [`bounds`](/kit/instances/#culling) on the kind.
+- The pose kernel binds 5 storage buffers and 1 uniform, plus what `local` reads.
+
+## Motion vectors
+
+The joints buffer holds this frame's joints and last frame's. Code compiled with [`history.previously`](/kit/history/), as a [TAA](/kit/taa/) motion output's is, reads last frame's, so a swinging arm draws its own motion. Both halves sit in one buffer, so a motion pipeline binds no extra storage.
+
+- Call `animate` every frame a pose is drawn, also while paused. A frame without it keeps the last motion.
+- A pose added since the last `animate` starts with equal halves and shows no motion in its first frame.
+- An instance that moves needs its set created with [`history: true`](/kit/instances/#motion) for its transform's motion.
+
+## Joints of your own
+
+Use `local` to turn a head toward a target, reach with a hand or follow a simulation. It receives the clip's placement, joint index and pose slot, then returns a placement relative to the parent joint. Index its input data by `figures.slotOf(id)`. For joints driven only by `local`, play `poses.rest` to leave all clip placements at rest.
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+import { poses } from '@typegpu/kit';
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const knight: gltf.ModelData;
+// ---cut---
+const HEAD = knight.skin!.joints.findIndex(({ name }) => name === 'head');
+const turns = root.createBuffer(d.arrayOf(d.f32, 256)).$usage('storage');
+const turn = turns.as('readonly');
+
+const figures = poses.create(
+  root,
+  knight.skin!,
+  { rest: poses.rest },
+  {
+    capacity: 256,
+    local: (played, joint, slot) => {
+      'use gpu';
+      if (joint !== HEAD) return poses.Placement(played);
+      const half = turn.$[slot] / 2;
+      return poses.Placement({
+        rotation: d.vec4f(0, std.sin(half), 0, std.cos(half)),
+        position: played.position,
+        scale: played.scale,
+      });
+    },
+  },
+);
+```
+
+Return a copy from `local` with `poses.Placement(played)`. Do not return `played` itself.
+
+## One rig, many characters
+
+Characters sharing a rig can list joints in different orders. Use `poses.rebind` to match a model to another skin by joint name. One set of poses can then animate all those characters:
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+import { meshPool, poses } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+declare const knight: gltf.ModelData;
+declare const rogue: gltf.ModelData;
+// ---cut---
+const rig = knight.skin!;
+const thief = pool.add(poses.rebind(rogue, rogue.skin!, rig));
+```
+
+It throws if the target skin lacks a joint or has a different bind placement.
+
+## Things held
+
+Bind a sword, shield or lantern to one joint with `poses.attach`. Model the item in that joint's space, then add it alongside the body so one pose moves both:
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+import { instances, meshPool, poses } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const Guard = instances.define('Guard', {
+  host: { pose: d.u32 },
+  pose: (guard) => {
+    'use gpu';
+    return guard.pose;
+  },
+});
+const guards = instances.create(root, pool, { kind: Guard, capacity: 1024 });
+declare const knight: gltf.ModelData;
+declare const sword: gltf.ModelData;
+declare const pose: number;
+// ---cut---
+const body = pool.add(knight);
+const blade = pool.add(poses.attach(sword, knight.skin!, 'handslot.r'));
+
+guards.add({ meshes: [...body.meshes, ...blade.meshes] }, { pose });
+```
+
+An item modelled in another space takes an `offset`, a matrix from its space to the joint's. This one turns an axe half a turn about its grip:
+
+```ts
+poses.attach(axe, knight.skin!, 'handslot.r', { offset: mat4.rotationY(Math.PI) });
+```
+
+Attachment transforms rotate normals and correct triangle winding for mirrored binds and offsets. A missing joint name throws with a list of joints.
+
+Each mesh, including held items, needs an instance row. All meshes of one character share a pose.
+
+## Where a joint is
+
+`figures.jointAt(id, joint, time)` finds a joint on the CPU, where `animate` places it, for a muzzle flash, a thrown item or a camera on a hand:
+
+```ts twoslash
+import { poses } from '@typegpu/kit';
+declare const figures: poses.Poses<'idle' | 'walk'>;
+declare const pose: poses.Id;
+declare const now: number;
+// ---cut---
+const hand = figures.jointAt(pose, 'handslot.r', now);
+const grip = hand.columns[3].xyz; // the hand's position in model space
+```
+
+Multiply the matrix by the instance's transform for world space.
+
+On the GPU, `poses.jointPosition(id, joint)` returns joint `joint`'s position in model space, as the last `animate` placed it, including plays from kernels and `local`. Call it from a pipeline piped `figures.inject()`, such as a picker's `position` or a kernel that sends sparks from a hand. Joint indices follow the skin's `joints`.
+
+## In your own shaders
+
+In a shader created from `root.pipe(pool.inject()).pipe(figures.inject())`, `poses.skinned(i, vertex, id)` poses vertex `i`'s position and normal by pose `id`:
+
+```ts twoslash
+import { cameras } from '@typegpu/kit';
+import { meshPool, poses } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 1, 0],
+  distance: 8,
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const fragment = tgpu.fragmentFn({ in: { normal: d.vec3f }, out: d.vec4f })(({ normal }) => {
+  'use gpu';
+  return d.vec4f(normal * 0.5 + 0.5, 1);
+});
+declare const figures: poses.Poses;
+declare const pose: poses.Id;
+// ---cut---
+const which = root.createUniform(d.u32, pose);
+
+const vertex = tgpu.vertexFn({
+  in: { i: d.builtin.vertexIndex },
+  out: { position: d.builtin.position, normal: d.vec3f },
+})(({ i }) => {
+  'use gpu';
+  const posed = poses.skinned(i, meshPool.vertexAt(i), which.$);
+  return {
+    position: cameras.toClip(posed.position),
+    normal: posed.normal,
+  };
+});
+
+const pipeline = root
+  .pipe(pool.inject())
+  .pipe(figures.inject())
+  .pipe(view.inject())
+  .createRenderPipeline({ vertex, fragment, targets: { format: 'rgba16float' } });
+```
+
+A depth pass needs only `poses.skinnedPosition(i, meshPool.positionAt(i), id)`.
+
+## Memory
+
+| What      |                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| the clips | 48 bytes per key per joint.                                                                                                    |
+| the poses | 96 bytes per joint for this frame's and last frame's joints, plus 212 bytes per pose slot. A pose with 24 joints takes 2.5 KB. |
+| the skin  | 96 bytes per joint for the parent, inverse bind matrix, bind origin and layer masks. A 24-joint skin takes 2.3 KB.             |
+| the pool  | 8 extra bytes per vertex of capacity after adding a skinned model. The default 65 536 vertices take 512 KB.                    |
+
+Each joint reads 2 keys for a clip, 4 for a crossfade or a line and 8 for a line fading from a line, then as many again for each layer playing. An additive layer reads 1 more for a clip and 2 more for a line.
+
+## Tearing down
+
+Call `figures.destroy()` when no drawing uses the buffers.
+
+## Limits
+
+<Rules>
+
+- **Joint counts** Each vertex supports at most four joints, and a skin supports 256. Weights use steps of 1/255.
+- **Layers** A pose has a base and up to three layers, and each blends from one other clip. An interrupted blend starts from the last played clip, so it can pop.
+- **Masks and mixes** Masks select whole subtrees. Additive layers refer to their clip's first key. Lines mix along one number; there are no 2D blend spaces.
+- **Kernels** Kernels play at speed 1. A pose takes its plays from the CPU or from kernels, as [above](#kernels-driving-poses).
+- **Inverse kinematics** There is no inverse kinematics. Use `local` for joints of your own.
+- **Reading joints** `jointAt` leaves out `local` and plays from kernels. Each call computes the joint and its parents on the CPU.
+- **Root motion** Moving the skin root moves meshes without moving the instance. Animate a walk in place and move instances at the planted foot's pace.
+- **Hidden instances** All pose joints update each frame, including those used only by invisible instances.
+- **Normals** Normals use joint matrices rather than inverse transposes. Uneven joint scale therefore causes slight shading errors.
+- **Morph targets** Morph targets aren't read.
+
+</Rules>

@@ -1,0 +1,172 @@
+/* The binder; its overlay, close and turn buttons and its open button are in card.css */
+dialog.binder {
+  color: var(--muted);
+  font: 500 var(--type-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* From a pull the page is dimmed already */
+dialog.binder[open]:not([data-handoff])::backdrop {
+  animation: binder-dim 0.4s ease both;
+}
+
+dialog.binder[open][data-leaving]::backdrop {
+  animation: binder-undim 0.55s 0.2s ease-in both;
+}
+
+@keyframes binder-dim {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes binder-undim {
+  to {
+    opacity: 0;
+  }
+}
+
+.binder-stage {
+  overflow: hidden;
+}
+
+.binder-stage > canvas {
+  position: absolute;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
+.binder-stage .pull-card {
+  transform-origin: 0 0;
+}
+
+/* While a card is out, the binder darkens behind it, and a press there puts the card back */
+.binder-veil {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklab, var(--ground) 70%, transparent);
+}
+
+.binder-head,
+.binder-foot {
+  position: absolute;
+  right: var(--s-4);
+  left: var(--s-4);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+
+.binder-head {
+  top: var(--s-4);
+}
+
+.binder-foot {
+  bottom: var(--s-5);
+  justify-content: center;
+}
+
+/* Visibility outlasts each fade, so hidden controls leave the tab order once they are gone */
+.binder-count,
+.binder-foot,
+.binder-row,
+.binder-veil {
+  transition:
+    opacity 0.4s ease,
+    visibility 0.4s;
+}
+
+/* The row shows at once and fades in, so focus can move into it as it comes */
+dialog.binder[data-shown] .binder-row {
+  transition: opacity 0.4s ease;
+}
+
+dialog.binder:not([data-ready]) .binder-count,
+dialog.binder:is(:not([data-ready]), [data-out]) .binder-foot,
+dialog.binder[data-leaving] :is(.binder-count, .binder-head button, .binder-foot),
+dialog.binder:not([data-shown]) .binder-row,
+dialog.binder:not([data-out]) .binder-veil {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.binder-count {
+  display: flex;
+  gap: var(--s-3);
+  margin: 0;
+}
+
+.binder-count strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.binder-stage svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.binder-caption {
+  min-width: min(22em, 60vw);
+  margin: 0 var(--s-4);
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.binder-row {
+  width: min(420px, 100vw - 32px);
+  text-align: center;
+}
+
+.binder-row :is(a, button) {
+  min-height: 32px;
+  padding: 0 var(--s-3);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-decoration: none;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.binder-row .binder-open {
+  display: inline-flex;
+  gap: var(--s-2);
+  align-items: center;
+  margin-right: var(--s-3);
+}
+
+dialog.binder :is(a, button):not(.pull-card *):hover {
+  border-color: var(--accent);
+  color: var(--accent-high);
+}
+
+.binder-note {
+  margin: 0;
+  font: 400 var(--type-small) / 1.55 var(--font-sans);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.binder-note a {
+  padding: 0;
+  color: var(--link);
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog.binder::backdrop,
+  dialog.binder * {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}

@@ -1,0 +1,95 @@
+---
+// The album in the header while the cards are on: hidden until the reader has a card, then their count.
+import { examples } from '../../examples/examples.ts';
+---
+
+<button type="button" class="album-button" data-album-button data-total={examples.length} hidden>
+  <svg viewBox="0 0 16 16" aria-hidden="true">
+    <rect x="3.5" y="2.5" width="9" height="12" rx="0.5" />
+    <rect x="5.5" y="1.5" width="9" height="12" rx="0.5" />
+  </svg>
+  <span class="album-label">Album</span>
+  <span data-album-count></span>
+</button>
+{/* Shown with its count as the header parses, so the search beside it stays put */}
+<script is:inline>
+  try {
+    const button = document.currentScript.previousElementSibling;
+    const album = JSON.parse(localStorage.getItem('typegpu-kit:album') ?? '{}');
+    const have = album.version === 1 ? Object.keys(album.found ?? {}).length : 0;
+    button.hidden = have === 0;
+    button.querySelector('[data-album-count]').textContent = `${have}/${button.dataset.total}`;
+  } catch {}
+</script>
+
+<script>
+  import { count, onAlbum } from './album.ts';
+  import { whenCards } from './cards.ts';
+
+  const button = document.querySelector<HTMLButtonElement>('[data-album-button]');
+  if (button) whenCards(() => {
+    const shown = button.querySelector<HTMLElement>('[data-album-count]')!;
+    const total = button.dataset.total ?? '';
+    const update = () => {
+      const have = count();
+      button.hidden = have === 0;
+      shown.textContent = `${have}/${total}`;
+      button.setAttribute('aria-label', `Album, ${have} of ${total} cards`);
+    };
+    update();
+    onAlbum(update);
+    button.addEventListener('click', () => {
+      void import('./open.ts').then(({ openAlbum }) => openAlbum());
+    });
+  });
+</script>
+
+<style>
+  .album-button {
+    display: inline-flex;
+    flex: none;
+    gap: var(--s-2);
+    align-items: center;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: none;
+    color: var(--text-2);
+    font: 400 12px / 1 var(--font-mono);
+    cursor: pointer;
+  }
+
+  :global(:root:not([data-cards])) .album-button,
+  .album-button[hidden] {
+    display: none;
+  }
+
+  .album-button:hover {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+
+  .album-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  svg {
+    width: 14px;
+    height: 14px;
+    fill: var(--ground);
+    stroke: currentColor;
+    stroke-width: 1;
+  }
+
+  [data-album-count] {
+    color: var(--accent);
+  }
+
+  @media (max-width: 49.99em) {
+    .album-label {
+      display: none;
+    }
+  }
+</style>

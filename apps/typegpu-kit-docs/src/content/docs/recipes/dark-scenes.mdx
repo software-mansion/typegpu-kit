@@ -1,0 +1,89 @@
+---
+title: Dark scenes
+description: Settings that keep a night scene dark, from the sky to the final pass.
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import ExposureAdapt from '../../../components/viz/ExposureAdapt.astro';
+
+<ExampleFigure
+  example="night-market"
+  controls={['fire']}
+  values={{ dof: false }}
+  caption="Lower the fire to see what the moon and the sky light on their own. The lamps and the fire light the scene, and the sky adds a little blue to the shadows."
+/>
+
+The [lighting](/kit/lighting/) defaults describe daylight. A pale blue sky lights every surface from above and shows in every reflection, and fog takes a pale grey-blue. In a night scene those values brighten the shadows and wash out the distance. Set the sky, the sun and the fog for the night, light the scene with lamps, and set the exposure for a dark picture:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { lighting, table, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+const lamps = table.create(root, lighting.PointLight, {
+  capacity: 8,
+  defaults: { ...lighting.WHITE },
+});
+// ---cut---
+import { bloom, finish } from '@typegpu/kit';
+
+const night = lighting.create(root, {
+  settings: {
+    sunDirection: [-0.45, 0.75, -0.5], // the moon
+    sunColor: [0.5, 0.65, 1],
+    sunIntensity: 0.25,
+    skyTop: [0.03, 0.06, 0.16],
+    skyBottom: [0.02, 0.016, 0.014],
+    fogColor: [0.03, 0.06, 0.13],
+    fogDensity: 0.015,
+    fogFalloff: 0.12,
+  },
+  points: { table: lamps },
+});
+
+const source = () => screen.textures.hdr;
+const glow = bloom.create(root, { source, settings: { threshold: 1.2 } });
+const final = finish.create(root, {
+  format: surface.format,
+  source,
+  glow,
+  settings: { exposure: 1.2 },
+});
+```
+
+| Setting                    | At night                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------- |
+| `skyTop`, `skyBottom`      | Dark blue above, near black below. They light every surface and fill every reflection.         |
+| `sunColor`, `sunIntensity` | A pale blue moon from `0.05` to `0.25`.                                                        |
+| `fogColor`                 | The sky's colour near the horizon. A pale fog brightens a dark scene at any density.           |
+| bloom `threshold`          | `0.8` to `1.2`. Raise it until lit surfaces stop glowing and only lamps, flames and sparks do. |
+| finish `exposure`          | `1.2`, or an [adapted exposure](#adapting-to-the-dark).                                        |
+
+Point lights provide most of the light at night. Give a lantern or a fire an intensity near `8` and a range near `11`, and small lamps an intensity from `0.5` to `3`. See [point lights](/kit/lighting/#point-lights) and [their shadows](/kit/lighting/#point-and-spot-shadows).
+
+## Adapting to the dark
+
+An [adapted exposure](/kit/finish/#adapting-exposure) aims the picture's average at `key`. The default, `0.18`, is a daylit scene's average. It brightens a night scene to the same average and lifts its shadows. Set `key` to the average the scene is lit for:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+const source = () => screen.textures.hdr;
+// ---cut---
+import { exposure, finish } from '@typegpu/kit';
+
+const eye = exposure.create(root, { source, settings: { key: 0.04 } });
+const final = finish.create(root, { format: surface.format, source, exposure: eye });
+```
+
+- A street lit by lamps and the moon averages about `0.04`. A night sky lit by fireworks averages about `0.007`.
+- `highest` caps how far the exposure rises in a dark moment, such as a street whose fire went out. Set it a little above the exposure the scene looks right at.
+- A flash brightens the average, and the exposure falls at `fall` to dim the picture around it.
+
+<ExposureAdapt />

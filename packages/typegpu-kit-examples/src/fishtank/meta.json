@@ -1,0 +1,8 @@
+{
+  "title": "Fish tank",
+  "category": "simulations",
+  "description": "3 340 fish swim as GPU boids. A device table holds them, a neighbour grid sorts them by cell, and live lists group them by species. A coroutine reads back eaten food. Caustics, bubbles, crumbs and bloom complete the tank.",
+  "line": "3 340 boids in a sorted neighbour grid, fed and lit from above.",
+  "order": 17,
+  "hint": "F feeds \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

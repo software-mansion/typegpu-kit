@@ -1,0 +1,342 @@
+---
+---
+
+<figure class="viz" data-viz="bind-groups">
+  <p class="viz-title">Each owner's bindings in a pipeline's bind groups</p>
+  <svg viewBox="0 0 640 190" role="group" aria-label="A pipeline's bind groups, each holding the owners whose bindings it binds; move an owner by dragging it, or by pressing it and then a group"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="reset">Reset</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag tint into another owner's group, or tap it and then the group. The pipeline fits in four, and every shared owner still swaps its resources without a new pipeline. Drop one into the fixed group and a swap of it builds a new pipeline.
+  </figcaption>
+</figure>
+
+<style>
+  figure :global(svg [data-key]:focus) {
+    outline: none;
+  }
+
+  figure :global(svg [data-key]:focus-visible > rect) {
+    stroke: var(--viz-a);
+    stroke-width: 2;
+  }
+
+  /* The ring is the chip's own outline, so its name keeps its weight. */
+  figure :global(svg [data-key]:focus-visible > text) {
+    stroke: none;
+  }
+
+  .viz-status {
+    --lines: 2;
+  }
+</style>
+
+<script>
+  import { createProgram, move, OPENING, OWNERS, type Owner, type Placement, type Shares } from './BindGroups.program.ts';
+  import { action, each, statusLine } from './figure.ts';
+  import { fitWidth, pointIn, stipple, svg, text } from './svg.ts';
+
+  type Held = Owner | 'output';
+
+  /** Below this width the columns pack tighter. */
+  const WIDE = 520;
+  /** Below this width the drawing scales down, so the column heads keep apart. */
+  const NARROWEST = 360;
+  const CHIP = 22;
+  const DEPTH = 3;
+  const FRAME = 22;
+  const BOXES = FRAME + 44;
+  const FIXED = 'var(--viz-line)';
+  const SHARED = 'var(--viz-d)';
+  const BAD = 'var(--viz-bad)';
+  const LIVE = 'var(--viz-accent)';
+  /** Arrow keys walk the chips and the plates that take a drop, in drawing order. */
+  const ARROWS: Readonly<Record<string, number>> = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+
+  /** A group's plate, its depth drawn below and to the right. */
+  function slab(figure: SVGSVGElement, x: number, y: number, width: number, height: number, stroke: string, fill: string, dashed = false) {
+    svg('path', {
+      d: `M${x},${y + height}l${DEPTH},${DEPTH}h${width}v-${height}l-${DEPTH},-${DEPTH}M${x + width},${y + height}l${DEPTH},${DEPTH}`,
+      fill: 'none', stroke, ...(dashed ? { 'stroke-dasharray': '3 3', 'stroke-opacity': 0.6 } : {}),
+    }, figure);
+    return svg('rect', {
+      x, y, width, height, rx: 1, fill, stroke,
+      ...(dashed ? { 'stroke-dasharray': '3 3' } : {}),
+    }, figure);
+  }
+
+  /** Words in `color`, for the status line. */
+  function tinted(words: string, color: string) {
+    const span = document.createElement('span');
+    span.style.color = color;
+    span.textContent = words;
+    return span;
+  }
+
+  /** A sentence on what a swap of each of `owners` makes, naming them as `a, b or c`. */
+  function line(owners: readonly Held[], color: string, rest: string) {
+    if (owners.length === 0) return [];
+    const names = owners.length < 2 ? owners[0] : `${owners.slice(0, -1).join(', ')} or ${owners.at(-1)}`;
+    return ['A swap of ', tinted(names, color), rest];
+  }
+
+  each('bind-groups', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const reset = action(root, 'reset');
+
+    let shares: Shares = OPENING;
+    let placement: Placement = createProgram(shares);
+    let picked: Owner | undefined;
+    let drag: { owner: Owner; x: number; y: number } | undefined;
+    let over: number | undefined;
+    /** Each column's left edge and width, and the plates' top and bottom, as last drawn. */
+    let columns: { x: number; width: number }[] = [];
+    let span = { top: 0, bottom: 0 };
+
+    const moving = () => drag?.owner ?? picked;
+    const columnOf = (owner: Owner) => placement.groups.findIndex((holds) => holds.includes(owner));
+
+    const draw = fitWidth(figure, (width) => {
+      const { groups, count, limit, fits } = placement;
+      const wide = width >= WIDE;
+      const gap = wide ? 12 : 5;
+      const pad = wide ? 10 : 4;
+      const beyond = wide ? 22 : 10;
+      const inset = wide ? 4.5 : 3;
+      const slots = limit + 1;
+      const column = (width - 2 * pad - (limit - 1) * gap - beyond - DEPTH) / slots;
+      const rows = Math.max(2, ...groups.map((holds) => holds.length));
+      const height = rows * (CHIP + 5) + 5;
+      const frameRight = 2 * pad + limit * column + (limit - 1) * gap;
+      const bottom = BOXES + height + DEPTH + pad;
+      const moved = moving();
+      const from = moved === undefined ? -1 : columnOf(moved);
+
+      columns = Array.from({ length: slots }, (_, i) => ({
+        x: i < limit ? pad + i * (column + gap) : frameRight + beyond,
+        width: column,
+      }));
+      span = { top: FRAME, bottom };
+
+      text(figure, 0, 12, 'pipeline', { class: 'strong' });
+      text(figure, frameRight, 12, `${count} groups · maxBindGroups ${limit}`, {
+        'text-anchor': 'end',
+        fill: fits ? 'var(--text-2)' : BAD,
+      });
+      svg('rect', {
+        x: 0.5, y: FRAME + 0.5, width: frameRight - 1, height: bottom - FRAME - 1,
+        rx: 2, fill: 'none', stroke: 'var(--viz-line)',
+      }, figure);
+
+      columns.forEach(({ x }, i) => {
+        const holds = groups[i] ?? [];
+        const outside = i >= limit;
+        const automatic = holds.includes('output');
+        const centre = x + (column - DEPTH) / 2;
+        const target = moved !== undefined && i !== from;
+        const bad = outside && holds.length > 0;
+
+        const kind = outside ? 'no slot' : holds.length === 0 ? 'free' : automatic ? 'fixed' : 'swappable';
+        const tone = bad ? BAD : automatic ? 'var(--text-2)' : holds.length > 0 ? SHARED : 'var(--viz-muted)';
+        text(figure, centre, BOXES - 22, `@group(${i})`, {
+          'text-anchor': 'middle',
+          ...(bad ? { fill: BAD } : holds.length > 0 ? { class: 'strong' } : {}),
+        });
+        text(figure, centre, BOXES - 8, kind, { 'text-anchor': 'middle', fill: tone });
+
+        const stroke = over === i ? LIVE : bad ? BAD : holds.length === 0 ? FIXED : automatic ? FIXED : SHARED;
+        const fill =
+          holds.length === 0 ? 'none' : stipple(figure, bad ? BAD : automatic ? FIXED : SHARED, automatic ? 0.25 : 0.12);
+        const plate = slab(figure, x + 0.5, BOXES + 0.5, column - DEPTH - 1, height, stroke, fill, holds.length === 0 && over !== i);
+        if (target && over !== i) {
+          svg('rect', {
+            x: x - 2.5, y: BOXES - 2.5, width: column - DEPTH + 4, height: height + 6,
+            rx: 2, fill: 'none', stroke: LIVE, 'stroke-dasharray': '2 3',
+          }, figure);
+        }
+
+        // The plate takes a drop: from the keyboard while an owner is picked, and by a tap
+        plate.setAttribute('data-column', String(i));
+        if (target) {
+          plate.setAttribute('data-key', `column-${i}`);
+          plate.setAttribute('tabindex', '0');
+          plate.setAttribute('role', 'button');
+          plate.setAttribute('aria-label', `Move ${moved} into @group(${i})`);
+          plate.style.cursor = 'pointer';
+        }
+
+        holds.forEach((owner, k) => {
+          const y = BOXES + 5.5 + k * (CHIP + 5);
+          const chosen = owner === moved;
+          const lifted = drag?.owner === owner;
+          const tint = chosen && !lifted ? LIVE : bad ? BAD : automatic ? FIXED : SHARED;
+          const chip = svg('g', lifted ? { opacity: 0.35 } : {}, figure);
+          svg('rect', {
+            x: x + inset, y, width: column - DEPTH - 2 * inset, height: CHIP, rx: 2,
+            fill: 'var(--ground)', stroke: tint,
+            ...(lifted ? { 'stroke-dasharray': '3 3' } : {}),
+          }, chip);
+          text(chip, centre, y + 15, owner, {
+            'text-anchor': 'middle',
+            fill: chosen && !lifted ? 'var(--accent-high)' : bad ? BAD : owner === 'output' ? 'var(--viz-muted)' : automatic ? 'var(--text-2)' : SHARED,
+          });
+          if (owner === 'output') return;
+          chip.setAttribute('data-owner', owner);
+          chip.setAttribute('data-key', owner);
+          chip.setAttribute('tabindex', '0');
+          chip.setAttribute('role', 'button');
+          chip.setAttribute('aria-pressed', String(chosen));
+          chip.setAttribute('aria-label', `${owner}, in @group(${i}), ${kind}`);
+          chip.setAttribute('style', 'touch-action: none; cursor: grab');
+        });
+      });
+
+      if (drag) {
+        const chipWidth = column - DEPTH - 2 * inset;
+        svg('rect', {
+          x: drag.x - chipWidth / 2, y: drag.y - CHIP / 2, width: chipWidth, height: CHIP, rx: 2,
+          fill: 'var(--ground)', stroke: LIVE,
+        }, figure);
+        text(figure, drag.x, drag.y + 4, drag.owner, { 'text-anchor': 'middle', fill: 'var(--accent-high)' });
+      }
+
+      return bottom + 1;
+    }, NARROWEST);
+
+    const say = () => {
+      const { swaps, count, limit, fits } = placement;
+      reset.disabled = shares === OPENING;
+      if (!fits) {
+        status.replaceChildren(tinted(`${count} bind groups`, BAD), ` and a device that takes ${limit}, so creating this pipeline fails.`);
+        return;
+      }
+
+      const named = [...OWNERS, 'output' as const];
+      const free = named.filter((owner) => swaps[owner].pipelines === 0);
+      const fixed = named.filter((owner) => swaps[owner].pipelines > 0);
+      const groups = free.length > 0 ? swaps[free[0]].bindGroups : 0;
+      const pipelines = fixed.length > 0 ? swaps[fixed[0]].pipelines : 0;
+
+      status.replaceChildren(
+        ...line(free, SHARED, ` makes ${groups} new bind group and no new pipeline. `),
+        ...line(fixed, 'var(--text)', ` builds ${pipelines} new pipeline.`),
+      );
+    };
+
+    /** Draws, keeping the keyboard on the chip or plate it was on. */
+    const redraw = () => {
+      const focused = figure.contains(document.activeElement)
+        ? document.activeElement?.getAttribute('data-key')
+        : undefined;
+      draw();
+      if (focused) figure.querySelector<SVGElement>(`[data-key='${focused}']`)?.focus();
+    };
+
+    const drop = (owner: Owner, column: number) => {
+      const holds: readonly Held[] = placement.groups[column] ?? [];
+      picked = undefined;
+      if (!holds.includes(owner)) {
+        shares = move(shares, owner, holds);
+        placement = createProgram(shares);
+        say();
+      }
+      draw();
+      figure.querySelector<SVGElement>(`[data-key='${owner}']`)?.focus();
+    };
+
+    /** The column under a point, if one is. */
+    const columnAt = ({ x, y }: DOMPoint) => {
+      if (y < span.top || y > span.bottom) return undefined;
+      const found = columns.findIndex((at) => x >= at.x - 6 && x <= at.x + at.width + 6);
+      return found < 0 ? undefined : found;
+    };
+
+    let press: { owner: Owner | undefined; x: number; y: number; pointer: number } | undefined;
+
+    figure.addEventListener('pointerdown', (event) => {
+      if (!event.isPrimary || event.button !== 0) return;
+      const owner = (event.target as Element).closest('[data-owner]')?.getAttribute('data-owner') as Owner | null;
+      press = { owner: owner ?? undefined, x: event.clientX, y: event.clientY, pointer: event.pointerId };
+      if (owner) figure.setPointerCapture(event.pointerId);
+    });
+
+    figure.addEventListener('pointermove', (event) => {
+      if (!press?.owner || event.pointerId !== press.pointer) return;
+      if (!drag && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 4) return;
+      const at = pointIn(figure, event);
+      drag = { owner: press.owner, x: at.x, y: at.y };
+      picked = undefined;
+      const column = columnAt(at);
+      over = column !== undefined && column !== columnOf(press.owner) ? column : undefined;
+      draw();
+    });
+
+    const release = (event: PointerEvent) => {
+      if (!press || event.pointerId !== press.pointer) return;
+      const { owner } = press;
+      press = undefined;
+
+      if (drag) {
+        const target = over;
+        drag = undefined;
+        over = undefined;
+        if (target === undefined) redraw();
+        else drop(owner!, target);
+        return;
+      }
+
+      const column = columnAt(pointIn(figure, event));
+      if (picked && column !== undefined && owner !== picked) drop(picked, column);
+      else {
+        picked = owner && owner !== picked ? owner : undefined;
+        redraw();
+      }
+    };
+    figure.addEventListener('pointerup', release);
+    figure.addEventListener('pointercancel', () => {
+      press = undefined;
+      drag = undefined;
+      over = undefined;
+      redraw();
+    });
+
+    figure.addEventListener('keydown', (event) => {
+      const element = (event.target as Element).closest('[data-key]');
+      if (event.key === 'Escape' && picked) {
+        picked = undefined;
+        redraw();
+        return;
+      }
+      const step = ARROWS[event.key];
+      if (element && step) {
+        event.preventDefault();
+        const keys = [...figure.querySelectorAll<SVGElement>('[data-key]')];
+        keys[(keys.indexOf(element as SVGElement) + step + keys.length) % keys.length]?.focus();
+        return;
+      }
+      if (!element || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      const owner = element.getAttribute('data-owner') as Owner | null;
+      const column = Number(element.getAttribute('data-column') ?? -1);
+      if (picked && owner !== picked) drop(picked, owner ? columnOf(owner) : column);
+      else {
+        picked = owner && owner !== picked ? owner : undefined;
+        redraw();
+      }
+    });
+
+    reset.addEventListener('click', () => {
+      shares = OPENING;
+      placement = createProgram(shares);
+      picked = undefined;
+      say();
+      draw();
+    });
+
+    say();
+    draw();
+  });
+</script>

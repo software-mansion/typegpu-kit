@@ -1,0 +1,76 @@
+{
+  "name": "typegpu-kit-native",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeGPU Kit examples as a React Native app.",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios --device",
+    "bundle": "expo export --platform ios",
+    "test:types": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@expo/ui": "~58.0.29",
+    "@typegpu/color": "catalog:",
+    "@typegpu/kit": "workspace:*",
+    "@typegpu/noise": "catalog:",
+    "expo": "~58.0.26",
+    "expo-asset": "~58.0.21",
+    "expo-constants": "~58.0.16",
+    "expo-file-system": "~58.0.14",
+    "expo-font": "~58.0.12",
+    "expo-image-manipulator": "~58.0.16",
+    "expo-image-picker": "~58.0.10",
+    "expo-linking": "~58.0.17",
+    "expo-router": "~58.0.32",
+    "expo-status-bar": "~58.0.5",
+    "react": "catalog:native",
+    "react-native": "catalog:native",
+    "react-native-gesture-handler": "~3.3.0",
+    "react-native-nitro-image": "0.15.2",
+    "react-native-nitro-modules": "0.37.2",
+    "react-native-reanimated": "4.7.2",
+    "react-native-safe-area-context": "~5.11.1",
+    "react-native-screens": "~4.30.1",
+    "react-native-vision-camera": "5.2.4",
+    "react-native-vision-camera-worklets": "5.2.4",
+    "react-native-webgpu": "catalog:native",
+    "react-native-worklets": "catalog:native",
+    "typegpu": "catalog:",
+    "typegpu-kit-examples": "workspace:*",
+    "typegpu-kit-pull": "workspace:*"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.13",
+    "@types/react": "catalog:native",
+    "@webgpu/types": "catalog:types",
+    "babel-preset-expo": "~58.0.26",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native-reanimated",
+        "react-native-worklets",
+        "react-native-gesture-handler",
+        "react-native-webgpu",
+        "typescript"
+      ]
+    },
+    "autolinking": {
+      "ios": {
+        "buildFromSource": [
+          "react-native-worklets",
+          "react-native-reanimated"
+        ]
+      }
+    }
+  },
+  "worklets": {
+    "staticFeatureFlags": {
+      "IOS_DYNAMIC_FRAMERATE_ENABLED": false
+    }
+  }
+}

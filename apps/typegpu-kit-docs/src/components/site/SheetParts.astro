@@ -1,0 +1,118 @@
+---
+import type { Links, Part } from '../../contracts/facets.ts';
+
+interface Props {
+  parts: readonly Part[];
+  links: Links;
+}
+
+const { parts, links } = Astro.props;
+---
+
+{
+  parts.map((part) => {
+    if (part.type === 'pill') {
+      const { text, facet, module, dashed, title } = part.pill;
+      const href = module === undefined ? undefined : links.module(module);
+      return href ? (
+        <a class:list={['pill', { dashed }]} data-facet={facet} href={href} title={title}>
+          {text}
+        </a>
+      ) : (
+        <span class:list={['pill', { dashed }]} data-facet={facet} title={title}>
+          {text}
+        </span>
+      );
+    }
+    if (part.type === 'code') return <code>{part.text}</code>;
+    if (part.type === 'example') {
+      const { href, title } = links.example(part.key);
+      return (
+        <a class="link" href={href}>
+          {title}
+        </a>
+      );
+    }
+    if (part.type === 'check') {
+      const href = part.on ? links.member?.(part.text) : undefined;
+      return (
+        <span class:list={['check', { off: !part.on }]}>
+          <span class="mark" aria-hidden="true">
+            {part.on ? '✓' : '–'}
+          </span>
+          {href ? (
+            <a href={href}>
+              <code>{part.text}</code>
+            </a>
+          ) : (
+            <code>{part.text}</code>
+          )}
+          {!part.on && <span class="sr-only">(none)</span>}
+        </span>
+      );
+    }
+    if (part.type === 'aside') return <span class="words">{part.text}</span>;
+    // An item that names code keeps it with its words, so a list still breaks between items
+    return (
+      <span>
+        {part.text
+          .split(/(`[^`]+`)/)
+          .map((each) => (each.startsWith('`') ? <code>{each.slice(1, -1)}</code> : each))}
+      </span>
+    );
+  })
+}
+
+<style>
+  code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+
+  .pill.dashed {
+    border-style: dashed;
+    background: transparent;
+  }
+
+  .words {
+    color: var(--muted);
+  }
+
+  .link {
+    color: var(--text-2);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    text-decoration: none;
+  }
+
+  .link:hover {
+    color: var(--accent-high);
+    text-decoration: underline;
+  }
+
+  .check {
+    display: inline-flex;
+    gap: 0.6ch;
+  }
+
+  .check .mark {
+    color: var(--f-needs);
+  }
+
+  .check a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .check a:hover {
+    color: var(--accent-high);
+  }
+
+  .check.off,
+  .check.off .mark {
+    color: var(--muted);
+  }
+</style>

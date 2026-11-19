@@ -1,0 +1,120 @@
+---
+import logo from '../../assets/software-mansion.svg?url';
+
+const LIBRARIES = [
+  ['TypeGPU', 'https://docs.swmansion.com/TypeGPU/'],
+  ['React Native Reanimated', 'https://docs.swmansion.com/react-native-reanimated/'],
+  ['React Native Gesture Handler', 'https://docs.swmansion.com/react-native-gesture-handler/'],
+  ['React Native Worklets', 'https://docs.swmansion.com/react-native-worklets/'],
+  ['Argent', 'https://argent.swmansion.com/'],
+  ['React Native Audio API', 'https://docs.swmansion.com/react-native-audio-api/'],
+  ['ruNNtime', 'https://docs.swmansion.com/runntime/'],
+  ['Pulsar', 'https://docs.swmansion.com/pulsar/'],
+  ['Enriched Markdown', 'https://enriched.swmansion.com/markdown/'],
+] as const;
+---
+
+<section class="swm not-content" aria-labelledby="software-mansion">
+  <div class="about">
+    <a class="logo" href="https://swmansion.com/">
+      <img src={logo} alt="Software Mansion" width="241" height="129" />
+    </a>
+    <div>
+      <h2 id="software-mansion">We are Software Mansion</h2>
+      <p>
+        A software company built around improving developer experience and bringing the innovative
+        ideas of our clients to life. Do you have a software project we can help you with?
+      </p>
+      <a
+        class="btn primary"
+        href="https://swmansion.com/contact/projects?utm_source=typegpu-kit&utm_medium=docs"
+        >Hire us</a
+      >
+    </div>
+  </div>
+  <ul aria-label="Libraries by Software Mansion">
+    {
+      LIBRARIES.map(([name, href]) => (
+        <li>
+          <a href={href}>{name}</a>
+        </li>
+      ))
+    }
+  </ul>
+</section>
+
+<style>
+  .swm {
+    margin-top: var(--s-8);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--ground-2);
+  }
+
+  .about {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--s-6);
+    align-items: center;
+    padding: var(--s-6);
+  }
+
+  .logo img {
+    display: block;
+    width: auto;
+    height: 96px;
+  }
+
+  h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: clamp(22px, 2vw, 28px);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    max-width: var(--measure);
+    margin: var(--s-2) 0 var(--s-4);
+    color: var(--text-2);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  ul {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s-1) var(--s-5);
+    margin: 0;
+    padding: var(--s-4) var(--s-6);
+    border-top: 1px solid var(--rule);
+    list-style: none;
+  }
+
+  li a {
+    color: var(--text-2);
+    font: 12px/1.9 var(--font-mono);
+    text-decoration: none;
+  }
+
+  li a:hover {
+    color: var(--accent-high);
+  }
+
+  @media (max-width: 40em) {
+    .about {
+      grid-template-columns: 1fr;
+      gap: var(--s-4);
+      padding: var(--s-5);
+    }
+
+    .logo img {
+      height: 64px;
+    }
+
+    ul {
+      grid-template-columns: 1fr;
+      padding: var(--s-4) var(--s-5);
+    }
+  }
+</style>

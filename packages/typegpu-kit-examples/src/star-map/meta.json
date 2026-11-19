@@ -1,0 +1,11 @@
+{
+  "title": "Star map",
+  "category": "data",
+  "description": "20 000 stars are generated on the CPU. GPU picking finds the star under the pointer each frame. Its found() accessor lights that star through a 'use gpu' glow field in the same frame. Readback handles clicks, and the chosen star gets a callout pinned beside it, drawn over the finished frame: a ring and a leader out to a plate, shaded from signed distances, with its name over its distance from the core typing on in the kit's MSDF text. Bloom and the final pass add glow.",
+  "line": "20 000 stars; the one under the pointer is picked on the GPU.",
+  "order": 26,
+  "card": {
+    "choose": [-5, 0, -1.5]
+  },
+  "hint": "hover a star \u00b7 click to choose \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

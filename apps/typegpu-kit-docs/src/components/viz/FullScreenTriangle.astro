@@ -1,0 +1,171 @@
+<figure class="viz" data-viz="full-screen-triangle">
+  <p class="viz-title">One triangle covers the canvas and shades every pixel</p>
+  <svg
+    viewBox="0 0 640 360"
+    role="img"
+    tabindex="0"
+    aria-label="Triangle covering the canvas and fragment runs for its pixels"
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Point at a pixel to see its position and where <code>sheetAt</code> maps it on the dish. Three vertices cover the canvas; the GPU clips the outside and runs fragments for the covered pixels in parallel, without a fixed order.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    cursor: crosshair;
+  }
+</style>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, each, onKeys } from './figure.ts';
+  import { stipple, CHAR, fitWidth, pointIn, seeded, svg, text } from './svg.ts';
+
+  /** Seconds to run every pixel, then seconds to hold the finished canvas. */
+  const SWEEP = 3;
+  const HOLD = 1.5;
+  /** The canvas, in pixels. */
+  const across = 16;
+  const down = 10;
+
+  each('full-screen-triangle', (root) => {
+    const figure = root.querySelector('svg')!;
+    const random = seeded(5);
+    let order: number[] = [];
+    let ran = 0;
+    let held = 0;
+    let pointed: number | undefined;
+    let layout = { x0: 0, y0: 0, cell: 1 };
+
+    const shuffle = () => {
+      order = Array.from({ length: across * down }, (_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      ran = 0;
+      held = 0;
+    };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const x0 = 46;
+        const room = Math.min(width * 0.46, (width - x0 - 8) / 2, 300);
+        const canvasWidth = Math.floor(room / across) * across;
+        const cell = canvasWidth / across;
+        const canvasHeight = cell * down;
+        const y0 = 2 * canvasHeight + 22;
+        layout = { x0, y0, cell };
+        /** Where a point of clip space is: the canvas runs from −1 to 1 each way, y up. */
+        const clip = (cx: number, cy: number) =>
+          [x0 + ((cx + 1) / 2) * canvasWidth, y0 - ((cy + 1) / 2) * canvasHeight] as const;
+
+        const corners = [clip(-1, -1), clip(3, -1), clip(-1, 3)] as const;
+        svg('polygon', {
+          points: corners.map((corner) => corner.join(',')).join(' '),
+          fill: stipple(figure, 'var(--viz-line)', 0.125), stroke: 'var(--viz-muted)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4',
+        }, figure);
+        const accent = { class: 'strong' };
+        for (const [x, y] of corners) svg('circle', { cx: x, cy: y, r: 3, fill: 'var(--viz-muted)' }, figure);
+        text(figure, corners[0][0] - 4, corners[0][1] + 18, '(−1, −1)', accent);
+        text(figure, corners[1][0], corners[1][1] + 18, '(3, −1)', { ...accent, 'text-anchor': 'end' });
+        text(figure, corners[2][0] + 10, corners[2][1] + 4, '(−1, 3)', accent);
+        const [cornerX, cornerY] = clip(1, 1);
+        text(figure, cornerX + 12, cornerY - 10, '(1, 1)');
+
+        const done = new Set(order.slice(0, ran));
+        const latest = new Set(order.slice(Math.max(ran - Math.ceil(order.length / 30), 0), ran));
+        for (let i = 0; i < across * down; i++) {
+          const px = i % across;
+          const py = Math.floor(i / across);
+          const lit = done.has(i);
+          const off = Math.hypot(px + 0.5 - across / 2, py + 0.5 - down / 2) / (across / 2);
+          const light = 0.65 - 0.45 * Math.min(off, 1);
+          svg('rect', {
+            x: x0 + px * cell + 0.5, y: y0 - canvasHeight + py * cell + 0.5, width: cell - 1, height: cell - 1,
+            fill: lit ? (latest.has(i) ? stipple(figure, 'var(--viz-accent)', 0.5) : stipple(figure, 'var(--viz-d)', 0.5)) : stipple(figure),
+            'fill-opacity': lit ? (latest.has(i) ? 0.9 : light) : 1,
+            stroke: i === pointed ? 'var(--viz-accent)' : 'none', 'stroke-width': 1.5,
+          }, figure);
+        }
+        svg('rect', { x: x0, y: y0 - canvasHeight, width: canvasWidth, height: canvasHeight, fill: 'none', stroke: 'var(--text-2)', 'stroke-width': 1.5 }, figure);
+
+        const shown = pointed ?? order[Math.max(ran - 1, 0)];
+        const px = (shown % across) + 0.5;
+        const py = Math.floor(shown / across) + 0.5;
+        const lines = [
+          [`fragments run: ${ran} of ${across * down}`, 'strong'],
+          [pointed === undefined ? 'the last to run:' : 'the pixel pointed at:', ''],
+          [`pixel.xy = (${px}, ${py})`, ''],
+          [`at = (${(((px - across / 2) * 2) / across).toFixed(2)}, ${(((py - down / 2) * 2) / across).toFixed(2)})`, 'accent'],
+        ] as const;
+        const styles = { strong: { class: 'strong' }, accent: { style: 'fill: var(--viz-accent)' }, '': {} };
+
+        // What the figure shows, under the triangle, where no line crosses it
+        const keyY = y0 + 46;
+        const key = [
+          [`the canvas: ${across} × ${down} pixels`, 'strong'],
+          ['the dashed triangle is clipped outside', ''],
+          ['the canvas, so no fragments run there', ''],
+        ] as const;
+        key.forEach(([words, kind], k) => text(figure, 0, keyY + k * 18, words, styles[kind]));
+
+        const rx = cornerX + 28;
+        const readoutBottom = cornerY - 28;
+        const fits = rx + 28 * CHAR <= width && readoutBottom - 3 * 18 - 12 >= 0;
+        if (fits) {
+          lines.forEach(([words, kind], k) => text(figure, rx, readoutBottom - (3 - k) * 18, words, styles[kind]));
+          return keyY + key.length * 18 - 6;
+        }
+        const lineY = keyY + key.length * 18 + 10;
+        lines.forEach(([words, kind], k) => text(figure, 0, lineY + k * 18, words, styles[kind]));
+        return lineY + lines.length * 18 - 6;
+      },
+      300,
+    );
+
+    const shown = animation(root, {
+      step(dt) {
+        if (ran < order.length) {
+          ran = Math.min(order.length, ran + Math.max(1, Math.round((order.length * dt) / SWEEP)));
+        } else if ((held += dt) > HOLD) {
+          ran = 0;
+          held = 0;
+        }
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+
+    figure.addEventListener('pointermove', (event) => {
+      const p = pointIn(figure, event);
+      const px = Math.floor((p.x - layout.x0) / layout.cell);
+      const py = Math.floor((p.y - (layout.y0 - layout.cell * down)) / layout.cell);
+      const inside = px >= 0 && px < across && py >= 0 && py < down;
+      const next = inside ? py * across + px : undefined;
+      if (next === pointed) return;
+      pointed = next;
+      shown.redraw();
+    });
+    figure.addEventListener('pointerleave', () => {
+      pointed = undefined;
+      shown.redraw();
+    });
+    onKeys(figure, {
+      arrow(dx, dy) {
+        const at = pointed ?? (across * down) / 2 + across / 2;
+        const px = clamp((at % across) + dx, 0, across - 1);
+        const py = clamp(Math.floor(at / across) + dy, 0, down - 1);
+        pointed = py * across + px;
+        shown.redraw();
+      },
+    }, 'arrow keys point at a pixel');
+
+    shuffle();
+  });
+</script>

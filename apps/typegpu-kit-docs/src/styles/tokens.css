@@ -1,0 +1,77 @@
+/* The design tokens, which the site and the example pages share. */
+
+@import './fonts.css';
+
+:root,
+::backdrop {
+  color-scheme: dark;
+
+  --ground: hsl(220 30% 5.5%);
+  --ground-2: hsl(220 26% 7.5%);
+  --ground-3: hsl(220 22% 10%);
+  --ground-4: hsl(220 20% 13%);
+  --rule: hsl(220 18% 15%);
+  --rule-strong: hsl(220 16% 23%);
+  /* The edge of a control that is known by its edge alone: 3.4:1 on --ground, 3.1:1 on --ground-3. */
+  --rule-control: hsl(220 14% 42%);
+
+  /* On --ground: --text 16:1, --text-2 11:1, --muted 6:1. */
+  --text: hsl(216 25% 93%);
+  --text-2: hsl(218 16% 79%);
+  --muted: hsl(218 12% 62%);
+
+  /* The mark's blue, and the ice of the wordmark's foot. On --ground: --accent 5:1, so text that
+     must read takes --link, 9:1, or --accent-high. */
+  --accent: hsl(225 100% 65%);
+  --accent-high: hsl(205 100% 93%);
+  --accent-low: hsl(225 100% 65% / 0.16);
+  --link: hsl(224 100% 79%);
+
+  /* The logo's colours, its lilac top through its blues to the shadow at its foot. */
+  --mark-lilac: #d597ff;
+  --mark-violet: #a335f5;
+  --mark-blue: #4c77ff;
+  --mark-deep: #3255df;
+  --mark-shadow: #243292;
+  --mark-ice: #d9efff;
+
+  /* Facets of a module's contract: its pills, the dot and label of a fact on a
+     card or a strip, and the asides. */
+  --f-records: hsl(198 68% 70%);
+  --f-injects: hsl(266 74% 80%);
+  --f-needs: hsl(154 52% 62%);
+  --f-requires: hsl(36 92% 64%);
+  --f-platform: hsl(326 66% 77%);
+  --f-kind: hsl(216 14% 80%);
+  --f-status: hsl(218 12% 70%);
+  --f-exception: hsl(4 84% 70%);
+
+  /* What a call does with a name: takes it, or returns it. Apart from every facet's colour; the
+     root it borrows is grey and a module it needs is that facet's green. */
+  --r-takes: hsl(52 88% 72%);
+  --r-returns: var(--link);
+
+  --font-sans: 'Aeonik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Spacing: 4, 8, 12, 16, 24, 32, 48, 64. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* Type sizes: mono labels and readouts, status lines, small prose, figure prose. */
+  --type-label: 11px;
+  --type-status: 12px;
+  --type-small: 13px;
+  --type-body: 14px;
+
+  --screen-door: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'><path d='M0 0h2v2h-2zM2 0h2v2h-2zM4 0h2v2h-2zM6 0h2v2h-2zM8 0h2v2h-2zM10 0h2v2h-2zM12 0h2v2h-2zM14 0h2v2h-2zM2 2h2v2h-2zM6 2h2v2h-2zM10 2h2v2h-2zM14 2h2v2h-2zM0 4h2v2h-2zM2 4h2v2h-2zM4 4h2v2h-2zM6 4h2v2h-2zM8 4h2v2h-2zM10 4h2v2h-2zM12 4h2v2h-2zM14 4h2v2h-2zM2 6h2v2h-2zM6 6h2v2h-2zM10 6h2v2h-2zM14 6h2v2h-2zM0 8h2v2h-2zM2 8h2v2h-2zM4 8h2v2h-2zM6 8h2v2h-2zM8 8h2v2h-2zM10 8h2v2h-2zM12 8h2v2h-2zM14 8h2v2h-2zM2 10h2v2h-2zM6 10h2v2h-2zM10 10h2v2h-2zM14 10h2v2h-2zM0 12h2v2h-2zM2 12h2v2h-2zM4 12h2v2h-2zM6 12h2v2h-2zM8 12h2v2h-2zM10 12h2v2h-2zM12 12h2v2h-2zM14 12h2v2h-2zM2 14h2v2h-2zM6 14h2v2h-2zM10 14h2v2h-2zM14 14h2v2h-2z'/></svg>");
+
+  /* The longest line of prose. */
+  --measure: 62ch;
+}

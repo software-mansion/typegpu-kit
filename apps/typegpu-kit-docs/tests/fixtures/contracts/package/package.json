@@ -1,0 +1,14 @@
+{
+  "name": "@kit-fixtures/fixture",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./spinner": "./src/spinner.ts",
+    "./shade": "./src/shade.ts",
+    "./tool": "./src/tool.ts",
+    "./vendored": "./src/vendored/index.ts",
+    "./dev": "./src/dev.ts",
+    "./package.json": "./package.json"
+  }
+}

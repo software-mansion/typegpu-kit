@@ -1,0 +1,353 @@
+---
+title: Cameras
+description: Orbit, flat, custom and layered cameras with shader accessors, eased motion and last-frame views.
+modules: [kit/cameras]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import OrbitCamera from '../../../components/viz/OrbitCamera.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A camera keeps a **goal** that your input handlers and game logic can change. Once a frame, `update(dt)` eases the view towards it and writes the uniform only if the view moved. Shaders read it through one `cameras.current` accessor, whichever kind of camera filled it.
+
+<Hidden card="ocean">
+  <OrbitCamera />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+const surface = web.surface(root, canvas);
+// ---cut---
+import { cameras } from '@typegpu/kit';
+
+const view = cameras.orbit(root, { size: surface, target: [0, 1, 0], distance: 12 });
+web.orbitControls(view, canvas); // drag writes view.goal
+
+view.goal.yaw += Math.PI / 2; // or turn it from game logic
+//   ^?
+
+frames.create(root, (frame) => {
+  view.update(frame.dt); // eases, and writes the uniform if the view moved
+  // ..
+});
+```
+
+## Goal and update
+
+<Rules>
+
+- **Following** Write `goal.target` to follow something; the `target` option is only where it starts. A knob that writes `goal.fov` eases like the rest.
+- **Pose** Read `pose` for CPU work that has to match the frame, such as a pan.
+- **Easing** `update(dt)` multiplies the gap by e<sup>−damping·dt</sup>. At the default damping of 14, half the gap closes every 50 ms at any frame rate. A gap under 1e-5 snaps shut.
+- **Cuts** Use `jump()` for a camera cut or a view drawn on demand. It preserves the view it replaced as last frame's view.
+- **Writes** The uniform is written at creation, then only when the view moved or the aspect ratio changed, by a queue write that lands before the frame's commands. A still camera costs a few comparisons and allocates nothing.
+- **Yaw** Yaw eases the short way round, so a goal from `Math.atan2` that jumps from π to −π turns the camera a little, not a full turn back. A goal a whole number of turns away leaves the view where it is.
+- **Ranges** `pitchRange` and `distanceRange` clamp the orbit goal at creation and in `update` and `jump`, so input can write past them.
+- **Floor** `floor(x, z)` returns the lowest height the eye may reach over a point, such as the ground there plus a margin. At the same times the goal's pitch rises, within `pitchRange`, to the lowest pitch that keeps the eye at or above it.
+- **Reach** `reach(target, yaw, pitch)` returns how far the eye may go from the target along a direction, such as to a room's wall less a margin. `update` and `jump` pull the pose's distance in to it, and `goal.distance` keeps the viewer's zoom, so the eye comes back out as it turns away from the wall. [Cloister](/examples/cloister/) keeps its eye inside the court this way.
+
+</Rules>
+
+A pan moves the target by the distance the finger moves over the ground. This handler pans with two fingers and orbits with one:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 12 });
+// ---cut---
+/** Moves the target by a drag of `dx`, `dy` pixels on a view `height` pixels tall. */
+function pan(dx: number, dy: number, height: number) {
+  const { yaw, distance, fov } = view.pose;
+  const scale = (2 * distance * Math.tan(fov / 2)) / height;
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+
+  view.goal.target[0] -= (cos * dx + sin * dy) * scale;
+  view.goal.target[2] -= (cos * dy - sin * dx) * scale;
+}
+```
+
+The stampede keeps the eye 1.2 m above its hills, however low input turns it:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+const root = await tgpu.init();
+declare function heightAt(x: number, z: number): number;
+// ---cut---
+const view = cameras.orbit(root, {
+  size: { width: 8, height: 6 },
+  target: [0, 2, 0],
+  distance: 40,
+  floor: (x, z) => heightAt(x, z) + 1.2,
+});
+```
+
+`cameras.eyeOf(pose, out)` writes an orbit camera's eye position for either `goal` or `pose`, for CPU work at the eye such as placing a sound.
+
+## What shaders read
+
+`root.pipe(view.inject())` fills the `cameras.current` accessor from `@typegpu/kit` with the camera's uniform:
+
+| Field            | Type      | Meaning                                                                 |
+| ---------------- | --------- | ----------------------------------------------------------------------- |
+| `viewProjection` | `mat4x4f` | World to clip space.                                                    |
+| `position`       | `vec3f`   | The eye, in world space.                                                |
+| `right`, `up`    | `vec3f`   | The view's x and y axes in world space, for quads that face the screen. |
+
+`cameras.toClip(point)` returns a world point in clip space, the position a vertex shader returns. It reads `cameras.current` itself. Code that projects with a view of its own, such as a shadow's, multiplies by that view's `viewProjection`.
+
+`'use gpu'` functions that take `cameras.current.$` derive the rest. A function of your own types that parameter as `cameras.Camera`:
+
+<Rules>
+
+- **Forward** `cameras.forwardOf(view)` returns the direction the view looks in.
+- **Lens** `cameras.lensOf(view)` returns the projection's x and y scales.
+- **Ray** `cameras.rayOf(view, ndc)` returns an `origin` and a unit `direction` through a screen point. `ndc` ranges from −1 to 1 with +y up. Orbit rays start at the eye. Flat rays are parallel and start at their screen points. To go back to the screen, multiply a point on the ray, such as `origin + direction`, by `viewProjection` and divide by `w`.
+- **To the viewer** `cameras.towards(view, point)` returns the unit direction from a point to the viewer for shading. For a flat camera it is the opposite of the view direction.
+- **Distance** `cameras.distanceOf(view, depth)` returns the distance along the view direction to the point a depth value holds, for orbit and flat cameras alike. Read `depth` from the depth target the view drew. Depth of field, ambient occlusion and the [night market](/examples/night-market/)'s focus pull read distance this way.
+
+</Rules>
+
+`forwardOf` returns `cross(up, right)`, so `right`, `up` and the view direction form a right-handed basis. A `Camera` you build in a shader must keep that basis. A view of a reflection must also mirror the image, as the [fireworks](/examples/fireworks/) lake does, and is read with u mirrored.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pointer = root.createUniform(d.struct({ ndc: d.vec2f }));
+// ---cut---
+import { cameras } from '@typegpu/kit';
+
+/** Where the pointer's ray meets the ground, y = 0. */
+const ground = () => {
+  'use gpu';
+  const ray = cameras.rayOf(cameras.current.$, pointer.$.ndc);
+  return ray.origin + ray.direction * (-ray.origin.y / ray.direction.y);
+};
+```
+
+`cameras.sees(view, center, radius)` returns false only when a sphere lies wholly outside one of the view's six planes. It can accept a sphere beyond a corner. Use it in the `alive` callback of [live lists](/kit/live-lists/) with the camera's fill:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, liveLists } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 8, height: 6 }, target: [0, 0, 0], distance: 9 });
+// ---cut---
+// Balls, each a centre and a radius in a vec4f
+const balls = root.createReadonly(d.arrayOf(d.vec4f, 256));
+
+const seen = liveLists.create(root, {
+  capacity: 256,
+  draws: [{ vertexCount: 36 }],
+  alive: tgpu
+    .fn((i: number) => {
+      'use gpu';
+      const ball = balls.$[i];
+      return cameras.sees(cameras.current.$, ball.xyz, ball.w);
+    })
+    .pipe(view.inject()),
+});
+```
+
+To find what is under a pointer among things that move on the GPU, use [picker](/kit/picker/), which projects each candidate with this camera.
+
+## Last frame's view
+
+`view.previous` holds last frame's view. Code compiled with [`history.previously`](/kit/history/) reads it through `cameras.current` for motion vectors and reprojection. `toClip` compiled this way finds where a world position appeared on screen last frame:
+
+```ts
+const clipBefore = history.previously(cameras.toClip);
+```
+
+The orbit and flat cameras write `previous` in `update` and `jump`. When they move, they store the view they replace. On the frame after they stop, they store the current view.
+
+## On the CPU
+
+Each kit camera keeps a CPU copy of the view its uniform holds, for CPU work that has to match the frame. None of these calls allocates:
+
+<Rules>
+
+- **Surface points** `view.projectAt` and `view.rayAt` take points of the surface, x and y from 0 to 1 with +y down, as [`web.pointer`](/kit/web/#pointer-input) reports them. A point from `projectAt` gives `rayAt` a ray through the world point.
+- **Level planes** `cameras.hitHeight(ray, height, out)` writes where a ray meets the level plane at `height` and returns how far along the ray that is. It returns undefined, writing nothing, for a ray that runs level or points away. `{ grazing }` also misses rays whose direction's y is nearer 0 than it, which would hit far beyond the scene near the horizon.
+- **Terrain** `height` can also be a function of x and z, such as a terrain's height. `hitHeight` then searches the ray in steps, the first `step` long and each 4% longer, up to `reach`, and halves the last step 16 times. It allocates nothing, so a pointer can find the hills under it every frame, as in the [stampede](/examples/stampede/).
+
+</Rules>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 800, height: 600 },
+  target: [0, 0, 0],
+  distance: 12,
+});
+declare const label: HTMLElement;
+// ---cut---
+const at = [0, 0, 0];
+const ray = { origin: [0, 0, 0], direction: [0, 0, 0] };
+
+// A label over a point, in CSS pixels of an 800 by 600 canvas
+if (view.projectAt([0, 2, 0], at)) {
+  label.style.translate = `${at[0] * 800}px ${at[1] * 600}px`;
+}
+
+// The ground under the pointer, y = 0; a miss leaves `aim` where it was
+const aim = [0, 0, 0];
+const pointing = {
+  move(x: number, y: number) {
+    view.rayAt(x, y, ray);
+    cameras.hitHeight(ray, 0, aim, { grazing: 0.01 });
+  },
+};
+```
+
+Both read the view the frame draws, from the last `update` or `write`, not the goal. A `custom` camera projects nothing before its first `write`. A function that takes the ray types it as `cameras.CpuRay`.
+
+A module that draws with a camera takes it as an option and pipes it in, as `@typegpu/kit` does. [Meshes](/kit/meshes/) shows a vertex shader that reads it.
+
+## Orbit controls
+
+`web.orbitControls(view, element, { sensitivity, zoomSpeed, button, pan, page, onChange })` writes the goal from the pointer.
+
+<Rules>
+
+- **Orbit and zoom** A drag with the primary button orbits, `sensitivity` radians per pixel (0.008), and keeps going outside the element. The wheel and a pinch zoom without scrolling the page, scaling the distance by e<sup>deltaY·zoomSpeed</sup> (0.001).
+- **Other buttons** With `button: 'secondary'` or `'middle'`, that button orbits and two fingers orbit by the move of their midpoint as they pinch. The primary button and one finger stay free for the scene, such as for strokes from [`web.pointer`](/kit/web/#pointer-input) that paint.
+- **Panning** With `pan: true`, the secondary button, or the middle one when the secondary orbits, and two fingers moving together pan the target as `cameras.pan` does. Buttons the controls use open no context menu and start no autoscroll.
+- **In a page** With `page: true`, vertical swipes and the wheel scroll the page. Horizontal drags turn the camera. Pinches and wheel events with Ctrl or ⌘ held zoom it. Trackpad pinches send those wheel events. Use it for a canvas inside a page that scrolls.
+- **Changes** `onChange` runs after each input that wrote the goal, for a view that draws only when asked.
+- **Touch action** It sets the element's `touch-action` to `none`, or `pan-y` with `page`. `destroy()`, or `[Symbol.dispose]`, removes listeners and restores the original value. Create controls in [`attach`](/kit/hosting/#on-the-web) on a hosted page to dispose them with the scene.
+- **Taps** The controls leave taps to the app. Listen on the same element and count a release within a few pixels of its press as a tap, such as one that places a tower on a board the drag orbits.
+
+</Rules>
+
+For a binding the controls don't offer, write the goal yourself. `cameras.turn(goal, dx, dy, { sensitivity })` turns it by a drag as the controls do, and `cameras.pan(goal, dx, dy, { height })` pans it, with `height` the view's height in the units of the drag. Here a drag turns the view, a drag with Shift held pans it and the wheel zooms:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 12 });
+// ---cut---
+web.pointer(canvas, {
+  move(_x, _y, event) {
+    if (event.buttons !== 1) return;
+    const { movementX: dx, movementY: dy } = event;
+    if (event.shiftKey) cameras.pan(view.goal, dx, dy, { height: canvas.clientHeight });
+    else cameras.turn(view.goal, dx, dy);
+  },
+  zoom: (by) => {
+    view.goal.distance *= by;
+  },
+});
+```
+
+On React Native, write `goal` from gesture handlers, here with the scene on the JS thread and `height` the view's height in points. One finger turns the view and two pan it:
+
+```ts
+const orbit = Gesture.Pan()
+  .runOnJS(true)
+  .maxPointers(1)
+  .onChange((event) => {
+    cameras.turn(view.goal, event.changeX, event.changeY);
+  });
+const pan = Gesture.Pan()
+  .runOnJS(true)
+  .minPointers(2)
+  .onChange((event) => {
+    cameras.pan(view.goal, event.changeX, event.changeY, { height });
+  });
+const zoom = Gesture.Pinch()
+  .runOnJS(true)
+  .onChange((event) => {
+    view.goal.distance /= event.scaleChange;
+  });
+```
+
+A handler can't access a scene on another runtime. Write cumulative gesture values to a [`runtimes.cell`](/kit/hosting/#values-between-runtimes). Each frame, have the scene move the goal by the change in those values.
+
+## Flat camera
+
+`cameras.flat(root, { size, height })` gives an orthographic view `height` world units tall, with +y up and z from −1 to 1. `snap` rounds the drawn centre to a grid, such as one texel of a pixel-art target, so the art doesn't shimmer as the view follows a hero. Pass that target as `size`.
+
+`fit: { width, height, mode }` replaces `height` with a world rectangle centred on the view. `'cover'` fills the view with it and crops its longer side; `'contain'` shows all of it and leaves bands. The camera sets `goal.height` and its eased height at once, at creation and whenever the aspect changes, so a zoom still eases until the next resize. The [ember mirror](/examples/ember-mirror/) covers the screen with its camera feed this way.
+
+## A camera of your own
+
+`cameras.custom(root)` takes matrices you supply for a follow camera, a scripted shot or a repeatable benchmark view. Pass `write(view, projection)` a view matrix containing rotation and translation, such as one from `mat4.lookAt`, and a projection matrix. It derives the eye and screen axes and fills `cameras.current`. The orbit and flat cameras use this implementation.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const hero: Float32Array;
+declare const aspect: number;
+// ---cut---
+import { cameras } from '@typegpu/kit';
+import { mat4 } from 'wgpu-matrix';
+
+const chase = cameras.custom(root);
+const eye = new Float32Array(3);
+const up = [0, 1, 0];
+const view = mat4.create();
+const projection = mat4.perspective(0.8, aspect, 0.1, 500);
+
+// after the hero moves
+eye[0] = hero[0];
+eye[1] = hero[1] + 3;
+eye[2] = hero[2] + 6;
+chase.write(mat4.lookAt(eye, hero, up, view), projection);
+```
+
+- Skipping `write` while the view is still leaves `previous` stale.
+- Until the first `write` the uniform holds zeros, and nothing drawn with it shows.
+- `write` throws for a view matrix that mirrors the world. For a reflection, mirror the image too with `mat4.multiply(mat4.scaling([-1, 1, 1]), view)`. Triangles then keep their winding.
+
+## A view per layer
+
+`cameras.layered(root, n)` holds `n` views in one uniform array, one for each layer of a [description drawn into layers](/kit/passes/#layers), such as a shadow cascade each. `write(k, view, projection)` writes layer `k` from the same matrices as a custom camera's `write`. `cameras.current.$` in a pass into layer `k` is view `k`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { passes, type Targets } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const maps: Targets<{ depth: { format: 'depth16unorm'; layers: 2 } }>;
+// ---cut---
+import { cameras } from '@typegpu/kit';
+import { mat4 } from 'wgpu-matrix';
+
+const views = cameras.layered(root, 2);
+const casters = passes.create(root, maps, { depth: passes.depth }).pipe(views.inject());
+
+const sun = mat4.lookAt([20, 40, 20], [0, 0, 0], [0, 1, 0]);
+views.write(0, sun, mat4.ortho(-10, 10, -10, 10, 0, 200)); // near
+views.write(1, sun, mat4.ortho(-40, 40, -40, 40, 0, 200)); // far
+```
+
+- It keeps no last frame's views, so code compiled with `history.previously` reads the current view.
+- It has no CPU `project`, `ray` or `rayAt`.
+
+## Limits
+
+<Rules>
+
+- **Snapping** A gap under 1e-5 snaps shut in any unit. That suits radians and scenes a few units to a few hundred across.
+- **Copies** `goal.target` is an array, so a goal copied with a spread shares its target.
+- **Projection** `lensOf`, `rayOf`, `ray` and `rayAt` assume a projection centred on the view axis.
+- **Flat rays** `rayOf` tells a flat camera from an orbit one by the matrix's last row, (0, 0, 0, 1) under an orthographic projection. A `custom` camera's rays follow the same test.
+- **Fixed struct** `Camera` is one fixed struct with no inverse view-projection. Put other values per view in a uniform of your own, split by how often they change.
+- **Other cameras** A camera implementing `CameraBase` works with every module without `project`, `ray` or `previous`. These belong to the kit's cameras. Without a temporal fill, `history.previously` reads the same camera uniform as current-frame code, so motion vectors omit camera motion.
+
+</Rules>

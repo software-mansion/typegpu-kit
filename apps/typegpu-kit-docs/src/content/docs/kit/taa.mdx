@@ -1,0 +1,216 @@
+---
+title: Temporal antialiasing
+description: Smooth stepped edges and shimmer by gathering samples over several frames.
+modules: [kit/taa]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import TaaSamples from '../../../components/viz/TaaSamples.astro';
+
+With one sample per pixel, angled edges form steps, and thin lines shimmer as they move. [MSAA](/kit/targets/) takes multiple samples in each drawing pass, and [FXAA](/kit/fxaa/) smooths the finished picture. TAA distributes samples across frames. Each frame offsets the scene by a fraction of a pixel. The resolve blends it with the previous image using motion to find each surface's previous position.
+
+<Hidden card="lattice">
+  <ExampleFigure
+    example="lattice"
+    controls={['taa', 'scale', 'upscale', 'speed']}
+    loupe
+    caption="Hold the pointer over distant beams and turn TAA off. The loupe shows thin beams stepping and shimmering as they turn. Lower the render scale, then turn upscaling off and on to compare the smaller picture stretched with TAA resolving it up."
+  />
+</Hidden>
+
+<TaaSamples />
+
+Every scene pass must jitter, and drawings that move must write motion. Use [pass descriptions](/kit/passes/) for those passes:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, passes, targets, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+declare const frame: Frame;
+// A drawing such as the lattice beams
+declare const beams: passes.Drawing<d.WgslStruct<{ position: d.Vec4f }>, { color: d.v4f }>;
+// ---cut---
+import { finish, taa } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  motion: { format: 'rg16float', sampled: true },
+  depth: { format: 'depth24plus', sampled: true },
+});
+const aa = taa.create(root, {
+  source: () => screen.textures.hdr,
+  motion: () => screen.textures.motion,
+  depth: () => screen.textures.depth,
+  camera: view,
+});
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, motion: taa.motion, depth: passes.depth },
+    { jitter: aa.jitter },
+  )
+  .pipe(view.inject());
+const drawn = scene.add(beams); // a drawing, such as the lattice's beams
+const final = finish.create(root, { format: surface.format, source: aa });
+
+// Each frame
+screen.fit();
+scene.record(frame, drawn);
+aa.record(frame);
+
+final.record(frame, surface.view(frame));
+```
+
+<Rules>
+
+- **Motion** `taa.motion` writes each surface's movement since the previous frame in UV coordinates. It reruns vertex code with [`history.previously`](/kit/history/) to read the previous camera and other `temporal` fills.
+- **Object motion** All renderers include camera motion. Object motion requires vertex code to read temporal state. Particles use velocity, and the lattice stores its turn in a [history](/kit/history/#in-a-drawing). [Skinned poses](/kit/poses/#motion-vectors) keep last frame's joints, so posed joints show their own motion.
+- **Rows** By default, instances, trails and text include only camera motion. A set of instances or a table created with [`history: true`](/kit/instances/#motion) gives each row that moves its own motion, whether `write` or a kernel moved it.
+- **Still vertices** Renderers with stationary vertices, such as a full-screen sky, use `scene.without('motion')`. See [Passes](/kit/passes/#what-each-target-gets) for their outputs.
+- **Unwritten pixels** Unwritten motion pixels retain the `taa.motion` clear value, and `taa.written(motion)` is false for them in a shader of yours. With `camera` and `depth`, the resolve reconstructs surface position from depth and applies camera motion. Otherwise those pixels stay fixed.
+- **Depth** `depth` is required. Pass `null` for a picture drawn without depth, such as a 2D game: the resolve then reads motion at each pixel, and pixels without motion stay in place.
+- **Without motion** Omit `motion` when no drawing's vertices move, as in the ray-marched [jelly slider](/examples/jelly-world/). The resolve then binds no motion texture, and the scene writes no motion target. With `camera` and `depth`, every pixel follows the camera. Without them, history stays at each pixel, which suits a still camera.
+- **Jitter** Jitter cycles through 8 subpixel offsets, or more [at `size`](#drawing-below-the-output-size). GPU copies advance it after each resolve without per-frame CPU writes. `aa.offset` holds the current clip-space offset for custom jitter shaders.
+- **The resolve** The resolve clamps previous colour within `spread` standard deviations of nearby current colours. It takes `blend` of the current frame and downweights bright values in both frames. With `depth`, each pixel uses motion from the nearest surrounding surface.
+- **Compiling** `await aa.initAsync()` compiles the resolve and binds both histories to the current source, so recording binds nothing new until a source or size changes.
+- **Resetting** Call `reset()` after a camera cut. Resizing, region changes and `enable(true)` also reset history.
+- **Turning off** After `enable(false)`, jitter is zero, `record` records nothing and `output` is the source, so keep calling `record` and keep `aa` as the next pass's source.
+- **As a source** Give bloom `source: aa` to bloom the antialiased picture. Every post-processing `source` takes `aa` and reads its `output` and `region` at each call, because output alternates between two textures.
+- **Recording** `record` takes the frame or an encoder. `record(frame, { timestampWrites })` times the resolve under a [profiler](/kit/profiler/) timer.
+
+</Rules>
+
+[A finished look for model scenes](/recipes/lit-models/) runs it after a scene lit with shadows and ambient occlusion, before bloom and the final pass.
+
+## Drawing below the output size
+
+Drawing fewer pixels saves fragment work, and stretching the smaller picture to the canvas blurs it. Over a jitter cycle, TAA samples each output pixel at many positions, so it can rebuild detail finer than one drawn pixel. Draw at two thirds in the edge figure above to watch it rebuild one edge. Give it `size`, and it resolves a scene drawn at a lower [resolution](/kit/targets/#resolution-scale) up to that size:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, finish, passes, targets, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+declare const frame: Frame;
+declare const beams: passes.Drawing<d.WgslStruct<{ position: d.Vec4f }>, { color: d.v4f }>;
+// ---cut---
+import { taa } from '@typegpu/kit';
+
+const settings = { scale: 0.67 }; // two thirds of each side
+const screen = targets.create(
+  root,
+  surface,
+  {
+    hdr: { format: 'rgba16float', sampled: true },
+    motion: { format: 'rg16float', sampled: true },
+    depth: { format: 'depth24plus', sampled: true },
+  },
+  { resolution: () => settings.scale },
+);
+const aa = taa.create(root, {
+  source: () => screen.textures.hdr,
+  region: screen.regions.hdr,
+  size: surface,
+  motion: () => screen.textures.motion,
+  depth: () => screen.textures.depth,
+  camera: view,
+});
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, motion: taa.motion, depth: passes.depth },
+    { jitter: aa.jitter },
+  )
+  .pipe(view.inject());
+const final = finish.create(root, { format: surface.format, source: aa });
+```
+
+<Rules>
+
+- **Output size** History, `aa.output` and `aa.region` take `size`, so bloom, exposure and the final pass read `aa` at the output size. While off, `output` is the source in its own region.
+- **Reconstruction** Each output pixel rebuilds the frame from the nine drawn pixels around it, weighted by where this frame's jitter placed each one. A frame whose samples land far from the pixel counts for less.
+- **Jitter** Jitter stays within a drawn pixel. It takes 8 offsets for each output pixel a drawn pixel covers: 18 at two thirds of each side.
+- **Changing scale** History keeps through changes to the region, so the scale can follow [`dynamicResolution`](/kit/profiler/#following-gpu-time). A new `size` starts over.
+- **Smaller sources** A source texture smaller than the output, such as one made with `targets.scaled`, needs no `region`.
+- **Lowest scale** Draw at least two thirds of each side.
+- **Mip bias** Shaders of the scene that sample mipmapped textures pass a bias of log2(drawn / output) - 1 to `std.textureSampleBias`, -1.58 at two thirds of each side. Without it, their textures stay as blurred as the drawn size.
+
+</Rules>
+
+## Translucent and dithered drawings
+
+Particles, additive glows and dithered fades change from frame to frame without motion that explains the change. Their surroundings vary too much for the colour clamp to reject old colours, so they leave trails. A `reactive` texture the size of the source sets how much history to drop at each pixel. Write it from the drawings that need it:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, passes, targets, taa } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+declare const beams: passes.Drawing<d.WgslStruct<{ position: d.Vec4f }>, { color: d.v4f }>;
+declare const sparks: passes.Drawing<d.WgslStruct<{ position: d.Vec4f }>, { color: d.v4f }>;
+// ---cut---
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  motion: { format: 'rg16float', sampled: true },
+  reactive: { format: 'r8unorm', sampled: true },
+  depth: { format: 'depth24plus', sampled: true },
+});
+const aa = taa.create(root, {
+  source: () => screen.textures.hdr,
+  motion: () => screen.textures.motion,
+  reactive: () => screen.textures.reactive,
+  depth: () => screen.textures.depth,
+  camera: view,
+});
+
+// How much history to drop where a drawing covers
+const fresh = passes.output(d.f32, {
+  write: () => {
+    'use gpu';
+    return 0.8;
+  },
+});
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, motion: taa.motion, reactive: fresh, depth: passes.depth },
+    { jitter: aa.jitter },
+  )
+  .pipe(view.inject());
+const solid = scene.without('reactive').add(beams);
+const flying = scene.add(sparks);
+```
+
+- 0 accumulates as usual. Higher values take that share of history's weight away, up to 0.9, so some history always stays and edges stay smooth.
+- Draw opaque drawings first. One left out with `without` writes 0 over what is beneath it, while a blended one keeps it.
+- Write what changes, such as a particle's alpha, for soft edges.
+- Without `reactive`, the resolve binds and reads nothing more.
+
+## What it's made of
+
+| Part                     |                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aa.settings`            | Blend and spread, a uniform.                                                                                                                                        |
+| `aa.jitter`, `aa.offset` | The `jitter` for `passes.create`, and this frame's offset in clip space, a uniform.                                                                                 |
+| `aa.output`, `aa.region` | Antialiased `rgba16float` image at `size` or the source's, and its region, or the source while off. Read each frame because output alternates between two textures. |
+| `aa.enabled`             | Whether `enable` last turned it on.                                                                                                                                 |
+
+## Limits
+
+- The kit's model materials sample textures without a mip bias, so at `size` their textures stay as blurred as the drawn size.
+- TAA writes alpha 1, so it doesn't suit a canvas over a page.
+- A renderer that leaves out motion, such as an additive glow, takes the motion of what is under it.
+- Moving instances, trails, text and skinned poses need their own motion to avoid dimming. Their default motion includes only the camera.
+- Lines thinner than one drawn pixel can lose most of their brightness, even while stationary.

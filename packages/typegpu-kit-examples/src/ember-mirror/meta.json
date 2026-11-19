@@ -1,0 +1,8 @@
+{
+  "title": "Ember mirror",
+  "category": "simulations",
+  "description": "Your camera as a dark mirror. Each camera frame, a compute pass compares every cell of the picture with the last and sheds particle embers where an edge moved, coloured by what shed them. Bloom adds glow. Without a camera, drifting smoke sheds instead. A video feed copies each frame into a texture the scene owns, on the web and on native.",
+  "line": "Move in front of the camera and your outline sheds embers.",
+  "order": 19,
+  "hint": "move to shed embers \u00b7 without a camera, smoke shows instead"
+}

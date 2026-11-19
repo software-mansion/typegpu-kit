@@ -1,0 +1,672 @@
+---
+title: Passes
+description: Describe a frame's render targets once, so every renderer writes colour, depth and whatever else a later pass reads.
+modules: [kit/passes]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import DepthPrecision from '../../../components/viz/DepthPrecision.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+
+TAA needs motion vectors and a pick of your own needs ids at each pixel. Every renderer must write these alongside colour. Implementing each output separately in every renderer duplicates shader code. Renderers without the required data, such as particles without ids, also need a rule for that target.
+
+<ExampleFigure
+  example="lattice"
+  controls={['view', 'sky', 'beams', 'embers', 'into']}
+  values={{ view: 'motion' }}
+>
+  The sky, beams and embers share one description for colour, TAA motion and depth. The description
+  runs `taa.motion` for each drawing. Grey means still, colour means motion and black means no
+  motion output. Drag horizontally to turn the camera. Put the embers in `scene.without('motion')`
+  to keep the motion beneath them. Only the beams appear in depth, because the sky and embers test
+  depth without writing it.
+</ExampleFigure>
+
+`passes.create` defines what each target holds. A renderer supplies a **drawing** with a vertex function, a `pixelOf` function that gives its data at each pixel, such as colour or id, and a draw call. `scene.add(drawing)` builds a pipeline that computes every output from that data. `scene.record(frame, drawn)` draws it into the targets.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare const canvas: HTMLCanvasElement;
+declare const motion: passes.Output<unknown, { readonly position: d.v4f }>;
+const root = await tgpu.init();
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+// ---cut---
+import { d } from 'typegpu';
+import { passes } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  motion: { format: 'rg16float', sampled: true },
+  depth: { format: 'depth24plus', sampled: true },
+});
+const scene = passes
+  .create(root, screen, { hdr: passes.color, motion, depth: passes.depth })
+  .pipe(view.inject());
+
+// What each vertex carries to its pixels, and what the renderer knows at a pixel
+const Corner = d.struct({ position: d.vec4f, world: d.vec3f });
+const Seen = d.struct({ color: d.vec4f });
+
+const at = (vertexIndex: number, instanceIndex: number) => {
+  'use gpu';
+  const corners = [d.vec3f(-1, 0, 0), d.vec3f(1, 0, 0), d.vec3f(0, 2, 0)];
+  const world = corners[vertexIndex] + d.vec3f(d.f32(instanceIndex) * 3, 0, 0);
+  return Corner({ position: cameras.toClip(world), world });
+};
+const pixelOf = (corner: d.Infer<typeof Corner>) => {
+  'use gpu';
+  return Seen({ color: d.vec4f(corner.world * 0.25 + 0.5, 1) });
+};
+
+// Four triangles, drawn into every target the scene describes
+const triangles = scene.add({
+  Vertex: Corner,
+  at,
+  pixelOf,
+  color: passes.shaded,
+  draw: (pass) => pass.draw(3, 4),
+});
+await scene.initAsync();
+
+frames.animate(frames.create(root, (frame) => scene.record(frame, triangles)));
+```
+
+`passes.create(root, surface)` draws each renderer's colour into the canvas without extra targets or outputs.
+
+## Drawing into your own texture
+
+`passes.create` takes a target set or a surface, `{ format, view(frame), width, height }` with an optional `pixelRatio`. The surface form is for textures created outside the kit, such as a canvas. A texture you create to draw into and sample elsewhere, such as a label, a decal or a mirror, is a target set. `targets.create` takes any `{ width, height }` and sizes a fixed set once, when it is created:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { text, type Font, type Frame } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const font: Font;
+declare const frame: Frame;
+// ---cut---
+import { passes, targets } from '@typegpu/kit';
+
+const size = { width: 512, height: 256, pixelRatio: 1 };
+const page = targets.create(root, size, { ink: { format: 'rgba8unorm', sampled: true } });
+const tags = text.create(root, font, { capacity: 1, length: 3, place: text.screen });
+const paint = passes.create(root, page, { ink: passes.color });
+const drawn = paint.add(tags.drawing);
+tags.labels.patch({ 0: { position: [330, 128, 0.5], color: [1, 1, 1, 1] } });
+
+// When the value changes, draw it into the page before the passes that sample it
+tags.write(0, '42', { em: 180, align: 'right' });
+paint.record(frame, drawn);
+
+// Sample it from another shader, such as a floor's
+const ink = page.textures.ink.createView();
+```
+
+The [jelly slider](/examples/jelly-world/) draws its value this way and samples it from the floor under the jelly.
+
+## Drawings
+
+A drawing of one pipeline is a plain object, a `passes.Drawing<Vertex, Pixel>`. It needs a `Vertex`, an `at` that makes one and a `draw`. A drawing that writes colour or outputs also needs `pixelOf`, and `color` when the description has a `passes.color` target. The other fields are optional. The kit's drawings have a `label`, and `scene.add({ ...sparks.drawing, label: 'sparks' })` renames one. A blended drawing that tests the depth without writing it sets `depthWriteEnabled: false` in its `depthStencil`.
+
+`passes.fullScreen` is the `Vertex` and `at` of one triangle that covers the screen at depth 0, drawn with `draw(3)`. `passes.drawing({ … })` returns a drawing written as a value unchanged and infers its vertex and pixel, so `at`, `pixelOf` and `draw` need no annotations. A function that takes any drawing types it as `passes.AnyDrawing`.
+
+<Rules>
+
+- **Pipelines** Each description a drawing is added to builds a pipeline of its own, for its targets, jitter, samples and fills. A renderer gives its drawing, `scene.add(particles.drawing)`, and holds no pipeline.
+- **Sample count** Every target in a description has the same sample count. `passes.create` reads it once to build pipelines. To change MSAA, create another target set and description, then add each drawing again. Destroy the old description to free its compound drawings' per-view work.
+- **Missing fields** A drawing whose pixel or vertex lacks a field an output reads fails to type-check at `add`. The error names the target and the fields its output reads. [`without`](#what-each-target-gets) leaves the output out.
+- **What add returns** `add` returns a `passes.Drawn`. `drawn.draw(pass)` records into a pass from `begin`. `drawn.destroy()` removes it from the description's compilation list and frees its per-view resources.
+
+</Rules>
+
+### Indirect draws
+
+`draw` receives TypeGPU's render commands, so it can issue an indirect draw. `pass.drawIndirect(buffer, offset)` reads its counts from a buffer with `indirect` usage, at `offset` bytes. With `storage` usage too, a kernel decides how much to draw and the CPU never reads the count:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { passes } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const scene: passes.Description<{ readonly hdr: typeof passes.color }>;
+declare const quads: passes.Drawing<typeof passes.fullScreen.Vertex, { readonly color: d.v4f }>;
+// ---cut---
+const Draw = d.struct({
+  vertexCount: d.atomic(d.u32),
+  instanceCount: d.u32,
+  firstVertex: d.u32,
+  firstInstance: d.u32,
+});
+const args = root
+  .createBuffer(Draw, { vertexCount: 0, instanceCount: 1, firstVertex: 0, firstInstance: 0 })
+  .$usage('storage', 'indirect');
+const counts = args.as('mutable');
+
+// Called from a kernel: claims a quad's six vertices and returns the first
+const claim = () => {
+  'use gpu';
+  return std.atomicAdd(counts.$.vertexCount, 6);
+};
+
+const drawn = scene.add({ ...quads, draw: (pass) => pass.drawIndirect(args) });
+```
+
+- Zero the count before the kernel runs each frame, such as with `args.patch({ vertexCount: 0 })`.
+- A record takes 16 bytes, so one buffer of records draws each at `16 * k`. `at` receives vertex indices from `firstVertex` on, so records can split one list of vertices.
+- `pass.drawIndexedIndirect(buffer, offset)` reads 20-byte records of `indexCount`, `instanceCount`, `firstIndex`, `baseVertex` and `firstInstance`, and needs the drawing's `indices`.
+- A record whose `firstInstance` is not 0 requires the [`indirect-first-instance`](/platforms/#device-features) feature.
+- [Live lists](/kit/live-lists/) write these records for the live rows of a table.
+
+### Depth alone
+
+A description whose only target is `passes.depth` draws depth alone, as a shadow map or a depth prepass does. Its drawings need no `pixelOf` or `color`, and one without `depthOf`, `cutout` or `sampleMask` builds a pipeline with no fragment stage. A description with any other target requires `pixelOf`, even from a drawing with `writeMask: 0`. To write the depth of something a colour pass drew, such as a full-screen sea that reads the depth texture and so can't write it, add its shape to a description of depth alone:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const screen: targets.Targets<{
+  hdr: { format: 'rgba16float' };
+  depth: { format: 'depth24plus'; sampled: true };
+}>;
+declare const view: cameras.OrbitCamera;
+declare const scene: passes.Description<{ readonly hdr: typeof passes.color }>;
+declare const sea: passes.Drawn;
+// ---cut---
+const Corner = d.struct({ position: d.vec4f });
+const level = passes.create(root, screen, { depth: passes.depth }).pipe(view.inject());
+
+// The sea's plane at y = 0, with no pixel function
+const plane = level.add({
+  Vertex: Corner,
+  at: (vertexIndex: number) => {
+    'use gpu';
+    const corners = [d.vec2f(-1, -1), d.vec2f(1, -1), d.vec2f(-1, 1), d.vec2f(1, 1)];
+    const xz = corners[vertexIndex] * 500;
+    return Corner({ position: cameras.toClip(d.vec3f(xz.x, 0, xz.y)) });
+  },
+  primitive: { topology: 'triangle-strip' },
+  draw: (pass) => pass.draw(4),
+});
+
+frames.create(root, (frame) => {
+  scene.record(frame, sea);
+  level.record(frame, plane, { clear: false }); // keeps the depth the scene drew
+});
+```
+
+- A translucent drawing throws there.
+- A later pass that tests this depth with `depthCompare: 'equal'` needs `invariant: true` on both drawings.
+
+### What `color` takes
+
+`color` requires an output. Passing a function such as `color: (s) => s.color` fails to type-check at `add`. `passes.shaded` writes the pixel's `color` field as it is. Any other colour is an [output](#outputs) of your own whose `write` reads the pixel's data:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { passes, pipelines } from '@typegpu/kit';
+declare const scene: passes.Description<{ readonly hdr: typeof passes.color }>;
+declare const drawing: passes.Drawing<typeof passes.fullScreen.Vertex, { readonly color: d.v4f }>;
+// ---cut---
+// The pixel's colour, premultiplied for `pipelines.blend.over`
+const premultiplied = passes.output(d.vec4f, {
+  write: (pixel: { readonly color: d.v4f }) => {
+    'use gpu';
+    return d.vec4f(pixel.color.xyz * pixel.color.w, pixel.color.w);
+  },
+});
+
+const veil = scene.add({ ...drawing, color: premultiplied, blend: pipelines.blend.over });
+```
+
+### Compound drawings
+
+A renderer with several pipelines or per-view resources supplies a `passes.Compound` object with `build(into)`. Per-view resources can include a list of objects visible to a camera. Each description calls `build` once, so the shadow and scene get separate pipelines. `build` receives a `passes.Into`: the description's targets and outputs, its fills, and `pipeline`, `add`, `without` and `instead`. It creates the pipelines with `into.pipeline(drawing)` and returns a `passes.Built` with `draw`, `initAsync` and an optional `destroy` for per-view cleanup. [Instances](/kit/instances/) renderers use this form.
+
+These drawings share a vertex function. Their two pipelines draw a fill, then an outline:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { passes } from '@typegpu/kit';
+const Corner = d.struct({ position: d.vec4f });
+type Seen = { readonly color: d.v4f };
+declare const fill: passes.Drawing<typeof Corner, Seen>;
+declare const rim: passes.Drawing<typeof Corner, Seen>;
+declare const scene: passes.Description<{ readonly color: typeof passes.color }>;
+declare const count: number;
+// ---cut---
+const outlined: passes.Compound<Seen, d.Infer<typeof Corner>> = {
+  build(into) {
+    const filling = into.pipeline(fill);
+    const rimming = into.pipeline(rim);
+    return {
+      draw(pass) {
+        pass.setPipeline(filling);
+        pass.draw(4, count);
+        pass.setPipeline(rimming);
+        pass.draw(4, count);
+      },
+      async initAsync() {
+        await Promise.all([filling.initAsync(), rimming.initAsync()]);
+      },
+    };
+  },
+};
+
+const drawn = scene.add(outlined);
+```
+
+`into.pipeline(drawing, from)` builds from a configuration of your own, such as `root.pipe(into.inject()).with(slot, value)`, to fill a slot differently in each pipeline.
+
+In a description with [layers](#layers), `into.layers` is how many there are, for per-layer work such as a visible list for each. The built `draw(pass, layer)` receives the layer of the pass it draws into, to pick that layer's work.
+
+## Outputs
+
+`passes.output(schema, spec)` defines the value each renderer writes per pixel to one target:
+
+<Rules>
+
+- **Writing** `write(pixel, carried)` runs per pixel and returns a value of `schema`. Its first parameter types the data it reads. `(pixel: { id: number })` requires an `id`, so only drawings whose `pixelOf` returns that field can write it.
+- **Varying** `vary(vertex, before)` runs per vertex and returns a `varyings` struct. The rasteriser interpolates it for `write`'s `carried` parameter. With `previous: true`, `before` holds last frame's vertex. The renderer's vertex code compiles again with [`history.previously`](/kit/history/) to read last frame's camera and other `temporal` fills.
+- **Clearing** `clear` is what the target holds where nothing drew, zero by default. The `color` target clears to the description's `clear` option instead.
+- **Integers** Integers go between the stages flat.
+
+</Rules>
+
+```ts twoslash
+import { d } from 'typegpu';
+import { passes } from '@typegpu/kit';
+const uvOf = (clip: d.v4f) => {
+  'use gpu';
+  return (clip.xy / clip.w) * d.vec2f(0.5, -0.5);
+};
+// ---cut---
+// Where what each pixel shows was last frame, in UV
+const Clips = d.struct({ now: d.vec4f, before: d.vec4f });
+const motion = passes.output(d.vec2f, {
+  varyings: Clips,
+  previous: true,
+  vary: (now: { position: d.v4f }, before: { position: d.v4f }) => {
+    'use gpu';
+    return Clips({ now: now.position, before: before.position });
+  },
+  write: (_pixel: unknown, clips) => {
+    'use gpu';
+    return uvOf(clips.before) - uvOf(clips.now);
+  },
+});
+
+const id = passes.output(d.u32, {
+  clear: 0xffffffff, // nothing here
+  write: (pixel: { id: number }) => {
+    'use gpu';
+    return pixel.id;
+  },
+});
+```
+
+`passes.color` marks the target for each renderer's colour. `passes.depth` marks the depth target. A description allows at most one of each and leaves unlisted targets untouched. A key the set lacks fails to type-check at the key. An output comes only from `passes.output` and has no members to read.
+
+## What each target gets
+
+`scene.without('id')` omits the `id` output and its varyings for drawings that can't supply it. `scene.instead({ motion: skyMotion })` writes an output of the drawing's own into that target. Both draw into the pass `scene.begin` starts:
+
+```ts
+const embers = scene.without('id').add(sparks.drawing);
+const sky = scene.without('id').instead({ motion: skyMotion }).add(skyDrawing);
+```
+
+| Target                                         | What the drawing writes there                                                                                                                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `passes.color`                                 | Its own `color`, through its `blend` and `writeMask`.                                                                                                                          |
+| `passes.depth`                                 | Its depth, or `depthOf`'s, as its `depthStencil` state says: tested and written by default.                                                                                    |
+| An output                                      | The output's `write`, from its pixel data and the output's varyings. Outputs don't blend: a blended drawing replaces the value wherever it draws, its transparent corners too. |
+| An output `instead` replaces                   | The replacement's `write`.                                                                                                                                                     |
+| An output `without` leaves out, opaque         | The output's `clear`, as if nothing drew there.                                                                                                                                |
+| An output `without` leaves out, with a `blend` | Nothing: what is under it stays.                                                                                                                                               |
+
+The kit's drawings:
+
+| Drawing                                  | Vertex             | Pixel            | Blend                        | Depth                                 |
+| ---------------------------------------- | ------------------ | ---------------- | ---------------------------- | ------------------------------------- |
+| An [instances](/kit/instances/) renderer | `instances.Corner` | `instances.Lit`  | none, or as its `blend` says | written; tested only when translucent |
+| [`particles.drawing`](/kit/particles/)   | `particles.Corner` | `particles.Seen` | add, or as its `blend` says  | tested only                           |
+| A [lines](/kit/lines/) set's `drawing`   | `lines.Corner`     | `lines.Seen`     | over, or as its `blend` says | tested only; written with `opaque`    |
+| [`trails.drawing`](/kit/trails/)         | `lines.Corner`     | `lines.Seen`     | add, or as its `blend` says  | tested only                           |
+| A [text](/kit/text/) set's `drawing`     | `text.Corner`      | `text.Seen`      | over, or as its `blend` says | tested only                           |
+
+Draw what tests the depth without writing it after the opaque drawings. [Impostors](/kit/impostors/) draw through an instances renderer.
+
+## Translucent drawings
+
+<ExampleFigure example="jellies" controls={['oit']}>
+  Every bell, oral arm and tentacle is a translucent drawing. Turn off `oit` to draw them into a
+  description without the two targets: they blend over in draw order, and the moon jelly behind the
+  sea nettle covers it.
+</ExampleFigure>
+
+Blending translucent drawings over each other looks right only when they draw from far to near. That needs sorting every frame, and still fails where two surfaces cross. A drawing with `translucent: true` needs no order. Give the description two more targets, one marked `passes.accumulation` and one marked `passes.revealage`. Each translucent pixel adds its colour into the first, weighted so that nearer layers count most, and multiplies the share of what lies behind it that still shows into the second. `scene.composite(frame)` then lays the average over the colour target in a pass of its own:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { tgpu } from 'typegpu';
+import { cameras, frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare const canvas: HTMLCanvasElement;
+const root = await tgpu.init();
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+type Seen = { readonly color: d.v4f };
+declare const ground: passes.Drawing<typeof passes.fullScreen.Vertex, Seen>;
+declare const bells: passes.Drawing<typeof passes.fullScreen.Vertex, Seen>;
+// ---cut---
+import { passes, targets } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  accum: { format: 'rgba16float', sampled: true },
+  reveal: { format: 'r16float', sampled: true },
+  depth: { format: 'depth24plus' },
+});
+const scene = passes
+  .create(root, screen, {
+    hdr: passes.color,
+    accum: passes.accumulation,
+    reveal: passes.revealage,
+    depth: passes.depth,
+  })
+  .pipe(view.inject());
+
+// The opaque ground first, then the translucent bells
+const drawn = [scene.add(ground), scene.add({ ...bells, translucent: true })];
+
+frames.create(root, (frame) => {
+  scene.record(frame, drawn);
+  scene.composite(frame);
+});
+```
+
+<Rules>
+
+- **Colour** A translucent drawing's `color` output is premultiplied, `d.vec4f(rgb * alpha, alpha)`. Colour with an alpha of 0 adds light, as a glow does.
+- **Depth** It tests the depth that opaque drawings wrote before it and writes none. Draw it after them, in any order among the translucent ones.
+- **Opaque drawings** Opaque drawings leave the two targets alone. Outputs such as motion take a translucent drawing's value as they take a [blended one's](#what-each-target-gets).
+- **Without the targets** In a description without the two targets, the same drawing blends over the colour target in draw order. The jellies keep a second description to turn the targets off.
+- **Compositing** `composite` reads both targets as textures, so each needs `sampled: true`.
+- **Instances** An [instances](/kit/instances/#transparency) renderer with `blend: 'translucent'` or `'clear'` draws translucent.
+
+</Rules>
+
+## Fills
+
+`pipe(fill)` adds a fill to every pipeline built from the returned description. It applies after the drawing's fill and takes precedence. `passes.create(…).pipe(view.inject())` uses `view` as its camera. A [shadow map](/kit/lighting/#shadows) uses a description of depth alone, viewed from the sun.
+
+`beneath(fill)` adds a fill that applies before the drawing's fill, as a default the drawing can override. `scene.beneath(light.inject())` lights every drawing that doesn't fill the lighting's hooks itself. Fills given to `beneath` and to `pipe` each apply in call order.
+
+A compound drawing that builds pipelines from its own configuration, such as an [instances renderer](/kit/instances/#renderers), starts from `inject()` and applies its own fills over it, so `beneath` lights it too.
+
+## Pixels and points
+
+A line two points wide or a label pinned beside a star needs the size of what the pass draws into, which differs between the canvas, a low-resolution target and a shadow map. Every description fills `passes.viewport` in each pipeline and kernel it builds. It holds the drawn region's `size` in pixels and its `pixelRatio`, the pixels a point takes:
+
+```ts twoslash
+import { d } from 'typegpu';
+// ---cut---
+import { cameras, passes } from '@typegpu/kit';
+
+/** Where a world point lands on the target, moved `offset` points right and up. */
+const besideInPoints = (world: d.v3f, offset: d.v2f) => {
+  'use gpu';
+  const view = passes.viewport.$;
+  const clip = cameras.toClip(world);
+  return d.vec4f(clip.xy + ((offset * 2 * view.pixelRatio) / view.size) * clip.w, clip.zw);
+};
+```
+
+<Rules>
+
+- **Size and ratio** Over a surface, `size` is the surface's and `pixelRatio` its `pixelRatio`. Over targets, `size` is the drawn region and `pixelRatio` the source's, scaled by the region, so a point keeps its size at a lower `resolution` or through `targets.scaled`. A source without a ratio, such as a shadow map's fixed size, has a `pixelRatio` of 1.
+- **Updates** `begin` and `record` write it when the region has changed. A pipeline from `pipeline()` drawn into a pass you begin yourself, or a kernel built from `inject()` in a frame where the description doesn't begin, reads the region of the last `begin`.
+- **Bindings** Each description holds its own uniform, even beside another over the same targets. A pipeline that reads it binds 1 uniform.
+- **Slots** Descriptions also fill two slots: `passes.sampleCount` with the samples per pixel, and `passes.depthOnly` with whether they draw into depth alone. A drawing reads them to cut its own edges where there is one sample, or to leave out what only shows in colour, such as an antialiased edge in a shadow map.
+
+</Rules>
+
+## Buffers and textures of your own
+
+A drawing's shaders read buffers, textures and samplers through accessors, which its `inject()` fills. The description builds each pipeline from that fill, so a draw binds no group of yours:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { passes } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const scene: passes.Description<{ readonly hdr: typeof passes.color }>;
+const Seen = d.struct({ color: d.vec4f });
+// ---cut---
+const tints = tgpu.accessor(d.arrayOf(d.vec4f, 4));
+const picture = tgpu.accessor(d.texture2d(d.f32));
+const smooth = tgpu.accessor(d.sampler());
+
+const tintBuffer = root.createReadonly(d.arrayOf(d.vec4f, 4));
+const image = root.createTexture({ size: [512, 512], format: 'rgba8unorm' }).$usage('sampled');
+const view = image.createView(d.texture2d(d.f32));
+const sampler = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+const backdrop = scene.add({
+  ...passes.fullScreen,
+  pixelOf: (corner: d.Infer<typeof passes.fullScreen.Vertex>) => {
+    'use gpu';
+    const band = std.min(d.u32(corner.uv.y * 4), 3);
+    return Seen({ color: std.textureSample(picture.$, smooth.$, corner.uv) * tints.$[band] });
+  },
+  color: passes.shaded,
+  inject: () => (cfg) =>
+    cfg
+      .with(tints, tintBuffer)
+      .with(picture, () => view.$)
+      .with(smooth, () => sampler.$),
+  draw: (pass) => pass.draw(3),
+});
+```
+
+- Shaders can read `tintBuffer.$` and `view.$` without accessors. The resources become fixed bindings in each pipeline's automatic group.
+- A kernel of your own reads them the same way, created from `root.pipe(fill)`, with `scene.inject()` piped in too when it reads the camera.
+- WebGPU forbids read-write storage in a vertex stage. Fill an accessor that a kernel writes and a vertex stage reads with `byStage(buffer)`, read-write in compute and read-only elsewhere.
+- `cfg.with` takes a slot or accessor and its value. Passing a bind group as `cfg.with(group)` fails with TS2554.
+
+A resource you swap without new pipelines, such as a texture that follows the canvas, goes in a [`bindings.layout`](/kit/bindings/) part. Give the description its parts by key as `shared`. It shares them in one layout, and every pass it begins sets that layout's group:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { frames, passes, targets } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const screen: targets.Targets<{ hdr: { format: 'rgba16float' } }>;
+const picture = (size: number) =>
+  root.createTexture({ size: [size, size], format: 'rgba8unorm' }).$usage('sampled');
+const image = picture(512);
+const bigger = picture(1024);
+const Seen = d.struct({ color: d.vec4f });
+const sampler = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+// ---cut---
+import { bindings } from '@typegpu/kit';
+
+const backdropBindings = bindings.layout({
+  picture: { texture: d.texture2d(d.f32) },
+  smooth: { sampler: 'filtering' },
+});
+const part = backdropBindings.bind({ picture: image, smooth: sampler });
+const scene = passes.create(root, screen, { hdr: passes.color }, { shared: { backdrop: part } });
+
+const backdrop = scene.add({
+  ...passes.fullScreen,
+  pixelOf: (corner: d.Infer<typeof passes.fullScreen.Vertex>) => {
+    'use gpu';
+    const color = std.textureSample(
+      backdropBindings.$.picture,
+      backdropBindings.$.smooth,
+      corner.uv,
+    );
+    return Seen({ color });
+  },
+  color: passes.shaded,
+  draw: (pass) => pass.draw(3),
+});
+
+frames.create(root, (frame) => scene.record(frame, backdrop));
+
+part.replace({ picture: bigger }); // between frames, keeping the pipeline
+```
+
+- `shared` also fills every shared part in the pipelines the description builds, so a drawing or a callback needs no `inject` for them.
+- Create the description before any other pipeline that reads its parts builds. A pipeline built before then holds the part as fixed bindings, and `passes.create` throws.
+- A pipeline the description builds that reads a shared part it wasn't given throws as it builds, and names the `shared` to add.
+- When two descriptions or a pass of your own read the same parts, call [`bindings.share`](/kit/bindings/#sharing) once and give its result to each description as `shared`. A pass you open yourself sets the group with `pass.setBindGroup(shared.layout, shared.group())`.
+
+## Every frame
+
+`record(frame, drawn)` draws one handle or a list in order in a pass of its own. Create the list at setup. Use `begin(frame)` to choose drawings per frame or set a bind group of your own before drawing.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, passes, profiler } from '@typegpu/kit';
+const root = await tgpu.init();
+type Writes = { readonly hdr: typeof passes.color; readonly depth: typeof passes.depth };
+declare const scene: passes.Description<Writes>;
+declare const glows: passes.Description<Writes>;
+declare const ground: passes.Drawn;
+declare const herd: passes.Drawn;
+declare const sparks: passes.Drawn;
+// ---cut---
+const timing = profiler.create(root);
+const sceneTime = timing.timer('scene');
+const opaque = [ground, herd];
+
+frames.create(root, (frame) => {
+  scene.record(frame, opaque, { timestampWrites: sceneTime.writes() });
+  glows.record(frame, sparks, { clear: false }); // over what the scene drew
+  timing.capture(frame);
+});
+```
+
+<Rules>
+
+- **Clearing** Output targets clear to their output's `clear`. The colour target uses the description's `clear`, which the pass reads at each begin. Depth uses `depthClear`, which defaults to 1. Stencil uses `stencilClear`.
+- **Keeping contents** `clear: false` keeps what every target holds, for a later pass such as glows after one that reads the depth. `clear: ['hdr']` clears the targets it names and keeps the rest, such as the depth an earlier pass drew.
+- **Transient targets** A [transient](/kit/targets/#transient-targets) target can't retain its contents between passes. `begin` throws if asked to keep it. Set `transient: false` in its spec to retain contents. Multisampled targets are transient by default.
+- **Storing** Each pass stores what it drew, `storeOp: 'store'`, except into a transient target, `'discard'`, which keeps only what it resolves.
+- **Timing** `timestampWrites` times the pass with a [profiler](/kit/profiler/).
+- **Jitter** The `jitter` option moves each vertex where the rasteriser sees it and nowhere else. Outputs read where the vertex is, so motion holds no jitter. [Temporal antialiasing](/kit/taa/) sets it.
+- **Disabled descriptions** `record` and `composite` skip a disabled description; `begin` does not.
+
+</Rules>
+
+## Reversed depth
+
+Standard depth puts the near plane at 0 and the far plane at 1, so a float depth target spends its precision near the eye and distant surfaces fight. Reversed depth puts the near plane at 1 and the far plane at 0. Set it up in two places: the description clears depth to 0 and keeps the greater depth, and the camera projects reversed depth.
+
+<DepthPrecision />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare const canvas: HTMLCanvasElement;
+const root = await tgpu.init();
+const surface = web.surface(root, canvas);
+// ---cut---
+import { cameras, passes, targets } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth32float', sampled: true },
+});
+const view = cameras.orbit(root, {
+  size: surface,
+  target: [0, 0, 0],
+  distance: 6,
+  reversed: true,
+});
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, depth: passes.depth },
+    { depthClear: 0, depthCompare: 'greater' },
+  )
+  .pipe(view.inject());
+```
+
+<Rules>
+
+- **Depth test** The kit's drawings test depth with the description's `depthCompare`. [`environment.background`](/kit/environment/) sits at depth 0 and draws where depth still holds it.
+- **Depth readers** The camera's `inject()` fills `cameras.reversed`, so [TAA](/kit/taa/), [depth of field](/kit/dof/), [ambient occlusion](/kit/ao/) and the [picker](/kit/picker/) read the depth that camera drew the reversed way. Give TAA `reversed: true` when it has no `camera`.
+- **Custom cameras** A [custom camera](/kit/cameras/) takes `reversed: true` too. Write a reversed projection into it, such as `mat4.perspectiveReverseZ(fov, aspect, near, far)`.
+- **Your own shaders** A shader of your own that reads the depth starts from `cameras.farDepth()` and keeps the nearer of two depths with `cameras.nearerDepth()(a, b)`, through the camera's fills.
+- **Unchanged values** A drawing's own `depthStencil` compare, `passes.fullScreen`'s depth of 0 and the depth `text.screen` takes stay as you write them. Give them reversed values yourself.
+- **Shadows** [Shadows](/kit/lighting/#shadows) draw into maps of their own with standard depth, whatever the scene uses.
+
+</Rules>
+
+## Layers
+
+A shadow map in cascades, one per distance, draws the same casters into several layers of one texture, each through its own view. Give `targets.create` a target with `layers`, and the description draws a pass into each. [`cameras.layered`](/kit/cameras/#a-view-per-layer) holds a view per layer:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, instances } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const herd: instances.Renderer;
+// ---cut---
+import { mat4 } from 'wgpu-matrix';
+import { cameras, passes, targets } from '@typegpu/kit';
+
+const size = { width: 1024, height: 1024, pixelRatio: 1 };
+const maps = targets.create(root, size, {
+  depth: { format: 'depth16unorm', layers: 3, sampled: true },
+});
+const views = cameras.layered(root, 3);
+const casters = passes
+  .create(root, maps, { depth: passes.depth }, { bias: { constant: 2, slope: 2 } })
+  .pipe(views.inject());
+const drawn = casters.add(herd);
+
+frames.create(root, (frame) => {
+  // A wider view for each layer
+  for (let k = 0; k < 3; k++) {
+    const reach = 8 * 4 ** k;
+    const view = mat4.lookAt([20, 40, 20], [0, 0, 0], [0, 1, 0]);
+    views.write(k, view, mat4.ortho(-reach, reach, -reach, reach, 0, 200));
+  }
+  casters.record(frame, drawn); // a pass into each layer
+});
+```
+
+<Rules>
+
+- **One pipeline** The description builds each pipeline once, for all layers. Each pass sets a uniform holding its layer, which shaders read as `passes.layer.$`. `cameras.layered` reads it to give `cameras.current.$` the layer's view. Data of your own per layer can be indexed by it too.
+- **Recording** `record` draws a pass into each layer, in order, with the same options. `record(frame, drawn, { layer })` draws into one. `begin(frame, { layer })` begins one and throws without a layer when there are several.
+- **Timing** With `timestampWrites`, the first layer's pass writes the start and the last layer's pass writes the end.
+- **Layer counts** Every target a description draws into needs the same `layers`, or `passes.create` throws naming each target and its count. Translucency targets and resolves aren't drawn into layers.
+- **Render bundles** A render bundle can't draw into a description of 2 or more layers, and `draw` throws for one. Record the drawing into the passes that `record` or `begin` opens.
+- **Kit drawings** Drawings of one pipeline, [particles](/kit/particles/), [trails](/kit/trails/) and [text](/kit/text/) draw the same way into each layer, through the layer's view. An [instances](/kit/instances/#culling) renderer with `cull: true` keeps a visible list per layer and culls every layer in one pair of dispatches. [Impostors](/kit/impostors/) and [poses](/kit/poses/) draw through an instances renderer.
+- **Kernels** A kernel built from a layered description's `inject()` runs outside its passes, so it fills `passes.layer` itself, as the instances culling does from each invocation's y.
+- **Bindings** The layer takes 1 uniform and one of WebGPU's 4 bind groups in each pipeline that reads `passes.layer`. With `cameras.layered`, a caster binds 2 uniforms: the views and the layer.
+
+</Rules>
+
+## Limits
+
+<Rules>
+
+- **Bind groups** A pipeline a description builds uses up to three of WebGPU's four bind groups: one for its fixed bindings, one for the [shared parts](#buffers-and-textures-of-your-own) and one for the [layer](#layers). One is left for a group of your own.
+- **Fragment inputs** A drawing's `pixelOf` reads its vertex's fields and the pixel's `position`, not WebGPU's other fragment inputs, such as `frontFacing`.
+- **Derivatives** In `pixelOf`, take `std.fwidth`, `std.dpdx` and `std.dpdy` before any branch or `return` that depends on the pixel. WGSL rejects a derivative in control flow that varies between pixels.
+- **Large coordinates** A few thousand units from the origin, a 32-bit float steps by about 0.0002, too coarse for derivatives of a world position or for noise coordinates across a pixel. Carry `world - cameras.current.$.position` in the vertex, and add the eye's position back in `pixelOf` where it needs the world position.
+- **Varying names** Each output's varyings go between the stages as `<target>_<field>`, and a vertex field of that name throws. They count towards WebGPU's 16 inter-stage variables, with the vertex's own fields.
+- **Previous frame** An output with `previous: true` runs the renderer's `at` twice per vertex, and binds last frame's uniforms beside this frame's.
+- **Overlapping layers** Translucent layers that overlap in depth average their colours by weight, so a layer close behind another shows through more than it would in order. The weight suits distances from the eye of about 0.1 to 500.
+- **Translucent motion** A translucent drawing's motion is that of the layer drawn last where it shows, so TAA can smear what lies behind it. Leave it out of motion with `without('motion')` to keep the motion beneath it.
+- **Blended drawings** [Particles](/kit/particles/), [trails](/kit/trails/) and [text](/kit/text/) drawings set a `blend` and draw over in order. A drawing of your own made from one, without its `blend` and with `translucent: true`, draws in any order when its colour is premultiplied.
+
+</Rules>

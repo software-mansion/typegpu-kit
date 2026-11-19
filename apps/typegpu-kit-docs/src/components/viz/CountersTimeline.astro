@@ -1,0 +1,123 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="counters">
+  <p class="viz-title">Each copy of the counter reaches the CPU when its map lands</p>
+  <svg viewBox="0 0 640 200" role="img" aria-label="A counter on the GPU, its copies carried in staging buffers, and the totals and gains the CPU reads frames later"></svg>
+  <p class="viz-status" aria-live="polite" style="--lines: 2"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="stomp">stomp</button>
+    <button data-action="clear">clear</button>
+    <Choice name="hz" label="hz" options={[60, 30, 10]} value={30} />
+    <Slider inline name="latency" label="map takes" min={1} max={8} value={3} unit=" frames" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag <code>map takes</code> past six frames. The bars stack into all three staging buffers, captures are skipped, and the next copy still brings every stomp to <code>take()</code> once. <code>clear</code> drops the copies still on their way.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, choice, each, slider, statusLine } from './figure.ts';
+  import { createProgram, type Column } from './CountersTimeline.program.ts';
+  import { fitWidth, seeded, svg, text } from './svg.ts';
+  import {
+    columnsIn,
+    drawTrips,
+    frameAxis,
+    heldValue,
+    KEPT,
+    lanes,
+    short,
+    skipped,
+    steppedRun,
+    type Trip,
+  } from './timeline.ts';
+
+  /** Staging buffers, the kit's default. */
+  const SLOTS = 3;
+  const at = lanes(SLOTS);
+  /** Stomps before the first frame shown: one early, then two between copies. */
+  const PRIMED = [KEPT - 20, KEPT - 9, KEPT - 8];
+  /** How often the stand-in kernel stomps in a frame while the figure plays. */
+  const CHANCE = 0.12;
+
+  each('counters', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const random = seeded(7);
+    const hz = choice(root, 'hz', () => run.reset());
+    const latency = slider(root, 'latency', () => run.reset());
+
+    const run = steppedRun(root, {
+      create: () => createProgram({ latency: latency.valueAsNumber, hz: Number(hz.value) }),
+      // The stand-in kernel stomps in the first frames as PRIMED says, then now and then
+      before(program, frame) {
+        if (frame < KEPT ? PRIMED.includes(frame) : random() < CHANCE) program.add('stomps', 1);
+      },
+      draw: () => draw(),
+    });
+
+    const draw = fitWidth(figure, (width) => {
+      const program = run.program;
+      if (!program) return at.height;
+
+      const view = columnsIn(program.columns, width);
+      const { columns, x, cell } = view;
+      frameAxis(figure, view, at, SLOTS, 'take()');
+
+      for (const column of columns) {
+        if (!column.cleared) continue;
+        const cx = x(column.index) - cell / 2;
+        svg('line', { x1: cx, x2: cx, y1: at.gpu - 14, y2: at.below + 8, stroke: 'var(--viz-bad)', 'stroke-dasharray': '3 3' }, figure);
+        text(figure, cx + 4, at.cpu + 16, 'clear', { style: 'fill: var(--viz-bad)' });
+      }
+
+      heldValue(figure, view, at.gpu, columns.map((column) => short(column.counters.stomps)), 'var(--viz-b)', 'above');
+
+      let carried: number | undefined;
+      const trips: Trip[] = [];
+      for (const column of program.columns) {
+        const { copy } = column;
+        if (!copy) continue;
+        const { stomps } = column.counters;
+        trips.push({
+          from: column.index,
+          slot: copy.slot,
+          until: copy.until,
+          label: stomps === carried ? undefined : short(stomps),
+          look: copy.dropped ? 'dropped' : undefined,
+        });
+        carried = stomps;
+      }
+      drawTrips(figure, view, at, trips);
+      for (const column of columns) if (column.full && column.wanted) skipped(figure, x(column.index), at);
+
+      heldValue(figure, view, at.cpu, columns.map((column) => column.latest && short(column.latest.stomps)), 'var(--viz-c)', 'below');
+
+      for (const column of columns) {
+        const gain = column.taken?.stomps ?? 0;
+        if (gain > 0) text(figure, x(column.index), at.below + 4, `+${short(gain)}`, { 'text-anchor': 'middle', class: 'strong', style: 'fill: var(--viz-c)' });
+      }
+
+      say(columns);
+      return at.height;
+    });
+
+    const say = (columns: readonly Column[]) => {
+      const now = columns.at(-1);
+      if (!now) return;
+      const gained = columns.findLast((column) => column.taken && column.taken.stomps > 0);
+      status.textContent = [
+        now.latest ? `latest.stomps = ${now.latest.stomps}` : 'latest = undefined',
+        gained ? `take() last gave stomps +${gained.taken!.stomps}, in frame ${gained.index}` : 'take() gave no stomps in these frames',
+      ].join('\n');
+    };
+
+    action(root, 'stomp', () => run.act((program) => program.add('stomps', 1)));
+    action(root, 'clear', () => run.act((program) => program.clear()));
+    run.reset();
+  });
+</script>

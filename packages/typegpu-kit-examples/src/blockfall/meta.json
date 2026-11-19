@@ -1,0 +1,11 @@
+{
+  "title": "Blockfall",
+  "category": "games",
+  "description": "Painted stone blocks fall into a gold-edged glass well floating in the dark. The CPU lists blocks as render instances, and the GPU eases them between cells, brightest on the falling piece. A ghost shows where the piece will land. A fixed-step clock controls drops, and coroutines clear rows. A warm spot light out of view and a cool sun shadow the blocks, and ambient occlusion darkens their creases. Cleared blocks flash and break into stone chips that tumble, land flat and shadow the floor, with a little dust. Embers drift up past the well. MSAA smooths the HDR render, with bloom.",
+  "line": "Painted blocks as table rows, breaking into stone chips.",
+  "order": 29,
+  "hint": "arrows move · Z X C rotate · space drops · Q E turn · drag to orbit",
+  "poster": {
+    "seconds": 32
+  }
+}

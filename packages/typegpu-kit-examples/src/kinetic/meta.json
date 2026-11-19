@@ -1,0 +1,8 @@
+{
+  "title": "Kinetic",
+  "category": "worlds",
+  "description": "A mobile of thirteen pieces on four wire arms turns slowly under a sky: Calder's red, yellow, blue, black and white in lacquer, and below them mirror, brushed steel, brass and copper. Its wires are the kit's lines, lit as the pieces are, with antialiased edges. An environment bakes each sky on the GPU into a cube of reflections at six roughnesses and nine spherical harmonics of diffuse light, which light every piece and draw the backdrop. The CC0 HDR panoramas are Poly Haven's Kloofendal 48d Partly Cloudy (Pure Sky) by Greg Zaal with sky edits by Jarod Guest, Studio Small 09 by Sergej Majboroda and Venice Sunset by Greg Zaal. The kit replaces each panorama's sun or main softbox with a light that casts shadows. The daylight sky scatters sunlight through air and ozone; move the time of day from noon to deep dusk and the sun comes round into view and sets, while the sky re-bakes fifteen times a second.",
+  "line": "A Calder mobile turning under a sky the environment bakes on the GPU, from noon to dusk.",
+  "order": 10,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

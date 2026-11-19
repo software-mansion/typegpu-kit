@@ -1,0 +1,36 @@
+---
+import { loadModules } from './load.ts';
+import { hrefOf } from './modules.ts';
+
+const modules = await loadModules();
+const headings = ['Module', 'Import', 'What it is'] as const;
+---
+
+<table data-pagefind-ignore>
+  <thead>
+    <tr>{headings.map((heading) => <th scope="col">{heading}</th>)}</tr>
+  </thead>
+  <tbody>
+    {
+      modules.map((module) => {
+        const href = hrefOf(modules, module);
+        const name = <code>{module.namespace}</code>;
+        return (
+          <tr>
+            <td data-label={headings[0]}>{href ? <a href={href}>{name}</a> : name}</td>
+            <td data-label={headings[1]}>
+              <code>{module.specifier}</code>
+            </td>
+            <td data-label={headings[2]}>
+              {module.summary
+                .split(/(`[^`]+`)/)
+                .map((part) =>
+                  part.startsWith('`') && part.endsWith('`') ? <code>{part.slice(1, -1)}</code> : part,
+                )}
+            </td>
+          </tr>
+        );
+      })
+    }
+  </tbody>
+</table>

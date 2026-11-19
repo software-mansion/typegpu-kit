@@ -1,0 +1,1023 @@
+---
+title: Slime mould
+description: Grow a slime mould of 400 000 agents from an empty canvas into glowing threads that find food, with no shader or TypeGPU experience.
+---
+
+import { FileTree, Steps } from '@astrojs/starlight/components';
+import Hidden from '../../../components/album/Hidden.astro';
+import Install from '../../../components/site/Install.astro';
+import Bloom from '../../../components/viz/Bloom.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import FixedStep from '../../../components/viz/FixedStep.astro';
+import FrameSteps from '../../../components/viz/FrameSteps.astro';
+import FullScreenTriangle from '../../../components/viz/FullScreenTriangle.astro';
+import PingPong from '../../../components/viz/PingPong.astro';
+import SenseSteer from '../../../components/viz/SenseSteer.astro';
+import SlimeStage from '../../../components/viz/SlimeStage.astro';
+import ToneColour from '../../../components/viz/ToneColour.astro';
+import Workgroups from '../../../components/viz/Workgroups.astro';
+
+Build the [slime mould example](/examples/slime-mould/) with 400 000 agents on a dish of agar. Each agent represents a speck of _Physarum_ slime mould. It senses the trail ahead, turns toward the strongest trail, steps forward and leaves more trail. Each agent reads only its surroundings. Together they grow glowing threads that connect the food on the dish.
+
+The GPU repeats the same small job for thousands of agents at once. You write that job in TypeScript, and [TypeGPU](https://typegpu.com) turns it into a shader, a program the GPU runs. You need a browser with WebGPU. You need no experience with shaders or TypeGPU.
+
+:::tip[Follow along]
+Work in the project from [Getting started](/getting-started/#host-a-scene), and put each file beside `index.ts` in `src/`. Each block shows what a step adds. The finished files are one link away, behind the Source link on [the example](/examples/slime-mould/).
+:::
+
+<Steps>
+
+1. **Pour the agar.**
+
+   Start with two files. `index.ts` gives the scene a canvas and runs its frames. `scene.ts` builds what you draw and records each frame.
+
+   ```ts twoslash title="index.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/index-tutorial-1.ts
+   // ---cut---
+   import * as web from '@typegpu/kit/web';
+   import { createScene } from './scene.ts';
+
+   web.host(createScene, { canvas: document.querySelector('canvas')! });
+   ```
+
+   [`web.host`](/kit/hosting/) creates a root, a [surface](/kit/web/), your scene and a [frame loop](/kit/frames/). The root is TypeGPU's handle on the GPU. You use it to create GPU resources. The surface sizes the canvas to its place on the page. The loop calls the scene's `frame` at every animation frame.
+
+   `frame` records GPU commands into an **encoder**, a list of commands to run later. When `frame` returns, the loop **submits** that list. The GPU runs it while the CPU moves on. Commands come in **passes**. A render pass draws into an image, and a compute pass runs calculations. The figure steps through a larger frame, one line at a time.
+
+   <FrameSteps />
+
+   Draw the agar first. A [draw](https://docs.swmansion.com/TypeGPU/fundamentals/pipelines/) runs two functions. The **vertex** function places the corners of triangles on the screen. The **fragment** function colours each pixel they cover.
+
+   Cover the canvas with one triangle to colour every pixel. `common.fullScreenTriangle` places its three corners so the triangle spans twice the canvas width and height. The GPU clips the part outside the canvas. It runs the fragment function for each pixel inside and gives it the pixel position.
+
+   <FullScreenTriangle />
+
+   ```ts twoslash title="agar.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agar-tutorial-1.ts
+   import { hexToRgb, linearToSrgb, srgbToLinear } from '@typegpu/color';
+   import { common, d, std, tgpu, type TgpuRenderCommands, type TgpuRoot } from 'typegpu';
+   import type { TgpuUniform } from 'typegpu';
+   // ---cut---
+   /** Picture size in pixels and elapsed growth time in seconds. */
+   export const World = d.struct({ size: d.vec2f, time: d.f32 });
+
+   /** Converts an sRGB hex colour, such as 0xc0301c, to linear light. */
+   export const hex = (rgb: number) => srgbToLinear(hexToRgb(rgb));
+   const AGAR = hex(0x080b10);
+   const DEEP = hex(0x030406);
+
+   /**
+    * Sheet coordinates have (0, 0) at the picture centre, with y pointing down. One unit is half
+    * the picture's longer side. The mould grid covers -1 to 1 on both axes, so on a wide picture its
+    * top and bottom run past the edges.
+    */
+   export const sheetAt = (pixel: d.v2f, size: d.v2f) => {
+     'use gpu';
+     return ((pixel - size * 0.5) * 2) / std.max(size.x, size.y);
+   };
+
+   // Inside createAgar(root, world, { format })
+   // ---cut-start---
+   export function createAgar(
+     root: TgpuRoot,
+     world: TgpuUniform<typeof World>,
+     options: { format: GPUTextureFormat },
+   ) {
+     const { format } = options;
+     // ---cut-end---
+     const ground = tgpu.fragmentFn({ in: { pixel: d.builtin.position }, out: d.vec4f })(({
+       pixel,
+     }) => {
+       'use gpu';
+       const at = sheetAt(pixel.xy, world.$.size);
+       const color = std.mix(AGAR, DEEP, std.smoothstep(0.2, 1.1, std.length(at)));
+       return d.vec4f(linearToSrgb(color), 1);
+     });
+     const drawing = root.createRenderPipeline({
+       vertex: common.fullScreenTriangle,
+       fragment: ground,
+       targets: { format },
+     });
+     return {
+       initAsync: () => drawing.initAsync(),
+       draw(pass: TgpuRenderCommands) {
+         pass.setPipeline(drawing);
+         pass.draw(3);
+       },
+     };
+     // ---cut-start---
+   }
+   // ---cut-end---
+   ```
+
+   - `'use gpu'` marks a [function](https://docs.swmansion.com/TypeGPU/fundamentals/functions/) that TypeGPU compiles for the GPU. It can call other such functions and the maths in `std`. `d.vec2f` and `d.vec3f` hold two and three numbers. The operators `+`, `-`, `*` and `/` work on those vectors inside GPU functions.
+   - `pixel` counts pixels from the canvas's top-left corner. `sheetAt` moves the origin to the centre and divides by half the longer side. On a wide canvas, the dish runs from -1 to 1 horizontally. The mould lives on a square from -1 to 1 in both directions, so its top and bottom extend beyond a wide canvas.
+   - `std.mix(a, b, t)` interpolates from `a` at `t = 0` to `b` at `t = 1`. `std.smoothstep(low, high, x)` changes smoothly from 0 to 1 as `x` goes from `low` to `high`. These functions darken the agar toward its edges.
+   - `world` is a [uniform](https://docs.swmansion.com/TypeGPU/fundamentals/buffers/), a small piece of GPU memory with the same values for every pixel. Your TypeScript writes it, and a shader reads it as `world.$`.
+   - A **pipeline** combines a vertex function and a fragment function for drawing. Compilation takes time, so `createAgar` returns `initAsync` alongside `draw`. The scene awaits `initAsync` before its first frame. `draw(3)` runs the triangle's three vertices.
+   - Shaders add and mix colours in linear light. `hex` splits an sRGB colour, as you would pick it in an editor, into red, green and blue with `hexToRgb`, then converts them into linear light. The canvas displays sRGB, so `linearToSrgb` encodes the final colour. In step 8, the final pass handles that encoding.
+
+   The scene makes the uniform and the agar, and draws the agar in its pass:
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/scene-tutorial-1.ts
+   // ---cut---
+   import type { Frame, Surface } from '@typegpu/kit';
+   import { d, type TgpuRoot } from 'typegpu';
+   import { createAgar, World } from './agar.ts';
+
+   export async function createScene(root: TgpuRoot, surface: Surface) {
+     const world = root.createUniform(World, {
+       size: d.vec2f(surface.width, surface.height),
+       time: 0,
+     });
+     const agar = createAgar(root, world, { format: surface.format });
+     await agar.initAsync();
+
+     return {
+       frame(frame: Frame) {
+         const pass = frame.encoder.beginRenderPass({
+           colorAttachments: { view: surface.view(frame) },
+         });
+         agar.draw(pass);
+         pass.end();
+       },
+     };
+   }
+   ```
+
+   Omit `destroy` while the scene has nothing to free. Leave the uniform and pipeline to the [garbage collector](/concepts/modules/#freeing-what-a-scene-made).
+
+   The canvas shows the dish: near-black agar with a faint cool tint that darkens toward its edges.
+
+2. **Put agents in a buffer, and move them.**
+
+   A [buffer](https://docs.swmansion.com/TypeGPU/fundamentals/buffers/) is GPU memory that holds many values of one shape. Create one for up to a million agents. Each `Agent` stores a position, a heading and whether it is awake. Positions use cells of a square grid that covers the dish, 2048 cells across. You create that grid in step 3.
+
+   A **kernel** is a [compute function](https://docs.swmansion.com/TypeGPU/fundamentals/pipelines/) that the GPU runs many times at once. Each run is a **thread**, numbered by `gid.x` from 0. Here, thread `n` places agent `n`. The first 16 384 agents start awake on a spiral at the centre. The rest sleep until step 5.
+
+   ```ts twoslash title="agents.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agents-tutorial-1.ts
+   import { randf } from '@typegpu/noise';
+   import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+   const WORKGROUP = 64;
+   declare const root: TgpuRoot, size: number, capacity: number;
+   // ---cut---
+   /** Initial agent count and fraction of blob cells occupied. */
+   const SEED = 16384;
+   const FILL = 0.2;
+   /** The golden angle prevents agents in the initial blob from lining up. */
+   const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
+   const Agent = d.struct({ position: d.vec2f, heading: d.f32, awake: d.u32 });
+   /** Agent count and step distance in trail cells. */
+   const Physarum = d.struct({ count: d.u32, speed: d.f32 });
+
+   const agents = root.createMutable(d.arrayOf(Agent, capacity));
+   const physarum = root.createUniform(Physarum);
+   const centre = d.vec2f(size / 2);
+
+   const toward = (angle: number) => {
+     'use gpu';
+     return d.vec2f(std.cos(angle), std.sin(angle));
+   };
+
+   const scatter = tgpu.computeFn({
+     workgroupSize: [WORKGROUP],
+     in: { gid: d.builtin.globalInvocationId },
+   })(({ gid }) => {
+     'use gpu';
+     if (gid.x >= physarum.$.count) return;
+     randf.seed(d.f32(gid.x));
+     const out = d.f32(gid.x) * GOLDEN;
+     const position = centre + toward(out) * std.sqrt(d.f32(gid.x) / (Math.PI * FILL));
+     const heading = randf.sample() * Math.PI * 2;
+     const awake = std.select(d.u32(0), d.u32(1), gid.x < SEED);
+     agents.$[gid.x] = Agent({ position, heading, awake });
+   });
+   ```
+
+   - `createMutable` creates a buffer that a kernel can write. `physarum` is a uniform with the agent count and distance per step. The scene writes it through the `set` method that `createAgents` returns.
+   - Place agent `n` at `n` golden angles around the centre and `√(n / (π · FILL))` cells from it. The first `n` agents fill a disc of `n / FILL` cells, one agent per five cells. The golden angle prevents rows from lining up.
+   - After `randf.seed(...)`, `randf.sample()` from [`@typegpu/noise`](https://www.npmjs.com/package/@typegpu/noise) returns a random number from 0 to 1. Seed with the thread number to give each agent its own numbers. `std.select(a, b, condition)` returns `b` when the condition holds and `a` otherwise.
+
+   Threads start in **workgroups**, groups of threads that run together. Use 64 threads per workgroup and dispatch enough groups to cover every agent, rounded up with `dispatchWorkgroups(Math.ceil(count / 64))`. The last workgroup can have more threads than agents. The bounds check at the start of the kernel stops those extra threads.
+
+   <Workgroups />
+
+   Add a second kernel, `move`, to move each awake agent forward by `speed` cells. Vary its heading a little each step so it does not walk in a straight line. An agent that would leave the dish stays put and turns back by 135° to 225°. This prevents agents from collecting along the edge.
+
+   ```ts twoslash title="agents.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agents-tutorial-2.ts
+   import { randf } from '@typegpu/noise';
+   import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+   const WORKGROUP = 64;
+   declare const root: TgpuRoot, size: number, capacity: number;
+   declare const toward: (angle: number) => d.v2f;
+   const Agent = d.struct({ position: d.vec2f, heading: d.f32, awake: d.u32 });
+   const agents = root.createMutable(d.arrayOf(Agent, capacity));
+   const physarum = root.createUniform(d.struct({ count: d.u32, speed: d.f32 }));
+   // ---cut---
+   /** How much an agent's heading wanders each step on its own, in radians either way. */
+   const WANDER = 0.08;
+
+   /** Excludes a one-cell border around the sheet. */
+   const onSheet = (position: d.v2f) => {
+     'use gpu';
+     return std.all(std.ge(position, d.vec2f(1))) && std.all(std.lt(position, d.vec2f(size - 1)));
+   };
+
+   const move = tgpu.computeFn({
+     workgroupSize: [WORKGROUP],
+     in: { gid: d.builtin.globalInvocationId },
+   })(({ gid }) => {
+     'use gpu';
+     if (gid.x >= physarum.$.count) return;
+     const agent = agents.$[gid.x];
+     if (agent.awake === 0) return;
+     randf.seed3(d.vec3f(agent.position, d.f32(gid.x)));
+
+     let heading = agent.heading + (randf.sample() - 0.5) * 2 * WANDER;
+     const next = agent.position + toward(heading) * physarum.$.speed;
+     if (!onSheet(next)) {
+       heading += Math.PI * (0.75 + 0.5 * randf.sample());
+     } else {
+       agent.position = d.vec2f(next);
+     }
+     agent.heading = heading;
+   });
+   ```
+
+   `agent` points into the buffer, so assigning its fields writes the buffer. Seed with its position and number to get different random numbers each step. Create pipelines named `scattering` and `moving` with `root.createComputePipeline({ compute: scatter })` and `{ compute: move }`. Return `initAsync: () => pipelines.compile([scattering, moving])`, `scatter(encoder)` to dispatch in its own compute pass and `move(pass)` to dispatch into the caller's pass.
+
+   Stepping once per frame would make the mould move twice as fast at 120 Hz as at 60 Hz. A [fixed step](/kit/clock/#fixed-step) counts how many simulation steps fit in the elapsed time. It carries the unused time into the next frame:
+
+   <FixedStep />
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/scene-tutorial-2.ts
+   import { clock, type Frame } from '@typegpu/kit';
+   import type { TgpuCommandEncoder, TgpuComputePass, TgpuRoot, TgpuUniform } from 'typegpu';
+   import type { World } from './agar.ts';
+   declare const root: TgpuRoot, world: TgpuUniform<typeof World>, frame: Frame;
+   declare function createAgents(
+     root: TgpuRoot,
+     options: { size: number; capacity: number },
+   ): {
+     initAsync(): Promise<unknown>;
+     set(values: { count: number; speed: number }): void;
+     scatter(encoder: TgpuCommandEncoder): void;
+     move(pass: TgpuComputePass): void;
+     destroy(): void;
+   };
+   // ---cut---
+   // Inside createScene
+   const STEP = 1 / 60;
+   const sim = clock.fixedStep({ step: STEP });
+   const agents = createAgents(root, { size: 2048, capacity: 1_000_000 });
+   await agents.initAsync();
+   agents.set({ count: 400_000, speed: 1.2 });
+   let scattering = true;
+
+   // Inside frame, before the render pass
+   const steps = sim.update(frame.dt);
+   if (steps > 0) {
+     world.patch({ time: sim.time });
+   }
+   if (scattering) agents.scatter(frame.encoder);
+   scattering = false;
+   for (let i = 0; i < steps; i++) {
+     const pass = frame.encoder.beginComputePass();
+     agents.move(pass);
+     pass.end();
+   }
+   ```
+
+   Record the scatter, the steps and the render pass into one encoder, in that order. The GPU places the agents before it moves them. `world.patch` writes only the fields you supply, here the elapsed simulation time in seconds. The picture stays the same because nothing draws the agents yet.
+
+3. **Leave a trail.**
+
+   Display the mould as a trail on a grid of 2048 × 2048 cells. Store that grid in a [texture](https://docs.swmansion.com/TypeGPU/fundamentals/textures/), an image the GPU can read or write. Reading can blend nearby cells, while writing sets one cell at a time. `at(uv)` reads the trail, with `uv` from 0 to 1 across the grid.
+
+   Each step, every agent adds a drop to its cell. If two threads read and add to the same value at once, one update can overwrite the other. Put the drops in a buffer of [atomic](https://www.w3.org/TR/WGSL/#atomic-builtin-functions) numbers. An **atomic** add completes before another thread adds to the same number. These atomics hold whole numbers, so represent a drop of 1 as `PARTS`, or 1024. A kernel named `take` moves each cell's drops into the texture and empties the cell.
+
+   ```ts twoslash title="trail.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/trail-tutorial-1.ts
+   import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot, size: number;
+   // ---cut---
+   const PARTS = 1024;
+   const WORKGROUP = 16;
+
+   const trail = root
+     .createTexture({ size: [size, size], format: 'rgba16float' })
+     .$usage('storage', 'sampled');
+   const reading = trail.createView(d.texture2d(d.f32));
+   const writing = trail.createView(d.textureStorage2d('rgba16float', 'write-only'));
+   const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+   const dropped = root.createMutable(d.arrayOf(d.atomic(d.u32), size * size));
+
+   const deposit = (cell: d.v2i, amount: number) => {
+     'use gpu';
+     std.atomicAdd(dropped.$[cell.y * size + cell.x], d.u32(amount * PARTS));
+   };
+   const at = (uv: d.v2f) => {
+     'use gpu';
+     return std.textureSampleLevel(reading.$, smooth.$, uv, 0).x;
+   };
+
+   const take = tgpu.computeFn({
+     workgroupSize: [WORKGROUP, WORKGROUP],
+     in: { gid: d.builtin.globalInvocationId },
+   })(({ gid }) => {
+     'use gpu';
+     if (gid.x >= size || gid.y >= size) return;
+     const index = gid.y * size + gid.x;
+     const fresh = d.f32(std.atomicLoad(dropped.$[index])) / PARTS;
+     std.atomicStore(dropped.$[index], 0);
+     std.textureStore(writing.$, gid.xy, d.vec4f(fresh, 0, 0, 1));
+   });
+   ```
+
+   - Give the texture two views, `reading` to sample through the `smooth` sampler and `writing` to store a cell. The `rgba16float` format holds four numbers per cell. The trail uses the first.
+   - `take` runs one thread per cell in workgroups of 16 × 16. Return `size`, `deposit`, `at` and `spread(pass)` from `createTrail`. Compile the pipeline in `initAsync`. `spread` dispatches `Math.ceil(2048 / 16)` workgroups in each direction.
+
+   Pass the trail to `createAgents` so it can read the grid size. End `move` by depositing a drop at the agent's position. Add `deposit: d.f32` to `Physarum` for the drop size:
+
+   ```ts
+   trail.deposit(d.vec2i(agent.position), physarum.$.deposit);
+   ```
+
+   Draw a second full-screen triangle over the agar in `veins.ts`. Its fragment function reads the trail under each pixel and makes it orange in proportion to the density. A density of 1 gives full orange.
+
+   ```ts twoslash title="veins.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/veins-tutorial-1.ts
+   import { pipelines } from '@typegpu/kit';
+   import { linearToSrgb } from '@typegpu/color';
+   import { common, d, std, tgpu, type TgpuRoot, type TgpuUniform } from 'typegpu';
+   import { hex, sheetAt, type World } from './agar.ts';
+   import type { Trail } from './trail.ts';
+   declare const root: TgpuRoot, world: TgpuUniform<typeof World>, trail: Trail;
+   declare const format: GPUTextureFormat;
+   // ---cut---
+   const ORANGE = hex(0xff7a2a);
+
+   const veins = tgpu.fragmentFn({ in: { pixel: d.builtin.position }, out: d.vec4f })(({
+     pixel,
+   }) => {
+     'use gpu';
+     const uv = sheetAt(pixel.xy, world.$.size) * 0.5 + 0.5;
+     return d.vec4f(linearToSrgb(ORANGE * std.saturate(trail.at(uv))), 0);
+   });
+   const drawing = root.createRenderPipeline({
+     vertex: common.fullScreenTriangle,
+     fragment: veins,
+     targets: { format, blend: pipelines.blend.add },
+   });
+   ```
+
+   The `add` [blend state](/kit/pipelines/#blend-states) adds colour to the agar. `std.saturate` clamps it to 0 to 1. Veins returns `initAsync` and `draw`, like agar. Create both modules and await their `initAsync`. Run `trail.spread(pass)` after `agents.move(pass)`, then draw the veins after the agar.
+
+   <SlimeStage stage="specks">
+     Watch the specks spread from the centre as the 16 384 awake agents walk. Each speck shows only
+     the current step's drops.
+   </SlimeStage>
+
+4. **Spread the trail, and let it fade.**
+
+   A trail that lasts one step is only specks. Real Physarum leaves a chemical that spreads into the agar around it and breaks down. So each step blurs the trail, keeps 93% of it, and adds the new drops.
+
+   Blur each cell by averaging it with its neighbours. Reading and writing one texture would let some threads read neighbours that have already changed. Add a second texture, `spare`. The first kernel reads the trail, blurs horizontally and writes to `spare`. The second reads `spare`, blurs vertically and writes to the trail. This alternation is called **ping-pong**. The kit's [history](/kit/history/) uses the same pattern to keep state between frames.
+
+   <PingPong />
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="trail.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/trail-tutorial-2.ts
+   import { d, std, tgpu, type TgpuComputePass, type TgpuComputePipeline } from 'typegpu';
+   import type { TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot, size: number, WORKGROUP: number;
+   const texture = () =>
+     root.createTexture({ size: [size, size], format: 'rgba16float' }).$usage('storage', 'sampled');
+   const reading = texture().createView(d.texture2d(d.f32));
+   const spareWriting = texture().createView(d.textureStorage2d('rgba16float', 'write-only'));
+   declare const blurringDown: TgpuComputePipeline;
+   // ---cut---
+   /** Trail retention per step and blur strength, both from 0 to 1. */
+   export const Spread = d.struct({ keep: d.f32, blur: d.f32 });
+
+   export const TRAIL = { decay: 0.07, blur: 1 };
+
+   // Inside createTrail
+   // ---cut-start---
+   export function createTrail() {
+   // ---cut-end---
+   const spread = root.createUniform(Spread, { keep: 1 - TRAIL.decay, blur: TRAIL.blur });
+
+   const inside = (cell: d.v2i) => {
+     'use gpu';
+     return std.clamp(cell, d.vec2i(0), d.vec2i(size - 1));
+   };
+
+   const across = tgpu.computeFn({
+     workgroupSize: [WORKGROUP, WORKGROUP],
+     in: { gid: d.builtin.globalInvocationId },
+   })(({ gid }) => {
+     'use gpu';
+     if (gid.x >= size || gid.y >= size) return;
+     const cell = d.vec2i(gid.xy);
+     const here = std.textureLoad(reading.$, cell, 0).x;
+     const left = std.textureLoad(reading.$, inside(cell - d.vec2i(1, 0)), 0).x;
+     const right = std.textureLoad(reading.$, inside(cell + d.vec2i(1, 0)), 0).x;
+     const blurred = std.mix(here, (left + here * 2 + right) / 4, spread.$.blur);
+     std.textureStore(spareWriting.$, gid.xy, d.vec4f(blurred, 0, 0, 1));
+   });
+   const blurringAcross = root.createComputePipeline({ compute: across });
+   const groups = Math.ceil(size / WORKGROUP);
+
+   return {
+     // Beside deposit and at
+     spread(pass: TgpuComputePass) {
+       pass.setPipeline(blurringAcross);
+       pass.dispatchWorkgroups(groups, groups);
+       pass.setPipeline(blurringDown);
+       pass.dispatchWorkgroups(groups, groups);
+     },
+   };
+   // ---cut-start---
+   }
+   // ---cut-end---
+   ```
+
+   `std.textureLoad` reads one cell without blending. `inside` keeps reads of neighbouring cells within the grid. Rename `take` to `down`. Read `spare` above and below the cell, then store the blurred, faded trail plus the drops:
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="trail.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/trail-tutorial-3.ts
+   import { d, std, type TgpuRoot, type TgpuUniform } from 'typegpu';
+   import type { Spread } from './trail.ts';
+   declare const root: TgpuRoot, spread: TgpuUniform<typeof Spread>, size: number, PARTS: number;
+   declare const gid: d.v3u, inside: (cell: d.v2i) => d.v2i;
+   const texture = () =>
+     root.createTexture({ size: [size, size], format: 'rgba16float' }).$usage('storage', 'sampled');
+   const writing = texture().createView(d.textureStorage2d('rgba16float', 'write-only'));
+   const spareReading = texture().createView(d.texture2d(d.f32));
+   const dropped = root.createMutable(d.arrayOf(d.atomic(d.u32), size * size));
+   (() => {
+     'use gpu';
+   // ---cut---
+   // Inside down, after the bounds check
+   const cell = d.vec2i(gid.xy);
+   const here = std.textureLoad(spareReading.$, cell, 0).x;
+   const up = std.textureLoad(spareReading.$, inside(cell - d.vec2i(0, 1)), 0).x;
+   const below = std.textureLoad(spareReading.$, inside(cell + d.vec2i(0, 1)), 0).x;
+   const blurred = std.mix(here, (up + here * 2 + below) / 4, spread.$.blur);
+
+   const index = gid.y * size + gid.x;
+   const fresh = d.f32(std.atomicLoad(dropped.$[index])) / PARTS;
+   std.atomicStore(dropped.$[index], 0);
+   std.textureStore(writing.$, gid.xy, d.vec4f(blurred * spread.$.keep + fresh, 0, 0, 1));
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   Dispatch both kernels in the step's compute pass, one after the other. The GPU finishes one dispatch's writes before the next reads them. `TRAIL` holds the values the trail starts with, which the scene's controls reuse later. Return `settings: spread`. Compile both pipelines in `initAsync` with `pipelines.compile([blurringAcross, blurringDown])`.
+
+   <SlimeStage stage="spread">
+     Watch the trails fade behind the agents. With no steering yet, their walks spread the blob into
+     an even haze.
+   </SlimeStage>
+
+5. **Sense and steer.**
+
+   Give each agent three sensors, one ahead and one to either side. The side sensors sit `sensorAngle` radians from its heading. All three sit `sensorDistance` cells away. Read the trail at each sensor and turn toward the strongest. If the trail ahead is weakest, turn left or right at random. Agents follow and strengthen each other's trails, so the haze gathers into threads.
+
+   <SenseSteer />
+
+   ```ts twoslash title="agents.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agents-tutorial-3.ts
+   import { randf } from '@typegpu/noise';
+   import { d, std, type TgpuRoot } from 'typegpu';
+   import type { Trail } from './trail.ts';
+   const Agent = d.struct({ position: d.vec2f, heading: d.f32, awake: d.u32 });
+   declare const root: TgpuRoot, trail: Trail, size: number, WANDER: number;
+   declare const agent: d.Infer<typeof Agent>, toward: (angle: number) => d.v2f;
+   const physarum = root.createUniform(
+     d.struct({ sensorAngle: d.f32, sensorDistance: d.f32, turn: d.f32 }),
+   );
+   // ---cut---
+   /** Samples trail attraction `sensorDistance` cells away at `angle` radians from the heading. */
+   const sniff = (agent: d.Infer<typeof Agent>, angle: number) => {
+     'use gpu';
+     const uv = (agent.position + toward(agent.heading + angle) * physarum.$.sensorDistance) / size;
+     return trail.at(uv);
+   };
+
+   // Inside move, after the seed, replacing the random walk
+   // ---cut-start---
+   (() => {
+     'use gpu';
+     // ---cut-end---
+     const angle = physarum.$.sensorAngle;
+     const ahead = sniff(agent, d.f32(0));
+     const left = sniff(agent, -angle);
+     const right = sniff(agent, angle);
+
+     const turn = physarum.$.turn * (0.5 + randf.sample());
+     let heading = agent.heading + (randf.sample() - 0.5) * 2 * WANDER;
+     if (ahead < left && ahead < right) {
+       heading += std.select(-turn, turn, randf.sample() < 0.5);
+     } else if (left > ahead && left > right) {
+       heading -= turn;
+     } else if (right > ahead && right > left) {
+       heading += turn;
+     }
+     // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   Add `sensorAngle`, `sensorDistance` and `turn` to `Physarum`. Set them from 30°, 35 cells and 45° in the scene. Convert the two angles to radians. Vary each turn between half and one and a half times `turn` so agents do not all turn by the same amount.
+
+   Without another rule, agents collect in a few thick threads and strengthen them further. The sleeping agents also need a way to wake. Track the agent count per cell in `taken` and use it for two rules:
+
+   - Occasionally put an agent to sleep if the 3 × 3 cells around it contain 30 or more agents.
+   - Let a sleeping agent pick an awake agent at random. Wake it two cells ahead of that agent if fewer than 5 agents stand there.
+
+   These rules move agents out of crowds and let the mould grow where its edges have room.
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="agents.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agents-tutorial-4.ts
+   import { randf } from '@typegpu/noise';
+   import { d, std, type TgpuRoot } from 'typegpu';
+   const Agent = d.struct({ position: d.vec2f, heading: d.f32, awake: d.u32 });
+   declare const root: TgpuRoot, size: number, gid: d.v3u, agent: d.Infer<typeof Agent>;
+   const agents = root.createMutable(d.arrayOf(Agent, 64));
+   const physarum = root.createUniform(d.struct({ alive: d.u32 }));
+   declare const cellOf: (position: d.v2f) => number, toward: (angle: number) => d.v2f;
+   declare const enter: (position: d.v2f) => boolean;
+   const [ROOM, CROWD, THINNING] = [5, 30, 0.05];
+   // ---cut---
+   const taken = root.createMutable(d.arrayOf(d.atomic(d.u32), size * size));
+
+   
+   const neighbours = (position: d.v2f) => {
+     'use gpu';
+     let count = d.u32(0);
+     for (let y = -1; y <= 1; y++) {
+       for (let x = -1; x <= 1; x++) {
+         count += std.atomicLoad(taken.$[cellOf(position + d.vec2f(d.f32(x), d.f32(y)))]);
+       }
+     }
+     return count;
+   };
+
+   // Inside move, replacing the early return for sleeping agents
+   // ---cut-start---
+   (() => {
+     'use gpu';
+   // ---cut-end---
+   if (agent.awake === 0) {
+     if (gid.x >= physarum.$.alive) return;
+     randf.seed2(d.vec2f(d.f32(gid.x), agent.heading));
+     agent.heading = randf.sample() * Math.PI * 2;
+     const parent = agents.$[d.u32(randf.sample() * d.f32(physarum.$.alive))];
+     if (parent.awake === 0) return;
+     const heading = parent.heading + (randf.sample() - 0.5) * 2;
+     const position = parent.position + toward(heading) * 2;
+     if (neighbours(position) < ROOM && enter(position)) {
+       agents.$[gid.x] = Agent({ position, heading, awake: 1 });
+     }
+     return;
+   }
+   // After the seed
+   if (randf.sample() < THINNING && neighbours(agent.position) >= CROWD) {
+     std.atomicSub(taken.$[cellOf(agent.position)], 1);
+     agent.awake = 0;
+     return;
+   }
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   - `taken` holds an atomic count per cell. `enter(position)` adds 1 to the cell at that position. Call it in `scatter` for each awake agent, and clear `taken.buffer` through the encoder before scattering. When `move` crosses into another cell, subtract 1 from the old cell and add 1 to the destination.
+   - A sleeping agent changes its heading each step and uses it to seed random numbers. This lets it try a different parent each step until it wakes.
+   - Add `alive` to `Physarum` to limit how many agents can wake. Return `grow(seconds, doubling)` from `createAgents`. It sets `alive` to 16 384 doubled every `doubling` seconds, capped at the agent count. Call `agents.grow(sim.time, 2)` beside the time write, before scattering and stepping, so the mould grows gradually.
+
+   <SlimeStage stage="sensing">
+     Watch the blob form threads within a second and grow outward as agents wake at its edges.
+     Threads merge and branch as the network changes.
+   </SlimeStage>
+
+6. **Feed it.**
+
+   Real Physarum grows toward food and keeps paths between food sources. Add up to 32 oat flakes in `oats.ts`, each a small rotated oval. When the flakes change, paint them into a texture with a [baker](/kit/baker/), storing coverage, scent, core and halo. The scent fades over a tenth of the dish's width. Return `initAsync: () => painting.initAsync()`.
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="oats.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/oats-tutorial-1.ts
+   import { d, std, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot;
+   const Oat = d.struct({ at: d.vec2f, size: d.vec2f, angle: d.f32 });
+   const Food = d.struct({ count: d.u32, strength: d.f32, reach: d.f32 });
+   const oats = root.createReadonly(d.arrayOf(Oat, 32));
+   const food = root.createUniform(Food);
+   declare const rotate: (v: d.v2f, angle: number) => d.v2f, at: d.v2f, cell: number;
+   const [CORE, HALO] = [400, 0.6];
+   (() => {
+     'use gpu';
+     let cover = d.f32(0);
+     let smell = d.f32(0);
+     let core = d.f32(0);
+     let halo = d.f32(0);
+   // ---cut---
+   // Inside the baker's function, at cell at, with coordinates from -1 to 1 and width cell
+   for (let i = d.u32(0); i < food.$.count; i++) {
+     const oat = oats.$[i];
+     // Transform the ellipse into a unit circle before measuring distance
+     const local = rotate(at - oat.at, -oat.angle) / oat.size;
+     const r = std.length(local);
+     const edge = (r - 1) * std.min(oat.size.x, oat.size.y);
+     cover = std.max(cover, std.smoothstep(cell, -cell, edge));
+     const reach = std.max(edge, 0) / food.$.reach;
+     smell += std.exp(-reach * reach);
+     core += std.exp(-r * r * CORE);
+     halo += std.exp(-r * r * HALO);
+   }
+   return d.vec4f(cover, smell, core, halo);
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   `oats.foodAt(uv)` returns the food scent and coverage at an agent's position. It multiplies the scent by `strength`, which the scene sets to 100. Pass this function to `createAgents` as its `food` option. Add a `fed` field to each agent, with 1 for fully fed and 0 for starved:
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="agents.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/agents-tutorial-5.ts
+   import { randf } from '@typegpu/noise';
+   import { d, std, type TgpuRoot } from 'typegpu';
+   import type { Trail } from './trail.ts';
+   const Agent = d.struct({ position: d.vec2f, heading: d.f32, awake: d.u32, fed: d.f32 });
+   declare const root: TgpuRoot, trail: Trail, size: number, agent: d.Infer<typeof Agent>;
+   declare const toward: (angle: number) => d.v2f, food: (uv: d.v2f) => d.v2f;
+   declare const neighbours: (position: d.v2f) => number, cellOf: (position: d.v2f) => number;
+   const taken = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+   const physarum = root.createUniform(
+     d.struct({ sensorDistance: d.f32, deposit: d.f32, hunger: d.f32 }),
+   );
+   const [CROWD, THINNING] = [30, 0.05];
+   // ---cut---
+   const sniff = (agent: d.Infer<typeof Agent>, angle: number) => {
+     'use gpu';
+     const uv = (agent.position + toward(agent.heading + angle) * physarum.$.sensorDistance) / size;
+     const hunger = std.saturate(1 - agent.fed * 2);
+     return trail.at(uv) + food(uv).x * hunger;
+   };
+
+   // Inside move, after the seed
+   // ---cut-start---
+   (() => {
+     'use gpu';
+   // ---cut-end---
+   const eats = food(agent.position / size).y > 0.5;
+   agent.fed = std.select(agent.fed - physarum.$.hunger, 1, eats);
+   const crowded = randf.sample() < THINNING && neighbours(agent.position) >= CROWD;
+   if (agent.fed <= 0 || crowded) {
+     std.atomicSub(taken.$[cellOf(agent.position)], 1);
+     agent.awake = 0;
+     return;
+   }
+
+   // Replace the deposit with an amount based on fed
+   trail.deposit(d.vec2i(agent.position), physarum.$.deposit * (0.3 + 1.7 * agent.fed * agent.fed));
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   Three rules make the mould forage:
+
+   - **Hunger.** Set `fed` to 1 when an agent stands on a flake. Otherwise subtract `hunger` each step. With `hunger` at `STEP / 6`, a fully fed agent lasts 6 seconds without food. At 0 it sleeps, as crowded agents do. Branches without food die back, and their agents can wake where others have fed. Give a waking agent its parent's `fed` value or a random value, whichever is greater. In `scatter`, start agents between 0.5 and 1 so they do not all starve at once.
+   - **Smell.** Below half fed, an agent senses food as well as trail. The hungrier it is, the more it follows food. Fed agents follow the network while hungry agents search for food.
+   - **Deposit.** Vary the drop size from 0.3 times `deposit` when starving to 2 times `deposit` when fully fed. The strongest trails form at food and along paths from it, creating thick branches.
+
+   Draw the food in `veins` by adding a bright point and faint halo to the orange trail. `oats.glowAt(uv)` returns these from the texture's last two numbers. Call `oats.paint(frame.encoder)` after the scatter in the scene's frame. It records work only when the flakes have changed.
+
+   Return `settings` and `pointing` beside `frame` and `destroy`. `pointing.press(x, y)` adds food at a tap, with `x` and `y` from 0 to 1 across and down the canvas. Use `sheetAt` on the CPU to convert it to the dish's coordinates. `settings.values` holds panel values, and `settings.write` sends them to the uniforms. The `regrow` action clears the trail and scatters the blob again. Keep its time in `born`, and grow with `agents.grow(sim.time - born, 2)` from then on.
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/scene-tutorial-3.ts
+   import type { clock, Frame, Surface } from '@typegpu/kit';
+   import { d } from 'typegpu';
+   import type { createAgents } from './agents.ts';
+   import { sheetAt } from './agar.ts';
+   import type { Oats } from './oats.ts';
+   import { TRAIL, type Trail } from './trail.ts';
+   declare const surface: Surface, oats: Oats, trail: Trail, sim: clock.FixedStep;
+   declare const agents: ReturnType<typeof createAgents>, STEP: number, DEGREES: number;
+   declare let scattering: boolean, born: number;
+   export function createScene() {
+   // ---cut---
+   // Inside createScene, replacing the fixed settings writes
+   const values = { ...TRAIL, sensorAngle: 30, sensorDistance: 35, food: 100 };
+   const regrow = () => {
+     trail.clear();
+     scattering = true;
+     born = sim.time;
+   };
+   const agentValues = () => ({
+     count: 400_000,
+     sensorAngle: values.sensorAngle * DEGREES,
+     sensorDistance: values.sensorDistance,
+     turn: 45 * DEGREES,
+     speed: 1.2,
+     deposit: 0.5,
+     hunger: STEP / 6,
+   });
+   agents.set(agentValues());
+   oats.set(values.food);
+   const settings = {
+     values,
+     write() {
+       agents.set(agentValues());
+       trail.settings.write({ keep: 1 - values.decay, blur: values.blur });
+       oats.set(values.food);
+     },
+     actions: { regrow },
+   };
+   const pointing = {
+     press(x: number, y: number) {
+       const { width, height } = surface;
+       oats.drop(sheetAt(d.vec2f(x * width, y * height), d.vec2f(width, height)));
+     },
+   };
+   // ---cut-start---
+   return { settings, pointing, frame(frame: Frame) {}, destroy() {} };
+   }
+   // ---cut-end---
+   ```
+
+   `index.ts` connects them to the page in `attach`, which runs once the scene is built. [`web.pointer`](/kit/web/#pointer-input) sends taps to `pointing.press`. A panel from [lil-gui](https://lil-gui.georgealways.com/) gets a slider for each value and a button for `regrow`. Add lil-gui to the project:
+
+   <Install add="lil-gui" />
+
+   The host calls the function `attach` returns when it frees the scene, so return one that removes both:
+
+   ```ts twoslash title="index.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/reader/scene.ts
+   import type { Frame, Surface } from '@typegpu/kit';
+   import type { TgpuRoot } from 'typegpu';
+   export declare function createScene(
+     root: TgpuRoot,
+     surface: Surface,
+   ): Promise<{
+     settings: {
+       values: { sensorAngle: number; sensorDistance: number; decay: number; food: number };
+       write(): void;
+       actions: { regrow(): void };
+     };
+     pointing: { press(x: number, y: number): void };
+     frame(frame: Frame): void;
+     destroy(): void;
+   }>;
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/reader/index.ts
+   // ---cut---
+   import * as web from '@typegpu/kit/web';
+   import GUI from 'lil-gui';
+   import { createScene } from './scene.ts';
+
+   const canvas = document.querySelector('canvas')!;
+   web.host(createScene, {
+     canvas,
+     attach({ scene }) {
+       const pointer = web.pointer(canvas, { down: scene.pointing.press });
+       const gui = new GUI({ title: 'slime mould' });
+       const { values, write, actions } = scene.settings;
+       gui.add(values, 'sensorAngle', 5, 90, 1).name('sensor angle (degrees)');
+       gui.add(values, 'sensorDistance', 2, 40, 0.5).name('sensor distance (cells)');
+       gui.add(values, 'decay', 0, 0.5, 0.005);
+       gui.add(values, 'food', 0, 200, 1);
+       gui.onChange(write);
+       gui.add(actions, 'regrow');
+       write();
+       return () => {
+         pointer.destroy();
+         gui.destroy();
+       };
+     },
+   });
+   ```
+
+   <SlimeStage stage="food">
+     Watch the mould reach for the flakes and keep the threads between them. The centre empties as
+     the food sources connect and unfed threads die back.
+   </SlimeStage>
+
+7. **Turn density into light.**
+
+   A thread made by one agent and a hub of hundreds can differ a hundredfold in density. Mapping density directly to brightness cannot show both. `saturate(density)` makes dense threads the same flat orange. Dividing density enough to distinguish the hubs makes the fine threads too dark.
+
+   Use `log(1 + density × GAIN)` to brighten faint trails while compressing dense ones. Divide by the same curve at `FULL`, or 18, to get a tone from 0 to 1. Use that tone to select a colour along a ramp. It runs from crimson for faint threads through red and orange to gold at the hubs.
+
+   <ToneColour />
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="veins.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/veins-tutorial-2.ts
+   import { linearToSrgb } from '@typegpu/color';
+   import { d, std, type TgpuUniform } from 'typegpu';
+   import { hex } from './agar.ts';
+   import type { Trail } from './trail.ts';
+   import type { Look } from './veins.ts';
+   declare const trail: Trail, uv: d.v2f, food: d.v3f, look: TgpuUniform<typeof Look>;
+   const ORANGE = hex(0xff7a2a);
+   // ---cut---
+   const CRIMSON = hex(0x3a0610);
+   const RED = hex(0xb0201a);
+   const GOLD = hex(0xffe0a0);
+   const FULL = 18;
+   const GAIN = 0.6;
+
+   const ramp = (tone: number) => {
+     'use gpu';
+     let color = CRIMSON * std.smoothstep(0, 0.25, tone);
+     color = std.mix(color, RED, std.smoothstep(0.2, 0.5, tone));
+     color = std.mix(color, ORANGE, std.smoothstep(0.45, 0.8, tone));
+     return std.mix(color, GOLD, std.smoothstep(0.75, 1, tone));
+   };
+
+   // Inside veins, replacing the plain orange
+   // ---cut-start---
+   (() => {
+     'use gpu';
+   // ---cut-end---
+   const reach = 0.75 / d.f32(trail.size);
+   const density =
+     (trail.at(uv) * 2 +
+       trail.at(uv + d.vec2f(reach, 0)) +
+       trail.at(uv - d.vec2f(reach, 0)) +
+       trail.at(uv + d.vec2f(0, reach)) +
+       trail.at(uv - d.vec2f(0, reach))) /
+     6;
+   const tone = std.log(1 + density * GAIN) / std.log(1 + FULL * GAIN);
+   return d.vec4f(linearToSrgb(ramp(tone) * look.$.light + food), 0);
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   This curve would make individual drops look grainy. Average the trail under the pixel with four surrounding points. Store `light` and `pulse` in `Look`, and return its `look` uniform beside `initAsync` and `draw`. Export `VEINS = { light: 1, pulse: 1 }`, start the uniform from it and spread it into the scene's `values`. Add `light` to the controls, write it in `settings.write` with `veins.look.write`, and give it a slider from 0 to 2. Encode the colour with `linearToSrgb` until the next step.
+
+   <ExampleFigure
+     example="slime-mould"
+     values={{ pulse: 0, glow: 0 }}
+     controls={['light', 'regrow']}
+     caption="Change the brightness to see fine crimson threads, red and orange branches, and gold paths to the food. Pulse and glow are off for this step."
+   />
+
+8. **Pulse, and glow.**
+
+   In living Physarum, cytoplasm flows back and forth through the veins every minute or two. Represent that motion with a brightness wave that travels outward along the thick branches every 3.5 seconds:
+
+   - Decrease its phase with distance from the centre so the wave travels outward.
+   - Vary the phase with angle to bend each wavefront slightly.
+   - Use `smoothstep` to keep the pulse in dense branches, leaving fine threads still.
+
+   {/* prettier-ignore */}
+   ```ts twoslash title="veins.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/veins-tutorial-3.ts
+   import { d, std, type TgpuUniform } from 'typegpu';
+   import type { World } from './agar.ts';
+   import type { Look } from './veins.ts';
+   declare const world: TgpuUniform<typeof World>, look: TgpuUniform<typeof Look>;
+   declare const at: d.v2f, tone: number, food: d.v3f, ramp: (tone: number) => d.v3f;
+   // ---cut---
+   const PERIOD = 3.5;
+   const WAVES = 1.6;
+
+   // Inside veins, after calculating tone
+   // ---cut-start---
+   (() => {
+     'use gpu';
+   // ---cut-end---
+   const swirl = 0.15 * std.sin(std.atan2(at.y, at.x) * 3 + std.length(at) * 5);
+   const phase = world.$.time / PERIOD - std.length(at) * WAVES + swirl;
+   const wave = std.sin(phase * Math.PI * 2) * std.smoothstep(0.55, 0.9, tone);
+   const pulse = 1 + 0.4 * look.$.pulse * wave;
+   return d.vec4f(ramp(tone) * (look.$.light * pulse) + food, 0);
+   // ---cut-start---
+   })();
+   // ---cut-end---
+   ```
+
+   `at` is `sheetAt(pixel.xy, world.$.size)`. `world.$.time` holds elapsed simulation seconds, written by the scene as in step 2. Add `pulse` to `values` and its uniform write, with a slider from 0 to 2.
+
+   Let the brightest hubs exceed the canvas's range. Assign the last gold mix to `color`, then return it with the densest trail raised to 2.2 times gold:
+
+   ```ts
+   color = std.mix(color, GOLD, std.smoothstep(0.75, 1, tone));
+   return color * (1 + 1.2 * std.smoothstep(0.85, 1.2, tone));
+   ```
+
+   The canvas holds colour values from 0 to 1 and clips anything brighter. Draw into an `hdr` [render target](/kit/targets/) with the `rgba16float` format to keep values above 1. Finish the frame with two passes from [`@typegpu/kit`](/kit/finish/):
+
+   - **[Bloom](/kit/finish/#bloom)** blurs what is brighter than its `threshold` into a wide, soft glow, as a camera lens does.
+   - **The final pass** adds bloom, maps brightness into the canvas's range of 0 to 1, darkens the corners and encodes sRGB. Return linear colours from the agar and veins fragment functions, without `linearToSrgb`.
+
+   In the figure, each disc is twice as bright as the previous one. Change the threshold to choose which discs glow.
+
+   <Bloom />
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/slime-mould/scene-tutorial-4.ts
+   import { pipelines, targets, type Frame, type Surface } from '@typegpu/kit';
+   import { bloom, finish } from '@typegpu/kit';
+   import { d, type TgpuRoot, type TgpuUniform } from 'typegpu';
+   import type { World } from './agar.ts';
+   import type { createAgar } from './agar.ts';
+   import type { createAgents } from './agents.ts';
+   import type { Oats } from './oats.ts';
+   import type { Trail } from './trail.ts';
+   import type { createVeins } from './veins.ts';
+   declare const root: TgpuRoot, surface: Surface, world: TgpuUniform<typeof World>, frame: Frame;
+   declare const agar: ReturnType<typeof createAgar>, oats: Oats, trail: Trail;
+   declare const agents: ReturnType<typeof createAgents>, veins: ReturnType<typeof createVeins>;
+   // ---cut---
+   // Inside createScene, give agar and veins the HDR format
+   const HDR = 'rgba16float';
+   const screen = targets.create(root, surface, { hdr: { format: HDR, sampled: true } });
+   const hdr = () => screen.textures.hdr;
+   const glow = bloom.create(root, { source: hdr, settings: { threshold: 1, knee: 0.5 } });
+   const final = finish.create(root, {
+     format: surface.format,
+     source: hdr,
+     glow,
+     settings: { glowIntensity: 0.2, vignette: 0.3 },
+   });
+   await pipelines.compile([agar, oats, trail, agents, veins, glow, final]);
+
+   // Inside frame
+   if (screen.fit()) world.patch({ size: d.vec2f(screen.width, screen.height) });
+   // Record the simulation steps here
+   const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: screen.views.hdr } });
+   // Draw the agar and veins here
+   pass.end();
+
+   glow.record(frame);
+   final.record(frame, surface.view(frame));
+
+   // In the returned scene
+   // ---cut-start---
+   const scene = {
+     // ---cut-end---
+     destroy() {
+       for (const made of [screen, oats, trail, agents, glow]) made.destroy();
+     },
+     // ---cut-start---
+   };
+   // ---cut-end---
+   ```
+
+   Draw only the final pass into the canvas. `final.record` opens its pass, draws and ends it. When the canvas resizes, `screen.fit()` creates matching textures and returns `true`. Write that size to `world`. [`pipelines.compile`](/kit/pipelines/) calls each listed helper's `initAsync` before the first frame. `destroy` frees the targets and each helper after its last frame. Each helper frees its own textures and large buffers, including the agents, trail, deposited and taken counts, and oats. For a `glow` slider, add `glow: 1` to `values` and patch `final.settings` with `glowIntensity: 0.2 * values.glow` in `settings.write`.
+
+   <Hidden card="slime-mould">
+     <ExampleFigure
+       example="slime-mould"
+       controls={['pulse', 'glow', 'sensorAngle', 'sensorDistance', 'regrow']}
+       caption="Tap to add food, widen the sensor angle for a looser network, or increase the sensor distance for longer, straighter threads. The mould grows toward food; regrow to start again."
+     />
+   </Hidden>
+
+</Steps>
+
+## What's in the example
+
+<FileTree>
+
+- src/
+  - index.ts `web.host`, the tap and the panel
+  - scene.ts `createScene(root, surface)` with the uniform, target, modules, values and frame
+  - agar.ts the dish, `sheetAt` and `hex`
+  - agents.ts the agents' buffer, the crowd counts and the two kernels
+  - trail.ts the trail's two textures, the drops and the blur
+  - oats.ts the flakes, their texture and the baker that paints it
+  - veins.ts the tone curve, the ramp, the pulse and the draw
+
+</FileTree>
+
+The example exposes more settings and describes its controls for the example page. Your `index.ts` attaches the panel and taps.
+
+## Next
+
+Things to try in the example:
+
+- Add a second species with its own buffer. Let its agents sense their own trail and avoid the first species' trail.
+- Make food run out by lowering a flake's strength while agents eat on it. The mould should move on.
+- Raise the count toward its million on a fast GPU, or lower it on a phone, and see how the network's grain changes.
+
+[Domino run](/tutorials/domino-run/) builds a 3D scene with 1 474 dominoes that fall on the GPU from the one you tap. [Write a module](/tutorials/write-a-module/) builds a module of your own and tests it.

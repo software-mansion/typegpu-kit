@@ -1,0 +1,311 @@
+---
+import { RULE_CODE, RULE_SAYS, handIn, highlight, render } from './code.ts';
+import type { RuleName } from './rules.ts';
+import './code.css';
+
+const NAMES = Object.keys(RULE_CODE) as RuleName[];
+---
+
+<section class="yours not-content" data-home="your-rule" data-viz="your-rule">
+  <div class="stage home-code">
+    <canvas class="stack" aria-hidden="true"></canvas>
+    <svg class="leaders" aria-hidden="true"></svg>
+    <ol class="labels" aria-hidden="true"></ol>
+    <div class="side">
+      <h2 id="a-rule-of-your-own">A rule of your own</h2>
+      <p>
+        The steering takes a <code>'use gpu'</code> function that computes force from a bird and
+        its neighbours.{' '}
+        <span class="staged">Pick a rule and drag its number.</span>
+        <span class="flat">Pick one to read it.</span>
+      </p>
+      <div class="rules" role="group" aria-label="Rules">
+        {
+          NAMES.map((name) => (
+            <button type="button" data-rule={name} aria-pressed={name === 'flock' ? 'true' : 'false'}>
+              <b>{name}</b>
+              <span>{RULE_SAYS[name]}</span>
+            </button>
+          ))
+        }
+      </div>
+      {
+        NAMES.map((name) => (
+          <pre class="code body" data-rule={name} hidden={name !== 'flock'}><code set:html={render(RULE_CODE[name])} /></pre>
+        ))
+      }
+      <pre class="code hooked"><code><span class="line hot" set:html={highlight(handIn('flock'))} /></code></pre>
+    </div>
+  </div>
+</section>
+
+<script>
+
+  const sections = document.querySelectorAll<HTMLElement>('[data-home="your-rule"]');
+
+  for (const section of sections) {
+    const chips = [...section.querySelectorAll<HTMLButtonElement>('.rules button')];
+    const bodies = [...section.querySelectorAll<HTMLElement>('pre[data-rule]')];
+    const handed = section.querySelector('.hooked .y');
+    for (const chip of chips) {
+      chip.addEventListener('click', () => {
+        if (document.documentElement.classList.contains('home-staged')) return;
+        for (const each of chips) each.setAttribute('aria-pressed', String(each === chip));
+        for (const body of bodies) body.hidden = body.dataset.rule !== chip.dataset.rule;
+        if (handed) handed.textContent = chip.dataset.rule ?? '';
+      });
+    }
+  }
+
+  // Imported here, so a browser without WebGPU loads none of it
+  if (navigator.gpu && sections.length > 0) {
+    void import('./runtime.ts').then(({ register }) => {
+      for (const section of sections) register('your-rule', section);
+    });
+  }
+</script>
+
+<style>
+  .yours {
+    position: relative;
+  }
+
+  .stage {
+    position: relative;
+  }
+
+  canvas.stack,
+  .leaders,
+  .labels {
+    display: none;
+  }
+
+  .side {
+    max-width: var(--measure);
+  }
+
+  .side h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: clamp(24px, 2.3vw, 32px);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+
+  .side > p {
+    margin: var(--s-3) 0 0;
+    color: var(--text-2);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .side .staged,
+  :global(:root.home-staged) .side .flat {
+    display: none;
+  }
+
+  :global(:root.home-staged) .side .staged {
+    display: inline;
+  }
+
+  .rules {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    margin-top: var(--s-4);
+  }
+
+  .rules button {
+    display: grid;
+    gap: 1px;
+    min-width: 6.5rem;
+    padding: 6px 12px 5px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 3px;
+    background: var(--ground-2);
+    color: var(--text);
+    font: 13px/1.3 var(--font-mono);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rules button:hover {
+    border-color: var(--accent);
+  }
+
+  .rules button span {
+    min-height: 1.3em;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .rules button[aria-pressed='true'] {
+    border-color: var(--accent-high);
+    background: var(--accent-low);
+    color: var(--accent-high);
+  }
+
+  .code {
+    margin: var(--s-3) 0 0;
+    padding: var(--s-2) var(--s-3);
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--ground-2);
+    color: var(--text-2);
+    font: 11.5px/1.55 var(--font-mono);
+  }
+
+  .code[hidden] {
+    display: none;
+  }
+
+  .code :global(.line) {
+    display: inline-block;
+    min-width: 100%;
+    margin-inline: calc(-1 * var(--s-3));
+    padding-inline: calc(var(--s-3) - 2px) var(--s-3);
+    border-left: 2px solid transparent;
+  }
+
+  .code :global(.line.hot) {
+    border-left-color: var(--accent);
+    background: var(--accent-low);
+  }
+
+  .code :global(.line.new) {
+    animation: fresh 1.2s ease-out;
+  }
+
+  @keyframes fresh {
+    from {
+      background: color-mix(in oklab, var(--accent) 40%, transparent);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .code :global(.line.new) {
+      animation: none;
+    }
+  }
+
+  /* With WebGPU: the stack on the left, its labels, and the text on the right. */
+  :global(:root.home-staged) .yours {
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
+    border-block: 1px solid var(--rule);
+    background: var(--ground);
+  }
+
+  :global(:root.home-staged) .stage {
+    height: 100svh;
+    min-height: 680px;
+    overflow: hidden;
+    cursor: grab;
+    touch-action: pan-y;
+    user-select: none;
+  }
+
+  :global(:root.home-staged) canvas.stack,
+  :global(:root.home-staged) .leaders {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .leaders {
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .leaders :global(line) {
+    stroke: var(--rule-strong);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .leaders :global(line.pointed) {
+    stroke: var(--accent);
+  }
+
+  .leaders :global(circle) {
+    fill: var(--muted);
+  }
+
+  :global(:root.home-staged) .labels {
+    position: absolute;
+    inset: 0;
+    display: block;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    pointer-events: none;
+  }
+
+  .labels :global(li) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    gap: 2px;
+    width: max-content;
+    margin: 0;
+    translate: 0 -50%;
+    font: 12px/1.3 var(--font-mono);
+    opacity: 0;
+  }
+
+  .labels :global(b) {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .labels :global(span) {
+    color: var(--muted);
+  }
+
+  .labels :global(li.pointed b),
+  .labels :global(li.pointed span) {
+    color: var(--accent-high);
+  }
+
+  .labels :global(li.accent span) {
+    color: var(--accent);
+  }
+
+  :global(:root.home-staged) .side {
+    position: absolute;
+    top: 0;
+    right: 4%;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    width: min(33vw, 31rem);
+    max-width: none;
+    margin: 0;
+    cursor: auto;
+    user-select: text;
+  }
+
+  /* Phones: the stack above the text. */
+  @media (max-width: 56em) {
+    :global(:root.home-staged) .stage {
+      height: auto;
+      min-height: 0;
+      padding-top: 100vw;
+    }
+
+    :global(:root.home-staged) canvas.stack {
+      height: 100vw;
+    }
+
+    :global(:root.home-staged) .side {
+      position: static;
+      width: auto;
+      padding: var(--s-5) 5% var(--s-6);
+    }
+  }
+</style>

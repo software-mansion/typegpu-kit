@@ -1,0 +1,135 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+import { HUES, STRIPS } from './ToneCurves.scene.ts';
+
+const hues = Object.keys(HUES);
+---
+
+<figure class="viz" data-viz="tone-curves">
+  <p class="viz-title">Tone curves on grey light and on one colour</p>
+  <div class="plot">
+    <svg viewBox="0 0 520 314" role="img" aria-label="Tone curves for grey light and colour strips at increasing brightness"></svg>
+    <canvas></canvas>
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="tone" options={STRIPS} value={STRIPS[0]} />
+    <Slider inline name="exposure" min={-4} max={4} step={0.5} value={0} unit=" stops" />
+    <Choice name="hue" label="colour" options={hues} value={hues[0]} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise exposure to see where each colour strip turns white. The plot shows grey light through each curve, and the strips show one colour at increasing brightness.
+  </figcaption>
+</figure>
+
+<style>
+  .plot {
+    position: relative;
+  }
+
+  canvas {
+    position: absolute;
+    margin: 0;
+    border-radius: 0;
+  }
+</style>
+
+<script>
+  import { d } from 'typegpu';
+  import { linearToSrgb } from '@typegpu/color';
+  import { clamp } from '../home/geometry.ts';
+  import { choice, each, live, slider } from './figure.ts';
+  import { fitWidth, leader, svg, text } from './svg.ts';
+  import { CURVES, FILL, HIGH, HUES, LOW, STRIPS, type Hue, type Strip } from './ToneCurves.scene.ts';
+
+  const HEIGHT = 314;
+  const LEFT = 70;
+  const TOP = 14;
+  const BOTTOM = 148;
+  const STRIP = 186;
+  const ROW = 24;
+  const COLOURS = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)', 'var(--viz-e)', 'var(--viz-f)'];
+
+  const y = (value: number) => BOTTOM - value * (BOTTOM - TOP);
+
+  /** What the screen shows for grey light through `tone`: tone map, encode, clamp. */
+  const screen = (tone: Strip, light: number) => clamp(linearToSrgb(CURVES[tone](d.vec3f(light))).x);
+
+  const percent = (value: number, of: number) => `${(value / of) * 100}%`;
+  const signed = (stops: number) => (stops < 0 ? String(stops) : `+${stops}`);
+
+  each('tone-curves', (root) => {
+    const figure = root.querySelector('svg')!;
+    const canvas = root.querySelector('canvas')!;
+    const hue = choice<Hue>(root, 'hue', () => draw());
+
+    const plot = fitWidth(
+      figure,
+      (width) => {
+        const right = width - 12;
+        const x = (stop: number) => LEFT + ((stop - LOW) / (HIGH - LOW)) * (right - LEFT);
+        const chosen = tone.value;
+        const exposure = 2 ** exposureInput.valueAsNumber;
+
+        canvas.style.left = percent(LEFT, width);
+        canvas.style.top = percent(STRIP, HEIGHT);
+        canvas.style.width = percent(right - LEFT, width);
+        canvas.style.height = percent(ROW * (STRIPS.length - 1 + FILL), HEIGHT);
+
+        for (const value of [0, 0.5, 1]) {
+          svg('line', { x1: LEFT, x2: right, y1: y(value), y2: y(value), stroke: 'var(--viz-line)', 'stroke-dasharray': value === 0 ? 'none' : '2 3' }, figure);
+          text(figure, LEFT - 6, y(value) + 4, String(value), { 'text-anchor': 'end' });
+        }
+        text(figure, 0, TOP + 4, 'screen');
+
+        for (let stop = -6; stop <= 6; stop += 2) {
+          if (stop === 0) svg('line', { x1: x(0), x2: x(0), y1: TOP, y2: BOTTOM, stroke: 'var(--viz-line)', 'stroke-dasharray': '2 3' }, figure);
+          const label = stop < 0 ? `1/${2 ** -stop}` : String(2 ** stop);
+          text(figure, x(stop), BOTTOM + 16, label, { 'text-anchor': 'middle' });
+        }
+        text(figure, 0, BOTTOM + 16, 'light');
+
+        for (const curve of [...STRIPS.filter((name) => name !== chosen), chosen]) {
+          const points: string[] = [];
+          for (let i = 0; i <= 160; i++) {
+            const stop = LOW + ((HIGH - LOW) * i) / 160;
+            points.push(`${x(stop).toFixed(1)},${y(screen(curve, 2 ** stop * exposure)).toFixed(1)}`);
+          }
+
+          const on = curve === chosen;
+          svg('polyline', {
+            points: points.join(' '),
+            fill: 'none',
+            stroke: on ? 'var(--viz-accent)' : COLOURS[STRIPS.indexOf(curve)],
+            'stroke-width': on ? 1.5 : 1,
+            'stroke-opacity': 1,
+          }, figure);
+        }
+
+        STRIPS.forEach((curve, row) => {
+          const top = STRIP + row * ROW;
+          const on = curve === chosen;
+          text(figure, 0, top + 13, curve, { fill: on ? 'var(--accent-high)' : COLOURS[row] });
+          leader(figure, curve.length * 6.6 + 4, top + 9, LEFT - 4, top + 9, on);
+        });
+
+        return HEIGHT;
+      },
+      300,
+    );
+
+    const draw = () => {
+      plot();
+      shown.update((scene) => scene.set(HUES[hue.value], 2 ** exposureInput.valueAsNumber));
+    };
+
+    const tone = choice<Strip>(root, 'tone', plot);
+    const exposureInput = slider(root, 'exposure', draw, signed);
+    plot();
+
+    // The plot reads the curves on the page, so the scene's module is already here
+    const shown = live(root, () => import('./ToneCurves.scene.ts'), undefined, {
+      ready: (scene) => scene.set(HUES[hue.value], 2 ** exposureInput.valueAsNumber),
+    });
+  });
+</script>

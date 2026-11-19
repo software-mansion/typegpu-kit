@@ -1,0 +1,42 @@
+packages:
+  - packages/*
+  - apps/*
+
+allowBuilds:
+  esbuild: true
+  webgpu: false
+
+catalog:
+  typegpu: 0.12.10
+  wgpu-matrix: ^3.4.2
+  '@typegpu/color': 0.12.2
+  '@typegpu/noise': 0.12.1
+  '@typegpu/radiance-cascades': 0.12.3
+  '@typegpu/sdf': 0.12.2
+  unplugin-typegpu: 0.12.8
+
+catalogs:
+  native:
+    '@types/react': ~19.3.0
+    react: 19.3.1
+    react-native: 0.88.1
+    react-native-webgpu: 0.21.1
+    react-native-worklets: 0.13.1
+  test:
+    vitest: ^5.1.1
+    webgpu: ^0.6.2
+  types:
+    '@types/node': ^24.19.2
+    '@webgpu/types': ^0.1.74
+    typescript: npm:tsover@6.0.2
+
+overrides:
+  # Use one JS wrapper and native binding for docs prerendering.
+  satteri: 0.11.7
+  typescript: 'catalog:types'
+
+patchedDependencies:
+  expressive-code-twoslash@0.6.1: patches/expressive-code-twoslash@0.6.1.patch
+  metro@0.87.1: packages/typegpu-kit/patches/metro@0.87.1.patch
+  metro-runtime@0.87.1: packages/typegpu-kit/patches/metro-runtime@0.87.1.patch
+  unplugin-typegpu@0.12.8: patches/unplugin-typegpu@0.12.8.patch

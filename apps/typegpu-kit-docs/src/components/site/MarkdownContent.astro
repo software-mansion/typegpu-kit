@@ -1,0 +1,39 @@
+---
+// A module page ends with its cards, under a Reference heading the table of contents lists. Every
+// page's terms open their popovers through terms.open.ts
+import Default from '@astrojs/starlight/components/MarkdownContent.astro';
+import { loadListed } from './load.ts';
+import ModuleSheet from './ModuleSheet.astro';
+import { REFERENCE_ID } from './modules.ts';
+
+const { modules, listed: shown } = await loadListed(Astro.locals.starlightRoute.entry.data);
+---
+
+<Default>
+  <slot />
+  {
+    shown.length > 0 && (
+      <Fragment>
+        <h2 id={REFERENCE_ID}>Reference</h2>
+        <div class="cards not-content">
+          {shown.map((module) => (
+            <ModuleSheet module={module} modules={modules} named={shown.length > 1} />
+          ))}
+        </div>
+      </Fragment>
+    )
+  }
+</Default>
+
+<script>
+  import './terms.open.ts';
+</script>
+
+<style>
+  .cards {
+    container: modules / inline-size;
+    display: grid;
+    gap: var(--s-5);
+    margin-top: var(--s-4);
+  }
+</style>

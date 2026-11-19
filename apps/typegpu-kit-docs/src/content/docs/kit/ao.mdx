@@ -1,0 +1,167 @@
+---
+title: Ambient occlusion
+description: Darker sky light in creases and contacts, read from a depth prepass.
+modules: [kit/ao]
+---
+
+import AoHorizons from '../../../components/viz/AoHorizons.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+
+Sky light reaches a point from the whole open half of the sky. `shading.hemisphere` gives every point all of it, so the floor under a domino gets as much as open floor and the domino looks like it hovers. Ambient occlusion measures how much of that half each pixel sees past nearby surfaces and dims the sky light by it.
+
+<ExampleFigure
+  example="dominoes"
+  controls={['occlusion', 'view']}
+  values={{ auto: false }}
+  caption="Switch the view to occlusion to see what it darkens: the floor under each domino and between the close ones in the spirals. Turn it off and the dominoes float a little above the floor."
+/>
+
+`ao.create` reads a depth texture you draw before shading, often at half resolution. Each frame, a trace pass walks the depth around every pixel to find the horizon on each side, using ground-truth ambient occlusion (GTAO). A denoise pass then blurs the result over neighbours on the same surface.
+
+<AoHorizons />
+
+Shading reads the result at a world position with `ao.at`:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth24plus' },
+});
+// Supply a drawing such as a floor
+declare const floor: passes.Drawing<
+  d.WgslStruct<{ position: d.Vec4f; normal: d.Vec3f }>,
+  { color: d.v4f }
+>;
+// ---cut---
+import { lighting, ao, passes, shading } from '@typegpu/kit';
+
+const early = targets.create(root, surface, {
+  depth: { format: 'depth32float', scale: 0.5, sampled: true },
+});
+const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+const occlusion = ao.create(root, view, { depth: () => early.textures.depth });
+
+const sky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+const light = lighting.create(root, {
+  shading: { ambient: sky },
+});
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, depth: passes.depth },
+    { shared: { ao: occlusion.part } },
+  )
+  .pipe(view.inject())
+  .pipe(light.inject());
+const shapes = [prepass.add(floor)];
+const drawn = [scene.add(floor)];
+
+frames.animate(
+  frames.create(root, (frame) => {
+    early.fit();
+    screen.fit();
+    prepass.record(frame, shapes);
+    occlusion.record(frame);
+    scene.record(frame, drawn);
+  }),
+);
+```
+
+- `shared: { ao: occlusion.part }` puts the occlusion in the scene's [shared group](/kit/passes/#buffers-and-textures-of-your-own) and fills `ao.at` in every pipeline the scene builds, so the `ambient` hook needs no `inject`.
+- Record in this order: the prepass, then `occlusion.record`, then the passes that shade.
+- Draw only opaque drawings in the prepass. A translucent surface in front of the opaque one finds no texel at its distance, so `ao.at` returns 1 there.
+- The occlusion only dims what the `ambient` hook returns. Sun and point light keep their own shadows.
+
+[A finished look for model scenes](/recipes/lit-models/) records it beside sun shadows, TAA and bloom for a scene of glTF models.
+
+## The depth it reads
+
+- Use `depth32float`. Distance from `depth16unorm` steps in bands far from the eye, which the trace sees as creases.
+- Half resolution, `scale: 0.5`, costs a quarter of the trace and still shows contact shadows. The occlusion takes the size of its depth and `ao.at` blends its 4 nearest texels.
+- A multisampled depth can't be read. Draw a single-sampled prepass, as the domino run does under its MSAA scene.
+- Give `region` when the depth is drawn into part of its texture, as with a [resolution scale](/kit/targets/#resolution-scale).
+
+## Normals
+
+By default the trace rebuilds each pixel's normal from neighbouring depth, choosing on each axis the neighbour nearer in depth so edges stay sharp. Thin geometry and normal maps lose detail this way. Write the vertex normal in the prepass with `ao.normal`, an `rg16float` [output](/kit/passes/), and give the target as `normal`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, ao, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+// ---cut---
+const early = targets.create(root, surface, {
+  normal: { format: 'rg16float', scale: 0.5, sampled: true },
+  depth: { format: 'depth32float', scale: 0.5, sampled: true },
+});
+const prepass = passes
+  .create(root, early, { normal: ao.normal, depth: passes.depth })
+  .pipe(view.inject());
+const occlusion = ao.create(root, view, {
+  depth: () => early.textures.depth,
+  normal: () => early.textures.normal,
+});
+```
+
+Drawings in that prepass need a `normal` in what their vertex code returns, as instances and the geometry meshes have. Pixels the prepass leaves unwritten fall back to normals from depth.
+
+## Settings
+
+`occlusion.settings` is a uniform. Its initial values combine `ao.defaults` with the `settings` option.
+
+| Field    | Default |                                                                |
+| -------- | ------- | -------------------------------------------------------------- |
+| `radius` | `0.5`   | How far occluders count, in world units.                       |
+| `power`  | `2.2`   | Raises visibility to this power. Higher values darken creases. |
+
+- Set `radius` near the size of the gaps you want darkened. The domino run uses 2.5 cm, a little under the gap between dominoes. A radius smaller than about one texel on screen leaves the pixel open.
+- `slices` sets how many directions each pixel walks, 1 to 3, with 3 steps on each side. Each 3 × 3 block of pixels turns its directions through 9 angles, and the denoise averages them.
+- With `temporal: true`, the directions turn further every frame, over 16 frames, for [TAA](/kit/taa/) to average. A GPU copy advances the frame without a CPU write.
+
+## Turning it off
+
+`enabled` is a function that `record` calls each frame. While it returns false, the first `record` clears the output to full visibility and later ones draw nothing. A timer passed in `timestampWrites` is written from an empty compute pass, as for [shadows](/kit/lighting/#shadows), so a [profiler](/kit/profiler/) timer can stay on `record`. Shading calls `ao.at` and reads 1. Skip the prepass yourself while it is off:
+
+```ts
+const menu = { occlusion: true };
+const occlusion = ao.create(root, view, {
+  depth: () => early.textures.depth,
+  enabled: () => menu.occlusion,
+});
+// in the frame
+if (menu.occlusion) prepass.record(frame, shapes);
+occlusion.record(frame);
+```
+
+A resize while it is off clears the new output once.
+
+## Resizing
+
+When the depth changes size, the next `record` replaces both of the occlusion's textures. Shading pipelines keep working only when they read `occlusion.part` through a [shared group](/kit/bindings/). Give it to the description that draws them as `shared: { ao: occlusion.part }`, as above. A pipeline that reads `ao.at` outside a shared group throws as it builds and names the call to add.
+
+## What it binds
+
+- Each pipeline that reads `ao.at` binds a texture and a uniform holding the region, both in the shared group, besides the camera it already has.
+- The trace binds the depth, the normal if given, the camera, the settings and the region. The denoise binds the raw occlusion, the settings and the region.
+- `occlusion.output` is the `rg16float` occlusion, visibility in red and eye distance in green, with `occlusion.region` as its drawn part. Read it each frame, since a resize replaces it. [Another target](/kit/finish/#another-target) shows how to view it.
+
+## Limits
+
+- The camera can be perspective or orthographic, such as `cameras.flat`. A projection off its centre, such as an off-axis frustum, places the points it walks wrongly.
+- `ao.at` projects through the camera of the pipeline that calls it. Under a second camera, such as a reflection's, it reads the first camera's occlusion at the wrong texels and mostly returns 1.
+- Only what the prepass drew occludes. Anything off screen or hidden behind a nearer surface doesn't.
+- With few steps, a closed corner stays lighter than it would with a full search.
+- Each pixel searches the depth up to `radius` around it, so a large radius close to the eye covers many pixels with the same 3 steps and misses thin occluders.

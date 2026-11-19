@@ -1,0 +1,8 @@
+{
+  "title": "Solar system",
+  "category": "data",
+  "description": "A low-poly sun, eight planets, a belt of rocks between Mars and Jupiter, and two comets. Each planet's name arches over it and a band of facts turns around it, written in world space. A slow tour visits one planet at a time; hover or tap one to choose it. Its band unravels and its details type on, on whichever side of it the sun and the other planets leave clear. Each rock's orbit and tumble follow from its seed and the time alone, so the belt stays exact at any orbit speed. Uses instances, drawings, text, lines, trails and picker from @typegpu/kit.",
+  "line": "Planets wrapped in their own facts; tap one and its details type on.",
+  "order": 25,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

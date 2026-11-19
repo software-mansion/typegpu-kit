@@ -1,0 +1,151 @@
+---
+import { getEntry } from 'astro:content';
+import { examples } from '../../examples/examples.ts';
+import { posterOf } from './posters.ts';
+import { exampleHref, pageHref, sourceHref } from './urls.ts';
+
+/**
+ * The examples to read first, the shortest of each kind of program: what each shows, the file
+ * that holds it and the page that explains it.
+ */
+const starters = [
+  {
+    key: 'cloister',
+    shows: 'A model lit by a sky and eight lanterns, with point shadows, TAA and bloom.',
+    file: 'scene.ts',
+    page: 'recipes/lit-models',
+  },
+  {
+    key: 'forest',
+    shows: 'One mesh drawn 20 000 times, swayed per instance and culled on the GPU.',
+    file: 'trees.ts',
+    page: 'kit/instances',
+  },
+  {
+    key: 'fishtank',
+    shows: 'Rows that a kernel steps each frame, reading their neighbours from a grid.',
+    file: 'school.ts',
+    page: 'kit/grid',
+  },
+  {
+    key: 'lattice',
+    shows: 'Drawings of your own in one description of passes, with motion for TAA.',
+    file: 'lattice.ts',
+    page: 'kit/passes',
+  },
+  {
+    key: 'blockfall',
+    shows: 'A game: rules on the CPU, blocks as rows, a fixed-step clock and coroutines.',
+    file: 'blocks.ts',
+    page: 'concepts/data-on-the-gpu',
+  },
+];
+
+const rows = await Promise.all(
+  starters.map(async ({ key, shows, file, page }) => {
+    const example = examples.find((candidate) => candidate.key === key);
+    const guide = await getEntry('docs', page);
+    if (!example || !guide) throw new Error(`A starter names ${key} or ${page}, which isn't there.`);
+    return { example, shows, file, page, guide: guide.data.title };
+  }),
+);
+---
+
+<ol class="starters not-content">
+  {
+    rows.map(({ example, shows, file, page, guide }) => (
+      <li>
+        <img src={posterOf(example.key)} alt="" width="96" height="60" loading="lazy" />
+        <div class="what">
+          <a class="title" href={exampleHref(example.key)}>
+            {example.title}
+          </a>
+          <p>{shows}</p>
+        </div>
+        <p class="read">
+          <a href={`${sourceHref(example.key)}#${file}`}>{file}</a>
+          <a href={pageHref(page)}>{guide}</a>
+        </p>
+      </li>
+    ))
+  }
+</ol>
+
+<style>
+  .starters {
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--rule);
+    list-style: none;
+  }
+
+  li {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) minmax(0, 16rem);
+    gap: var(--s-2) var(--s-4);
+    align-items: center;
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  img {
+    display: block;
+    width: 96px;
+    height: 60px;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    object-fit: cover;
+  }
+
+  p {
+    margin: 0;
+    color: var(--muted);
+    font: 400 11px/1.6 var(--font-mono);
+  }
+
+  .title {
+    color: var(--text);
+    font: 500 12px/1.5 var(--font-mono);
+    text-decoration: none;
+  }
+
+  .title:hover {
+    color: var(--link);
+  }
+
+  .read {
+    display: grid;
+    gap: var(--s-1);
+    justify-items: start;
+  }
+
+  .read a {
+    color: var(--link);
+    text-decoration: none;
+  }
+
+  .read a:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .read a:first-child::before {
+    content: 'read ';
+    color: var(--muted);
+  }
+
+  .read a:last-child::before {
+    content: 'guide ';
+    color: var(--muted);
+  }
+
+  @media (max-width: 40rem) {
+    li {
+      grid-template-columns: 96px minmax(0, 1fr);
+    }
+
+    .read {
+      grid-column: 2;
+    }
+  }
+</style>

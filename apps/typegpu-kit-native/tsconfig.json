@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2024", "DOM", "ESNext.Disposable"],
+    "types": ["@webgpu/types", "expo/types"],
+    "customConditions": ["react-native"],
+    "resolveJsonModule": true
+  },
+  "include": ["index.ts", "app", "src", "tests", "vitest.config.mts"]
+}

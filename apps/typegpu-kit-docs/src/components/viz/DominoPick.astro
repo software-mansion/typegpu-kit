@@ -1,0 +1,120 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="domino-pick">
+  <p class="viz-title">The pointer selects the nearest domino within its reach</p>
+  <svg viewBox="0 0 640 400" role="img" aria-label="Projected domino centres, pointer reach and selected domino"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="reach" min={8} max={48} value={24} unit=" pt" />
+    <Slider inline name="pitch" label="camera pitch" min={5} max={80} value={22} unit="°" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Move the pointer to select the nearest projected domino centre whose radius meets the dashed reach circle. Nearby dominoes have large circles; distant ones cluster together within the same reach.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    touch-action: pinch-zoom;
+    cursor: crosshair;
+  }
+</style>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { each, onKeys, plural, slider, statusLine } from './figure.ts';
+  import { createProgram, type Program } from './DominoPick.program.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  /** The domino the pointer starts over: on the lead, near the camera. */
+  const START = 14;
+
+  each('domino-pick', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const reach = slider(root, 'reach', () => draw());
+    const pitch = slider(root, 'pitch', () => draw());
+
+    let program: Program | undefined;
+    let made = '';
+    /** The pointer, as fractions of the view, so a new width keeps it over the same place. */
+    let pointer: { x: number; y: number } | undefined;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const height = Math.round((width * 10) / 16);
+        const key = `${width} ${pitch.valueAsNumber}`;
+        if (key !== made) {
+          program?.destroy();
+          program = createProgram({ width, height, pitch: (pitch.valueAsNumber * Math.PI) / 180 });
+          made = key;
+        }
+        const { middles } = program!;
+        if (!pointer) {
+          const start = middles[START];
+          pointer = { x: (start.x + 6) / width, y: (start.y - 4) / height };
+        }
+        const x = pointer.x * width;
+        const y = pointer.y * height;
+        const within = reach.valueAsNumber;
+        const found = program!.pick(x, y, within);
+        const near = new Set(found.within);
+
+        middles.forEach((middle, i) => {
+          if (near.has(i) || i === found.nearest) return;
+          svg('circle', { cx: middle.x, cy: middle.y, r: 1.2, fill: 'var(--viz-muted)' }, figure);
+        });
+        for (const i of found.within) {
+          const middle = middles[i];
+          const kept = i === found.nearest;
+          svg('circle', {
+            cx: middle.x, cy: middle.y, r: middle.radius,
+            fill: kept ? stipple(figure, 'var(--viz-accent)', 0.25) : 'none',
+            stroke: kept ? 'var(--viz-a)' : 'var(--viz-b)', 'stroke-opacity': kept ? 1 : 0.6,
+          }, figure);
+          svg('circle', { cx: middle.x, cy: middle.y, r: kept ? 2.5 : 1.5, fill: kept ? 'var(--viz-a)' : 'var(--viz-b)' }, figure);
+        }
+
+        svg('circle', {
+          cx: x, cy: y, r: within, fill: 'none',
+          stroke: 'var(--viz-a)', 'stroke-dasharray': '4 3',
+        }, figure);
+        svg('path', { d: `M${x - 5},${y}h10M${x},${y - 5}v10`, stroke: 'var(--viz-a)' }, figure);
+
+        if (found.nearest !== undefined) {
+          const kept = middles[found.nearest];
+          svg('line', { x1: x, y1: y, x2: kept.x, y2: kept.y, stroke: 'var(--viz-a)' }, figure);
+          const right = kept.x < width - 60;
+          text(figure, kept.x + (right ? 1 : -1) * (within + 8), kept.y - within - 4, `domino ${found.nearest}`, {
+            class: 'strong', 'text-anchor': right ? 'start' : 'end',
+          });
+          const others = found.within.length - 1;
+          status.textContent = `${plural(found.within.length, 'domino', 'dominoes')} within ${within} pt. Selected domino ${found.nearest}, centre ${found.gap.toFixed(1)} pt away${others > 0 ? `, over ${plural(others, 'other')}` : ''}.`;
+        } else {
+          status.textContent = `No domino within ${within} pt. found() returns picker.none, and nothing falls.`;
+        }
+
+        return height;
+      },
+      320,
+    );
+
+    const point = (event: PointerEvent) => {
+      const area = figure.getBoundingClientRect();
+      pointer = { x: (event.clientX - area.left) / area.width, y: (event.clientY - area.top) / area.height };
+      draw();
+    };
+    figure.addEventListener('pointermove', point);
+    figure.addEventListener('pointerdown', point);
+    onKeys(figure, {
+      arrow(dx, dy) {
+        pointer = { x: clamp(pointer!.x + dx * 0.02), y: clamp(pointer!.y + dy * 0.02) };
+        draw();
+      },
+    }, 'arrow keys move the pointer');
+    draw();
+  });
+</script>

@@ -1,0 +1,71 @@
+---
+import { DISCS } from './Bloom.scene.ts';
+import Slider from './Slider.astro';
+
+const lights = Array.from({ length: DISCS }, (_, i) => (i === 0 ? '½' : String(2 ** (i - 1))));
+---
+
+<figure class="viz" data-viz="bloom">
+  <p class="viz-title">Bloom on six discs, each twice as bright as the last</p>
+  <canvas aria-label="Six discs doubling in brightness, with bloom around bright discs"></canvas>
+  <ol class="lights" aria-hidden="true" style={`--discs: ${DISCS}`}>{lights.map((light) => <li><span>{light}×</span></li>)}</ol>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="threshold" min={0} max={10} step={0.25} value={1} />
+    <Slider inline name="glowIntensity" min={0} max={0.6} step={0.02} value={0.12} />
+    <Slider name="levels" min={1} max={8} value={6} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise the threshold to stop dimmer discs glowing, or reduce levels to narrow the glow. Each disc is twice as bright as the previous one.
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    height: clamp(120px, 18vw, 200px);
+  }
+
+  .lights {
+    display: grid;
+    grid-template-columns: repeat(var(--discs), 1fr);
+    margin: var(--s-1) 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--muted);
+    font: var(--type-status) var(--font-mono);
+    text-align: center;
+  }
+
+  .lights li {
+    margin: 0;
+  }
+
+  .lights span {
+    display: inline-block;
+    padding: 1px var(--s-1);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    font-size: var(--type-label);
+  }
+</style>
+
+<script>
+  import { each, live, slider } from './figure.ts';
+
+  each('bloom', (figure) => {
+    const keys = ['threshold', 'glowIntensity'] as const;
+    const levels = slider(figure, 'levels', (value) => {
+      shown.update((scene) => scene.remake(value));
+    });
+    const inputs = keys.map((key) =>
+      slider(figure, key, (value) => {
+        shown.update((scene) => scene.set({ [key]: value }));
+      }),
+    );
+    const shown = live(
+      figure,
+      () => import('./Bloom.scene.ts'),
+      () => ({ levels: levels.valueAsNumber }),
+      { ready: (scene) => keys.forEach((key, i) => scene.set({ [key]: inputs[i].valueAsNumber })) },
+    );
+  });
+</script>

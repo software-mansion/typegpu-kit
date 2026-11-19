@@ -1,0 +1,186 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="particle-ring">
+  <p class="viz-title">A ring of 48 slots, written at its head</p>
+  <svg viewBox="0 0 520 250" role="img" aria-label="Particle bursts filling a ring of 48 slots"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="small">Burst 8</button>
+    <button data-action="large">Burst 30</button>
+    <Slider inline name="life" min={0.5} max={5} step={0.5} value={2} unit=" s" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Burst 30 particles or increase lifetime to overwrite live particles as the ring wraps, even if other slots are free. The 48-slot pool also receives small automatic bursts, and particles fade as they age.
+  </figcaption>
+</figure>
+
+<script>
+  import { clock } from '@typegpu/kit';
+  import { action, animation, each, slider } from './figure.ts';
+  import { seeded, stipple, svg, text } from './svg.ts';
+
+  const CAPACITY = 48;
+  const VARIANCE = 0.25;
+  const CENTER = { x: 118, y: 124 };
+  const RADIUS = 100;
+  const FLASH = 0.6;
+
+  const angleOf = (slot: number) => -Math.PI / 2 + (2 * Math.PI * slot) / CAPACITY;
+  const at = (slot: number, radius: number) => ({
+    x: CENTER.x + Math.cos(angleOf(slot)) * radius,
+    y: CENTER.y + Math.sin(angleOf(slot)) * radius,
+  });
+
+  each('particle-ring', (root) => {
+    const figure = root.querySelector('svg')!;
+    const random = seeded(5);
+    const lifeInput = slider(root, 'life');
+
+    const sim = clock.fixedStep({ step: 1 / 60 });
+    const age = new Float32Array(CAPACITY);
+    const life = new Float32Array(CAPACITY);
+    const flash = new Float32Array(CAPACITY);
+    const queued: number[] = [];
+
+    let head = 0;
+    let elapsed = 0;
+    let nextBurst = 0;
+    let born = 0;
+    let replaced = 0;
+    let steps = 0;
+    let live = 0;
+
+    const alive = (slot: number) => age[slot] < life[slot];
+
+    const burst = (count: number) => {
+      const total = queued.reduce((sum, n) => sum + n, 0);
+      const clamped = Math.min(count, CAPACITY - total);
+      if (clamped > 0) queued.push(clamped);
+    };
+
+    const spawn = () => {
+      if (queued.length === 0) return;
+      born = 0;
+      replaced = 0;
+
+      for (const count of queued) {
+        for (let i = 0; i < count; i++) {
+          const slot = head++ % CAPACITY;
+          if (alive(slot)) {
+            replaced++;
+            flash[slot] = elapsed + FLASH;
+          }
+
+          age[slot] = 0;
+          life[slot] = lifeInput.valueAsNumber * (1 + (random() * 2 - 1) * VARIANCE);
+          born++;
+        }
+      }
+
+      queued.length = 0;
+    };
+
+    const step = () => {
+      for (let slot = 0; slot < CAPACITY; slot++) if (alive(slot)) age[slot] += sim.step;
+    };
+
+    const compact = () => {
+      live = 0;
+      for (let slot = 0; slot < CAPACITY; slot++) if (alive(slot)) live++;
+    };
+
+    const frame = (dt: number) => {
+      elapsed += dt;
+      if (elapsed >= nextBurst) {
+        burst(4 + Math.floor(random() * 6));
+        nextBurst = elapsed + 0.45 + random() * 0.3;
+      }
+
+      spawn();
+      steps = sim.update(dt);
+      for (let i = 0; i < steps; i++) step();
+      compact();
+    };
+
+    const ringView = svg('g', {}, figure);
+    const panel = svg('g', {}, figure);
+
+    // Built once; each frame only moves attributes
+    const cells = Array.from({ length: CAPACITY }, (_, slot) => {
+      const { x, y } = at(slot, RADIUS);
+      return svg('circle', { cx: x.toFixed(1), cy: y.toFixed(1), r: 5.5 }, ringView);
+    });
+    const pointer = svg('line', { x1: CENTER.x, y1: CENTER.y, stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, ringView);
+    const zero = at(0, RADIUS + 16);
+    text(ringView, zero.x, zero.y + 4, '0', { 'text-anchor': 'middle' });
+
+    const headText = text(ringView, CENTER.x, CENTER.y - 2, '', { 'text-anchor': 'middle', class: 'strong' });
+    const slotText = text(ringView, CENTER.x, CENTER.y + 14, '', { 'text-anchor': 'middle' });
+
+    const PANEL = 270;
+    text(panel, PANEL, 30, 'a frame', { class: 'strong' });
+    const lines = ['last spawn', 'steps', 'compact', 'draw'].map((name, i) => {
+      text(panel, PANEL, 54 + i * 22, name);
+      return text(panel, PANEL + 82, 54 + i * 22, '', { class: 'strong' });
+    });
+
+    const legend = (y: number, attributes: Record<string, string | number>, label: string) => {
+      svg('circle', { cx: PANEL + 5, cy: y - 4, r: 5, ...attributes }, panel);
+      text(panel, PANEL + 18, y, label);
+    };
+    legend(168, { fill: stipple(figure, 'var(--viz-d)', 0.75) }, 'alive, fading towards its life');
+    legend(190, { fill: 'none', stroke: 'var(--viz-line)' }, 'free, or dead');
+    legend(212, { fill: 'none', stroke: 'var(--viz-bad)', 'stroke-width': 2 }, 'replaced while alive');
+
+    const layout = () => {
+      const width = Math.max(300, Math.round(figure.getBoundingClientRect().width));
+      const stacked = width < 520;
+      figure.setAttribute('viewBox', `0 0 ${width} ${stacked ? 480 : 250}`);
+      ringView.setAttribute('transform', `translate(${(width - (stacked ? 236 : 520)) / 2},0)`);
+      panel.setAttribute('transform', stacked ? `translate(${-PANEL},250)` : `translate(${(width - 520) / 2},0)`);
+    };
+    new ResizeObserver(layout).observe(figure);
+    layout();
+
+    const draw = () => {
+      for (let slot = 0; slot < CAPACITY; slot++) {
+        const on = alive(slot);
+        const flashing = flash[slot] > elapsed;
+        const cell = cells[slot];
+
+        cell.setAttribute('fill', on ? stipple(figure, 'var(--viz-d)', 0.75) : 'none');
+        cell.setAttribute('fill-opacity', on ? (0.15 + 0.85 * (1 - age[slot] / life[slot])).toFixed(2) : '0');
+        cell.setAttribute('stroke', flashing ? 'var(--viz-bad)' : on ? 'none' : 'var(--viz-line)');
+        cell.setAttribute('stroke-width', flashing ? '2' : '1');
+      }
+
+      const tip = at(head % CAPACITY, RADIUS - 14);
+      pointer.setAttribute('x2', tip.x.toFixed(1));
+      pointer.setAttribute('y2', tip.y.toFixed(1));
+      headText.textContent = `head ${head}`;
+      slotText.textContent = `next slot ${head % CAPACITY}`;
+
+      lines[0].textContent = `${born} born, ${replaced} replaced`;
+      lines[1].textContent = `${steps} × 1/60 s`;
+      lines[2].textContent = `${live} live of ${CAPACITY}`;
+      lines[3].textContent = `${live} quads, indirect`;
+    };
+
+    // Starts with a few seconds already run, so the ring isn't empty
+    for (let i = 0; i < 180; i++) frame(1 / 60);
+
+    const ring = animation(root, { step: frame, draw, play: action(root, 'play') });
+
+    for (const [name, count] of [['small', 8], ['large', 30]] as const) {
+      action(root, name, () => {
+        burst(count);
+        // While paused, the burst still lands so the click shows something
+        if (ring.playing) return;
+        frame(0);
+        ring.redraw();
+      });
+    }
+  });
+</script>

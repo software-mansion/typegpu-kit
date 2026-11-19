@@ -1,0 +1,142 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="ping-pong">
+  <p class="viz-title">Two textures swap as input and output of the blur</p>
+  <svg
+    viewBox="0 0 640 220"
+    role="img"
+    aria-label="Two textures alternating as inputs and outputs for trail blur"
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Slider inline name="keep" label="keep" min={0.5} max={1} step={0.01} value={0.9} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Lower <code>keep</code> to fade the trail faster. Each step blurs horizontally into the spare texture, then vertically back into the trail with fading and fresh drops, so neither kernel writes the texture it reads.
+  </figcaption>
+</figure>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, each, slider } from './figure.ts';
+  import { stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  const COLUMNS = 12;
+  const ROWS = 8;
+  /** Seconds each kernel shows for. */
+  const PASS = 0.7;
+
+  /** A cell's index, with the cells past an edge clamped onto it. */
+  const cell = (x: number, y: number) =>
+    clamp(y, 0, ROWS - 1) * COLUMNS + clamp(x, 0, COLUMNS - 1);
+
+  /** Where the agent stands at a step: round an oval through the grid. */
+  const agentAt = (step: number) => {
+    const angle = step * 0.35;
+    return [Math.floor(5.5 + 4.5 * Math.cos(angle)), Math.floor(3.5 + 2.6 * Math.sin(angle))] as const;
+  };
+
+  each('ping-pong', (root) => {
+    const figure = root.querySelector('svg')!;
+    const keep = slider(root, 'keep', () => shown.redraw(), (value) => value.toFixed(2));
+    let trail = new Float32Array(COLUMNS * ROWS);
+    let spare = new Float32Array(COLUMNS * ROWS);
+    /** 0 while the blur across shows, 1 while the blur down does. */
+    let pass = 1;
+    let steps = 0;
+
+    const across = () => {
+      const next = new Float32Array(COLUMNS * ROWS);
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLUMNS; x++) {
+          next[cell(x, y)] = (trail[cell(x - 1, y)] + trail[cell(x, y)] * 2 + trail[cell(x + 1, y)]) / 4;
+        }
+      }
+      spare = next;
+    };
+
+    const down = () => {
+      const next = new Float32Array(COLUMNS * ROWS);
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLUMNS; x++) {
+          const blurred = (spare[cell(x, y - 1)] + spare[cell(x, y)] * 2 + spare[cell(x, y + 1)]) / 4;
+          next[cell(x, y)] = blurred * keep.valueAsNumber;
+        }
+      }
+      const [ax, ay] = agentAt(steps);
+      next[cell(ax, ay)] = next[cell(ax, ay)] + 1;
+      trail = next;
+      steps++;
+    };
+
+    // A few steps in, so the first picture has a track
+    for (let i = 0; i < 12; i++) {
+      across();
+      down();
+    }
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const gap = 36;
+        const size = Math.min(Math.floor((width - gap) / 2 / COLUMNS), 20);
+        const gridWidth = size * COLUMNS;
+        const top = 34;
+        const start = Math.floor((width - gridWidth * 2 - gap) / 2);
+        const lefts = [start, start + gridWidth + gap];
+        const reading = pass === 0 ? 0 : 1;
+
+        const grid = (values: Float32Array, left: number, name: string, read: boolean) => {
+          for (let y = 0; y < ROWS; y++) {
+            for (let x = 0; x < COLUMNS; x++) {
+              svg('rect', {
+                x: left + x * size, y: top + y * size, width: size - 1, height: size - 1, rx: 1.5,
+                fill: stipple(figure, read ? 'var(--viz-b)' : 'var(--viz-c)', Math.min(Math.round(values[cell(x, y)] * 1.6 * 8) / 8, 1)),
+              }, figure);
+            }
+          }
+          svg('rect', {
+            x: left - 2.5, y: top - 2.5, width: gridWidth + 4, height: ROWS * size + 4, rx: 2, fill: 'none',
+            stroke: read ? 'var(--viz-b)' : 'var(--viz-c)', 'stroke-width': 2, 'stroke-dasharray': read ? '' : '5 3',
+          }, figure);
+          text(figure, left, top - 10, `${name}: ${read ? 'read' : 'written'}`, { fill: read ? 'var(--viz-b)' : 'var(--viz-c)' });
+        };
+        grid(trail, lefts[0], 'trail', reading === 0);
+        grid(spare, lefts[1], 'spare', reading === 1);
+
+        const middle = top + (ROWS * size) / 2;
+        const x0 = start + gridWidth + 6;
+        const x1 = start + gridWidth + gap - 6;
+        const tip = reading === 0 ? x1 : x0;
+        const back = reading === 0 ? -6 : 6;
+        svg('path', {
+          d: `M${x0},${middle}H${x1}M${tip + back},${middle - 5}L${tip},${middle}L${tip + back},${middle + 5}`,
+          fill: 'none', stroke: 'var(--viz-accent)', 'stroke-width': 2,
+        }, figure);
+
+        const below = top + ROWS * size + 22;
+        const what =
+          pass === 0
+            ? 'across: blurs left and right'
+            : `down: blurs up and down, × ${keep.valueAsNumber.toFixed(2)}, + the drops`;
+        const line = `step ${steps}, ${what}`;
+        text(figure, start, below, line.length * CHAR <= width - start ? line : what, { style: 'fill: var(--viz-accent)' });
+        return below + 8;
+      },
+      320,
+    );
+
+    const shown = animation(root, {
+      every: PASS,
+      step() {
+        pass = 1 - pass;
+        if (pass === 0) across();
+        else down();
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+  });
+</script>

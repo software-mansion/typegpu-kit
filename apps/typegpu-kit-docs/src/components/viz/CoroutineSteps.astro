@@ -1,0 +1,152 @@
+---
+---
+
+<figure class="viz" data-viz="coroutine-steps">
+  <p class="viz-title"><code>openDoor</code> runs to its next wait, one frame at a time</p>
+  <div class="steps-code"></div>
+  <svg viewBox="0 0 480 96" role="img" aria-label="Door position and frames when openDoor runs"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="press">Press the switch</button>
+    <button data-action="step">Next frame</button>
+    <button data-action="play" aria-pressed="false">Play</button>
+    <button data-action="restart">Restart</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Press the switch and step through <code>openDoor</code>. The marked line is paused, and white lines ran in the last frame.
+  </figcaption>
+</figure>
+
+<style>
+  .steps-code {
+    margin: 0 0 var(--s-3);
+    padding: var(--s-2) 0;
+    overflow-x: auto;
+    border-left: 2px solid var(--rule);
+    background: none;
+    font: var(--type-status) / 1.6 var(--font-mono);
+  }
+  .steps-code :global(span) {
+    display: block;
+    padding-inline: var(--s-3);
+    border-left: 2px solid transparent;
+    color: var(--muted);
+    white-space: pre;
+  }
+  .steps-code :global(span.ran) {
+    color: var(--text);
+  }
+  .steps-code :global(span.paused) {
+    border-left-color: var(--accent);
+    background: none;
+    color: var(--text);
+  }
+</style>
+
+<script>
+  import { CODE, createProgram, FPS, FRAMES, type Step } from './CoroutineSteps.program.ts';
+  import { action, animation, each, statusLine } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const LEFT = 64;
+  const MAX_CELL = 32;
+  const HEIGHT = 96;
+
+  const describe = (last: Step | undefined) => {
+    if (!last) return 'No frames yet.';
+
+    const head = `Frame ${last.frame}, ${(last.frame / FPS).toFixed(3)} s:`;
+    if (!last.started) return `${head} nothing to resume.`;
+    if (last.ran.length === 0 && last.done) return `${head} openDoor has finished.`;
+    if (last.ran.length === 0) return `${head} openDoor is still waiting, so run skips it.`;
+    if (last.ran[0] === 1) return `${head} run starts openDoor, which pauses at line ${last.paused}.`;
+
+    const resumed = `${head} run resumes openDoor after line ${last.resumed}`;
+    if (last.done) return `${resumed}, and it runs to its end.`;
+    return `${resumed}, and it pauses at line ${last.paused}.`;
+  };
+
+  each('coroutine-steps', (root) => {
+    const code = root.querySelector('.steps-code')!;
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+
+    const lines = CODE.map((line) => {
+      const span = document.createElement('span');
+      span.textContent = line || ' ';
+      code.append(span);
+      return span;
+    });
+
+    let program = createProgram();
+
+    const press = action(root, 'press', () => {
+      program.press();
+      press.disabled = true;
+    });
+
+    const draw = fitWidth(figure, (width) => {
+      const { steps } = program;
+      const last = steps.at(-1);
+      lines.forEach((span, i) => {
+        span.classList.toggle('ran', !!last?.ran.includes(i + 1));
+        span.classList.toggle('paused', last?.paused === i + 1 && !last.done);
+      });
+
+      status.textContent = describe(last);
+      press.disabled = program.pressed;
+
+      svg('rect', { x: 8, y: 8, width: 40, height: 56, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+      const open = last?.open ?? 0;
+      svg('rect', { x: 10, y: 10, width: 36, height: 52 * (1 - open), fill: stipple(figure), stroke: 'var(--viz-muted)' }, figure);
+      text(figure, 28, 80, `${Math.round(open * 100)}%`, { 'text-anchor': 'middle', class: 'strong' });
+
+      const cell = Math.min((width - LEFT) / FRAMES, MAX_CELL);
+      text(figure, LEFT, 14, 'frame', { class: 'strong' });
+      for (let f = 0; f < FRAMES; f++) {
+        const x = LEFT + f * cell;
+        if (f % 4 === 0) text(figure, x + cell / 2, 30, String(f), { 'text-anchor': 'middle' });
+
+        const at = steps[f];
+        const fill = !at ? 'none' : at.ran.length > 0 ? stipple(figure, 'var(--viz-b)', 0.5) : at.started && !at.done ? stipple(figure, 'var(--viz-c)', 0.25) : 'none';
+        svg('rect', { x: x + 1, y: 40, width: cell - 2, height: 20, rx: 2, fill, stroke: 'var(--viz-line)' }, figure);
+      }
+
+      text(figure, LEFT, 80, 'ran', { style: 'fill: var(--viz-b)' });
+      text(figure, LEFT + 36, 80, 'waiting', { fill: 'var(--viz-c)' });
+      return HEIGHT;
+    });
+
+    const restart = () => {
+      program.destroy();
+      program = createProgram();
+      timeline.redraw();
+    };
+
+    const timeline = animation(root, {
+      every: 0.45,
+      step() {
+        program.step();
+        if (program.finished) timeline.play(false);
+      },
+      draw,
+      play: action(root, 'play'),
+      playing: false,
+      onPlay() {
+        if (program.finished) restart();
+      },
+      destroy: () => program.destroy(),
+    });
+
+    action(root, 'step', () => {
+      timeline.play(false);
+      program.step();
+      timeline.redraw();
+    });
+
+    action(root, 'restart', () => {
+      timeline.play(false);
+      restart();
+    });
+  });
+</script>

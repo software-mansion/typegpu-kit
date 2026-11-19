@@ -1,0 +1,32 @@
+---
+import { uniqueName } from './figure.ts';
+
+type Value = string | number;
+
+interface Props {
+  /** The `data-choice` the script finds it by, and the group's name for a screen reader. */
+  name: string;
+  /** Words shown before the options, which also name the group. */
+  label?: string;
+  options: readonly (Value | { readonly value: Value; readonly label: string })[];
+  value: Value;
+}
+
+const { name, label, options, value } = Astro.props;
+const group = uniqueName(name);
+const items = options.map((option) =>
+  typeof option === 'object' ? option : { value: option, label: String(option) },
+);
+---
+
+<div class="viz-choice" role="radiogroup" aria-label={label ?? name} data-choice={name}>
+  {label && <span aria-hidden="true">{label}</span>}
+  {
+    items.map((item) => (
+      <label>
+        <input type="radio" name={group} value={String(item.value)} checked={item.value === value} autocomplete="off" />
+        <span>{item.label}</span>
+      </label>
+    ))
+  }
+</div>

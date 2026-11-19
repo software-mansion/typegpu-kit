@@ -1,0 +1,226 @@
+---
+import { isCurrent, type IndexGroup, type IndexLink, type IndexSection } from './nav.ts';
+import { holds } from './sidebar.ts';
+
+interface Props {
+  links?: readonly IndexLink[];
+  sections?: readonly IndexSection[];
+  groups?: readonly IndexGroup[];
+  /** The current page's slug. */
+  current: string;
+  /** How many groups hold this level. */
+  depth?: number;
+  /** The labels of those groups, which make a section's id its own. */
+  path?: readonly string[];
+  /** The id of the label that names these rows. */
+  labelledBy?: string | undefined;
+}
+
+const {
+  links = [],
+  sections = [],
+  groups = [],
+  current,
+  depth = 0,
+  path = [],
+  labelledBy,
+} = Astro.props;
+
+/** On a module's page only its area stays open; anywhere else the guides do. */
+const inArea = groups.some((group) => group.kind === undefined && holds(group, current));
+
+const idOf = (label: string) =>
+  `index-${[...path, label].join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+---
+
+<ul
+  class:list={['list', { nested: depth > 0 }]}
+  style={`--depth: ${depth}`}
+  aria-labelledby={labelledBy}
+  data-rule={labelledBy === undefined ? undefined : ''}
+>
+  {
+    links.map((link) => (
+      <li>
+        <a
+          href={link.href}
+          aria-current={isCurrent(link, current) ? 'page' : undefined}
+          class:list={{ module: link.module !== undefined }}
+        >
+          <span class="name">{link.label}</span>
+          {link.within && <span class="within">in {link.within}</span>}
+        </a>
+      </li>
+    ))
+  }
+  {
+    sections.map((section) => (
+      <li class="section">
+        <span class="heading" id={idOf(section.label)}>
+          {section.label}
+        </span>
+        <Astro.self
+          links={section.links}
+          current={current}
+          depth={depth}
+          path={path}
+          labelledBy={idOf(section.label)}
+        />
+      </li>
+    ))
+  }
+  {
+    groups.map((group) => {
+      const here = holds(group, current);
+      return (
+        <li>
+          <details
+            class="group"
+            open={here || (group.kind !== undefined && !inArea)}
+          >
+            <summary>
+              <span class="label">{group.label}</span>
+            </summary>
+            <Astro.self
+              links={group.links}
+              sections={group.sections ?? []}
+              current={current}
+              depth={depth + 1}
+              path={[...path, group.label]}
+            />
+          </details>
+        </li>
+      );
+    })
+  }
+</ul>
+
+<style>
+  .list {
+    --pad: calc(var(--s-4) * (1 + var(--depth)));
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .list:not(.nested) > li + li {
+    margin-top: var(--s-3);
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-4) var(--s-1) var(--pad);
+    color: var(--text);
+    font: 500 12px/20px var(--font-mono);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: translateY(-2px) rotate(45deg);
+  }
+
+  details:not([open]) > summary::after {
+    transform: rotate(-45deg);
+  }
+
+  summary:hover::after {
+    border-color: var(--text);
+  }
+
+  /* A section's label is set apart from the rows by its case, and its rows hang from a rule. */
+  .heading {
+    display: block;
+    padding: var(--s-5) var(--s-4) var(--s-2) var(--pad);
+    color: var(--muted);
+    font: 400 11px/16px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .section:first-child > .heading {
+    padding-top: var(--s-2);
+  }
+
+  .section > .list {
+    margin-left: var(--pad);
+    border-left: 1px solid var(--rule);
+  }
+
+  .section > .list a {
+    padding-left: var(--s-3);
+  }
+
+  /* Where WebGPU lights the entry (glow.ts), the light draws the rules and runs along them. */
+  :global(:root[data-glow]) .section > .list {
+    border-left-color: transparent;
+  }
+
+  a {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-height: 28px;
+    padding: var(--s-1) var(--s-4) var(--s-1) var(--pad);
+    color: var(--text-2);
+    font: 400 14px/20px var(--font-sans);
+    text-decoration: none;
+  }
+
+  a.module {
+    font: 400 13.5px/20px var(--font-mono);
+  }
+
+  a:hover {
+    color: var(--accent-high);
+  }
+
+  a[aria-current='page'] {
+    color: var(--accent-high);
+    font-weight: 500;
+  }
+
+  :global(:root:not([data-glow])) a[aria-current='page']::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: var(--accent);
+  }
+
+  .section > .list a[aria-current='page']::before {
+    left: -1px;
+  }
+
+  .name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* The page a module's row opens into, when it is another module's page. */
+  .within {
+    color: var(--muted);
+    font: 400 11.5px/20px var(--font-sans);
+    white-space: nowrap;
+  }
+
+  summary:focus-visible,
+  a:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+</style>

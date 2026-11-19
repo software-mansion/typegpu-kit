@@ -1,0 +1,463 @@
+/* The accent's blue, and its ice at the brightest: live, selected, pointed at, or newly changed.
+ * Reads and inputs: sky; writes, uploads and outputs: amber.
+ * Ordered series and item kinds: sky, amber, green, violet, then pink.
+ * Alive, kept and completed: green; free, dead and idle: grey.
+ * Owned resources: green; borrowed resources: sky; teardown: amber.
+ * Timing: scene sky, shadow violet, bloom down amber and up green, output pink.
+ * Commands: compute sky, render amber, copy green, submit violet. Beside queue writes, which are
+ * amber, render is violet and the submit the accent.
+ * Density ramps: violet through pink and amber to near-white.
+ * Runtime work: scene sky, app green, relay violet, sent closure amber.
+ * Errors, overflow, lost work and rejected items: red.
+ * Scene materials, light and tone-mapped colour: source hues through Bayer dither.
+ */
+.viz {
+  --viz-line: var(--rule-strong);
+  --viz-muted: var(--muted);
+  --viz-fill: var(--ground-3);
+  --viz-accent: var(--accent);
+  --viz-a: var(--accent-high);
+  --viz-b: var(--f-records);
+  --viz-c: var(--f-requires);
+  --viz-d: var(--f-needs);
+  --viz-e: var(--f-injects);
+  --viz-f: var(--f-platform);
+  --viz-bad: var(--f-exception);
+  max-width: 100%;
+  margin-block: var(--s-6);
+  padding-block: var(--s-4);
+  overflow: hidden;
+  border-block: 1px solid var(--rule);
+  background: none;
+  font-size: var(--type-body);
+}
+
+/* A preview waiting for a tap or click (gallery.ts), over its screen, veil and any card link. */
+.viz-run {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.viz-run[hidden] {
+  display: none;
+}
+
+.viz-run > span {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  background: var(--ground);
+  color: var(--text);
+  font: 12px / 1.5 var(--font-mono);
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.viz-run > span::before {
+  content: '';
+  width: 7px;
+  height: 8px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.viz-run:is(:active, :focus-visible) > span {
+  border-color: var(--accent);
+  color: var(--accent-high);
+}
+
+@media (hover: hover) {
+  .viz-run:hover > span {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+}
+
+.viz-run:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viz-run > span {
+    transition: none;
+  }
+}
+
+/* Wide timelines keep their labels at their authored size and scroll within the figure. */
+.viz-wide {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-strong) transparent;
+}
+
+.viz-wide > svg {
+  min-width: 34rem;
+}
+
+.viz svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  /* svg.ts lays text out at this size: FONT and CHAR. */
+  font-size: var(--type-label);
+}
+
+.viz svg,
+.viz canvas {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+:where(.viz) canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+}
+
+.viz-screen {
+  position: relative;
+}
+
+.viz-screen:has(> canvas[hidden]) {
+  display: none;
+}
+
+:where(.viz svg text:not([fill])) {
+  fill: var(--viz-muted);
+}
+
+/* Text in the accent reads in the link's lighter blue. */
+.viz svg text {
+  --viz-accent: var(--link);
+}
+
+.viz svg .strong {
+  fill: var(--text);
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  align-items: center;
+  margin-top: var(--s-4);
+  font: var(--type-label) / 1.5 var(--font-mono);
+}
+
+/* Starlight spaces markdown siblings; a control row has its own gaps. */
+.viz .viz-controls > *,
+.viz .viz-choice > * {
+  margin: 0;
+}
+
+.viz-controls button,
+.viz .viz-choice label,
+.viz-controls select {
+  min-height: 28px;
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-2);
+  font: 11px/1.5 var(--font-mono);
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.viz-controls button,
+.viz .viz-choice label {
+  cursor: pointer;
+}
+
+.viz-controls button:hover,
+.viz .viz-choice label:hover,
+.viz-controls select:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.viz-controls button[aria-pressed='true'],
+.viz .viz-choice label:has(:checked) {
+  border-color: var(--accent);
+  color: var(--accent-high);
+}
+
+.viz-controls button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* A handle inside a drawing, which may draw no outline. */
+.viz svg :focus-visible {
+  stroke: var(--viz-a);
+}
+
+/* A drawing that takes arrow keys, ringed inside its edge. Chrome rings a focused SVG after a click too. */
+.viz svg.viz-keys:focus {
+  outline: none;
+}
+
+.viz svg.viz-keys:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.viz-controls button:focus-visible,
+.viz-controls select:focus-visible,
+.viz-controls input[type='range']:focus-visible,
+.viz .viz-choice label:has(:focus-visible) {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.viz .viz-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  align-items: center;
+  color: var(--muted);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.viz .viz-choice > span {
+  margin-right: var(--s-1);
+}
+
+.viz .viz-choice label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.viz .viz-choice input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.viz-controls label {
+  display: flex;
+  max-width: 100%;
+  gap: var(--s-2);
+  align-items: center;
+  color: var(--muted);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.viz-controls select {
+  min-width: 0;
+  max-width: 100%;
+  background: var(--ground);
+}
+
+.viz-range {
+  position: relative;
+  display: inline-flex;
+  gap: var(--s-2);
+  align-items: center;
+}
+
+.viz-controls input[type='range'] {
+  appearance: none;
+  width: 6rem;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.viz-controls input[type='range']::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--rule-control);
+}
+
+.viz-controls input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3.5px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--ground);
+}
+
+.viz-controls input[type='range']::-moz-range-track {
+  height: 1px;
+  background: var(--rule-control);
+}
+
+.viz-controls input[type='range']::-moz-range-thumb {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--ground);
+}
+
+.viz-controls output {
+  min-width: 3ch;
+  color: var(--text);
+  font: 11px/1.5 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.viz-number .viz-range {
+  min-height: 28px;
+}
+
+.viz-number output {
+  min-width: 1ch;
+  padding-inline: 1px;
+  border-bottom: 1px dotted var(--accent);
+  color: var(--accent-high);
+}
+
+.viz-controls .viz-number input[type='range'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  touch-action: none;
+}
+
+.viz-number .viz-range:hover output,
+.viz-number .viz-range:focus-within output,
+.viz-number .held + output {
+  background: var(--accent-low);
+}
+
+.viz-number .viz-range:has(:focus-visible) output {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.viz-note,
+.viz-caption {
+  max-width: var(--measure);
+  margin: var(--s-3) 0 0;
+  color: var(--muted);
+  font: var(--type-body) / 1.55 var(--font-sans);
+}
+
+/* What a figure shows, above it, in a line a reader takes in before the picture. */
+.viz-title {
+  margin: 0 0 var(--s-3);
+  color: var(--text);
+  font: 500 15px/1.45 var(--font-sans);
+}
+
+/* The word before what a caption asks the reader to do. */
+.viz-try {
+  margin-right: var(--s-2);
+  color: var(--accent-high);
+  font: 500 var(--type-label) / 1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* What the picture shows now, `statusLine` in figure.ts; `--lines` reserves taller text. */
+.viz-status {
+  min-height: calc(var(--lines, 1) * 1.6em);
+  margin: var(--s-2) 0 0;
+  color: var(--text-2);
+  font: var(--type-status) / 1.6 var(--font-mono);
+  white-space: pre-line;
+}
+
+/* A canvas that runs to the figure's edges, on its ground, taking strokes. */
+.viz-bleed {
+  height: clamp(240px, 30vw, 340px);
+  margin: 0;
+  border-radius: 0;
+  aspect-ratio: auto;
+  touch-action: pan-y;
+}
+
+/* Named values a figure updates as it runs, in boxed badges: a `dl`, or a label and `output`. */
+.viz-readout {
+  display: flex;
+  gap: var(--s-4);
+  margin: 0;
+  font: var(--type-label) / 1.5 var(--font-mono);
+}
+
+.viz-readout div {
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+}
+
+.viz-readout dt {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.viz-readout dd,
+.viz-readout output {
+  min-width: 6ch;
+  margin: 0;
+  padding: 1px var(--s-1);
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A second row of controls under the buttons; on a phone, one slider a line. */
+.viz-settings {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+  align-items: center;
+  container-type: inline-size;
+}
+
+.viz .viz-settings > *,
+.viz .viz-readout div {
+  margin: 0;
+}
+
+@container (max-width: 30rem) {
+  .viz-settings > label:has(input[type='range']) {
+    display: grid;
+    grid-template-columns: 7ch minmax(0, 1fr) 5ch;
+    width: 100%;
+  }
+
+  .viz-settings input[type='range'] {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viz-controls button,
+  .viz .viz-choice label,
+  .viz-controls select {
+    transition: none;
+  }
+}

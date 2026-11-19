@@ -1,0 +1,110 @@
+---
+---
+
+<figure class="viz" data-viz="liveLists">
+  <p class="viz-title">Table slots grouped by kind into indirect draws</p>
+  <svg viewBox="0 0 640 262" role="img" aria-label="Table slots grouped by kind into indirect draws"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="shuffle">Shuffle</button>
+    <button data-action="kill">Kill half</button>
+    <button data-action="first" aria-pressed="false">firstInstance</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Click a slot to change its kind or free it. Each kind starts at a fixed offset, encoded in separate pipelines or supplied through <code>firstInstance</code> so one pipeline can draw every kind.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, each, toggle } from './figure.ts';
+  import { stipple, leader, fitWidth, seeded, svg, text } from './svg.ts';
+
+  const SLOTS = 24;
+  const LEFT = 84;
+  const SIZE = 19;
+  const HEIGHT = 232;
+
+  const KINDS = [
+    { name: 'skeleton', color: 'var(--viz-b)', density: 0.125 },
+    { name: 'ghoul', color: 'var(--viz-c)', density: 0.375 },
+    { name: 'lich', color: 'var(--viz-d)', density: 0.625 },
+  ];
+
+  each('liveLists', (root) => {
+    const figure = root.querySelector('svg')!;
+    const random = seeded(3);
+    let selected = -1;
+
+    const kinds = Array.from({ length: SLOTS }, () => (random() < 0.35 ? -1 : Math.floor(random() * 3)));
+    const first = toggle(action(root, 'first'), () => draw());
+
+    const draw = fitWidth(figure, (width) => {
+      const slots = Math.min(SLOTS, Math.floor((width - LEFT) / 20));
+      const step = Math.min(26, Math.floor((width - LEFT) / slots));
+      const shown = kinds.slice(0, slots);
+
+      const cell = (x: number, y: number, kind: number, label: string, onClick?: () => void, active = false) => {
+        const group = svg('g', onClick ? { cursor: 'pointer' } : {}, figure);
+
+        svg('rect', {
+          x, y, width: step - 3, height: SIZE, rx: 2,
+          fill: kind < 0 ? 'none' : stipple(figure, KINDS[kind].color, KINDS[kind].density),
+          'fill-opacity': 0.35,
+          stroke: active ? 'var(--viz-accent)' : kind < 0 ? 'var(--viz-line)' : KINDS[kind].color,
+        }, group);
+
+        text(group, x + (step - 3) / 2, y + 13.5, label, {
+          'text-anchor': 'middle',
+          fill: active ? 'var(--accent-high)' : 'var(--text-2)',
+        });
+
+        if (onClick) group.addEventListener('click', onClick);
+      };
+
+      let span = 0;
+      shown.forEach((kind, slot) => kind >= 0 && (span = slot + 1));
+
+      text(figure, 0, 14, 'table rows', { class: 'strong' });
+      shown.forEach((kind, slot) =>
+        cell(LEFT + slot * step, 2, kind, String(slot), () => {
+          selected = slot;
+          kinds[slot] = kind === 2 ? -1 : kind + 1;
+          draw();
+        }, slot === selected),
+      );
+      text(figure, 0, 30, `span ${span}`);
+
+      const middle = LEFT + (slots * step) / 2;
+      svg('path', { d: `M ${middle} 30 v 16`, stroke: 'var(--viz-line)' }, figure);
+      text(figure, middle + 8, 42, 'live.compact(pass)');
+      svg('circle', { cx: middle, cy: 46, r: 2, fill: 'var(--viz-line)' }, figure);
+
+      KINDS.forEach((kind, k) => {
+        const y = 64 + k * 62;
+        const live = shown.flatMap((other, slot) => (other === k ? [slot] : []));
+
+        text(figure, 0, y + 14, kind.name, { fill: kind.color });
+        leader(figure, 0, y + 20, LEFT - 6, y + 20);
+        for (let i = 0; i < slots; i++) {
+          cell(LEFT + i * step, y, i < live.length ? k : -1, i < live.length ? String(live[i]) : '', undefined, live[i] === selected);
+        }
+
+        text(figure, 0, y + 36, first.on ? 'instanceSlot' : `slot(${k}, i)`);
+        text(figure, LEFT, y + 36, `instanceCount ${live.length} · firstInstance ${first.on ? k * slots : 0}`);
+      });
+
+      return HEIGHT;
+    });
+
+    action(root, 'shuffle', () => {
+      for (let i = 0; i < SLOTS; i++) kinds[i] = random() < 0.35 ? -1 : Math.floor(random() * 3);
+      draw();
+    });
+
+    action(root, 'kill', () => {
+      for (let i = 0; i < SLOTS; i++) if (kinds[i] >= 0 && random() < 0.5) kinds[i] = -1;
+      draw();
+    });
+
+    draw();
+  });
+</script>

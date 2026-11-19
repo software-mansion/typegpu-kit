@@ -1,0 +1,209 @@
+---
+title: Meshes
+description: Boxes, planes, spheres and other shapes, computed in the vertex shader or baked into buffers.
+modules: [kit/meshes]
+---
+
+import MeshBuild from '../../../components/viz/MeshBuild.astro';
+
+A mesh from `meshes`, imported from `@typegpu/kit/geometry`, has a `vertexCount` and a `vertexAt(i)` function marked `'use gpu'`. The function computes each vertex from its index. A vertex shader can therefore draw a box without a vertex buffer.
+
+<MeshBuild />
+
+```ts twoslash
+import { d, tgpu, type TgpuRenderPass } from 'typegpu';
+import type { CameraBase } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const view: CameraBase;
+declare const pass: TgpuRenderPass;
+const fragment = tgpu.fragmentFn({ in: { normal: d.vec3f }, out: d.vec4f })(({ normal }) => {
+  'use gpu';
+  return d.vec4f(normal, 1);
+});
+// ---cut---
+import { cameras } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+
+const cube = meshes.unindexed(meshes.box());
+
+const vertex = tgpu.vertexFn({
+  in: { vertexIndex: d.builtin.vertexIndex },
+  out: { position: d.builtin.position, normal: d.vec3f },
+})(({ vertexIndex }) => {
+  'use gpu';
+  const corner = cube.vertexAt(vertexIndex);
+
+  return {
+    position: cameras.toClip(corner.position),
+    normal: corner.normal,
+  };
+});
+
+const pipeline = root.pipe(view.inject()).createRenderPipeline({
+  vertex,
+  fragment,
+  targets: { format: 'bgra8unorm' },
+  primitive: { cullMode: 'back' },
+});
+
+pass.setPipeline(pipeline);
+pass.draw(cube.vertexCount);
+```
+
+## Shapes
+
+Each shape is centred at the origin. Each vertex is a `meshes.Vertex` with `position`, an outward `normal` and `uv` coordinates.
+
+| Shape          | Size                                                                      | Division                                                        |
+| -------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `box()`        | `width`, `height`, `depth` default to 1                                   | `widthSegments`, `heightSegments`, `depthSegments` default to 1 |
+| `plane()`      | `width`, `depth` default to 1, in xz with normal +y                       | `widthSegments`, `depthSegments` default to 1                   |
+| `sphere()`     | `radius` defaults to 0.5                                                  | `segments` around default to 32, `rings` default to 16          |
+| `cylinder()`   | `radius` defaults to 0.5, `height` defaults to 1, `caps` defaults to true | `radialSegments` default to 32, `heightSegments` default to 1   |
+| `torus()`      | `radius` defaults to 0.35, `tube` defaults to 0.15                        | `ringSegments` default to 48, `tubeSegments` default to 24      |
+| `icosphere()`  | `radius` defaults to 0.5                                                  | `segments` along each of its 20 triangles' edges default to 4   |
+| `capsule()`    | `radius` defaults to 0.25, `height` of the middle defaults to 0.5         | `segments` along each patch's edges default to 4                |
+| `roundedBox()` | `width`, `height`, `depth` default to 1, `radius` defaults to 0.1         | `segments` along each patch's edges default to 4                |
+
+- Use the option names in the table, such as `box({ width: 2, height: 0.5 })` or `sphere({ segments: 12, rings: 8 })`. The icosphere has evenly spaced triangles without crowded poles. Its `interpolate` function places points within each triangle.
+- Triangles wind counter-clockwise when viewed from outside, matching WebGPU's default `frontFace`. Use `cullMode: 'back'` to draw the outside and `'front'` to draw the inside, as of a room around the camera.
+
+Combine shapes while keeping their vertices computed from indices:
+
+```ts twoslash
+import { d, std } from 'typegpu';
+import { meshes } from '@typegpu/kit/geometry';
+// ---cut---
+const stalk = meshes.cylinder({ radius: 0.08, height: 0.5, radialSegments: 12 });
+const cap = meshes.sphere({ radius: 0.3, segments: 16, rings: 8 });
+
+const mushroom = meshes.concat(
+  meshes.transform(stalk, std.translation4(d.vec3f(0, 0.25, 0))),
+  meshes.transform(cap, std.translation4(d.vec3f(0, 0.5, 0))),
+);
+```
+
+- `meshes.transform(shape, matrix)` translates, rotates and scales with a `d.m4x4f`, including normals. Mirroring preserves triangle winding.
+- `meshes.concat(a, b, ...)` joins shapes with the same schema and topology into an indexed geometry. Its inputs can be unindexed.
+- `meshes.map(shape, schema, fn)` converts each vertex to `schema`. `meshes.attach(shape, struct, fn)` adds the fields returned by `fn`. Both preserve whether the shape is indexed.
+
+## Three ways to draw one
+
+The shapes are **indexed**. `indexAt(i)` identifies the vertex used by corner `i`, so triangles can share vertices. A box has 24 vertices and 36 indices.
+
+| Draw                              | Buffers          | Draw with                 | Each vertex computed               |
+| --------------------------------- | ---------------- | ------------------------- | ---------------------------------- |
+| `meshes.unindexed(shape)`         | none             | `draw(vertexCount)`       | once per corner, every frame       |
+| `meshes.bakeIndices(root, shape)` | index            | `drawIndexed(indexCount)` | about once, when the GPU reuses it |
+| `meshes.bake(root, shape)`        | vertex and index | `drawIndexed(indexCount)` | once, when baked                   |
+
+A box vertex needs only a few branches and a matrix multiply, so computing it each frame is cheap. A 32 × 16 sphere has 2 880 corners, each requiring sines and cosines. Bake shapes with more than a few hundred vertices. For many shapes drawn through one pipeline, use a [mesh pool](/kit/mesh-pool/).
+
+```ts twoslash
+import { d, tgpu, type TgpuRenderPass } from 'typegpu';
+import { meshes } from '@typegpu/kit/geometry';
+import { cameras, type CameraBase } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const view: CameraBase;
+declare const pass: TgpuRenderPass;
+const fragment = tgpu.fragmentFn({ in: { normal: d.vec3f }, out: d.vec4f })(({ normal }) => {
+  'use gpu';
+  return d.vec4f(normal, 1);
+});
+// ---cut---
+const ball = meshes.bakeIndices(root, meshes.sphere());
+
+const vertex = tgpu.vertexFn({
+  in: { vertexIndex: d.builtin.vertexIndex },
+  out: { position: d.builtin.position, normal: d.vec3f },
+})(({ vertexIndex }) => {
+  'use gpu';
+  const point = ball.vertexAt(vertexIndex); // vertexIndex contains the value read from the index buffer
+
+  return {
+    position: cameras.toClip(point.position),
+    normal: point.normal,
+  };
+});
+
+const pipeline = root
+  .pipe(view.inject())
+  .createRenderPipeline({ vertex, fragment, targets: { format: 'bgra8unorm' } })
+  .pipe(ball.inject()); // the index buffer belongs to the pipeline
+
+pass.setPipeline(pipeline);
+pass.drawIndexed(ball.indexCount);
+```
+
+- Apply a baked mesh's `inject()` to the pipeline. The vertex layout and index buffer belong to a pipeline, so do not apply it to the root.
+- Pass `{ encoder }` or `{ pass }` to record the fill into your own commands. Use `bakeAsync` or `bakeIndicesAsync` to compile fill pipelines under a loading screen.
+- A fully baked mesh exposes its `vertices` buffer and the `layout` set by `inject()` for vertex attributes. Call `updateVertices(options)` to refill vertices when values read by `vertexAt` change.
+- `destroy()` frees buffers allocated by the bake. It leaves caller-supplied buffers intact.
+
+| Bake option  | Default      |                                                                                                                   |
+| ------------ | ------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `vertices`   | a new buffer | A vertex and storage buffer matching the shape schema, with capacity for at least `vertexCount`. For `bake` only. |
+| `indices`    | a new buffer | A `u32` index and storage buffer with capacity for at least `indexCount`.                                         |
+| `encoder`    | none         | Records the fill into your encoder instead of submitting one of its own.                                          |
+| `pass`       | none         | Records the fill into your compute pass. Not with `encoder`.                                                      |
+| `with`       | the root     | Creates fill pipelines from this configuration, such as `root.pipe(fill)` when `vertexAt` reads accessors.        |
+| `bindGroups` | none         | Sets these bind groups on fill pipelines when `vertexAt` reads a caller-supplied layout.                          |
+
+## Many of them
+
+A set of [live lists](/kit/live-lists/) takes a vertex or index count for each group in `draws`. A geometry supplies that count, so pass the shape:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { liveLists, table } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+const root = await tgpu.init();
+// ---cut---
+const Block = table.define('Block', { host: { shape: d.u32, position: d.vec3f } });
+const blocks = table.create(root, Block, { capacity: 4096 });
+
+const cube = meshes.unindexed(meshes.box());
+const ball = meshes.bakeIndices(root, meshes.sphere({ segments: 12, rings: 8 }));
+
+const live = liveLists.create(root, {
+  ...blocks.live(),
+  group: blocks.gpu.shape,
+  draws: [cube, ball], // a block of shape 0 is a cube, of shape 1 a ball
+});
+```
+
+An unindexed shape uses `drawIndirect`. A baked indexed mesh uses `drawIndexedIndirect` and needs its `inject()` applied to the pipeline.
+
+:::caution
+`meshes.box()` itself has an `indexCount`, so as a draw it asks for an indexed draw with no index buffer bound. Pass `meshes.unindexed(meshes.box())`, or bake its indices.
+:::
+
+## Sprites
+
+A sprite is a square facing the camera. The shapes have no square in the xy plane. Read a 2 × 2 `plane` through `position.xz`, from -1 to 1, to place its 6 vertices facing the camera:
+
+```ts twoslash
+import { d } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+// ---cut---
+const quad = meshes.unindexed(meshes.plane({ width: 2, depth: 2 }));
+
+/** Corner `i` of a square `size` wide around `center`, facing the screen. */
+const sprite = (i: number, center: d.v3f, size: number) => {
+  'use gpu';
+  const corner = quad.vertexAt(i).position.xz;
+  const world =
+    center + (cameras.current.$.right * corner.x + cameras.current.$.up * corner.y) * (size / 2);
+
+  return { position: cameras.toClip(world), uv: corner * 0.5 + 0.5 };
+};
+```
+
+This use of the plane mirrors it, so its triangles wind clockwise on screen. Use the default `cullMode: 'none'` for sprites.
+
+## Errors
+
+- Passing both `encoder` and `pass` to a bake throws `Supply either an encoder or a compute pass, not both`.
+- A bake throws if a supplied buffer is too small. The message names the vertex or index count, such as `The vertex count … exceeds the buffer capacity …`.
+- `concat` throws if schemas or topologies differ. `attach` throws if a field already exists on the vertex.

@@ -1,0 +1,11 @@
+{
+  "title": "Benthos",
+  "category": "simulations",
+  "description": "Light falls through deep water onto 24 000 flecks of marine snow and a few glowing motes, and the pointer stirs them. Particles, bloom and the final pass draw it.",
+  "line": "Light through deep water and marine snow, stirred by the pointer.",
+  "order": 18,
+  "card": {
+    "snow": 8000
+  },
+  "hint": "drag to look around \u00b7 wheel to move"
+}

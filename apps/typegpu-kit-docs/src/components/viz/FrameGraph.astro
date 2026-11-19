@@ -1,0 +1,420 @@
+---
+import { MODULES } from './FrameAnatomy.program.ts';
+---
+
+<figure class="viz" data-viz="frame-graph">
+  <p class="viz-title">One frame's passes and the resources they read and write</p>
+  <svg viewBox="0 0 640 420" role="img" aria-label="Frame passes and the buffers and textures they read and write"></svg>
+  <ol class="sr-only"></ol>
+  <div class="viz-controls" data-pagefind-ignore>
+    {Object.entries(MODULES).map(([name, label]) => <button data-action={name} aria-pressed="true">{label}</button>)}
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Turn a module off to remove its calls or passes. Point at a resource to follow it from the writing pass to its readers.
+  </figcaption>
+</figure>
+
+<style is:global>
+  [data-viz='frame-graph'] .fg-title {
+    fill: var(--text);
+    font: var(--type-label) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] .fg-by,
+  [data-viz='frame-graph'] .fg-uses {
+    fill: var(--muted);
+    font: var(--type-label) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] .fg-by tspan,
+  [data-viz='frame-graph'] .fg-method {
+    fill: var(--text);
+    font: var(--type-status) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] .fg-lane-name {
+    fill: var(--text);
+    font: var(--type-status) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] .fg-module {
+    fill: var(--text-2);
+    font: var(--type-label) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] .fg-owner {
+    fill: var(--muted);
+    font: var(--type-label) var(--font-mono);
+  }
+
+  [data-viz='frame-graph'] [data-lane] {
+    color: var(--viz-muted);
+  }
+
+  [data-viz='frame-graph'] [data-lane].on {
+    color: var(--viz-accent);
+  }
+
+  [data-viz='frame-graph'] [data-access='read'] {
+    fill: var(--ground);
+    stroke: var(--viz-b);
+  }
+
+  [data-viz='frame-graph'] [data-access='write'] {
+    fill: var(--viz-c);
+  }
+
+  [data-viz='frame-graph'] .on [data-access='read'] {
+    stroke: var(--viz-accent);
+  }
+
+  [data-viz='frame-graph'] .on [data-access='write'] {
+    fill: var(--viz-accent);
+  }
+
+  [data-viz='frame-graph'] [data-pass].on > rect {
+    stroke: var(--viz-accent);
+  }
+
+  [data-viz='frame-graph'] [data-lane],
+  [data-viz='frame-graph'] [data-pass] {
+    transition: opacity 120ms;
+  }
+
+  [data-viz='frame-graph'] svg.lit [data-lane]:not(.on),
+  [data-viz='frame-graph'] svg.lit [data-pass]:not(.on) {
+    opacity: 0.25;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-viz='frame-graph'] [data-lane],
+    [data-viz='frame-graph'] [data-pass] {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  import { action, each, toggle, whenNear } from './figure.ts';
+  import {
+    createProgram,
+    MODULES,
+    type Access,
+    type Module,
+    type Pass,
+    type Program,
+    type Trace,
+  } from './FrameAnatomy.program.ts';
+  import { CHAR, stipple, fitWidth, svg, text } from './svg.ts';
+
+  /** What the figure calls each module, by the name the program records it under. */
+  const NAMES: Record<string, string> = {
+    field: 'flow field',
+    particles: 'particles',
+    readback: 'readback',
+    bloom: 'bloom',
+    finish: 'finish',
+    screen: 'targets',
+    you: 'you',
+  };
+
+  const LANE = 68;
+  const PASS_MIN = 296;
+  const PASS_MAX = 420;
+  const GAP = 8;
+
+  const moduleOf = (by: string) => by.split('.')[0];
+  const methodOf = (by: string) => by.split('.')[1] ?? by;
+
+  /** The buffers and textures a reader follows; a module's other buffers are left out. */
+  function laneOf(resource: { owner: string; label: string; kind: string }) {
+    if (resource.owner === 'readback') return 'staging';
+    if (resource.owner === 'screen') return 'hdr';
+    if (resource.owner === 'bloom' && resource.kind === 'texture') return 'mips';
+    if (resource.owner === 'particles' && resource.label === 'poolBuffer') return 'pool';
+    if (resource.owner === 'field' && resource.label === 'particles') return 'particles';
+    if (resource.owner === 'you') return resource.label || 'canvas';
+    return undefined;
+  }
+
+  interface Lane {
+    readonly key: string;
+    readonly name: string;
+    readonly owner: string;
+  }
+
+  interface Block {
+    readonly kind: Pass['kind'];
+    readonly count: number;
+    readonly by: string;
+    /** Your passes list the calls of each module in them; a module's own passes list none. */
+    readonly calls: { module: string; methods: string[] }[];
+    readonly uses: Map<string, Set<Access>>;
+  }
+
+  /** Passes one module opens one after another read as one block. */
+  function blocksOf(trace: Trace): { blocks: Block[]; lanes: Lane[] } {
+    const lanes = new Map<string, Lane>();
+    const blocks: Block[] = [];
+
+    for (const pass of trace.passes) {
+      const last = blocks.at(-1);
+      const joins = last && pass.by !== 'you' && last.by === pass.by && last.kind === pass.kind;
+      const block: Block = joins ? { ...last, count: last.count + 1 } : { kind: pass.kind, count: 1, by: pass.by, calls: [], uses: new Map() };
+      if (joins) blocks[blocks.length - 1] = block;
+      else blocks.push(block);
+
+      if (pass.by === 'you') {
+        for (const call of pass.calls) {
+          const module = moduleOf(call.by);
+          let entry = block.calls.find((candidate) => candidate.module === module);
+          if (!entry) block.calls.push((entry = { module, methods: [] }));
+          if (!entry.methods.includes(methodOf(call.by))) entry.methods.push(methodOf(call.by));
+        }
+      }
+
+      for (const [resource, accesses] of pass.uses) {
+        const name = laneOf(resource);
+        if (resource.uniform || !name) continue;
+
+        const key = `${resource.owner}/${name}`;
+        if (!lanes.has(key)) lanes.set(key, { key, name, owner: NAMES[resource.owner] ?? resource.owner });
+        const seen = block.uses.get(key) ?? new Set<Access>();
+        for (const access of accesses) seen.add(access);
+        block.uses.set(key, seen);
+      }
+    }
+
+    return { blocks, lanes: [...lanes.values()] };
+  }
+
+  const titleOf = (block: Block) => {
+    if (block.kind === 'compute') return block.count > 1 ? `${block.count} compute passes` : 'Compute pass';
+    if (block.kind === 'render') return block.count > 1 ? `${block.count} render passes` : 'Render pass';
+    if (block.kind === 'copy') return 'Copy';
+    return 'Map, after the submit';
+  };
+
+  /** Who records the block: you, or the one call that opens it, in code. */
+  const byOf = (block: Block): [call: string, rest: string] => {
+    if (block.by === 'you') return ['', 'you open it'];
+    if (block.kind === 'map') return [block.by, ' starts it'];
+    if (block.kind === 'copy') return [block.by, ' records it'];
+    return [block.by, block.count > 1 ? ' opens them' : ' opens it'];
+  };
+
+  const writes = (accesses: Set<Access>) => accesses.has('write');
+
+  function draw(figure: SVGSVGElement, width: number, trace: Trace) {
+    figure.classList.remove('lit');
+    const { blocks, lanes } = blocksOf(trace);
+    const wide = width - lanes.length * LANE >= PASS_MIN;
+    const passWidth = wide ? Math.min(width - lanes.length * LANE - 16, PASS_MAX) : width;
+    const laneWidth = (width - passWidth - 16) / Math.max(1, lanes.length);
+    const laneX = (i: number) => passWidth + 16 + (i + 0.5) * laneWidth;
+    const lanesOf = new Map(lanes.map((lane, i) => [lane.key, i]));
+
+    let y = 4;
+    if (wide) {
+      lanes.forEach((lane, i) => {
+        const head = svg('g', { 'data-lane': i }, figure);
+        text(head, laneX(i), 14, lane.name, { class: 'fg-lane-name', 'text-anchor': 'middle' });
+        text(head, laneX(i), 30, lane.owner, { class: 'fg-owner', 'text-anchor': 'middle' });
+      });
+
+      svg('circle', { cx: 5, cy: 26, r: 4.5, fill: 'var(--viz-c)' }, figure);
+      text(figure, 15, 30, 'writes', { class: 'fg-owner' });
+      svg('circle', { cx: 63, cy: 26, r: 4, fill: 'var(--ground-2)', stroke: 'var(--viz-b)', 'stroke-width': 1.5 }, figure);
+      text(figure, 73, 30, 'reads', { class: 'fg-owner' });
+      y = 44;
+    }
+
+    const guides = svg('g', {}, figure);
+    const marks = lanes.map(() => [] as number[]);
+    const submit = (at: number) => {
+      svg('line', { x1: 0, x2: width, y1: at, y2: at, stroke: 'var(--viz-accent)', 'stroke-dasharray': '4 4', 'stroke-opacity': 0.7 }, figure);
+      const label = text(figure, width, at - 6, 'submit', { class: 'fg-owner', 'text-anchor': 'end' });
+      label.style.fill = 'var(--viz-accent)';
+    };
+
+    blocks.forEach((block, j) => {
+      if (block.kind === 'map') {
+        submit(y + 10);
+        y += 24;
+      }
+
+      const group = svg('g', { 'data-pass': j }, figure);
+      const top = y;
+      const yours = block.by === 'you';
+      const box = svg('rect', { x: 0.5, y: top + 0.5, width: passWidth - 1, rx: 2 }, group);
+      if (yours) box.setAttribute('style', 'fill: none; stroke: var(--viz-line)');
+      else {
+        box.setAttribute('fill', stipple(figure));
+        box.setAttribute('stroke', 'var(--viz-line)');
+      }
+
+      // The title, with who records it after it, or under it where the line is too short
+      let line = top + 22;
+      const title = text(group, 14, line, titleOf(block), { class: 'fg-title' });
+      const [call, rest] = byOf(block);
+      const by = text(group, 0, line, '', { class: 'fg-by' });
+      if (call) svg('tspan', {}, by).textContent = call;
+      by.append(rest);
+
+      const after = 14 + title.getComputedTextLength() + 10;
+      if (after + by.getComputedTextLength() <= passWidth - 14) by.setAttribute('x', String(after));
+      else {
+        line += 18;
+        by.setAttribute('x', '14');
+        by.setAttribute('y', String(line));
+      }
+
+      for (const { module, methods } of block.calls) {
+        line += 21;
+        text(group, 14, line, NAMES[module] ?? module, { class: 'fg-module' });
+        text(group, 104, line, methods.join(' · '), { class: 'fg-method' });
+      }
+
+      // Without lanes, what the block writes and reads goes under it
+      if (!wide && block.uses.size > 0) {
+        const named = (key: string) => lanes[lanesOf.get(key)!].name;
+        const written = [...block.uses].filter(([, a]) => writes(a)).map(([key]) => named(key));
+        const read = [...block.uses].filter(([, a]) => !writes(a)).map(([key]) => named(key));
+        const parts = [written.length ? `writes ${written.join(', ')}` : '', read.length ? `reads ${read.join(', ')}` : ''];
+        for (const part of parts.filter(Boolean)) {
+          const fill = part.startsWith('writes') ? 'var(--viz-c)' : 'var(--viz-b)';
+          let words = '';
+          for (const word of part.split(' ')) {
+            if (words && (words.length + word.length + 1) * CHAR > passWidth - 28) {
+              line += 18;
+              text(group, 14, line, words, { class: 'fg-uses', style: `fill: ${fill}` });
+              words = '';
+            }
+            words = words ? `${words} ${word}` : word;
+          }
+          line += 18;
+          text(group, 14, line, words, { class: 'fg-uses', style: `fill: ${fill}` });
+        }
+      }
+
+      const bottom = line + 14;
+      box.setAttribute('height', String(bottom - top - 1));
+
+      if (wide) {
+        const middle = (top + bottom) / 2;
+        svg('line', { x1: passWidth, x2: width, y1: middle, y2: middle, stroke: 'var(--rule)', 'stroke-dasharray': '1 5' }, guides);
+        for (const key of block.uses.keys()) {
+          const i = lanesOf.get(key)!;
+          marks[i].push(middle);
+          group.dataset.lanes = `${group.dataset.lanes ?? ''} ${i}`;
+        }
+        group.dataset.middle = String(middle);
+      }
+
+      y = bottom + GAP;
+    });
+
+    if (!blocks.some((block) => block.kind === 'map')) {
+      submit(y + 6);
+      y += 14;
+    }
+
+    if (wide) {
+      lanes.forEach((lane, i) => {
+        const ys = marks[i];
+        const group = svg('g', { 'data-lane': i }, figure);
+        if (ys.length > 1) {
+          svg('line', { x1: laneX(i), x2: laneX(i), y1: Math.min(...ys), y2: Math.max(...ys), stroke: 'currentColor', 'stroke-width': 1 }, group);
+        }
+        blocks.forEach((block, j) => {
+          const accesses = block.uses.get(lane.key);
+          if (!accesses) return;
+          const middle = Number(figure.querySelector<SVGGElement>(`[data-pass="${j}"]`)!.dataset.middle);
+          svg('circle', writes(accesses)
+            ? { cx: laneX(i), cy: middle, r: 3, 'data-access': 'write' }
+            : { cx: laneX(i), cy: middle, r: 3, 'data-access': 'read' }, group);
+        });
+      });
+    }
+
+    return y;
+  }
+
+  /** The same frame in words, for a screen reader. */
+  function describe(list: HTMLOListElement, trace: Trace) {
+    const { blocks, lanes } = blocksOf(trace);
+    const name = (key: string) => lanes.find((lane) => lane.key === key)!.name;
+    list.replaceChildren(
+      ...blocks.map((block) => {
+        const item = document.createElement('li');
+        const calls = block.calls.map(({ module, methods }) => `${NAMES[module] ?? module} ${methods.join(', ')}`);
+        const written = [...block.uses].filter(([, a]) => writes(a)).map(([key]) => name(key));
+        const read = [...block.uses].filter(([, a]) => !writes(a)).map(([key]) => name(key));
+        item.textContent = [
+          `${titleOf(block)}, ${block.by === 'you' ? 'yours' : `by ${block.by}`}`,
+          calls.length ? `calls: ${calls.join('; ')}` : '',
+          written.length ? `writes ${written.join(', ')}` : '',
+          read.length ? `reads ${read.join(', ')}` : '',
+        ].filter(Boolean).join('. ');
+        return item;
+      }),
+    );
+  }
+
+  each('frame-graph', (root) => {
+    const figure = root.querySelector('svg')!;
+    const list = root.querySelector('ol')!;
+    let plain: Program | undefined;
+    let bloomed: Program | undefined;
+    let trace: Trace | undefined;
+
+    const redraw = fitWidth(figure, (width) => (trace ? draw(figure, width, trace) : 0));
+
+    const modules = Object.fromEntries(
+      Object.keys(MODULES).map((name) => [name, toggle(action(root, name), () => run())]),
+    ) as Record<Module, { readonly on: boolean }>;
+    const pressed = (name: Module) => modules[name].on;
+
+    const run = () => {
+      const program = pressed('bloom')
+        ? (bloomed ??= createProgram({ bloomed: true }))
+        : (plain ??= createProgram());
+      trace = program.run({
+        field: pressed('field'),
+        particles: pressed('particles'),
+        readback: pressed('readback'),
+        burst: pressed('particles'),
+        fail: false,
+      });
+      redraw();
+      describe(list, trace);
+    };
+
+    const light = (target: Element | null) => {
+      figure.classList.remove('lit');
+      for (const on of figure.querySelectorAll('.on')) on.classList.remove('on');
+
+      const lane = target?.closest<SVGGElement>('[data-lane]');
+      const pass = target?.closest<SVGGElement>('[data-pass]');
+      if (!lane && !pass) return;
+
+      figure.classList.add('lit');
+      if (lane) {
+        for (const part of figure.querySelectorAll(`[data-lane="${lane.dataset.lane}"]`)) part.classList.add('on');
+        for (const touching of figure.querySelectorAll<SVGGElement>('[data-pass]')) {
+          if ((touching.dataset.lanes ?? '').split(' ').includes(lane.dataset.lane!)) touching.classList.add('on');
+        }
+      } else if (pass) {
+        pass.classList.add('on');
+        for (const i of (pass.dataset.lanes ?? '').split(' ').filter(Boolean)) {
+          for (const part of figure.querySelectorAll(`[data-lane="${i}"]`)) part.classList.add('on');
+        }
+      }
+    };
+    figure.addEventListener('pointerover', (event) => light(event.target as Element));
+    figure.addEventListener('pointerleave', () => light(null));
+
+    // Building the modules resolves their shaders, so wait until the figure is near
+    whenNear(root, run);
+  });
+</script>

@@ -1,0 +1,264 @@
+---
+title: Getting started
+description: Install the kit, draw a first frame and host it as a scene, in a project of your own.
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+import Install from '../../components/site/Install.astro';
+import Ripple from '../../components/viz/Ripple.astro';
+
+TypeGPU Kit is a set of GPU modules on [TypeGPU](https://typegpu.com). Each borrows your root and records into your passes. You create the device, run the loop and submit the commands. This page sets up a web project, draws a frame and hands it to a host.
+
+## Create a project
+
+The kit's initializer writes the web project this page builds into a new directory:
+
+<Install create="@typegpu/kit my-scene" />
+
+In a terminal the initializer asks which scene to start from: the shader this page builds, or another of the [starter scenes](/starter-scenes/). `--scene lit` names one without asking, after `--` with npm. Without a terminal it writes the shader.
+
+`my-scene` gets the packages and configuration from [Install](#install), the canvas page from [Host a scene](#host-a-scene) with the scene you chose, and an `AGENTS.md` for [coding agents](#coding-agents). The initializer prints the commands that install the packages and start Vite. To add the kit to a project you already have, follow the rest of this page.
+
+## Install
+
+In a [Vite](https://vite.dev) project, install the kit, TypeGPU and its noise and colour packages, then Vite, the TypeGPU bundler plugin, [tsover](#setting-up-a-project) in place of TypeScript, and WebGPU's types:
+
+<Install
+  add="@typegpu/kit typegpu @typegpu/noise @typegpu/color"
+  dev="vite unplugin-typegpu typescript@npm:tsover@6.0.2 @webgpu/types"
+/>
+
+The plugin compiles your `'use gpu'` functions for the GPU. Add it to Vite:
+
+```ts title="vite.config.ts"
+import typegpu from 'unplugin-typegpu/vite';
+import { defineConfig } from 'vite';
+
+export default defineConfig({ plugins: [typegpu()] });
+```
+
+Give TypeScript WebGPU's types, and the disposables kit objects implement for `using`:
+
+```json title="tsconfig.json"
+{
+  "compilerOptions": {
+    "types": ["@webgpu/types", "vite/client"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable", "ESNext.Disposable"]
+  }
+}
+```
+
+The code on this site imports files by their `.ts` names, which takes `allowImportingTsExtensions` with `noEmit`. Vite's TypeScript templates set both.
+
+## Draw a frame
+
+The page needs a canvas and the script that draws into it:
+
+```html title="index.html"
+<body style="margin: 0">
+  <canvas style="display: block; width: 100vw; height: 100vh"></canvas>
+  <script type="module" src="/src/index.ts"></script>
+</body>
+```
+
+The script asks TypeGPU for a root, its handle on the GPU. A [surface](/kit/web/) configures the canvas for the root and keeps its drawing buffer the size of its layout. A fragment function colours every pixel of a triangle that covers the canvas, and a [frame loop](/kit/frames/) gives each frame an encoder and submits it when your function returns:
+
+<Ripple caption="The frame this section draws. Turn on Glow to add a bloom." />
+
+```ts twoslash title="src/index.ts"
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { common, d, std, tgpu } from 'typegpu';
+
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const time = root.createUniform(d.f32);
+
+const rings = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(({ uv }) => {
+  'use gpu';
+  const wave = std.sin(std.length(uv - 0.5) * 40 - time.$ * 3) * 0.5 + 0.5;
+  return d.vec4f(0.2, 0.6, 1, 1) * wave;
+});
+const drawing = root.createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment: rings,
+  targets: { format: surface.format },
+});
+
+const loop = frames.create(root, (frame) => {
+  time.write(frame.time);
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: surface.view(frame) } });
+  pass.setPipeline(drawing);
+  pass.draw(3);
+  pass.end();
+});
+frames.animate(loop);
+```
+
+Start Vite, then open the page in a WebGPU browser:
+
+<Install exec="vite" />
+
+Blue rings ripple out from the middle of the canvas. [How the kit works](/concepts/how-the-kit-works/) takes this frame apart line by line.
+
+## Host a scene
+
+Move what you draw into a scene: a file that exports `createScene(root, surface)` and returns its `frame`, with `destroy` when it has resources to free. A scene holds no loop or page code, so it runs unchanged on the web, on React Native and in a test.
+
+```ts twoslash title="src/scene.ts"
+// @filename: scene.ts
+// ---cut---
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+
+export async function createScene(root: TgpuRoot, surface: Surface) {
+  // The uniform, fragment function and pipeline from index.ts
+  return {
+    frame(frame: Frame) {
+      // The body of the frame loop from index.ts
+    },
+  };
+}
+```
+
+`web.host` creates the root, surface and loop, runs the scene and reports its first error. Its handle's `destroy()` tears them down in order:
+
+```ts twoslash title="src/index.ts"
+// @filename: scene.ts
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+export declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ frame(frame: Frame): void }>;
+// @filename: index.ts
+// ---cut---
+import * as web from '@typegpu/kit/web';
+import { createScene } from './scene.ts';
+
+web.host(createScene, { canvas: document.querySelector('canvas')! });
+```
+
+The picture stays the same. The [hosting page](/kit/hosting/) covers controlling the scene from the page, input, and running it on React Native.
+
+## Next
+
+- [Starter scenes](/starter-scenes/) gives four whole `src/scene.ts` files to start from: this shader, a lit mesh with a shadow, a frame finished with bloom, and particles stepped on the GPU.
+- The [tutorials](/tutorials/slime-mould/) build examples in this project, starting from no graphics or TypeGPU knowledge.
+- [How the kit works](/concepts/how-the-kit-works/) gives the seven rules every module follows.
+- The [module map](/map/) and the [examples](/examples/) show what the kit covers.
+- [Coding agents](#coding-agents) get the kit's rules from the package.
+
+## Setting up a project
+
+{/* BEGIN:setup, whose patches tests/setup.test.ts checks against packages/typegpu-kit/patches */}
+
+The packages ship built JavaScript with their `'use gpu'` functions already transformed, and declarations. The plugin transforms your own `'use gpu'` functions. Vector operators in them, `a * b`, type-check only under tsover, TypeGPU's fork of TypeScript. It replaces `typescript`, so a project on another TypeScript version moves to tsover's.
+
+A few entries need optional peers:
+
+| Import                                                                                | Needs                                                                                                                                        |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| [text](/kit/text/)'s font baker, `@typegpu/kit/fontBaker` and `typegpu-kit-bake-font` | `@pmndrs/glyph` and Node 24.2 or later, at build time. On React Native, add `rgba` to Metro's `assetExts` for the atlas.                     |
+| `@typegpu/kit/native/host`, `/native/react` and `/native/runtimes`                    | React 19.3, React Native 0.88, react-native-webgpu 0.21 and react-native-worklets 0.13. Only `/native/react` imports React.                  |
+| [`@typegpu/kit/testing/dawn`](/kit/testing/#in-your-own-project)                      | `webgpu` (dawn.node) and `vitest`. With pnpm 11, add `webgpu: false` to `allowBuilds`. Its build script only clears macOS's quarantine flag. |
+| `@typegpu/kit/testing/warnings`                                                       | `vitest`, for the warning checks in a test setup.                                                                                            |
+
+<Tabs syncKey="platform">
+
+<TabItem label="Web">
+
+The packages ship built JavaScript, so leave them to Vite's dependency prebundling, and add no `resolve.dedupe`. Excluding them from `optimizeDeps` while TypeGPU stays prebundled loads two copies of TypeGPU: the page warns "Found duplicate TypeGPU version", then fails on its first schema.
+
+</TabItem>
+
+<TabItem label="React Native">
+
+A hosted scene runs on a worklet runtime, which needs react-native-worklets' Bundle Mode: a worklet's named imports load again on the runtime it runs on. The kit's React Native entries require the versions the table above lists. The configs below are for Expo 58, whose Metro is 0.87.1.
+
+```js title="babel.config.js"
+const worklets = {
+  bundleMode: true,
+  strictGlobal: true,
+  importForwarding: {
+    // Packages a worklet imports from, with their subpaths, loaded again on the runtime it runs on.
+    moduleNames: ['typegpu', '@typegpu/noise', '@typegpu/color', '@typegpu/kit'],
+    // The kit's files, and the file of your scene worklets.
+    relativePaths: ['@typegpu/kit', 'src/hosts.ts'],
+  },
+};
+
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: [['babel-preset-expo', { worklets: false, reanimated: false }]],
+    plugins: ['unplugin-typegpu/babel', ['react-native-worklets/plugin', worklets]],
+  };
+};
+```
+
+```js title="metro.config.js"
+const { getDefaultConfig } = require('expo/metro-config');
+const { getBundleModeMetroConfig } = require('react-native-worklets/bundleMode');
+
+module.exports = getBundleModeMetroConfig(getDefaultConfig(__dirname));
+```
+
+Bundle Mode needs two Metro patches. The kit ships them in `node_modules/@typegpu/kit/patches/`. With pnpm, copy them into the project and list them in `pnpm-workspace.yaml`, then install again:
+
+```sh
+mkdir -p patches && cp node_modules/@typegpu/kit/patches/*.patch patches/
+```
+
+```yaml title="pnpm-workspace.yaml"
+patchedDependencies:
+  metro@0.87.1: patches/metro@0.87.1.patch
+  metro-runtime@0.87.1: patches/metro-runtime@0.87.1.patch
+```
+
+With npm or Yarn, use the patch-package or Yarn versions of the same patches from react-native-worklets' [Bundle Mode patches](https://github.com/software-mansion/react-native-reanimated/tree/main/packages/react-native-worklets/bundleMode/patches), which also cover other Metro versions.
+
+- `moduleNames` lists every package your worklets import from; each entry covers the package's subpaths too. `relativePaths` lists the kit and the file of your scene worklets, the one-line wrappers a [hosted scene](/kit/hosting/#on-react-native) takes off the JS thread. Entries match folder names inside packages too, so a bare `src` forwards Reanimated's own imports and crashes its animations on the UI runtime.
+- `relativePaths` entries match the path after the last `node_modules`. `'@typegpu/kit'` matches the kit installed from npm.
+- Import `'react-native-webgpu'` first in `index.ts`. Bundle Mode turns on inline requires, so an import further down installs `navigator.gpu` only when first used.
+- Import kit subpaths on React Native, such as `@typegpu/kit/frames`: Metro keeps every file it reaches. The helpers the root exports flat have theirs too: `@typegpu/kit/inject` for `byStage`, `unfilled`, `Checked` and `Inject`, `@typegpu/kit/owner` and `@typegpu/kit/memo`.
+- The patches are for Expo 58's versions; `metro` is the one inside `@expo/metro`. Both are worklets' own workarounds for Bundle Mode. Without the `metro` patch the bundle fails with "Failed to get the SHA-1" for a file in `react-native-worklets/.worklets`; the `metro-runtime` patch carries Fast Refresh to the worklet runtimes, in development.
+
+The [surface page](/kit/web/) draws the same first frame on a React Native canvas, and [Platforms](/platforms/) lists each platform's requirements.
+
+</TabItem>
+
+</Tabs>
+
+{/* END:setup */}
+
+## Versions
+
+Each kit minor runs on one TypeGPU minor, the one its peer range names. A patch release changes nothing you call. A minor release can change the kit in three ways, and its notes list every change:
+
+- **The contract changes only by addition.** Your own modules and scenes are written against it:
+  - [`frames`](/kit/frames/), `Frame` and the optional helper `owner`, and the fill helpers `Inject`, `Injectable`, `byStage`, `unfilled` and `Checked`
+  - the [drawing contract](/kit/passes/#drawings) of `passes`: `Drawing`, `Compound`, `Into`, `Built`, `Drawn`, `Output` with `passes.output`, and what a drawing reads from its description
+  - `cameras.current` and the `Camera` schema, `FloatTexture`, and the [`post`](/kit/finish/#an-effect-of-your-own) source types
+  - the [hosting](/kit/hosting/) contract, `Scene`, `CreateScene` and `Surface`, and the recorder in [`@typegpu/kit/testing`](/kit/testing/)
+  - how every module behaves: the root comes first and is borrowed, `destroy()` frees only what the factory made, `initAsync()` is optional, and `inject()` can be called any number of times
+- **A module keeps its import path, namespace, factory names and recording methods.** Its options, defaults, other members and looks can change. So can the shader-side hooks of `shading` and `lighting`, which makes a lit module of your own fit one kit minor.
+- **A module whose card says `unstable` can change in any way**, as can `@typegpu/kit/geometry` and `@typegpu/kit/debug`.
+
+Generated WGSL, the exact commands a frame records and how a picture looks can change in any release.
+
+## Coding agents
+
+The kit ships a guide for coding agents, the skill `skills/typegpu-kit/SKILL.md`. It lists the kit's rules, such as recording a frame into the frame's encoder, uniforms split by when they change, fixed steps and `@typegpu/noise`, and links to these pages as Markdown in the package's `docs/`, with every module's contract and the examples' source. The site serves each page as Markdown too, at its address with `.md` for the trailing slash, and lists them in `llms.txt` at the site's root. These name the kit version they describe and send agents in a project with the kit installed to its `docs/`.
+
+The skill, `docs/index.md` and `docs/modules.md` keep their paths in the package, and its `exports` name them: `import.meta.resolve('@typegpu/kit/docs/index.md')` finds the pages from any project.
+
+- [TanStack Intent](https://www.npmjs.com/package/@tanstack/intent) points the project's agent config at the skills its packages ship. Run it once:
+
+  <Install dlx="@tanstack/intent@latest install" />
+
+- Or point to the skill from the project's `AGENTS.md`:
+
+  ```md title="AGENTS.md"
+  Read node_modules/@typegpu/kit/skills/typegpu-kit/SKILL.md before writing GPU code.
+  ```

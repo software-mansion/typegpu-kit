@@ -1,0 +1,325 @@
+---
+// A folded table on a card: the fields of an options type a call takes, the members of what it
+// returns, or the fields of a schema. Each row's name links to the row, and the type's name is a
+// heading so a search lands on it. A row's type is coloured as code, and its names lead to their
+// tables
+import type { ComponentProps } from 'astro/types';
+import { Code } from 'astro:components';
+import { prose, type Links } from '../../contracts/facets.ts';
+import { instrument } from '../../styles/instrument.mjs';
+import SheetParts from './SheetParts.astro';
+
+export interface Row {
+  readonly id: string;
+  readonly name: string;
+  readonly optional?: boolean | undefined;
+  readonly type?: string | undefined;
+  readonly default?: string | undefined;
+  readonly doc?: string | undefined;
+  /** It takes a `'use gpu'` function, which runs in a shader. */
+  readonly gpu?: true | undefined;
+  /** The table of the options a method takes, which its `options` opens. */
+  readonly opens?: string | undefined;
+}
+
+interface Props {
+  id: string;
+  what: 'takes' | 'returns' | 'schema';
+  name: string;
+  /** Where it is taken and how many rows it has. */
+  aside: string;
+  rows: readonly Row[];
+  open?: boolean;
+  links: Links;
+  /** Where type names lead, as `typeHrefs` gives them. */
+  types: ReadonlyMap<string, string>;
+}
+
+const { id, what, name, aside, rows, open = false, links, types } = Astro.props;
+
+/**
+ * A type as a reader needs it: without TypeGPU's and TypeScript's plumbing, `typeof` before a
+ * schema, `NoInfer` and `readonly`, and on one line. The Markdown keeps the type as written.
+ */
+const shown = (type: string) => {
+  let text = type
+    .replace(/d\.Infer(?:Input)?<typeof (\w+)>/g, '$1')
+    .replace(/\btypeof (?=[A-Z])/g, '')
+    .replace(/\breadonly /g, '')
+    .replace(/\(\s+/g, '(')
+    .replace(/,\s*\)/g, ')');
+  for (let at = text.indexOf('NoInfer<'); at >= 0; at = text.indexOf('NoInfer<')) {
+    let depth = 0;
+    let end = at + 'NoInfer'.length;
+    do depth += text[end] === '<' ? 1 : text[end] === '>' ? -1 : 0;
+    while (depth > 0 && ++end < text.length);
+    text = `${text.slice(0, at)}${text.slice(at + 'NoInfer<'.length, end)}${text.slice(end + 1)}`;
+  }
+  return text;
+};
+
+// A type alone is no statement, so it is coloured as an alias's right side and the left one goes
+const ALIAS = 'type _ = ';
+type Transformer = NonNullable<ComponentProps<typeof Code>['transformers']>[number];
+
+/** Colours a type alone, and makes each name `types` knows a link, `cameras.Ray` as one. */
+const typeOnly = (): Transformer => {
+  const hrefs = new Map<number, string>();
+  return {
+    tokens: (lines) =>
+      lines.map((line) => {
+        // Shiki merges spaces into the next token; a link should cover the name alone
+        const kept = line.flatMap((token) => {
+          const cut = Math.max(0, ALIAS.length - token.offset);
+          if (cut >= token.content.length) return [];
+          const content = token.content.slice(cut);
+          const offset = token.offset + cut;
+          const [, space = '', word = ''] = /^(\s*)(.*)$/s.exec(content)!;
+          return space && word
+            ? [
+                { ...token, content: space, offset },
+                { ...token, content: word, offset: offset + space.length },
+              ]
+            : [{ ...token, content, offset }];
+        });
+        kept.forEach((token, at) => {
+          const qualified = `${kept[at - 2]?.content ?? ''}${kept[at - 1]?.content ?? ''}${token.content}`;
+          const href = types.get(qualified) ?? types.get(token.content);
+          if (href) hrefs.set(token.offset, href);
+        });
+        return kept;
+      }),
+    span(node, _line, _col, _element, token) {
+      const href = hrefs.get(token.offset);
+      if (href === undefined) return;
+      node.tagName = 'a';
+      node.properties.href = href;
+    },
+  };
+};
+---
+
+<details open={open}>
+  <summary data-role={what}>
+    <span class="what">{what}</span>
+    <h4 class="type" id={id}>
+      <code>{name}</code>
+    </h4>
+    <span class="aside" data-pagefind-ignore>{aside}</span>
+  </summary>
+  <dl>
+    {
+      rows.map((row) => (
+        <div class="row" id={row.id}>
+          <dt>
+            <code>
+              {(row.opens ? row.name.split(/(\boptions\??)/) : [row.name]).map((part) =>
+                part.startsWith('options') && row.opens ? (
+                  <a class="opens" href={`#${row.opens}`}>
+                    {part}
+                  </a>
+                ) : (
+                  part && <a href={`#${row.id}`}>{part}</a>
+                ),
+              )}
+              {row.optional && <span class="optional">?</span>}
+            </code>
+          </dt>
+          <dd>
+            {row.type && (
+              <p class="row-type">
+                <Code
+                  code={`${ALIAS}${shown(row.type)}`}
+                  lang="ts"
+                  theme={instrument}
+                  inline
+                  transformers={[typeOnly()]}
+                />
+                {row.gpu && (
+                  <span class="gpu" title="Takes a 'use gpu' function, which runs in a shader">
+                    'use gpu'
+                  </span>
+                )}
+              </p>
+            )}
+            {(row.doc || row.default) && (
+              <p class="note">
+                {row.doc && <SheetParts parts={prose(row.doc)!} links={links} />}
+                {row.default && (
+                  <span class="default">
+                    Default <SheetParts parts={prose(row.default)!} links={links} />.
+                  </span>
+                )}
+              </p>
+            )}
+          </dd>
+        </div>
+      ))
+    }
+  </dl>
+  <slot />
+</details>
+
+<style>
+  details {
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    scroll-margin-top: 6rem;
+  }
+
+  /* The options a result's methods take, inside its fold. */
+  details details {
+    margin: var(--s-2) var(--s-4) var(--s-3);
+  }
+
+  summary:has(:target),
+  .row:target {
+    background: var(--accent-low);
+  }
+
+  code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+
+  summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--s-1) var(--s-3);
+    padding: 6px var(--s-4);
+    cursor: pointer;
+  }
+
+  summary::before {
+    content: '+';
+    width: 1ch;
+    color: var(--muted);
+    font: 12px/22px var(--font-mono);
+  }
+
+  details[open] > summary::before {
+    content: '−';
+  }
+
+  summary:hover .type {
+    color: var(--accent-high);
+  }
+
+  .what {
+    width: 3.6rem;
+    color: var(--role);
+    font: 400 13px/22px var(--font-sans);
+  }
+
+  .type {
+    margin: 0;
+    scroll-margin-top: 7rem;
+    color: var(--text);
+    font: 500 13.5px/22px var(--font-mono);
+  }
+
+  .aside {
+    color: var(--muted);
+    font: 400 12.5px/20px var(--font-mono);
+  }
+
+  dl {
+    display: grid;
+    margin: 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
+    gap: var(--s-1) var(--s-4);
+    padding: var(--s-2) var(--s-4);
+    border-bottom: 1px solid var(--rule);
+    scroll-margin-top: 6rem;
+  }
+
+  .row:last-child {
+    border-bottom: 0;
+  }
+
+  dt {
+    color: var(--text);
+    font: 400 13.5px/22px var(--font-mono);
+  }
+
+  dt a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  dt a:hover {
+    color: var(--accent-high);
+  }
+
+  dt a.opens {
+    text-decoration: underline solid var(--r-takes);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 5px;
+  }
+
+  .row-type :global(.astro-code) {
+    /* Shiki paints the theme's ground; the card's shows through */
+    background: none !important;
+    font: inherit;
+  }
+
+  .row-type :global(.astro-code a) {
+    text-decoration: underline dotted;
+    text-underline-offset: 4px;
+  }
+
+  .row-type :global(.astro-code a:hover) {
+    text-decoration-style: solid;
+  }
+
+  summary[data-role='schema'] {
+    --role: var(--text-2);
+  }
+
+  .gpu {
+    padding: 0 6px;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    background: var(--accent-low);
+    color: var(--accent-high);
+    font: 500 11.5px/18px var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .optional,
+  .default {
+    color: var(--muted);
+  }
+
+  dd {
+    display: grid;
+    gap: var(--s-1);
+    min-width: 0;
+    margin: 0;
+  }
+
+  .row-type {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 1ch;
+    margin: 0;
+    color: var(--text-2);
+    font: 400 13px/22px var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  @container sheet (max-width: 639px) {
+    .row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

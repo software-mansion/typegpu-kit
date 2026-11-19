@@ -1,0 +1,470 @@
+---
+title: Hosting scenes
+description: Run a scene file on a web or React Native canvas, with its root, surface, loop, errors and teardown handled in order.
+modules: [kit/hosting, kit/host, kit/react, kit/runtimes]
+---
+
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import RuntimeLanes from '../../../components/viz/RuntimeLanes.astro';
+
+<Module id="kit/hosting" />
+
+A scene is the `createScene(root, surface, options)` function a scene file exports, which returns the scene's `frame` and an optional `destroy`. Hosting it requires a device, error listeners, a surface, the scene and a scheduled frame loop, with cleanup in order. `web.host` handles these on the web, and `useScene` on React Native, for the same scene file.
+
+On the web, `web.host(createScene, options, hosting)` runs a scene on a canvas. `createScene` receives `options` as its third argument, and `hosting` holds the canvas and what the page runs beside the scene:
+
+```ts twoslash
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+interface Game {
+  frame(frame: Frame): void;
+  destroy?(): void;
+  point(x: number, y: number): void;
+  readonly score: number;
+}
+declare function createScene(root: TgpuRoot, surface: Surface, options: { board: number }): Game;
+declare const canvas: HTMLCanvasElement;
+declare const hud: HTMLElement;
+// ---cut---
+import * as web from '@typegpu/kit/web';
+
+const hosted = web.host(
+  createScene,
+  { board: 1 },
+  {
+    canvas,
+    maxPixelRatio: 1.5,
+    optionalFeatures: ['timestamp-query', 'indirect-first-instance'],
+    onFrame: ({ scene }) => (hud.textContent = `${scene.score}`),
+    onError: (error) => (hud.textContent = String(error)),
+  },
+);
+
+canvas.addEventListener('pointerdown', ({ offsetX, offsetY }) =>
+  hosted.send(({ scene }) => scene.point(offsetX, offsetY)),
+);
+window.addEventListener('pagehide', () => hosted.destroy(), { once: true });
+```
+
+## On the web
+
+<Rules>
+
+- **Sending** `send(fn, ...args)` waits for scene creation, then calls `fn` with the stage, `{ scene, root, surface, loop, ready }`.
+- **Page frames** `onFrame(stage, frame)` runs after the scene's `frame` in every frame, for page code such as a HUD.
+- **Attaching** `attach` runs once the scene is up, with the stage. It may return a cleanup function or an object with `destroy()`, which the host frees with the scene, so controls made there go with it, as in `attach: ({ scene }) => web.orbitControls(scene.view, canvas)`. Any other value throws when `attach` returns.
+- **Loading** `stage.ready` stays false while the scene's `ready` promise is pending. Keep the loading screen visible until it resolves. A rejection reports a scene error.
+- **Synchronous** The scene's `frame` and `onFrame` are synchronous, since the host submits when they return. One that returns a promise, such as an `async` function, is a scene error, and its frame is never submitted. Load and compile in `createScene`, or behind `ready`.
+- **Scene errors** The first scene error, from `createScene`, a frame, `onFrame`, `ready` or the device (an uncaptured error or its loss), goes to `onError` and stops the frames, so it shows once.
+- **Sent errors** A sent closure that throws goes to `onError` each time and leaves the frames running, as an event handler's error leaves `requestAnimationFrame` running.
+- **The stage** To reach the stage directly from page code, take it once with `const stage = await hosted.run((s) => s)`.
+- **Pausing** `pause()` and `resume()` wait for scene creation, as `send` does.
+- **Your device** `device` takes a device of your own, which the host leaves alive. A test passes a [recording root](/kit/testing/)'s.
+- **Profiling** To time each pass of the scene, install the [GPU debug panel](/kit/gpu-debug/#profiling-from-the-address) before calling `host`.
+- **Teardown** `destroy()` releases everything in order, even while the scene is starting. It does not wait for work still running, so a `run` in flight meets destroyed resources. Calls sent after `destroy` are dropped, and `run` rejects once the scene is gone. Call it on `pagehide`, and from Vite's `import.meta.hot.dispose`.
+- **No options** Omit scene options when they are optional, as in `web.host(createScene, { canvas })`.
+
+</Rules>
+
+In a React component, start the host in an effect and destroy it in the effect's cleanup:
+
+```ts twoslash
+// @filename: scene.ts
+import type { cameras, Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+export declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ view: cameras.OrbitCamera; frame(frame: Frame): void; destroy(): void }>;
+// @filename: viewer.ts
+declare function useEffect(effect: () => () => void, deps: readonly unknown[]): void;
+declare const canvasRef: { readonly current: HTMLCanvasElement | null };
+// ---cut---
+import * as web from '@typegpu/kit/web';
+import { createScene } from './scene.ts';
+
+// In a component that renders <canvas ref={canvasRef} />
+useEffect(() => {
+  const canvas = canvasRef.current!;
+  const hosted = web.host(createScene, {
+    canvas,
+    attach: ({ scene }) => web.orbitControls(scene.view, canvas),
+  });
+  return () => hosted.destroy();
+}, []);
+```
+
+### Scenes that share a root
+
+A page of several canvases shares one root rather than a device per scene. `root` takes a root you made, which the host leaves alive. `schedule` replaces `requestAnimationFrame`, and `false` runs no frames: the page runs them through the stage's `loop`, such as to draw only the canvases on screen:
+
+```ts twoslash
+import { tgpu, type TgpuRoot } from 'typegpu';
+import type { Frame, Surface } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): { frame(f: Frame): void; destroy(): void };
+declare const canvases: HTMLCanvasElement[];
+// ---cut---
+const root = await tgpu.init();
+const stages: web.Stage<ReturnType<typeof createScene>>[] = [];
+
+for (const canvas of canvases) {
+  web.host(createScene, {
+    canvas,
+    root,
+    schedule: false,
+    attach: (stage) => void stages.push(stage),
+  });
+}
+
+requestAnimationFrame(function tick(now) {
+  for (const { loop } of stages) loop.run(now / 1000);
+  requestAnimationFrame(tick);
+});
+```
+
+- Each host watches the device, and WebGPU doesn't say which scene made an error, so the first uncaptured error or the loss reaches every scene's `onError`.
+- Without a schedule the host has no frames to stop at an error; stop running the `loop` from `onError`.
+
+## A host of your own
+
+`@typegpu/kit/hosting` is what `web.host` and React Native's [`useScene`](#on-react-native) are built from. It imports nothing from React Native.
+
+<Rules>
+
+- **Staging** `stage(root, surface, createScene, options, { schedule?, onError, watch?, onFrame?, attach?, release? })` creates a scene and scheduled frame loop. `schedule: false` disables automatic frames. The first error from a frame, `onFrame`, `ready` or the `watch` device stops the frames and reaches `onError` once. The stage's `destroy()` calls `release` last, to free host resources. When one of its steps throws, the rest still run, and `destroy` rethrows the error, or an `AggregateError` of several.
+- **Watching** `watch(device, onError)` calls `onError` with the device's first uncaptured error, or its loss unless it was destroyed on purpose, until you dispose it.
+- **Local values** `local(create)` keeps a value on the calling thread with `send` and `run`, matching `runtimes.own` on a worker, as in a test or on a web page.
+- **Types** `Scene` has `frame`, an optional `destroy` and an optional `ready`. Hosts call `destroy` when the scene provides it. `CreateScene` creates it from `(root, surface, options)`, and `Stage` holds it with host resources. `HostOptions` describes the options `web.host` and the React Native `host` share.
+
+</Rules>
+
+A view that draws only when asked, such as a model viewer, stages its scene on a shared root without a schedule, and runs a frame when the view moves:
+
+```ts twoslash
+import { tgpu, type TgpuRoot } from 'typegpu';
+import type { Frame, Surface } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): { frame(f: Frame): void; destroy(): void };
+declare const canvas: HTMLCanvasElement;
+declare function show(error: unknown): void;
+const root = await tgpu.init();
+// ---cut---
+import { stage } from '@typegpu/kit/hosting';
+
+const surface = web.surface(root, canvas, { alphaMode: 'premultiplied' });
+const staged = await stage(
+  root,
+  surface,
+  createScene,
+  {},
+  { schedule: false, watch: root.device, onError: show, release: () => surface.destroy() },
+);
+
+new ResizeObserver(() => staged.loop.run(0)).observe(canvas);
+
+window.addEventListener('pagehide', () => staged.destroy());
+```
+
+## On React Native
+
+<Module id="kit/host" was="scenes" />
+
+<RuntimeLanes />
+
+`host`, from `@typegpu/kit/native/host`, hosts a scene, the `createScene(root, surface, options)` function that [`web.host`](#on-the-web) takes, on a React Native canvas. It runs the scene on a worker runtime by default, or on the UI runtime or the JS thread. It owns a root on your device, the canvas's configuration, the scene and the worker it creates, and schedules frames at display vsync. `@typegpu/kit/native/runtimes` provides the same runtime controls for code outside a kit scene. `useScene` wraps the host for a React Native canvas.
+
+<Module id="kit/react" />
+
+Call `useScene` in a component. Beyond what the host does, it obtains a device, sizes the surface, pauses with the app and reports errors.
+
+```tsx title="Blockfall.tsx"
+import { useScene, type Stage } from '@typegpu/kit/native/react';
+import { useState } from 'react';
+import { Text } from 'react-native';
+import {
+  GestureDetector,
+  usePanGesture,
+  useSimultaneousGestures,
+  useTapGesture,
+} from 'react-native-gesture-handler';
+import { Canvas } from 'react-native-webgpu';
+import type { Score } from './game.ts';
+import { createScene } from './scene.ts';
+
+type Blockfall = Awaited<ReturnType<typeof createScene>>;
+
+const blockfall: typeof createScene = (root, surface, options) => {
+  'worklet';
+  return createScene(root, surface, options);
+};
+
+function drop({ scene }: Stage<Blockfall>) {
+  'worklet';
+  scene.game.drop();
+}
+
+function orbit({ scene }: Stage<Blockfall>, dx: number) {
+  'worklet';
+  scene.view.goal.yaw -= dx * 0.01;
+}
+
+export function BlockfallScreen() {
+  const [score, setScore] = useState<Score>();
+  const { canvas, scene, error } = useScene(blockfall, { onScore: setScore });
+  const send = scene?.send;
+
+  const tap = useTapGesture({
+    onActivate: () => {
+      'worklet';
+      send?.(drop);
+    },
+  });
+  const pan = usePanGesture({
+    onUpdate: (e) => {
+      'worklet';
+      send?.(orbit, e.changeX);
+    },
+  });
+
+  if (error) return <Text>{error.message}</Text>;
+  return (
+    <GestureDetector gesture={useSimultaneousGestures(tap, pan)}>
+      <Canvas {...canvas} style={{ flex: 1 }} />
+    </GestureDetector>
+  );
+}
+```
+
+Blockfall's `scene.ts` runs unchanged on the web and on React Native. The screen passes `blockfall`, a worklet that calls `createScene` through a named import, so worklets loads `scene.ts` on the scene's runtime with its shaders and modules. A `'worklet'` line in `createScene` itself would copy the shaders it captures instead. If `createScene` isn't a worklet, the hook's `error` shows the line to write.
+
+What the hook does for you:
+
+<Rules>
+
+- **Worker** A worker runs the scene by default, paced by `vsync`, with the [timer floor](#what-it-costs) set by `runtimes.worker`. Each component reuses one worker named after `createScene`, because worklets can't destroy runtimes.
+- **Device** The hook uses the nearest `<GPUDeviceProvider>`'s device. Without a provider, it requests a device with the `optionalFeatures` the adapter has and destroys that device after releasing the scene.
+- **Device errors** The hook listens for uncaptured errors and `device.lost` on the JS thread with [`hosting.watch`](#a-host-of-your-own). The first error or loss releases the scene and sets `error`. Deliberate device destruction doesn't count as loss. On a shared device, the error stops every scene because WebGPU doesn't identify its source scene.
+- **Restarting** Remount the component with a different `key` to restart. A new `<Canvas>` under the same hook, such as one inside a remounted parent, restarts the scene on it. If a provider's device is lost, remount the provider too.
+- **Resizing** Canvas layout changes resize the surface. `AppState` pauses and resumes it. Use `paused` to stop a canvas scrolled out of view.
+- **Thrown errors** Scheduled work catches errors. The first error sets `error` once. Every error but a sent closure's stops the frames.
+- **Callbacks** Top-level option callbacks use `post` to call the latest render's function. An inline arrow doesn't restart the scene.
+- **Options** Initial options come from the render that starts the scene. Send changes from an effect, as in `useEffect(() => send?.(setWeather, weather), [send, weather])`. Restarting the scene creates another `send`, so the effect resends the value.
+- **Teardown** Teardown runs on the scene's runtime after any frame in flight and unconfigures the canvas. A remounted scene, including a StrictMode remount, starts after the previous teardown finishes.
+
+</Rules>
+
+### Where it runs
+
+`on`, in the hook's third argument with the other options the card lists, takes `'worker'`, `'ui'`, `'js'` or a runtime of your own. The scene is the same everywhere:
+
+```tsx
+const { canvas, scene, error } = useScene(blockfall, { onScore: setScore }, { on: 'ui' });
+```
+
+- `'worker'` keeps scene work off the UI runtime. Pass a runtime as `on` to share one worker between components.
+- `'ui'` shares the UI runtime with Reanimated. Long scene frames delay the app's UI. Use it when Reanimated must read shared values in the same frame.
+- `'js'` runs at most 60 Hz and needs no worklet wrapper. React Native DevTools can debug this runtime. Use it to debug a scene that normally runs on a worker.
+
+### Steering it
+
+`send` runs a closure on the scene's runtime with the stage, which holds the scene, root, surface and loop. A closure reaches anything there, so the scene needs no message schema. `run` does the same and returns the result to React Native as a promise.
+
+### Without React
+
+Call `host` directly in an app with its own lifecycle. Pass the device, the canvas's context, its layout size and the pixel ratio, and call `resize`, `pause`, `resume` and `destroy` yourself.
+
+<Rules>
+
+- **Options** It accepts [`web.host`](#on-the-web)'s `schedule`, `onFrame`, `attach` and `onError` options. It also accepts canvas `format`, `alphaMode`, `usage`, `colorSpace`, `toneMapping` and a fixed `size`. Off the JS thread, `onFrame` and `attach` must be worklets. The host throws an error naming a callback that isn't one.
+- **A root** Supply `root` instead of a device only with `on: 'js'`. A root must stay on the thread that created it.
+- **Schedule** `schedule` replaces display vsync. With `false`, no frames run automatically. Send `({ loop }) => loop.run(seconds)` yourself.
+- **Device errors** The device's errors reach only the JS thread. With `on: 'js'` the host watches the device; elsewhere, listen with `hosting.watch(device, onError)`, as `useScene` does.
+
+</Rules>
+
+For a scene with two canvases or none, start it with the runtime pieces below.
+
+## The runtime pieces
+
+<Module id="kit/runtimes" />
+
+`@typegpu/kit/native/runtimes` provides runtime creation, scheduling and cross-runtime calls. Hosted code uses the kit's normal API on its own runtime.
+
+| Piece                           | What it does                                                                                                                     |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `runtimes.worker()`             | A runtime with WebGPU, whose zero-delay timers wait 2 ms, so react-native-webgpu's pump can't spin it                            |
+| `runtimes.vsync(runtime)`       | Frames for a worker at the display's vsync, relayed from the UI runtime; a worker's own `requestAnimationFrame` is a 16 ms timer |
+| `runtimes.own(runtime, create)` | Keeps a value on its runtime, reached by closures that run there, and catches what they throw                                    |
+| `runtimes.cell(fields)`         | Numbers and flags any runtime writes and reads without a lock or a wait for the UI thread                                        |
+| `runtimes.post(fn)`             | Calls `fn` on React Native with its arguments copied first                                                                       |
+| `runtimes.callable(fn)`         | Runs a worklet where it is called, and any other function through `post`                                                         |
+| `hosting.local(create)`         | The same handle as `own` on the calling thread, without worklets: the JS thread, the web and tests                               |
+| `runtimes.camera(runtime)`      | VisionCamera frames for a [video feed](/kit/video/#sources) on `runtime`, handed over from the camera thread                     |
+
+Start a scene on a worker using these runtime functions:
+
+```ts twoslash title="blockfall-host.ts"
+// @filename: scene.ts
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+export declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+  options: { onScore: (score: number) => void },
+): Promise<{ frame(frame: Frame): void; destroy?(): void; game: { drop(): void } }>;
+// @filename: blockfall-host.ts
+// ---cut---
+import { animate, create as createFrames } from '@typegpu/kit/frames';
+import { surface as canvasSurface } from '@typegpu/kit/native';
+import * as runtimes from '@typegpu/kit/native/runtimes';
+import { tgpu } from 'typegpu';
+import { createScene } from './scene.ts';
+
+const worker = runtimes.worker();
+const display = runtimes.vsync(worker);
+
+export interface Start {
+  readonly device: GPUDevice;
+  readonly context: GPUCanvasContext & { present(): void };
+  readonly size: { readonly width: number; readonly height: number };
+  readonly pixelRatio: number;
+  readonly onScore: (score: number) => void;
+}
+
+export function startBlockfall(start: Start) {
+  const { device, context, size, pixelRatio } = start;
+  const options = { onScore: runtimes.post(start.onScore) };
+
+  return runtimes.own(
+    worker,
+    async () => {
+      'worklet';
+      const root = tgpu.initFromDevice({ device });
+      const surface = canvasSurface(root, { getContext: () => context }, { pixelRatio });
+      surface.resize(size.width, size.height);
+
+      const scene = await createScene(root, surface, options);
+      const loop = createFrames(root, (frame) => scene.frame(frame));
+      const animation = animate(loop, { surface, schedule: display, onError: console.error });
+
+      const destroy = () => {
+        animation.destroy();
+        loop.destroy();
+        scene.destroy?.();
+        surface.destroy();
+        root.destroy();
+      };
+      return { scene, surface, destroy };
+    },
+    { onError: console.error },
+  );
+}
+```
+
+```ts title="App.tsx"
+const blockfall = startBlockfall({
+  device,
+  context,
+  size,
+  pixelRatio: PixelRatio.get(),
+  onScore: setScore,
+});
+
+blockfall.send(({ scene }) => {
+  'worklet';
+  scene.game.drop();
+});
+```
+
+<Rules>
+
+- **Any value** `own` keeps any value returned by `create`. The callback can use the same setup code as a web page.
+- **Named imports** Named imports let worklets load `createScene`, `createFrames`, `animate` and `tgpu` on the worker, including their shaders. Namespace imports such as `import * as frames` copy the namespace instead. Its functions can't be called on that runtime, so the worklet uses none.
+- **Early sends** Calls to `send` made while `create` runs wait for it. `send` is a worklet itself, so a Gesture Handler callback on the UI runtime sends straight to the worker.
+- **Async closures** A promise can't cross runtimes, so `run` awaits an async closure on the value's runtime.
+- **Cached copies** `send` reuses cached argument copies. If you mutate an object and resend it, the receiver gets its first copy. Send another object to transfer changed values.
+- **Errors** Errors from `create`, sent closures or scheduling `send` reach `onError`.
+
+</Rules>
+
+### Frames on a worker
+
+`vsync(worker)` relays the UI runtime's display link. A worker requests a frame and the next vsync schedules it there. If the previous frame is still running, the relay skips that vsync, which `missed()` counts. Give it to `animate` as `schedule`, which defaults to `requestAnimationFrame`; a test passes a schedule it steps by hand.
+
+### Values between runtimes
+
+```ts
+const pointer = runtimes.cell({ x: 0, y: 0, down: false });
+
+// a gesture on the UI runtime
+pointer.write({ x: event.x, y: event.y });
+
+// the scene's frame, on the worker; `here` is an object the scene made once
+pointer.read(here);
+```
+
+- A cell is one fixed-type synchronizable per field, so a read takes no lock and allocates nothing. Fields are read one at a time, so a read can mix two writes.
+- It holds the latest value only. Send events that mustn't be lost, like a tap or a key, through `send`, which queues them in order.
+- `post(fn)` calls React Native code with copied arguments. A reused object arrives with its values at the time of each call.
+- Worklet callbacks run on the calling runtime. Other callbacks run on React Native with copied arguments.
+
+### With code you already have
+
+- **A renderer of your own.** `own(worker, createRenderer)` holds it, and `vsync` paces it. Nothing needs `frames` or a TypeGPU Kit scene.
+- **@typegpu/react.** The resources it transfers keep working; `runtimes` registers no serializer of its own.
+- **Reanimated and Gesture Handler.** Gesture worklets write cells or call `send`. A shared value can go in a scene's options, but reading one on a worker waits for the UI thread.
+- **A runtime someone else made.** `own` and `vsync` take any runtime.
+- **Compiling off the frame's runtime.** `own(worker, warm)` compiles pipelines while the UI runtime draws. Dawn shares its pipeline cache across runtimes.
+
+### Testing
+
+In a test, a scene builds on `recordingRoot()` with no worklets. `local` gives the same `Owned` on the test's thread, and a hand-stepped schedule drives `animate`.
+
+- `local` lives in [`@typegpu/kit/hosting`](#a-host-of-your-own) with `Owned` and the scene types, which import nothing from React Native, so a test or a web page needs no mock of worklets.
+- `native/runtimes` and `native/host` import react-native-worklets; only `native/react` imports React.
+- `runtimes.cell` needs worklets, so in its test a scene that reads one takes any object with the same `read` and `write`:
+
+```ts
+const values = { x: 0, active: false };
+const input = {
+  read: (into: typeof values) => Object.assign(into, values),
+  write: (next: Partial<typeof values>) => void Object.assign(values, next),
+};
+```
+
+## Who does what
+
+| Runtime             | Holds                                                                   |
+| ------------------- | ----------------------------------------------------------------------- |
+| JS thread           | the device, `device.lost`, React state, the hook, assets                |
+| UI runtime          | the display link and its relay, Gesture Handler's callbacks, Reanimated |
+| the scene's runtime | the root, the modules, recording, submit, present and readback maps     |
+
+Use one runtime to record into a canvas and its encoders. Other runtimes may share the device with `implicit-device-synchronization`, which react-native-webgpu requests by default. They must not share that canvas or those encoders. A host that runs its scene off the JS thread throws for a device without the feature before it starts the scene, and `useScene` shows that as its `error`.
+
+## What it costs
+
+<Rules>
+
+- **Bundle Mode** Bundle Mode with `importForwarding` and worklets' patch to Metro. [Setting up a project](/getting-started/#setting-up-a-project) has the configs.
+- **A worklet** A one-line worklet that calls `createScene` off the JS thread, and named imports inside worklets.
+- **The relay** The relay's callback on the UI runtime at every display frame, even while the scene is paused.
+- **Live runtimes** Worklets can't destroy runtimes. `destroy` releases the scene while its runtime stays alive.
+- **Timer floor** A worker created by `runtimes.worker` delays zero-delay `setTimeout` calls by 2 ms. Set `worker({ timerFloor: 0 })` to disable this floor. The worker's `destroy()` gives the runtime back its own `setTimeout`. `host` and `useScene` destroy the workers they create once their scenes are released.
+- **Your worklets** Your own scheduled worklets still abort a Release build when they throw; code sent through `send` is guarded.
+
+</Rules>
+
+## Limits
+
+- Only functions at the top level of a scene's options run on React Native by themselves. A callback nested deeper needs `runtimes.post` by hand.
+- A cell has no version a reader can check, so it suits pointers and sticks, not a value that must stay whole, such as a transform.
+- No host runs a scene in a web worker.

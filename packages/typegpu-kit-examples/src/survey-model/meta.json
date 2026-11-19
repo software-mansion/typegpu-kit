@@ -1,0 +1,8 @@
+{
+  "title": "Survey model",
+  "category": "data",
+  "description": "Contour rings of a noise island rise off a slate plinth into a stacked survey model. A kernel traces each ring by bisecting the height along rays from the peak and writes its points into one set of lines, which draws every ring as a lit enamel tube in one draw, every fifth ring bold, dashing the soundings below the shoreline. A graticule of hairlines a point wide is printed on the plinth, beside a north arrow and a scale bar, and the rings cast a soft shadow under the sun. TAA and bloom finish the picture. Point at a ring to pick it out.",
+  "line": "Contour rings traced by a kernel, drawn as lit tubes in one draw of lines.",
+  "order": 27,
+  "hint": "point at a ring \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

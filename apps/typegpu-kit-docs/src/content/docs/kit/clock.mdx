@@ -1,0 +1,170 @@
+---
+title: Clock
+description: Simulation steps of a set length, work that is due every few frames, and easing and springs that keep their pace at any display rate.
+modules: [kit/clock]
+---
+
+import Cadence from '../../../components/viz/Cadence.astro';
+import FixedStep from '../../../components/viz/FixedStep.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+Display rates vary, and a resumed tab can have a long first frame. A simulation that uses frame time can behave differently at each rate. A **fixed step** counts how many steps of a set length to run this frame. A **cadence** tells you when less frequent work is due. Easing and springs move values at the same pace at any rate.
+
+<Hidden card="benthos">
+  <FixedStep />
+</Hidden>
+
+```ts twoslash
+import { tgpu, type TgpuComputePass } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const physics: { step(pass: TgpuComputePass): void };
+declare const gi: { step(pass: TgpuComputePass, dt: number): void };
+// ---cut---
+import { clock } from '@typegpu/kit';
+
+const sim = clock.fixedStep({ step: 1 / 120, maxSteps: 4 });
+const giCadence = clock.cadence({ every: 4 });
+
+frames.create(root, (frame) => {
+  const pass = frame.encoder.beginComputePass();
+  for (let steps = sim.update(frame.dt); steps > 0; steps--) physics.step(pass);
+  if (giCadence.due(frame.dt)) gi.step(pass, giCadence.dt);
+  pass.end();
+});
+```
+
+## Fixed step
+
+<Rules>
+
+- **Steps a frame** `update(dt)` returns the number of steps to run, capped at `maxSteps`, which defaults to 4. It carries over at most another `maxSteps` of time and drops the rest to bound catch-up work. You need no extra clamp on `dt`. This cap and [`frames.animate`](/kit/frames/#running-the-loop)'s `maxDt` bound a long frame.
+- **Fixed length** Every step lasts `step`, so a GPU simulation dispatches its kernel that many times in one pass with the length baked in. A value that changes per step comes from [a count of the steps](#a-value-per-step).
+- **Time** Write `time` to a uniform for animation that follows the simulation.
+- **Changing the step** Set `step` to change the step length, such as a fixed number of steps over a beat whose length is a setting. The next `update` runs steps of the new length on the time already carried, at most `maxSteps` of them. [Particles](/kit/particles/) and [machines](/kit/machines/) read the step once, when created.
+- **Steady frames** With `steady: true`, a frame longer than both frames before it counts only as long as the longer of them, so a simulation too heavy to catch up runs no extra steps after a frame that misses the display.
+- **Between steps** Write `ahead` to a uniform once per frame to extrapolate along an object's velocity. [Particles](/kit/particles/) take the fixed step and write their own value.
+
+</Rules>
+
+## A value per step
+
+A queue write such as `buffer.write` enters the queue when you call it. Encoded commands enter the queue at submit. All writes made before that submit run before its first command, including writes made after recording a pass that reads them.
+
+:::caution[A uniform written per step]
+All the steps of a frame read the last value written:
+
+```ts del={2}
+for (let steps = sim.update(dt); steps > 0; steps--) {
+  params.write({ phase: steps }); // every step reads the last write
+  field.step(compute);
+}
+```
+
+:::
+
+Count steps on the GPU. A dispatch that increments a counter after each step gives every step its own number. Use it to derive time, seed randomness or select a buffer from a pair.
+
+```ts twoslash
+import { clock, frames } from '@typegpu/kit';
+import { d, tgpu, type TgpuComputePass } from 'typegpu';
+const root = await tgpu.init();
+declare const field: { step(pass: TgpuComputePass): void };
+// ---cut---
+const STEP = 1 / 120;
+const sim = clock.fixedStep({ step: STEP });
+
+const count = root.createMutable(d.u32);
+const counting = root.createComputePipeline({
+  compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    count.$ += 1;
+  }),
+});
+
+/** When the step that calls it starts, in seconds. */
+const stepTime = () => {
+  'use gpu';
+  return d.f32(count.$) * STEP;
+};
+
+frames.create(root, (frame) => {
+  const pass = frame.encoder.beginComputePass();
+  for (let steps = sim.update(frame.dt); steps > 0; steps--) {
+    field.step(pass);
+    pass.setPipeline(counting);
+    pass.dispatchWorkgroups(1);
+  }
+  pass.end();
+});
+```
+
+- A kernel calls `stepTime`, or an accessor takes it as its fill, `root.with(time, stepTime)`, so a module that reads its time through an accessor gets the step's own.
+- Seed with the count, `randf.seed2(d.vec2f(i, count.$))`, and take the current half of a pair from `count.$ & 1`.
+- A kernel can't read the count in the dispatch that advances it because its threads run in no order. If the step's last kernel doesn't read it, its thread 0 can advance it and save the dispatch.
+- Upload CPU-computed per-step values, such as body positions, in one array per frame. Include `first`, the step count at the frame's start, tracked on the CPU. Each step reads its value at `count.$ - first`.
+
+Set up per-pass algorithm values inside the module. The [jump flood](/examples/jump-flood/) uses a different step size in each of ten passes. It uses an immediate when `root.enabledWgslLanguageFeatures` includes `immediate_address_space`, or a bind group per pass otherwise. If neither approach works, [submit per step](/kit/frames/#submitting-early).
+
+## Cadences
+
+<Cadence />
+
+<Rules>
+
+- **By frames** `{ every: n }` runs on every `n`th frame, so its rate follows the display. `every: 4` runs 15 times per second at 60 Hz and 36 times at 144 Hz.
+- **By rate** `{ hz: rate }` runs in the frame closest to each tick of a schedule `1 / rate` apart, so at 60 fps `hz: 25` alternates gaps of two and three frames. After a stall it runs once and starts the schedule again.
+- **Resetting** Call `reset()` when resuming work after a condition changes, such as global illumination after scene geometry settles.
+- **Invalid values** Values that would run once or never, such as `hz: 0` or `maxSteps: 0`, throw a `RangeError`.
+
+</Rules>
+
+Use an `if` in the recorder for work controlled by a flag or trigger.
+
+## Easing towards a goal
+
+A value that moves a fixed fraction of the way to its goal each frame moves faster at 144 Hz than at 60 Hz. `clock.ease(dt, rate)` returns the fraction for a frame `dt` seconds long, `1 - Math.exp(-dt * rate)`, so the gap closes at the same pace at any frame rate:
+
+```ts twoslash
+import type { Frame } from '@typegpu/kit';
+declare const frame: Frame;
+declare const goal: number;
+let follow = 0;
+// ---cut---
+import { clock } from '@typegpu/kit';
+
+// Half the gap closes every 87 ms, ln 2 / 8 seconds
+follow += (goal - follow) * clock.ease(frame.dt, 8);
+```
+
+[Cameras](/kit/cameras/#goal-and-update) ease towards their goal the same way.
+
+## Springs
+
+A spring follows its target with speed of its own, so it overshoots and settles where easing only slows down. Knock it by adding to its `velocity`. `clock.spring` steps the exact motion, so it settles the same at any frame rate and stays stable through a long frame:
+
+```ts twoslash
+import type { Frame } from '@typegpu/kit';
+declare const frame: Frame;
+declare const landed: boolean;
+declare const lean: [number, number, number];
+// ---cut---
+import { clock } from '@typegpu/kit';
+
+const squash = clock.spring({ stiffness: 160, damping: 10 });
+const tilt = clock.spring({ stiffness: 55, damping: 4.5, value: [0, 0, 0] });
+
+if (landed) squash.velocity -= 2; // a knock
+squash.step(0, frame.dt);
+tilt.step(lean, frame.dt); // moves tilt.value in place
+```
+
+- `damping` of `2 * Math.sqrt(stiffness)` settles fastest without overshooting. Lower values bounce.
+- A vector spring moves the array or vector you pass as `value` in place and allocates nothing per step.
+- Set `value` to jump. The spring keeps its `velocity`.
+
+## Limits
+
+- A `hz` run can come up to half a frame early, so `hz` sets an average rate. Work that needs a minimum gap checks `dt`.
+- Cadences don't stagger their phases. Work at the same rate or at rates that divide each other runs in the same frames. For example, 10, 20 and 30 Hz work all runs every 100 ms.

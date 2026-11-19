@@ -1,0 +1,157 @@
+---
+title: Profiler
+description: GPU timers for your passes, on one query set, read back without stalling.
+modules: [kit/profiler, kit/dynamicResolution]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import PassOverlap from '../../../components/viz/PassOverlap.astro';
+
+<Module id="kit/profiler" />
+
+Timestamp queries measure GPU pass time. A pass records the GPU clock at its beginning and end. The timestamps reach the CPU a frame or two later. A **profiler** holds the query set and its readback, and makes a **timer** for each pass you time. It reads back only the passes that ran.
+
+<Hidden card="jelly-world">
+  <PassOverlap />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+// ---cut---
+import { profiler } from '@typegpu/kit';
+
+const root = await tgpu.init({
+  device: { optionalFeatures: ['timestamp-query'] },
+});
+const gpu = profiler.create(root);
+const shadow = gpu.timer('shadow');
+
+frames.create(root, (frame) => {
+  const pass = frame.encoder.beginComputePass({
+    timestampWrites: shadow.writes(),
+  });
+  // ..
+  pass.end();
+  gpu.capture(frame); // after the timed passes
+});
+
+shadow.ms;
+//     ^?
+```
+
+A timer is a handle you keep and pass around; its name is only a label. Make timers at setup, up to `capacity`, 16 by default. `timers` lists them in order, for a readout.
+
+A CPU clock read around `queue.onSubmittedWorkDone()` times when the queue drains, which includes waiting for earlier frames and for other programs using the GPU, and can't split a frame into passes. To time every pass of a page without changing its code, use the [GPU debug panel](/kit/gpu-debug/#profiling-from-the-address).
+
+## What a timing means
+
+A timing spans a pass's first and last timestamps. Passes can overlap. Tile-based GPUs, including those in Apple devices and most phones, can start the next pass's vertex work while the previous pass's fragments finish. Independent passes can run side by side. Compare passes individually, but don't add their times to measure a frame.
+
+A pass's timing also counts time it spends waiting. The canvas pass often starts early and then waits for the passes whose results it reads, so a cheap tone map can read as the most expensive pass of the frame. Some drivers write a pass's first timestamp before it can run at all. The profiler starts each timing no earlier than the pass timed before it, so call `writes()` as you record each pass.
+
+A timer's `share` splits the frame instead. Each stretch of GPU time goes to the earliest recorded pass running in it, since later passes usually wait on it. The canvas pass's share is its tail after the rest finish, the time it adds to the frame. A pass that runs entirely beside an earlier one, such as a light pass beside a trace, gets none of it, and the earlier pass's share includes both. Shares add up to the time any timed pass was running. To measure what one pass costs, leave it out and see how much shorter the frame gets.
+
+`gpu.frame.ms` measures the interval from the earliest timed pass's beginning to the latest timed pass's end. It reports the median of those frame intervals.
+
+- Time the frame's first and last passes, and `frame` is the whole frame's GPU time, gaps between passes included. Passes between needn't be timed.
+- The last pass is usually the canvas's, which reads what the frame drew, so it ends last.
+- A last pass that shares nothing with the rest, such as a compute pass after the canvas's, can run beside them and end early.
+
+### The GPU's clock
+
+A GPU that finishes a frame early lowers its clock until the next one, and the next frame's passes run slower. Timings show how long passes took at the clock the GPU chose. To compare passes or measure a change, also measure without vsync, where the GPU runs at full clock. The [GPU debug panel's Measure](/kit/gpu-debug/#measuring) runs frames back to back at full clock.
+
+:::caution[Chrome rounds timestamps]
+Chrome rounds timestamps to 100 µs, so a short pass reads as zero or noise. `chrome://flags/#enable-webgpu-developer-features` turns that off, on your own machine only, since it drops other timing protections too.
+:::
+
+## Every frame
+
+<Rules>
+
+- **Timing a pass** `writes()` returns what a pass descriptor's `timestampWrites` takes, or `pipeline.withTimestampWrites`, which shares the compiled pipeline.
+- **Marking** `writes()` also marks the pass, and only marked passes are read back, since a skipped pass leaves old timestamps in the query set. Call it in every frame that records the pass.
+- **Capturing** Call `capture(frame)` after the timed passes. It maps timestamps after submit through `staging` buffers, 3 by default, as a [readback](/kit/readback/) does. If all buffers are mapping, it skips timing that frame. Passes marked after the frame's first `capture` also go untimed.
+- **Medians** `ms` and `share` are medians of the last `samples` valid timings, or `undefined` before any arrive. The profiler drops the first `skip` frames it reads back, for warm-up, and any sample whose end isn't after its beginning. A pass that runs only now and then, such as a level load, reports once it runs after warm-up. `samples` and `skip` both default to 30.
+- **Each sample** `onSample(timing, ms)` gets every `ms` sample after the first `skip` frames, a timer's or `gpu.frame`'s, as it comes back. Keep a maximum or a percentile there, or plot it.
+- **No allocation** Keep a pass descriptor and assign `scenePass.timestampWrites = sceneTime.writes()` before each begin, so no frame allocates one.
+
+</Rules>
+
+A kit module that opens passes takes the writes in its last argument, a `profiler.Timed`:
+
+```ts
+scene.begin(frame, { timestampWrites: sceneTime.writes() });
+scene.record(frame, drawn, { timestampWrites: sceneTime.writes() });
+glow.record(frame, { timestampWrites: bloom.writes() });
+light.shadow.record(frame, casters, { timestampWrites: shadow.writes() });
+```
+
+Call `destroy()` after you stop recording and reading timings. It frees the query set, resolve buffer and staging buffers.
+
+## Without `timestamp-query`
+
+Without `timestamp-query`, `available` is false. `writes()` returns `undefined`, which `timestampWrites` accepts. `capture` does nothing and every `ms` stays `undefined`, so the same code still runs. Optional features missing from the adapter are omitted without an error. Check `available` and fall back to frame times.
+
+## Following GPU time
+
+<Module id="kit/dynamicResolution" />
+
+A frame over its GPU budget misses the display's refresh, and one well under it could draw more pixels. `dynamicResolution.create(timing, { budget })` turns a timing into a resolution scale. It lowers the scale as soon as the timing runs over budget and raises it when there is room. A target set's [resolution](/kit/targets/#resolution-scale) reads the scale and changes without allocating:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, profiler, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init({ device: { optionalFeatures: ['timestamp-query'] } });
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+import { dynamicResolution } from '@typegpu/kit';
+
+const gpu = profiler.create(root);
+const sceneTime = gpu.timer('scene');
+const outputTime = gpu.timer('output');
+const detail = dynamicResolution.create(gpu.frame, { budget: (interval) => 0.75 * interval });
+
+const hdr = { format: 'rgba16float', sampled: true } as const;
+const screen = targets.create(root, surface, { hdr }, { resolution: () => detail.scale });
+
+frames.create(root, (frame) => {
+  detail.update(frame); // before fit, which reads the scale
+  screen.fit();
+  // the scene's pass with sceneTime.writes(), the output's with outputTime.writes()
+  gpu.capture(frame);
+});
+```
+
+<Rules>
+
+- **Timing** The budget applies to the timing you pass: `gpu.frame` for the frame's GPU time, or one timer, such as a ray march's.
+- **Budget function** A function as `budget` takes the display's frame interval in milliseconds. Three quarters of it allows 12.5 ms at 60 Hz and 6.25 ms at 120 Hz.
+- **Frame interval** `update` measures that interval between its calls. It follows the shortest recent frames, so a frame that misses the display barely moves it, and a program that slows or pauses its own time doesn't change it.
+- **Fixed costs** Time that doesn't scale with pixels, such as a final pass at full size, makes a step down too small, and the next median steps again.
+- **Overruns** A scale that ran over budget stays out of reach of steps up for 10 seconds. Running over again within twice that doubles it, up to 40 seconds.
+- **Overriding** Setting `scale` overrides it, as a detail slider does, and the next `update` measures from there. Skip `update` to hold the scale.
+- **No timestamps** Without `timestamp-query`, no samples arrive and the scale stays at the top of `range`. Set `scale` after `create` to a scale a slow device can draw.
+
+</Rules>
+
+## Other timers
+
+The [GPU debug panel](/kit/gpu-debug/) times every pass and dispatch without changing the program, but skips passes that write their own timestamps, like the profiler's. TypeGPU's `withPerformanceCallback` times one pipeline and reports only its last run in an encoder.
+
+## Limits
+
+<Rules>
+
+- **Unmarked passes** A pass recorded without its timer's `writes()` that frame isn't read back, and nothing warns.
+- **Missing ends** Omitting the frame's first or last pass from timing understates `frame`, without a warning.
+- **Shares** Shares count only timed passes. An untimed pass is shared out to the timed passes running beside it, or left in the gaps.
+- **Empty passes** Dawn on Metal writes no timestamps for an empty pass, so an empty marker pass can't open the frame's timing.
+- **Spikes** A median of 30 frames trails by half a second at 60 Hz and hides spikes; `onSample` sees them.
+- **Slowed clocks** A GPU that slows its clock under light load, as phones and Apple GPUs do, reports longer times at a low scale, so a resolution controller can settle below the scale the device could draw.
+
+</Rules>

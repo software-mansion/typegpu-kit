@@ -1,0 +1,11 @@
+{
+  "title": "Hex isle",
+  "category": "worlds",
+  "description": "CC0 KayKit hex tiles form an island through a day. The glTF reader loads models and textures. A moving sun casts shadows and the sky passes through sunset and a blue hour to night. One instance kind spins windmills, drifts clouds lit in the colour of the sky and lights windows at dusk. Depth of field blurs above and below a band so the island looks like a miniature, or, set to the pointer, focuses on what is under it.",
+  "line": "glTF hex tiles through a day, a tilt-shift miniature or in focus under the pointer.",
+  "order": 7,
+  "hint": "drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 1
+  }
+}

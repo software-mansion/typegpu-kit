@@ -1,0 +1,119 @@
+---
+title: Pipeline warm-up
+description: Compile pipelines behind a loading screen, list each stage's bindings, and find the pipelines warm-up missed.
+modules: [kit/pipelines, kit/census]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import WarmupBudget from '../../../components/viz/WarmupBudget.astro';
+
+<Module id="kit/pipelines" />
+
+A pipeline compiles at first use. That frame waits while TypeGPU resolves WGSL and the browser compiles it. Compile pipelines before rendering to avoid that stall.
+
+<Hidden card="flow-field">
+  <WarmupBudget />
+</Hidden>
+
+`pipelines.compile` starts every compile before the frame loop runs, yielding to the page between them so a loading screen keeps drawing:
+
+```ts twoslash
+declare function createField(): { initAsync(): Promise<void> };
+declare function createFinal(): { initAsync(): Promise<void> };
+declare const castle: { ready: Promise<void> };
+declare const bar: HTMLProgressElement;
+// ---cut---
+import { pipelines } from '@typegpu/kit';
+const field = createField();
+const final = createFinal();
+
+await Promise.all([
+  castle.ready, // the model's files
+  pipelines.compile([field, final], {
+    onProgress: (fraction) => (bar.value = fraction),
+  }),
+]);
+```
+
+## Compiling
+
+<Rules>
+
+- **The list** `compile([field, final])` calls `initAsync()` on each item in the list and resolves once all of them finish. An item is a TypeGPU pipeline, a pass description, or a module that compiles its own pipelines.
+- **Budget** Each start resolves WGSL and creates a shader module on the main thread. The browser compiles in the background. `budget` limits time spent starting compiles at a stretch before `compile` yields to the event loop, but at least one item starts. The default is 8 ms, about half a 60 Hz frame. A larger budget can make frames late without increasing compiler throughput.
+- **Progress** `onProgress(fraction)` runs as each item finishes; every item counts the same.
+- **Failures** The promise rejects after every item finishes. Multiple failures produce an `AggregateError`. A missing `inject()` fails with an error that names the fill, and a stage over its binding limit with an error that [lists its bindings](#bindings-per-stage).
+- **Before recording** Wait for the promise before recording. TypeGPU throws if a pipeline's `initAsync` is pending. A frame loop that starts early returns from its recorder until then. A [coroutine](/kit/coroutines/) waits with `yield* coroutines.until(compiled)`.
+
+</Rules>
+
+:::caution[WebKit compiles at the first draw]
+WebKit builds Metal state at the first draw or dispatch even after async compilation. WebKit compiles one pipeline at a time and presents nothing during compilation, so a budget can't keep its loading screen moving. Draw frames behind the loading screen until frame times settle.
+:::
+
+## Bindings per stage
+
+WebGPU guarantees each shader stage 8 storage buffers, 12 uniform buffers, 16 textures, 16 samplers and 4 storage textures. A binding counts in every stage its layout entry is visible to, whether or not that stage reads it. TypeGPU makes most automatic bindings visible to both the vertex and the fragment stage, so a uniform only the vertex shader reads still counts in the fragment stage. A lit renderer adds up the camera, the lighting, its shadows and every lighting hook's resources.
+
+When a pipeline in `compile` fails while a stage is over its limit, the error lists that kind's bindings by name, which TypeGPU takes from each resource's label:
+
+```txt
+The pipeline 'figure' binds more than WebGPU guarantees per stage:
+- vertex: 13 uniform buffers, over 12
+- fragment: 13 uniform buffers, over 12
+Its uniform buffers:
+  camera (group 0, binding 0; vertex, fragment)
+  paint (group 0, binding 7; vertex, fragment)
+  …
+```
+
+`pipelines.bindingsOf(pipeline)` returns the same list at any time: every entry of the pipeline's bind group layouts with its group, binding, name, kind and the stages that count it, and `over` for the stages above their limits. It counts entries the shader never reads, such as the other parts of a [shared layout](/kit/bindings/). An external texture counts as 4 textures, a sampler and a uniform buffer. Pass `{ limits: root.device.limits }` to compare with the device's own limits.
+
+To make room:
+
+- Fill a lighting hook on the renderers that read it, with `things.renderer().pipe((cfg) => cfg.with(shading.fog, fogged))`, instead of in `lighting.create`. A hook filled there binds its resources into every lit pipeline.
+- Pack uniforms that change together into one struct.
+- Keep per-object values in a buffer the pipeline already binds, such as an instance kind's host fields.
+
+## Census
+
+<Module id="kit/census" />
+
+A census from `@typegpu/kit/debug` finds what warm-up missed. Create it right after the root, in development only, and call `warm()` once warm-up is done:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { pipelines } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const field: { initAsync(): Promise<unknown> };
+// ---cut---
+import { census } from '@typegpu/kit/debug';
+
+const counted = census.create(root); // before any compile
+await pipelines.compile([field]);
+counted.warm(); // a compile from now on is late
+```
+
+- It wraps the device's `createShaderModule`, `createBindGroupLayout`, `createPipelineLayout` and four pipeline methods. `destroy()`, or `using`, restores them.
+- `late` lists the pipelines created synchronously after `warm()`, which compiled mid-frame. Play through the game to catch an effect or a menu that compiles on first use.
+- Each entry of `pipelines` lists its pipeline's layout entries in `bindings`, counted as `bindingsOf` counts them, its bind groups in `groups`, including TypeGPU's automatic group, and the stages over a limit in `over`.
+- `overBudget` lists the pipelines with a stage over a limit or more bind groups than `maxBindGroups`. The limits default to the minimums WebGPU guarantees on every device.
+- `modules` and `wgslBytes` count the shader modules and their WGSL.
+
+## Blend states
+
+`pipelines.blend.add` adds light, for sparks, glow and bloom. `pipelines.blend.over` lays premultiplied colour over what is there, for a fragment that returns `vec4f(rgb * a, a)`, and `pipelines.blend.straight` lays straight colour, for one that returns `vec4f(rgb, a)`. Give any of them to a pipeline's target:
+
+```ts
+root.createRenderPipeline({ vertex, fragment, targets: { format, blend: pipelines.blend.add } });
+```
+
+## Limits
+
+- The budget covers only compilation starts. Allow time for the rest of your frame. At 120 Hz a frame lasts about 8 ms, so use a smaller budget.
+- Progress counts items, so a module of six pipelines moves the bar as much as one pipeline. Pass a module's pipelines one by one to count each.
+- Started compiles can't be cancelled, so a typo in the first item is reported only after the slowest compile.
+- Nothing warms a pipeline the first frames don't use, such as an effect that fires later. On WebKit it stalls the first time it draws.
+- Only pipelines compiled through `compile`, directly or inside a module, fail with the binding list. A pipeline that compiles at its first draw reports the device's error.

@@ -1,0 +1,72 @@
+---
+import TableOfContents from '@astrojs/starlight/components/TableOfContents.astro';
+---
+
+{
+  Astro.locals.starlightRoute.toc && (
+    <div class="toc">
+      <TableOfContents />
+    </div>
+  )
+}
+
+<script>
+  import { light } from './glow.ts';
+
+  const toc = document.querySelector<HTMLElement>('.toc');
+  if (toc) light(toc, () => toc.querySelector('a[aria-current="true"]'));
+</script>
+
+<style>
+  /* The pane widens with the window (theme.css); the contents keep to the index's width. They show
+     from 72rem, where Starlight moves the pane beside the page; below, it would sit above it. */
+  .toc {
+    display: none;
+    position: relative;
+    isolation: isolate;
+    width: var(--sl-sidebar-width);
+    padding: var(--s-6) var(--s-5);
+  }
+
+  @media (min-width: 72rem) {
+    .toc {
+      display: block;
+    }
+  }
+
+  .toc :global(h2) {
+    margin-bottom: var(--s-2);
+    color: var(--text);
+    font: 500 11px/20px var(--font-mono);
+  }
+
+  .toc :global(ul) {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .toc :global(a) {
+    display: block;
+    padding: 4px var(--s-2) 4px calc(var(--s-3) + var(--depth, 0) * var(--s-3));
+    border-left: 2px solid transparent;
+    border-radius: 0;
+    color: var(--muted);
+    font: 400 12px/20px var(--font-mono);
+    line-height: 20px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+
+  .toc :global(a:hover) {
+    color: var(--accent-high);
+  }
+
+  .toc :global(a[aria-current='true']) {
+    color: var(--accent-high);
+  }
+
+  :global(:root:not([data-glow])) .toc :global(a[aria-current='true']) {
+    border-left-color: var(--accent);
+  }
+</style>

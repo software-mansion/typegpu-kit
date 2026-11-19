@@ -1,0 +1,8 @@
+{
+  "title": "Afterimage",
+  "category": "worlds",
+  "description": "A bronze Foucault pendulum swings over a ring of pegs in a brutalist concrete hall, under a coffered barrel vault. The low sun streams through the piers and the slots above them. Low-resolution rendering, bloom and an ordered colour dither, which the sun shafts share, give the picture a sixth-gen texture. The sun's bounce and the sky's occlusion are baked into the hall's vertex colours, as games of that era lit their worlds. Optional image feedback adds a brief trail. Compare it with the clean render. The hall and its pendulum were modelled in Blender for the kit and are CC0.",
+  "line": "A Foucault pendulum in a sunlit brutalist hall, rendered with a sixth-gen texture.",
+  "order": 4,
+  "hint": "drag to orbit · wheel to zoom · compare clean and processed"
+}

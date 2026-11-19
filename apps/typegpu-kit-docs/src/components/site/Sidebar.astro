@@ -1,0 +1,110 @@
+---
+import IndexList from './IndexList.astro';
+import { loadIndex } from './sidebar.ts';
+import { slugOf } from './urls.ts';
+
+const { groups } = await loadIndex();
+const { wide } = Astro.locals.starlightRoute.entry.data;
+---
+
+{
+  wide && (
+    <style is:inline>
+      :root {
+        --sl-content-width: 72rem;
+      }
+    </style>
+  )
+}
+<div class="index" data-index>
+  <IndexList groups={groups} current={slugOf(Astro.url.pathname)} />
+</div>
+<script is:inline aria-hidden="true">
+  // Restore the saved scroll before first paint. Folding is not saved: each page opens the area
+  // it is in
+  {
+    const index = document.querySelector('[data-index]');
+
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('typegpu-kit:index') ?? 'null');
+      if (saved && matchMedia('(min-width: 50em)').matches) {
+        document.getElementById('starlight__sidebar').scrollTop = saved.scroll;
+      }
+    } catch {
+      // A blocked or corrupt store leaves the index as built
+    }
+
+    const mark = () => {
+      const links = [...index.querySelectorAll('a[href]')];
+      const linking = (href) => links.find((link) => link.getAttribute('href') === href);
+      const current = linking(location.pathname + location.hash) ?? linking(location.pathname);
+      if (!current) return;
+
+      for (const link of index.querySelectorAll('a[aria-current="page"]')) {
+        if (link !== current) link.removeAttribute('aria-current');
+      }
+      current.setAttribute('aria-current', 'page');
+    };
+
+    mark();
+    addEventListener('hashchange', mark);
+  }
+</script>
+
+<script>
+  import { light } from './glow.ts';
+
+  const index = document.querySelector<HTMLElement>('[data-index]');
+  const scroller = document.getElementById('starlight__sidebar');
+
+  if (index) {
+    // The light sets out from the entry of the page before, found as `mark` finds the current one
+    const from = window.navigation?.activation?.from?.url;
+    const url = from ? new URL(from) : undefined;
+    const before =
+      url &&
+      (index.querySelector<HTMLElement>(`a[href="${url.pathname}${url.hash}"]`) ??
+        index.querySelector<HTMLElement>(`a[href="${url.pathname}"]`));
+
+    light(index, () => index.querySelector('a[aria-current="page"]'), {
+      before,
+      rules: () => index.querySelectorAll('[data-rule]'),
+    });
+
+    addEventListener('pagehide', () => {
+      try {
+        sessionStorage.setItem(
+          'typegpu-kit:index',
+          JSON.stringify({ scroll: scroller?.scrollTop ?? 0 }),
+        );
+      } catch {
+        // Without a store, the next page's index starts as built
+      }
+    });
+  }
+
+  // Reveal the current entry on load if saved scroll hides it, and whenever the menu opens
+  const reveal = () => {
+    const current = scroller?.querySelector('[aria-current="page"]');
+    if (!scroller || !current) return;
+
+    const pane = scroller.getBoundingClientRect();
+    const entry = current.getBoundingClientRect();
+    if (entry.top >= pane.top && entry.bottom <= pane.bottom) return;
+
+    scroller.scrollTop += entry.top - pane.top - pane.height / 3;
+  };
+
+  reveal();
+  scroller?.addEventListener('toggle', (event) => {
+    if ((event as ToggleEvent).newState === 'open') reveal();
+  });
+</script>
+
+<style>
+  .index {
+    position: relative;
+    isolation: isolate;
+    padding: var(--s-4) 0 var(--s-6);
+  }
+</style>

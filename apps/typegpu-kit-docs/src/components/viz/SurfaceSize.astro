@@ -1,0 +1,212 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="surface-size">
+  <p class="viz-title">The drawing buffer's pixels over the screen's, under a pixel-ratio cap</p>
+  <svg viewBox="0 0 764 300" role="img" aria-label="Six CSS pixels magnified, with the screen's pixel grid and the drawing buffer's pixels on it, beside the whole screen and the share of its pixels the buffer holds"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <label>screen <select data-control="screen" autocomplete="off">
+      <option value="390,844,3" data-shape="phone">phone, 390 × 844 at 3×</option>
+      <option value="1440,900,2" data-shape="laptop">laptop, 1440 × 900 at 2×</option>
+      <option value="1920,1080,1" data-shape="monitor">monitor, 1920 × 1080 at 1×</option>
+    </select></label>
+    <Slider inline name="max" label="maxPixelRatio" min={1} max={3} step={0.5} value={2} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise the phone's cap to 3. Each buffer pixel then sits on one screen pixel, and the buffer holds 2.25 times as many. The cap never adds pixels to the laptop or the monitor.
+  </figcaption>
+</figure>
+
+<script>
+  import { control, each, rounded, slider, statusLine } from './figure.ts';
+  import { createProgram } from './SurfaceSize.program.ts';
+  import { CHAR, fitWidth, stipple, svg, text } from './svg.ts';
+
+  /** CSS pixels the loupe shows, across and down. */
+  const COLUMNS = 3;
+  const ROWS = 2;
+  /** The largest CSS pixel in the loupe, in SVG units. */
+  const CELL = 120;
+  /** A line of the rulers and of the key. */
+  const LINE = 16;
+  /** The rulers above the loupe, and beside them the key when the screen sits beside the loupe. */
+  const BAND = 3 * LINE + 10;
+  /** From this width the screen sits beside the loupe; below it, under. */
+  const WIDE = 600;
+  /** Between the loupe and the screen, room for the lines that tie them. */
+  const GAP = 64;
+  /** The key's widest line. */
+  const KEY = 28 * CHAR;
+  /** Ground between two buffer pixels in the loupe. */
+  const INSET = 3;
+  /** Room under a screen for a laptop's deck or a monitor's foot. */
+  const FOOT = 12;
+
+  const BUFFER = 'var(--viz-accent)';
+  const SCREEN = 'var(--viz-muted)';
+  const CSS = 'var(--text-2)';
+
+  each('surface-size', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const picked = control<HTMLSelectElement>(root, 'screen');
+    const max = slider(root, 'max', () => draw());
+
+    const draw = fitWidth(figure, (width) => {
+      const [layoutWidth, layoutHeight, ratio] = picked.value.split(',').map(Number) as [number, number, number];
+      const { buffer, screen } = createProgram({
+        width: layoutWidth,
+        height: layoutHeight,
+        pixelRatio: ratio,
+        maxPixelRatio: max.valueAsNumber,
+      });
+      const wide = width >= WIDE;
+      // A CSS pixel in whole sixths, so the lines of both grids land on whole units at most caps
+      const cell = Math.min(CELL, Math.floor((wide ? width - GAP - 260 : width - 3) / COLUMNS / 6) * 6);
+      const loupe = { x: 1.5, y: BAND + 0.5, width: COLUMNS * cell, height: ROWS * cell };
+      const right = loupe.x + loupe.width;
+      const bottom = loupe.y + loupe.height;
+      /** A screen pixel and a buffer pixel in the loupe. */
+      const step = cell / screen.pixelRatio;
+      const size = cell / buffer.pixelRatio;
+
+      // Three rulers over the loupe's first CSS pixel name what its lines and cells are
+      const rulers = [
+        ['CSS pixel', cell, CSS, 2],
+        ['buffer pixel', size, BUFFER, 1],
+        ['screen pixel', step, SCREEN, 1],
+      ] as const;
+      rulers.forEach(([name, length, color, weight], k) => {
+        const y = 8.5 + k * LINE;
+        svg(
+          'path',
+          { d: `M${loupe.x},${y - 3.5}v7m0,-3.5h${length}m0,-3.5v7`, fill: 'none', stroke: color, 'stroke-width': weight },
+          figure,
+        );
+        text(figure, loupe.x + cell + 10, y + 4, name, { fill: color });
+      });
+
+      // The buffer's pixels as cells, clipped at the loupe's edge
+      const fill = stipple(figure, BUFFER, 0.3);
+      for (let j = 0; j * size < loupe.height - 0.01; j++) {
+        for (let i = 0; i * size < loupe.width - 0.01; i++) {
+          const x0 = loupe.x + i * size + INSET;
+          const y0 = loupe.y + j * size + INSET;
+          const x1 = Math.min(loupe.x + (i + 1) * size - INSET, right);
+          const y1 = Math.min(loupe.y + (j + 1) * size - INSET, bottom);
+          if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+          svg('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill, stroke: BUFFER, 'stroke-opacity': 0.6 }, figure);
+        }
+      }
+
+      // Over them the screen's pixels as thin lines, CSS pixels as strong ones
+      let thin = '';
+      let strong = '';
+      for (let k = 1; k < COLUMNS * screen.pixelRatio; k++) {
+        const line = `M${loupe.x + k * step},${loupe.y}v${loupe.height}`;
+        if (k % screen.pixelRatio === 0) strong += line;
+        else thin += line;
+      }
+      for (let k = 1; k < ROWS * screen.pixelRatio; k++) {
+        const line = `M${loupe.x},${loupe.y + k * step}h${loupe.width}`;
+        if (k % screen.pixelRatio === 0) strong += line;
+        else thin += line;
+      }
+      if (thin) svg('path', { d: thin, fill: 'none', stroke: CSS, 'stroke-opacity': 0.6 }, figure);
+      svg('path', { d: strong, fill: 'none', stroke: CSS, 'stroke-width': 2 }, figure);
+      svg('rect', { ...loupe, fill: 'none', stroke: CSS, 'stroke-width': 2 }, figure);
+
+      // The screen at its shape, with its key beside it where both fit and over it where not
+      const column = wide ? width - right - GAP - 1 : width - 2;
+      const full = wide ? bottom - FOOT - 0.5 : 160;
+      const beside = !wide || (screen.width / screen.height) * full + 16 + KEY <= column;
+      const scale = beside
+        ? Math.min((column - 16 - KEY) / screen.width, full / screen.height)
+        : Math.min(Math.min(column, 320) / screen.width, (loupe.height - FOOT) / screen.height);
+      const device = {
+        x: wide ? right + GAP : 1.5,
+        y: wide ? (beside ? 0.5 : loupe.y) : bottom + 22,
+        width: Math.round(screen.width * scale),
+        height: Math.round(screen.height * scale),
+      };
+      const held = {
+        x: device.x,
+        y: device.y,
+        width: Math.round(buffer.width * scale),
+        height: Math.round(buffer.height * scale),
+      };
+      svg('rect', { ...device, fill: 'none', stroke: SCREEN }, figure);
+      svg('rect', { ...held, fill: stipple(figure, BUFFER, 0.25), stroke: BUFFER }, figure);
+
+      const under = device.y + device.height;
+      const shape = picked.selectedOptions[0]?.dataset.shape;
+      if (shape === 'laptop') {
+        svg('path', { d: `M${device.x - 10},${under + 5}h${device.width + 20}`, fill: 'none', stroke: SCREEN }, figure);
+      } else if (shape === 'monitor') {
+        const middle = Math.round(device.x + device.width / 2) + 0.5;
+        svg('path', { d: `M${middle},${under}v8m-24,0h48`, fill: 'none', stroke: SCREEN }, figure);
+      }
+
+      // The buffer is drawn at a screen pixel for each of its own, then stretched to the screen
+      if (buffer.width < screen.width) {
+        const slope = device.height / device.width;
+        const from = [held.x + held.width + 4, held.y + held.height + 4 * slope];
+        const to = [device.x + device.width - 3, under - 3 * slope];
+        const angle = Math.atan2(to[1] - from[1], to[0] - from[0]);
+        const barb = (turn: number) =>
+          `M${to[0]},${to[1]}l${-6 * Math.cos(angle + turn)},${-6 * Math.sin(angle + turn)}`;
+        svg(
+          'path',
+          { d: `M${from[0]},${from[1]}L${to[0]},${to[1]}`, fill: 'none', stroke: BUFFER, 'stroke-dasharray': '2 3' },
+          figure,
+        );
+        svg('path', { d: barb(0.5) + barb(-0.5), fill: 'none', stroke: BUFFER }, figure);
+      }
+
+      // The spot the loupe magnifies, inside the buffer at every cap
+      const spot = { x: device.x + 8, y: (wide ? Math.max(device.y, loupe.y) : device.y) + 9, width: 9, height: 6 };
+      // Lines from the loupe's corners to the spot, or one line down to it where the screen sits under
+      svg(
+        'path',
+        {
+          d: wide
+            ? `M${right + 1},${loupe.y}L${spot.x},${spot.y}M${right + 1},${bottom}L${spot.x},${spot.y + spot.height}`
+            : `M${spot.x + spot.width / 2 - 0.5},${bottom + 1}V${spot.y}`,
+          fill: 'none',
+          stroke: 'var(--viz-a)',
+          'stroke-opacity': 0.5,
+        },
+        figure,
+      );
+      svg('rect', { ...spot, fill: 'var(--ground)', stroke: 'var(--viz-a)' }, figure);
+
+      const key = { x: beside ? device.x + device.width + 16 : device.x, y: beside ? device.y - 0.5 : 0 };
+      const sizes = key.x + 18 + 19 * CHAR;
+      const share = Math.round(((buffer.width * buffer.height) / (screen.width * screen.height)) * 100);
+      svg('rect', { x: key.x + 0.5, y: key.y + 3.5, width: 10, height: 10, fill: 'none', stroke: SCREEN }, figure);
+      text(figure, key.x + 18, key.y + 12.5, 'screen');
+      text(figure, sizes, key.y + 12.5, `${screen.width} × ${screen.height}`, { 'text-anchor': 'end', fill: CSS });
+      svg(
+        'rect',
+        { x: key.x + 0.5, y: key.y + LINE + 3.5, width: 10, height: 10, fill: stipple(figure, BUFFER, 0.25), stroke: BUFFER },
+        figure,
+      );
+      text(figure, key.x + 18, key.y + LINE + 12.5, 'buffer', { fill: BUFFER });
+      text(figure, sizes, key.y + LINE + 12.5, `${buffer.width} × ${buffer.height}`, { 'text-anchor': 'end', class: 'strong' });
+      text(figure, key.x, key.y + 2 * LINE + 12.5, `${share}% of the screen's pixels`);
+
+      const spans = rounded(screen.pixelRatio / buffer.pixelRatio);
+      status.textContent =
+        spans === '1'
+          ? 'A buffer pixel covers exactly one screen pixel.'
+          : `A buffer pixel covers ${spans} × ${spans} screen pixels.`;
+
+      return Math.max(bottom, under + FOOT) + 1;
+    });
+
+    picked.addEventListener('input', draw);
+    draw();
+  });
+</script>

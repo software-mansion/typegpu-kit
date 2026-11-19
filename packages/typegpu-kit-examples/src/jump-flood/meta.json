@@ -1,0 +1,7 @@
+{
+  "title": "Jump flood",
+  "category": "techniques",
+  "description": "A territory map of 48 drifting towns. Ten dispatches rebuild their regions each frame in one compute pass, each with its own step size, using immediates when the device supports them and a bind group per dispatch otherwise. One more dispatch records which regions touch, so the draw measures each pixel's exact distance to its region's edges, and a 'use gpu' paint function inks smooth borders, colour bands and town marks on paper.",
+  "line": "A territory map of 48 drifting towns, its regions flooded again every frame.",
+  "order": 33
+}

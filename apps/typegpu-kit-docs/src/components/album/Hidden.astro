@@ -1,0 +1,97 @@
+---
+// A sealed vessel tucked behind the figure it wraps, holding the card `card`: one of the cards the
+// docs hide for the album. An epic or legendary card waits in a box standing on the figure, any
+// other in a foil pack peeking over its edge, tipped a little its own way. HIDDEN in hidden.ts
+// names the page each card hides on.
+import Pull from '../pull/Pull.astro';
+import { loadEntries } from '../pull/entries.ts';
+
+interface Props {
+  card: string;
+}
+
+const { card } = Astro.props;
+const entry = (await loadEntries()).find(({ key }) => key === card);
+if (!entry) throw new Error(`No example "${card}" to hide`);
+const vessel = entry.rarity === 'epic' || entry.rarity === 'legendary' ? 'box' : 'pack';
+// A tip from -0.15 to 0.15 radians, the same for the card wherever it hides
+const tip = (([...card].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 7) - 3) * 0.05;
+---
+
+<div class="tucked" data-pagefind-ignore>
+  <Pull vessel={vessel} card={card} lean={tip} class={`tucked-${vessel}`} />
+  {/* Gone before the first paint once its card is found, so the page stays put as the cards load */}
+  <script is:inline define:vars={{ card }}>
+    try {
+      const album = JSON.parse(localStorage.getItem('typegpu-kit:album') ?? '{}');
+      if (album.version === 1 && card in (album.found ?? {}))
+        document.currentScript.parentElement.querySelector('.pull-object').hidden = true;
+    } catch {}
+  </script>
+  <slot />
+</div>
+
+<style>
+  /* Its own margins stay inside it, so the vessel can rest on the figure's top edge; the room
+     above is the vessel's while the cards are on */
+  .tucked {
+    position: relative;
+    display: flow-root;
+    isolation: isolate;
+  }
+
+  :global(:root[data-cards]) .tucked {
+    margin-top: 56px;
+  }
+
+  /* The pack stands behind the figure, its top half over the edge */
+  .tucked :global(.tucked-pack) {
+    position: absolute;
+    top: calc(var(--s-6) + 60px - 176px);
+    right: 7%;
+    z-index: 0;
+    width: 122px;
+    height: 176px;
+  }
+
+  /* The box stands on it, its foot and its pool of light behind it */
+  .tucked :global(.tucked-box) {
+    position: absolute;
+    top: calc(var(--s-6) + 16px - 132px);
+    right: 6%;
+    z-index: 0;
+    width: 150px;
+    height: 132px;
+  }
+
+  /* Once its card is found the vessel is gone, and the room it took with it */
+  :global(:root[data-cards]) .tucked:has(> :global(.pull-object[hidden])) {
+    margin-top: 0;
+  }
+
+  .tucked > :global(:not(.pull-object)) {
+    position: relative;
+    z-index: 1;
+    background: var(--ground);
+  }
+
+  @media (max-width: 40em) {
+    :global(:root[data-cards]) .tucked {
+      margin-top: 44px;
+    }
+
+    .tucked :global(.tucked-pack) {
+      top: calc(var(--s-6) + 50px - 144px);
+      right: 4%;
+      width: 100px;
+      height: 144px;
+    }
+
+    .tucked :global(.tucked-box) {
+      top: calc(var(--s-6) + 14px - 112px);
+      right: 3%;
+      width: 128px;
+      height: 112px;
+    }
+  }
+</style>

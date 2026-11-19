@@ -1,0 +1,60 @@
+---
+title: How to read the docs
+description: The four kinds of page, the parts of a module page, and what the marks on a module's card state.
+---
+
+import CardKey from '../../components/site/CardKey.astro';
+import Words from '../../components/site/Words.astro';
+import PageAnatomy from '../../components/viz/PageAnatomy.astro';
+
+The label above a page's title says which kind of page it is.
+
+| Kind     | Read it to                                                    | It assumes                                          |
+| -------- | ------------------------------------------------------------- | --------------------------------------------------- |
+| Tutorial | build one example from an empty canvas, step by step          | nothing: no shaders and no TypeGPU                  |
+| Concept  | learn how the kit works and why modules share one shape       | the frame from [Getting started](/getting-started/) |
+| Recipe   | combine several modules for one job, in code you can copy     | the modules it names                                |
+| Module   | use one module: what it solves, how to call it, what it costs | TypeGPU basics                                      |
+
+New to the kit, read [Getting started](/getting-started/), then [How the kit works](/concepts/how-the-kit-works/). Every module page builds on those two.
+
+A page that builds on another names it under its title, after **Read first**. A module page names the concept behind it beside its label. Every page ends with the next page of its group.
+
+## A module page
+
+Every module page has the same parts in the same order: one sentence on what the module is, a strip with its import and main call, the problem it solves, a figure, the module in use, sections in the order you meet them, and its reference card.
+
+<PageAnatomy />
+
+A page that covers several modules gives each one a strip in its own section and gathers their cards under Reference.
+
+## The card
+
+A card is generated from the module's source, so it always matches the installed code. It lists every call with what each argument is, every option with its default, every member of what a call returns, and the module's facts.
+
+A fact is listed only where the module differs from a plain one. A plain module records into what you hand it, never submits, creates no GPU objects in a steady frame and needs no device feature. A card with few facts describes a module with few surprises.
+
+<CardKey id="kit/dof" />
+
+Coral marks an exception to a rule every other module keeps: it submits on its own, it allocates after setup, or its API may still change. An exception is valid behaviour you design around, and its row says when it happens.
+
+An option that takes a function marked `'use gpu'` runs in a shader, so pass a `'use gpu'` function; any other function runs on the CPU.
+
+A name in a call opens its definition: the result opens its members, `options` its fields, an option its row, a module its page. A method named in a fact opens its member. Point at a label or a kind for its meaning.
+
+## Figures and code
+
+- In a figure, blue marks what is live, selected or new. The caption says what to try.
+- A number in code with a dotted underline can be dragged, and the figure follows it.
+- Every code block is typechecked against the kit. Point at a name to see its type.
+- Lines a block needs to compile but that are not its subject are hidden. A tutorial shows every line you write.
+
+## Words
+
+A word with a dotted underline is one the docs use in a sense of their own, marked where a page first uses it. Point at it or tap it for its meaning and the section that teaches it.
+
+<Words />
+
+## For coding agents
+
+Every page is also Markdown at its address with `.md` in place of the trailing slash, such as `/kit/frames.md`. `/llms.txt` lists them, and the kit ships the same pages in its package. [Getting started](/getting-started/#coding-agents) sets an agent up with them.

@@ -1,0 +1,37 @@
+{
+  "name": "typegpu-kit-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GPU modules built on TypeGPU that record into your command encoder.",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run --filter typegpu-kit-docs dev",
+    "dev:host": "pnpm run --filter typegpu-kit-docs dev:host",
+    "build": "pnpm run --filter typegpu-kit-docs build",
+    "preview": "pnpm run --filter typegpu-kit-docs preview",
+    "fix": "pnpm --filter typegpu-kit-pull lines && oxlint -c oxlint.config.ts --fix && oxfmt",
+    "test": "pnpm run test:types && pnpm run test:style && pnpm run test:unit && pnpm run test:gpu && pnpm run test:docs && pnpm run test:pack",
+    "test:types": "pnpm run -r --parallel test:types && tsc -p tsconfig.json",
+    "test:style": "oxlint -c oxlint.config.ts --max-warnings=0 && oxfmt --check",
+    "test:unit": "vitest run --project='!*(gpu)'",
+    "test:unit:watch": "vitest --project='!*(gpu)'",
+    "test:gpu": "vitest run --project='*(gpu)'",
+    "test:docs": "pnpm run build",
+    "test:pack": "node scripts/test-pack.ts"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:types",
+    "@webgpu/types": "catalog:types",
+    "oxfmt": "0.79.0",
+    "oxlint": "1.94.0",
+    "typegpu": "catalog:",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:",
+    "vite": "8.3.8",
+    "vitest": "catalog:test"
+  },
+  "engines": {
+    "node": ">=24.2.0"
+  },
+  "packageManager": "pnpm@11.18.0"
+}

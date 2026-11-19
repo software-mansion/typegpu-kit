@@ -1,0 +1,72 @@
+---
+// Place immediately after the canvas inside the same .viz-screen
+import { TEXELS } from './loupe.ts';
+
+interface Props {
+  /** Where it looks first, as fractions of the canvas from its top left. Default the middle. */
+  at?: readonly [number, number];
+}
+
+// Only its own props: a component with scoped styles also passes `class`
+const placement = { at: Astro.props.at };
+---
+
+<div class="viz-loupe" data-loupe={JSON.stringify(placement)} aria-hidden="true">
+  <span class="outline" data-outline></span>
+  <canvas class="lens"></canvas>
+  <span class="label">{TEXELS} × {TEXELS} px</span>
+</div>
+
+<style>
+  /* No margin: page content spaces an element after the canvas, which would offset the square. */
+  .viz-loupe {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    pointer-events: none;
+  }
+
+  .outline {
+    position: absolute;
+    top: 0;
+    left: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--accent-high);
+  }
+
+  .lens {
+    position: absolute;
+    right: var(--s-2);
+    bottom: var(--s-6);
+    width: clamp(88px, 30%, 176px);
+    height: auto;
+    aspect-ratio: 1;
+    border: 1px solid var(--accent-high);
+    border-radius: 2px;
+    background: var(--ground);
+    image-rendering: pixelated;
+  }
+
+  /* Opposite the square, so it never covers what it shows. */
+  .viz-loupe.left .lens {
+    right: auto;
+    left: var(--s-2);
+  }
+
+  .label {
+    position: absolute;
+    right: var(--s-2);
+    bottom: var(--s-6);
+    translate: 0 calc(100% + var(--s-1));
+    padding: 1px var(--s-1);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--muted);
+    font: var(--type-label) / 1.5 var(--font-mono);
+  }
+
+  .viz-loupe.left .label {
+    right: auto;
+    left: var(--s-2);
+  }
+</style>

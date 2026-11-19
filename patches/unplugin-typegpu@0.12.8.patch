@@ -1,0 +1,24 @@
+diff --git a/common-BCs4Tyq-.cjs b/common-BCs4Tyq-.cjs
+index 6839c00..dfafadd 100644
+--- a/common-BCs4Tyq-.cjs
++++ b/common-BCs4Tyq-.cjs
+@@ -686,6 +686,7 @@ function containsResourceConstructorCall(node, state) {
+ 	if (node.type === "CallExpression") {
+ 		if (isShellImplementationCall(node, state)) return true;
+ 		if (node.callee.type === "Identifier" && resourceConstructors.includes(node.callee.name)) return true;
++		if (node.callee.type === "Identifier" && node.arguments.length > 0 && containsResourceConstructorCall(node.arguments[0], state)) return true;
+ 		if (node.callee.type === "MemberExpression") {
+ 			if (node.callee.property.type === "Identifier") {
+ 				if (resourceConstructors.includes(node.callee.property.name)) return true;
+diff --git a/common-DCytgr8_.js b/common-DCytgr8_.js
+index 989d3fa..ae8da18 100644
+--- a/common-DCytgr8_.js
++++ b/common-DCytgr8_.js
+@@ -659,6 +659,7 @@ function containsResourceConstructorCall(node, state) {
+ 	if (node.type === "CallExpression") {
+ 		if (isShellImplementationCall(node, state)) return true;
+ 		if (node.callee.type === "Identifier" && resourceConstructors.includes(node.callee.name)) return true;
++		if (node.callee.type === "Identifier" && node.arguments.length > 0 && containsResourceConstructorCall(node.arguments[0], state)) return true;
+ 		if (node.callee.type === "MemberExpression") {
+ 			if (node.callee.property.type === "Identifier") {
+ 				if (resourceConstructors.includes(node.callee.property.name)) return true;

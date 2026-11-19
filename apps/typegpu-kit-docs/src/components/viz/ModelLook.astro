@@ -1,0 +1,57 @@
+---
+import Loupe from './Loupe.astro';
+import { STAGES } from './ModelLook.scene.ts';
+
+const LABELS = { shadows: 'Shadows', occlusion: 'Occlusion', taa: 'TAA', bloom: 'Bloom' } as const;
+---
+
+<figure class="viz" data-viz="model-look">
+  <p class="viz-title">A glTF village with shadows, occlusion, TAA and bloom</p>
+  <div class="viz-screen">
+    <canvas aria-label="A hex village of glTF houses, trees and lanterns at dusk, lit by a low sun"></canvas>
+    <Loupe at={[0.5, 0.5]} />
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    {STAGES.map((stage) => <button data-action={stage} data-stage={stage} aria-pressed="true">{LABELS[stage]}</button>)}
+    <button data-action="turn" aria-pressed="true">Turn</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag to look round, and turn each stage off to see what it adds. The loupe shows TAA on the roof edges.
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    cursor: grab;
+    touch-action: pan-y;
+  }
+</style>
+
+<script>
+  import { action, each, live, reducedMotion, toggle } from './figure.ts';
+  import type { Stage } from './ModelLook.scene.ts';
+
+  each('model-look', (figure) => {
+    const stages = [...figure.querySelectorAll<HTMLButtonElement>('[data-stage]')].map(
+      (button) => {
+        const stage = button.dataset.stage as Stage;
+        const state = toggle(button, (on) => shown.scene?.show(stage, on));
+        return { stage, state };
+      },
+    );
+    const turning = toggle(action(figure, 'turn'), (on) => shown.scene?.rotate(on));
+    if (reducedMotion()) turning.on = false;
+
+    // TAA and the occlusion settle over frames, so frames run while the figure is on screen
+    const shown = live(figure, () => import('./ModelLook.scene.ts'), undefined, {
+      animate: true,
+      playing: true,
+      loading: 'Loading the models, 1.1 MB.',
+      orbit: true,
+      ready(scene) {
+        for (const { stage, state } of stages) scene.show(stage, state.on);
+        scene.rotate(turning.on);
+      },
+    });
+  });
+</script>

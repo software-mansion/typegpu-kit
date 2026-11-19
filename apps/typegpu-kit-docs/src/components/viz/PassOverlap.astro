@@ -1,0 +1,111 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="pass-overlap">
+  <p class="viz-title">Overlapping passes sum to more than the frame takes</p>
+  <svg viewBox="0 0 480 236" role="img" aria-label="Overlapping GPU pass intervals, their sum and total frame duration"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="overlap" min={0} max={100} value={100} unit=" %" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Set overlap to 0 to make frame duration match the sum of pass times. The simulated passes total 13.7 ms.
+  </figcaption>
+</figure>
+
+<script>
+  import { each, slider } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const LEFT = 124;
+  const BUDGET = 1000 / 120;
+
+  // Each pass's interval in ms, and how far it can start before the previous pass ends
+  const passes = [
+    { name: 'particles', color: 'var(--viz-d)', ms: 0.9, early: 0 },
+    { name: 'shadow', color: 'var(--viz-e)', ms: 2.6, early: 0.9 }, // shares nothing with the particles
+    { name: 'scene', color: 'var(--viz-b)', ms: 5.2, early: 2.0 }, // vertex work while the shadow pass finishes
+    { name: 'bloom', color: 'var(--viz-c)', ms: 2.8, early: 1.6 },
+    { name: 'finish', color: 'var(--viz-f)', ms: 2.2, early: 1.2 },
+  ];
+
+  const ms = (value: number) => `${value.toFixed(1)} ms`;
+
+  each('pass-overlap', (root) => {
+    const figure = root.querySelector('svg')!;
+    const input = slider(root, 'overlap', () => draw());
+
+    const draw = fitWidth(figure, (width) => {
+      const overlap = input.valueAsNumber / 100;
+      const narrow = width < 440;
+      const scale = (width - LEFT - 4) / 14; // px per ms
+      const x = (t: number) => LEFT + t * scale;
+
+      const intervals: { begin: number; end: number }[] = [];
+      for (const pass of passes) {
+        const previous = intervals.at(-1);
+        const begin = previous ? previous.end - pass.early * overlap : 0;
+        intervals.push({ begin, end: begin + pass.ms });
+      }
+
+      const sum = passes.reduce((total, pass) => total + pass.ms, 0);
+      const span = Math.max(...intervals.map((interval) => interval.end));
+
+      passes.forEach((pass, i) => {
+        const { begin, end } = intervals[i];
+        const y = 8 + i * 22;
+
+        text(figure, 0, y + 12, pass.name, { fill: pass.color });
+        text(figure, LEFT - 8, y + 12, ms(pass.ms), { 'text-anchor': 'end' });
+        svg('rect', { x: x(begin), y, width: Math.max((end - begin) * scale - 1, 0.5), height: 16, rx: 2, fill: stipple(figure, pass.color, 0.25), stroke: pass.color }, figure);
+      });
+
+      const edges = [...new Set(intervals.flatMap((interval) => [interval.begin, interval.end]))].toSorted((a, b) => a - b);
+      const busyY = 124;
+      text(figure, 0, busyY + 11, 'overlapping', { class: 'strong' });
+      for (let i = 0; i + 1 < edges.length; i++) {
+        const mid = (edges[i] + edges[i + 1]) / 2;
+        const count = intervals.filter((interval) => interval.begin <= mid && mid < interval.end).length;
+        if (count === 0) continue;
+
+        svg('rect', {
+          x: x(edges[i]), y: busyY, width: (edges[i + 1] - edges[i]) * scale, height: 14,
+          fill: count > 1 ? stipple(figure, 'var(--viz-e)', 0.5) : stipple(figure, 'var(--viz-muted)', 0.5), 'fill-opacity': count > 1 ? 0.6 : 0.25,
+        }, figure);
+      }
+
+      const sumY = 162;
+      const spanY = 186;
+      text(figure, 0, sumY + 11, 'sum', { class: 'strong' });
+      text(figure, LEFT - 8, sumY + 11, ms(sum), { 'text-anchor': 'end' });
+      let at = 0;
+      for (const pass of passes) {
+        svg('rect', { x: x(at), y: sumY, width: Math.max(pass.ms * scale - 1, 0.5), height: 14, fill: stipple(figure, pass.color, 0.25), stroke: pass.color }, figure);
+        at += pass.ms;
+      }
+
+      text(figure, 0, spanY + 11, 'frame', { class: 'strong' });
+      text(figure, LEFT - 8, spanY + 11, ms(span), { 'text-anchor': 'end' });
+      svg('rect', {
+        x: x(0), y: spanY, width: span * scale, height: 14,
+        fill: span > BUDGET ? stipple(figure, 'var(--viz-bad)', 0.5) : stipple(figure, 'var(--viz-d)', 0.5),
+      }, figure);
+
+      svg('line', { x1: x(BUDGET), x2: x(BUDGET), y1: sumY - 16, y2: spanY + 20, stroke: 'var(--viz-line)', 'stroke-dasharray': '3 3' }, figure);
+      const room = x(BUDGET) + 112 < width;
+      text(figure, x(BUDGET) + (room ? 4 : -4), sumY - 6, '120 fps at 8.33 ms', { 'text-anchor': room ? 'start' : 'end' });
+
+      const total = `sum ${ms(sum)} = frame ${ms(span)}`;
+      const twice = `+ ${ms(sum - span)} counted more than once`;
+      if (narrow) {
+        text(figure, 0, 228, total, { class: 'strong' });
+        text(figure, 0, 244, twice, { class: 'strong' });
+      } else {
+        text(figure, 0, 228, `${total} ${twice}`, { class: 'strong' });
+      }
+      return narrow ? 252 : 236;
+    });
+
+    draw();
+  });
+</script>

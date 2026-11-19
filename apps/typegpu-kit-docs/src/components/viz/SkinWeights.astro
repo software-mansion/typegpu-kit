@@ -1,0 +1,447 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="skin-weights">
+  <p class="viz-title">A vertex goes where its joints carry it, mixed by its weights</p>
+  <svg class="viz-keys" viewBox="0 0 720 300" role="group" aria-label="An arm of three joints bending a strip of vertices skinned to them"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="shoulder" min={0} max={20} value={0} />
+    <Slider inline name="elbow" min={0} max={90} value={70} />
+    <Slider inline name="wrist" min={-20} max={40} value={20} />
+    <button data-action="weights" aria-pressed="true">Weights</button>
+    <button data-action="rest">Rest pose</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag a bone, then pick a vertex near the elbow. A hollow dot marks where one of its joints alone would carry it, and the vertex lies between the dots by its weights.
+  </figcaption>
+</figure>
+
+<style>
+  /* Each joint's colour, on the number that turns it. */
+  .viz-controls :global(label:has([data-control]))::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    background: var(--joint);
+  }
+
+  .viz-controls :global(label:has([data-control='shoulder'])) {
+    --joint: var(--viz-b);
+  }
+
+  .viz-controls :global(label:has([data-control='elbow'])) {
+    --joint: var(--viz-c);
+  }
+
+  .viz-controls :global(label:has([data-control='wrist'])) {
+    --joint: var(--viz-d);
+  }
+</style>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, control, each, onKeys, rounded, slider, toggle } from './figure.ts';
+  import { createProgram, HALF, type Posed } from './SkinWeights.program.ts';
+  import { fitWidth, onStroke, stipple, svg, text } from './svg.ts';
+
+  /** Each joint's colour, in the order of `skin.joints`. */
+  const JOINT = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)'];
+  /** Pixels a model unit takes at most. */
+  const UNIT = 104;
+  /** The widths of the joints' list and the vertex's values, and the gap between columns. */
+  const LIST = 150;
+  const VALUES = 206;
+  const GAP = 48;
+  const ROW = 26;
+  /** How much of a triangle its dither lights, in cells of this many pixels. */
+  const DENSITY = 0.34;
+  const CELL = 2;
+
+  const radians = (degrees: number) => (degrees * Math.PI) / 180;
+
+  /** The ends and the middle of a slider's range, in radians. */
+  const range = (input: HTMLInputElement) => {
+    const [min, max] = [Number(input.min), Number(input.max)];
+    return [min, (min + max) / 2, max].map(radians);
+  };
+
+  /** The vertex an event's target stands for, if any. */
+  const vertexAt = (event: Event) => {
+    const found = (event.target as Element).closest('[data-vertex]');
+    return found ? Number(found.getAttribute('data-vertex')) : undefined;
+  };
+
+  /** A disc at (x, y) cut into the joints' colours by their shares, which add up to 1. */
+  function pie(parent: SVGElement, x: number, y: number, r: number, shares: readonly number[]) {
+    let from = 0;
+    shares.forEach((share, joint) => {
+      if (share <= 0) return;
+      if (share >= 1) {
+        svg('circle', { cx: x, cy: y, r, fill: JOINT[joint] }, parent);
+        return;
+      }
+      const edge = (turn: number) =>
+        `${x + r * Math.sin(turn * 2 * Math.PI)},${y - r * Math.cos(turn * 2 * Math.PI)}`;
+      const d = `M${x},${y}L${edge(from)}A${r},${r} 0 ${share > 0.5 ? 1 : 0} 1 ${edge(from + share)}Z`;
+      svg('path', { d, fill: JOINT[joint] }, parent);
+      from += share;
+    });
+  }
+
+  each('skin-weights', (root) => {
+    const figure = root.querySelector('svg')!;
+    const { skin, mesh, pose } = createProgram();
+    const joints = skin.joints.length;
+    const vertices = mesh.positions.length / 3;
+    const inputs = skin.joints.map(({ name }) => control(root, name));
+
+    /** Each vertex's joints with a weight, and its weight for every joint of the skin. */
+    const influences = Array.from({ length: vertices }, (_, vertex) => {
+      const named = [0, 1, 2, 3].map((k) => ({
+        joint: mesh.joints![vertex * 4 + k],
+        weight: mesh.weights![vertex * 4 + k],
+      }));
+      const shares = Array.from({ length: joints }, () => 0);
+      for (const { joint, weight } of named) shares[joint] += weight;
+      return { named, shares };
+    });
+
+    // Room for the strip wherever the sliders let it go
+    const bounds = { left: 0, right: 0, bottom: 0, top: 0 };
+    for (const a of range(inputs[0])) {
+      for (const b of range(inputs[1])) {
+        for (const c of range(inputs[2])) {
+          const { positions } = pose([a, b, c]);
+          for (let i = 0; i < positions.length; i += 3) {
+            bounds.left = Math.min(bounds.left, positions[i]);
+            bounds.right = Math.max(bounds.right, positions[i]);
+            bounds.bottom = Math.min(bounds.bottom, positions[i + 1]);
+            bounds.top = Math.max(bounds.top, positions[i + 1]);
+          }
+        }
+      }
+    }
+    const MARGIN = 0.2;
+    const across = bounds.right - bounds.left + 2 * MARGIN;
+    const up = bounds.top - bounds.bottom + 2 * MARGIN;
+
+    const turns = inputs.map((input) => radians(input.valueAsNumber));
+    let posed: Posed = pose(turns);
+    let selected = 8;
+    let pointed: number | undefined;
+    // Where the drawing puts the model, for the pointer to find its way back
+    let origin = { x: 0, y: 0, unit: UNIT };
+    const weights = toggle(action(root, 'weights'), () => shown.redraw());
+
+    /** Bones the pointer turns: wide lines over them, kept between draws. */
+    const grips = skin.joints.map(({ name }) =>
+      svg('line', {
+        stroke: 'transparent',
+        'stroke-width': 18,
+        'stroke-linecap': 'round',
+        'pointer-events': 'stroke',
+        style: 'touch-action: none; cursor: grab',
+        'data-bone': name,
+      }),
+    );
+
+    /** Where the bone of `joint` ends: at its child, or a unit along it. */
+    const tail = (joint: number) => {
+      const child = skin.joints.findIndex(({ parent }) => parent === joint);
+      return child === -1 ? posed.place(joint, [1, 0, 0]) : posed.place(child);
+    };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const wide = width >= 600;
+        const beside = !wide && width >= LIST + VALUES + GAP;
+        const room = wide ? width - VALUES - GAP : width;
+        const unit = Math.min(room / across, UNIT);
+        const stage = { width: across * unit, height: up * unit };
+        origin = {
+          x: (wide ? 0 : (room - stage.width) / 2) + (MARGIN - bounds.left) * unit,
+          y: (MARGIN + bounds.top) * unit,
+          unit,
+        };
+        const at = (point: ArrayLike<number>) =>
+          [origin.x + point[0] * unit, origin.y - point[1] * unit] as const;
+        const vertex = (i: number) => at(posed.positions.subarray(i * 3, i * 3 + 3));
+
+        // The strip as the file stores it
+        const [bindX, bindY] = at([0, HALF]);
+        svg(
+          'rect',
+          {
+            x: bindX,
+            y: bindY,
+            width: joints * unit,
+            height: 2 * HALF * unit,
+            fill: 'none',
+            stroke: 'var(--viz-line)',
+            'stroke-dasharray': '3 3',
+          },
+          figure,
+        );
+        text(figure, bindX + joints * unit, bindY + 2 * HALF * unit + 14, 'bind pose', {
+          'text-anchor': 'end',
+        });
+
+        // The strip's triangles, two to a quad
+        for (let i = 0; i < mesh.indices.length; i += 6) {
+          const corners = [...mesh.indices.subarray(i, i + 6)];
+          const triangle = (from: number) =>
+            `M${corners.slice(from, from + 3).map((corner) => vertex(corner).join(',')).join('L')}Z`;
+          const d = triangle(0) + triangle(3);
+          const shares = skin.joints.map(
+            (_, joint) => corners.reduce((sum, corner) => sum + influences[corner].shares[joint], 0) / 6,
+          );
+          // Dithered between its joints' colours: each joint lights its share of the cells
+          let lit = weights.on ? DENSITY : 0;
+          for (let joint = joints - 1; joint >= 0 && lit > 0; joint--) {
+            if (shares[joint] > 0) {
+              svg('path', { d, fill: stipple(figure, JOINT[joint], lit, CELL), 'shape-rendering': 'crispEdges' }, figure);
+            }
+            lit -= shares[joint] * DENSITY;
+          }
+          if (!weights.on) svg('path', { d, fill: 'none', stroke: 'var(--viz-line)', 'stroke-linejoin': 'round' }, figure);
+        }
+
+        skin.joints.forEach((_, joint) => {
+          const [x, y] = at(posed.place(joint));
+          const [tx, ty] = at(tail(joint));
+          const length = Math.hypot(tx - x, ty - y);
+          const [dx, dy] = [(tx - x) / length, (ty - y) / length];
+          const [sx, sy] = [x + dx * 0.2 * length, y + dy * 0.2 * length];
+          const side = unit * 0.08;
+          svg(
+            'path',
+            {
+              d: `M${x},${y}L${sx - dy * side},${sy + dx * side}L${tx},${ty}L${sx + dy * side},${sy - dx * side}Z`,
+              fill: 'var(--ground)',
+              stroke: JOINT[joint],
+              'stroke-width': 1.25,
+              'stroke-linejoin': 'round',
+            },
+            figure,
+          );
+          const grip = grips[joint];
+          for (const [name, value] of Object.entries({ x1: x, y1: y, x2: tx, y2: ty })) {
+            grip.setAttribute(name, String(value));
+          }
+        });
+
+        // The vertex pointed at or picked: where each of its joints alone carries it, and the line
+        // between them that it lies on
+        const shownVertex = pointed ?? selected;
+        const carrying = influences[shownVertex].named.filter(({ weight }) => weight > 0);
+        const ghosts = carrying.map(({ joint }) => at(posed.carried(shownVertex, joint)));
+        if (ghosts.length > 1) {
+          svg(
+            'path',
+            { d: `M${ghosts.map((ghost) => ghost.join(',')).join('L')}`, fill: 'none', stroke: 'var(--text)' },
+            figure,
+          );
+        }
+        carrying.forEach(({ joint }, k) => {
+          svg(
+            'circle',
+            { cx: ghosts[k][0], cy: ghosts[k][1], r: 5, fill: 'var(--ground)', stroke: JOINT[joint], 'stroke-width': 1.5 },
+            figure,
+          );
+        });
+
+        const dot = unit > 80 ? 4.5 : 3.5;
+        for (let i = 0; i < vertices; i++) {
+          const [x, y] = vertex(i);
+          svg('circle', { cx: x, cy: y, r: dot + 1.5, fill: 'var(--ground)' }, figure);
+          if (weights.on) pie(figure, x, y, dot, influences[i].shares);
+          else svg('circle', { cx: x, cy: y, r: dot, fill: 'var(--viz-muted)' }, figure);
+        }
+        const ring = (i: number, stroke: string) => {
+          const [x, y] = vertex(i);
+          svg('circle', { cx: x, cy: y, r: dot + 4, fill: 'none', stroke, 'stroke-width': 1.5 }, figure);
+        };
+        if (shownVertex !== selected) ring(selected, 'var(--viz-line)');
+        ring(shownVertex, 'var(--viz-accent)');
+        // Its index, on the side of the strip it is on
+        const [vx, vy] = vertex(shownVertex);
+        const [ox, oy] = vertex(shownVertex ^ 1);
+        const out = (dot + 13) / Math.hypot(vx - ox, vy - oy);
+        text(figure, vx + (vx - ox) * out, vy + (vy - oy) * out + 4, String(shownVertex), {
+          'text-anchor': 'middle',
+          fill: 'var(--viz-accent)',
+        });
+
+        // Joints wear their index in `skin.joints`, here and in the list
+        const index = (x: number, y: number, joint: number, dashed = false) => {
+          svg(
+            'rect',
+            {
+              x: x - 8,
+              y: y - 8,
+              width: 16,
+              height: 16,
+              rx: 2,
+              fill: 'var(--ground)',
+              stroke: dashed ? 'var(--viz-line)' : JOINT[joint],
+              ...(dashed ? { 'stroke-dasharray': '2 2' } : {}),
+            },
+            figure,
+          );
+          text(figure, x, y + 4, String(joint), {
+            'text-anchor': 'middle',
+            fill: dashed ? 'var(--viz-muted)' : JOINT[joint],
+          });
+        };
+        skin.joints.forEach((_, joint) => index(...at(posed.place(joint)), joint));
+
+        figure.append(...grips);
+        for (let i = 0; i < vertices; i++) {
+          const [x, y] = vertex(i);
+          svg('circle', { cx: x, cy: y, r: unit * 0.115, fill: 'transparent', 'data-vertex': i, style: 'cursor: pointer' }, figure);
+        }
+
+        // The skin's joints, each under its parent
+        const list = wide ? { x: stage.width + GAP, y: 8 } : { x: 0, y: stage.height + 12 };
+        text(figure, list.x, list.y + 11, 'skin.joints', { class: 'strong' });
+        text(figure, list.x + LIST, list.y + 11, 'parent', { 'text-anchor': 'end' });
+        skin.joints.forEach(({ name, parent }, joint) => {
+          let depth = 0;
+          for (let above = parent; above !== -1; above = skin.joints[above].parent) depth += 1;
+          const x = list.x + 8 + depth * 14;
+          const y = list.y + 34 + joint * ROW;
+          if (parent !== -1) {
+            svg(
+              'path',
+              { d: `M${x - 14},${y - ROW + 8}V${y}H${x - 8}`, fill: 'none', stroke: 'var(--viz-line)' },
+              figure,
+            );
+          }
+          index(x, y, joint);
+          // The joints the vertex names stand out
+          const carries = carrying.some((carrier) => carrier.joint === joint);
+          text(figure, x + 16, y + 4, name, carries ? { class: 'strong' } : {});
+          text(figure, list.x + LIST, y + 4, String(parent), {
+            'text-anchor': 'end',
+            ...(parent !== -1 && { fill: JOINT[parent] }),
+          });
+        });
+
+        // What the mesh stores for the vertex
+        const values = beside
+          ? { x: width - VALUES, y: list.y }
+          : { x: list.x, y: list.y + 34 + joints * ROW + (wide ? 24 : 0) };
+        const cell = (k: number) => values.x + 64 + k * 38;
+        const { named } = influences[shownVertex];
+        const head = text(figure, values.x, values.y + 11, 'vertex ', { class: 'strong' });
+        svg('tspan', { fill: 'var(--viz-accent)' }, head).textContent = String(shownVertex);
+        text(figure, values.x, values.y + 38, 'joints');
+        text(figure, values.x, values.y + 38 + ROW, 'weights');
+        named.forEach(({ joint, weight }, k) => {
+          index(cell(k) + 8, values.y + 34, joint, weight === 0);
+          text(figure, cell(k) + 8, values.y + 38 + ROW, rounded(weight), {
+            'text-anchor': 'middle',
+            fill: weight > 0 ? 'var(--text)' : 'var(--viz-muted)',
+          });
+        });
+
+        // Its weights as lengths, and the mix they name
+        const bar = { x: values.x, y: values.y + 38 + ROW + 12, width: cell(3) + 16 - values.x };
+        let along = bar.x;
+        const sum = text(figure, values.x, bar.y + 24, '');
+        carrying.forEach(({ joint, weight }, k) => {
+          svg('rect', { x: along, y: bar.y, width: weight * bar.width, height: 3, fill: JOINT[joint] }, figure);
+          along += weight * bar.width;
+          svg('tspan', {}, sum).textContent = `${k > 0 ? ' + ' : ''}${rounded(weight)} × `;
+          svg('tspan', { fill: JOINT[joint] }, sum).textContent = skin.joints[joint].name;
+        });
+
+        const below = beside ? list.y + 34 + joints * ROW : values.y + 38 + ROW + 12 + 30;
+        return Math.ceil(wide ? Math.max(stage.height, below) : below);
+      },
+      300,
+    );
+
+    const shown = animation(root, { draw });
+    const repose = () => {
+      inputs.forEach((input, joint) => (turns[joint] = radians(input.valueAsNumber)));
+      posed = pose(turns);
+      shown.redraw();
+    };
+    for (const { name } of skin.joints) slider(root, name, repose, (degrees) => `${degrees}°`);
+
+    /** Sets a joint's slider, in whole degrees within its range, as the reader would. */
+    const turn = (joint: number, degrees: number) => {
+      const input = inputs[joint];
+      const before = input.value;
+      input.valueAsNumber = Math.round(degrees);
+      if (input.value !== before) input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    action(root, 'rest', () => inputs.forEach((_, joint) => turn(joint, 0)));
+
+    // A bone keeps the angle it was caught at under the pointer
+    let caught: number | undefined;
+    const heading = (joint: number, point: DOMPoint) => {
+      const [x, y] = posed.place(joint);
+      return Math.atan2(origin.y - point.y - y * origin.unit, point.x - origin.x - x * origin.unit);
+    };
+    onStroke(
+      figure,
+      grips.map((grip, joint) => {
+        grip.addEventListener('pointerdown', () => {
+          caught = undefined;
+          pointed = undefined;
+        });
+        return [
+          grip,
+          (point: DOMPoint) => {
+            const before = turns.slice(0, joint).reduce((sum, above) => sum + above, 0);
+            const to = heading(joint, point);
+            caught ??= to - before - turns[joint];
+            // The turn nearest the one it has, so a bone never flips across its range
+            let next = to - caught - before;
+            next -= Math.round((next - turns[joint]) / (2 * Math.PI)) * 2 * Math.PI;
+            turn(joint, (next * 180) / Math.PI);
+          },
+        ] as const;
+      }),
+    );
+
+    figure.addEventListener('pointermove', (event) => {
+      if (event.pointerType !== 'mouse' || event.buttons !== 0) return;
+      const over = vertexAt(event);
+      if (over === pointed) return;
+      pointed = over;
+      shown.redraw();
+    });
+    figure.addEventListener('pointerleave', () => {
+      pointed = undefined;
+      shown.redraw();
+    });
+    // A press picks without focusing the drawing, so its focus ring shows for the keyboard alone
+    figure.addEventListener('mousedown', (event) => event.preventDefault());
+    figure.addEventListener('click', (event) => {
+      const over = vertexAt(event);
+      if (over === undefined) return;
+      selected = over;
+      shown.redraw();
+    });
+    onKeys(
+      figure,
+      {
+        arrow(dx, dy) {
+          // Two rows of vertices: along the strip in twos, across it by one
+          const row = dy === 0 ? selected % 2 : dy < 0 ? 1 : 0;
+          const column = clamp(Math.floor(selected / 2) + dx, 0, vertices / 2 - 1);
+          selected = column * 2 + row;
+          pointed = undefined;
+          shown.redraw();
+        },
+      },
+      'arrow keys pick a vertex',
+    );
+  });
+</script>

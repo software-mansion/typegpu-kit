@@ -1,0 +1,46 @@
+---
+import Choice from './Choice.astro';
+import { FILTERS, SIZES, START } from './Shadow.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="shadow">
+  <p class="viz-title">One shadow map, read with one, four or nine comparisons</p>
+  <canvas aria-label="Three shapes and a narrow pillar casting shadows on a floor"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="sun" min={-180} max={180} step={5} value={START.sun} unit="°" />
+    <Choice name="filter" label="filter" options={FILTERS} value={START.filter} />
+    <Choice name="size" label="size" options={SIZES} value={START.texels} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Set 256 texels and compare one, four or nine shadow comparisons. The map spans 9 units around a 0.3-unit-wide pillar; extra comparisons soften its stepped shadow.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each, live, slider } from './figure.ts';
+  import type { Filter } from './Shadow.scene.ts';
+
+  each('shadow', (figure) => {
+    const aim = (degrees: number) => {
+      shown.update((scene) => scene.aim((degrees * Math.PI) / 180));
+    };
+    const sun = slider(figure, 'sun', aim);
+    // A new map compiles new pipelines, so a scene takes one only once the reader picks it
+    let picked = false;
+    const remake = () => {
+      picked = true;
+      shown.update((scene) => scene.remake(Number(size.value), Number(filter.value) as Filter));
+    };
+    const filter = choice(figure, 'filter', remake);
+    const size = choice(figure, 'size', remake);
+
+    const shown = live(figure, () => import('./Shadow.scene.ts'), undefined, {
+      grade: 1,
+      ready(scene) {
+        if (picked) scene.remake(Number(size.value), Number(filter.value) as Filter);
+        scene.aim((sun.valueAsNumber * Math.PI) / 180);
+      },
+    });
+  });
+</script>

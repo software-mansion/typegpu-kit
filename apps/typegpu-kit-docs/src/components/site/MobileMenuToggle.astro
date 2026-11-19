@@ -1,0 +1,55 @@
+---
+---
+
+<button popovertarget="starlight__sidebar" class="menu-button">
+  <span class="open">Menu</span>
+  <span class="close">Close</span>
+</button>
+
+<style>
+  .menu-button {
+    position: fixed;
+    top: calc((var(--sl-nav-height) - 32px) / 2);
+    right: var(--sl-nav-pad-x);
+    z-index: var(--sl-z-index-navbar);
+    height: 32px;
+    padding: 0 var(--s-3);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text);
+    font: 400 12px/1 var(--font-mono);
+    cursor: pointer;
+  }
+
+  .menu-button:hover {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+
+  .menu-button:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Wide screens show the index beside the page, from where Starlight stops making it a popover. */
+  @media (min-width: 50em), print {
+    .menu-button {
+      display: none;
+    }
+  }
+
+  .menu-button:has(~ :popover-open) .open,
+  .menu-button:not(:has(~ :popover-open)) .close {
+    display: none;
+  }
+</style>
+
+<style is:global>
+  /* On phones alone: wherever it applies, Chrome restyles the body at any change in the page. */
+  @media (max-width: 49.99em) {
+    body:has(#starlight__sidebar:popover-open) {
+      overflow: hidden;
+    }
+  }
+</style>

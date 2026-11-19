@@ -1,0 +1,40 @@
+{
+  "name": "typegpu-kit-examples",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeGPU Kit examples, shared by the docs site and the native app.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contract": "./src/contract.ts",
+    "./hosts": "./src/hosts.ts",
+    "./testing": "./tests/utils/examples.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "frames": "FRAMES=${FRAMES:-1} vitest run --root ../.. --project 'typegpu-kit-examples (gpu)' posters",
+    "posters": "POSTERS=${POSTERS:-1} vitest run --root ../.. --project 'typegpu-kit-examples (gpu)' posters",
+    "test:types": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@typegpu/color": "catalog:",
+    "@typegpu/kit": "workspace:*",
+    "@typegpu/noise": "catalog:",
+    "@typegpu/radiance-cascades": "catalog:",
+    "@typegpu/sdf": "catalog:",
+    "math": "^0.1.0",
+    "typegpu": "catalog:",
+    "wgpu-matrix": "catalog:"
+  },
+  "devDependencies": {
+    "@types/draco3d": "1.4.10",
+    "@types/node": "catalog:types",
+    "@webgpu/types": "catalog:types",
+    "draco3d": "1.5.9",
+    "sharp": "0.35.5",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:",
+    "vitest": "catalog:test",
+    "webgpu": "catalog:test"
+  }
+}

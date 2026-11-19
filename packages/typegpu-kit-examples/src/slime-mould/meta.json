@@ -1,0 +1,15 @@
+{
+  "title": "Slime mould",
+  "category": "simulations",
+  "description": "400 000 Physarum agents grow a network of glowing threads across dark agar toward food. The first tutorial builds the scene. A fixed-step kernel moves agents in a buffer. They sense the trail ahead, steer toward it and deposit more with atomics. Another kernel blurs and fades the trail grid. Food attracts hungry agents and feeds the network. A full-screen pass maps trail density through a tone curve and a crimson-to-gold colour ramp, with pulses and bloom. Random numbers come from @typegpu/noise. Tap to drop more food.",
+  "line": "A slime mould grows glowing threads across dark agar and connects the food it finds.",
+  "order": 14,
+  "card": {
+    "count": 100000,
+    "grid": 1024
+  },
+  "hint": "tap to drop more food",
+  "poster": {
+    "seconds": 24
+  }
+}

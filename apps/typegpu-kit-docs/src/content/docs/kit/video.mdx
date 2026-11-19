@@ -1,0 +1,137 @@
+---
+title: Camera and video
+description: Copy camera or video frames into a texture you own, fitted, turned and mirrored, or sample the newest frame in place without a copy.
+modules: [kit/video]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+
+A camera hands over frames at its own pace, in its own size and orientation, and each frame is valid only briefly: on the web an imported video frame expires when its task ends, and a native camera needs its buffer returned. A scene that samples frames directly has to handle all of that. `video.create` gives the scene a texture of a size it picks instead, and copies each new frame into it, fitted to that size, turned upright and mirrored if asked. The texture keeps the last frame until the next one arrives.
+
+<Hidden card="ember-mirror">
+  <ExampleFigure
+    example="ember-mirror"
+    controls={['sensitivity', 'rate', 'tint', 'reflection']}
+    caption="Your camera as a dark mirror: each new picture is compared with the last, and edges that moved shed embers. Drifting smoke shows until you allow the camera. Raise the sensitivity to shed from fainter changes."
+  />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas')!;
+// ---cut---
+import { video } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+
+const element = document.createElement('video');
+element.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
+element.muted = true;
+await element.play();
+
+const feed = video.create(root, { size: [640, 360] });
+feed.attach(web.video(element, { mirrored: true }));
+await feed.initAsync();
+
+const loop = frames.create(root, (frame) => {
+  feed.update(frame); // copies a new frame, or does nothing
+  // ...passes that read feed.texture
+});
+```
+
+- Compare `feed.frames` with the last frame's count to run work only on new pictures, such as a model or a comparison with the previous frame.
+- `feed.frameSize` tells a portrait camera from a landscape one.
+- Match a model's result to the frame it saw with `feed.time`.
+
+## Fitting
+
+`fit` decides what happens when the frame's shape differs from the texture's. `'cover'`, the default, fills the texture and crops the frame's overhang. `'contain'` shows the whole frame and leaves transparent black around it. `'stretch'` fills the texture and changes the frame's aspect.
+
+The fit is one render pass over the texture, which also turns the frame by its `rotation` and flips it when `mirrored`. It writes a uniform only when the frame's size, rotation or mirroring changes.
+
+`feed.crop` says where the texture lies on the upright frame, as an `origin` and `extent` from 0 to 1 across it. `'cover'` keeps it within the frame and `'contain'` reaches past it.
+
+## Without a copy
+
+`video.live` binds the source's newest frame where it lies, and shaders read it with `video.sample(uv)`, turned upright and mirrored as the source asks. Nothing is copied. With `crop: { size, fit }`, `video.sample(uv)` reads the part of the frame that a feed of that size and fit holds at `uv`, which lines up work done on a small feed with the full frame. The ember mirror above does both: its reflection samples the camera in place at full resolution, and its embers compare frames in a small feed. Each new frame is a new external texture, so share the live view's part before creating the pipelines that sample:
+
+```ts twoslash
+import { tgpu, d, common } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const element = document.createElement('video');
+// ---cut---
+import { bindings, video } from '@typegpu/kit';
+
+const camera = video.live(root);
+camera.attach(web.video(element, { mirrored: true }));
+const shared = bindings.share(root, { camera: camera.part }); // before the pipelines that sample
+
+const backdrop = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(({ uv }) => {
+  'use gpu';
+  return video.sample(uv);
+});
+const drawing = root.pipe(camera.inject()).createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment: backdrop,
+  targets: { format: surface.format },
+});
+
+const loop = frames.create(root, (frame) => {
+  camera.update(frame); // binds the newest frame, new or not
+  const pass = frame.encoder.beginRenderPass({
+    colorAttachments: [{ view: surface.view(frame), loadOp: 'clear', storeOp: 'store' }],
+  });
+  pass.setBindGroup(shared.layout, shared.group());
+  pass.setPipeline(drawing);
+  pass.draw(3);
+  pass.end();
+});
+```
+
+- Call `update(frame)` every frame before the passes that sample. An imported frame is valid only until the frame that read it submits. It returns whether the frame is new.
+- `video.sample` reads an external texture, so it samples with filtering, without mips or `textureLoad`. Copy frames with `video.create` to keep them, compare them or read them as an ordinary texture.
+- Before the first frame, after `attach(undefined)` and where `'contain'` leaves the crop uncovered, `video.sample` returns transparent black.
+- A web video imports again every frame. A native camera frame is imported once and stays bound until the next arrives, so steady frames create no bind group.
+
+## Sources
+
+A source hands out its newest frame, numbered, and any number of feeds and live views read it. Each remembers the last number it saw, so a feed copies a frame once and a live view knows when it is new. `web.video(element)` reads a playing `<video>`, from a camera or from a file, and numbers frames as the browser presents them. Readers import a frame in the same task as the frame loop's submit, while it is valid.
+
+On React Native, `runtimes.camera(runtime)` reads VisionCamera 5. Call its `write(frame)` from a frame output's `onFrame` on the camera thread, and attach it to the feed on the runtime that hosts the scene. The camera thread wraps each frame's pixels and gives the camera its buffer back at once. The scene's runtime imports the newest frame once and keeps it until a newer one arrives, so every feed and live view reads the same frame:
+
+```tsx
+import * as runtimes from '@typegpu/kit/native/runtimes';
+import { useCamera, useFrameOutput } from 'react-native-vision-camera';
+
+const source = runtimes.camera(worker); // the runtime that hosts the scene
+hosted.send(({ scene }) => {
+  'worklet';
+  scene.feed.attach(source);
+});
+
+const output = useFrameOutput({
+  onFrame: (frame) => {
+    'worklet';
+    source.write(frame);
+    frame.dispose();
+  },
+});
+useCamera({ isActive: true, device: 'front', outputs: [output], orientationSource: 'interface' });
+```
+
+The feed turns each frame by its `orientation` and mirrors it when `isMirrored` is set, so VisionCamera's `mirrorMode` decides which frames show mirrored. Call `source.destroy()` after detaching it to release the frame it holds.
+
+Any object with `latest(device, seen?)` is a source. It returns a `video.Latest`: an external texture imported on that device, the frame's size, rotation and mirroring, its optional `time` and its `serial` number, counting from 1. It returns `undefined` before the first frame and when the newest is numbered `seen`, so a feed imports nothing until a new frame arrives. The source keeps each frame until a newer one replaces it. A program with its own frames, such as decoded `VideoFrame`s, can also call `feed.record(frame, imported)` directly and close each frame after the submit.
+
+After `feed.attach(undefined)`, stop the camera's tracks yourself, and destroy the `web.video` source to stop watching the element.
+
+## Limits
+
+- Importing a video frame needs Chrome 113, Safari 26 or Firefox 144 on Windows. A live view binds a texture view in the external texture slot before its first frame, which needs Chrome 137.
+- Each copied frame creates a bind group, because each imported frame is a new external texture.
+- `runtimes.camera` needs VisionCamera 5 and react-native-webgpu 0.17.

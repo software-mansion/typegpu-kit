@@ -1,0 +1,33 @@
+---
+// Preload the two faces body text and code use first, so text doesn't reflow as they arrive
+import Default from '@astrojs/starlight/components/Head.astro';
+import mono from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
+import sans from '../../fonts/Aeonik-Regular.woff2?url';
+import Meta from './Meta.astro';
+import { markdownHref, slugOf } from './urls.ts';
+
+const notFound = Astro.locals.starlightRoute.entry.id === '404';
+---
+
+<Default />
+<Meta markdown={notFound ? undefined : markdownHref(slugOf(Astro.url.pathname))} />
+<link rel="preload" href={sans} as="font" type="font/woff2" crossorigin />
+<link rel="preload" href={mono} as="font" type="font/woff2" crossorigin />
+<script is:inline>
+  // A link to an anchor holds the first paint until the footer's script scrolls to it; Chrome
+  // otherwise paints the top of the page first
+  if (location.hash) {
+    const land = document.createElement('link');
+    land.rel = 'expect';
+    land.href = '#typegpu-kit-land';
+    land.setAttribute('blocking', 'render');
+    document.head.append(land);
+  }
+  if (navigator.gpu) document.documentElement.dataset.glow = '';
+  // The cards, where WebGPU runs and the reader has not turned them off; see album/cards.ts
+  let cardsOff = false;
+  try {
+    cardsOff = localStorage.getItem('typegpu-kit:cards') === 'off';
+  } catch {}
+  if (navigator.gpu && !cardsOff) document.documentElement.dataset.cards = '';
+</script>

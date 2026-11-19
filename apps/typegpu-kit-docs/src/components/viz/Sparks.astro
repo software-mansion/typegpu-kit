@@ -1,0 +1,117 @@
+---
+import Slider from './Slider.astro';
+import { CAPACITY } from './Sparks.scene.ts';
+
+const grouped = (value: number) => value.toLocaleString('en-US').replaceAll(',', ' ');
+---
+
+<figure class="viz" data-viz="sparks">
+  <p class="viz-title">Bursts fill a ring of {grouped(CAPACITY)} particle slots</p>
+  <canvas class="viz-bleed" aria-label="Particle bursts falling under gravity"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="auto" aria-pressed="true">Auto</button>
+    <button data-action="burst">Burst 400</button>
+    <button data-action="clear">Clear</button>
+    <dl class="viz-readout">
+      <div><dt>head</dt><dd data-read="head">0</dd></div>
+      <div><dt>next slot</dt><dd data-read="slot">0</dd></div>
+    </dl>
+    <div class="viz-settings">
+      <Slider name="gravity" min={-15} max={0} step={0.5} value={-7} />
+      <Slider name="drag" min={0} max={4} step={0.1} value={0.7} />
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Press or drag to burst sparks. The head counts births and overwrites the next slot of the ring even if it is alive. Gravity and drag upload <code>settings</code> only when changed.
+  </figcaption>
+</figure>
+
+<script>
+  import * as clock from '@typegpu/kit/clock';
+  import type { connect as Connect } from '../../examples/host.ts';
+  import { action, each, live, reducedMotion, slider, toggle } from './figure.ts';
+
+  const grouped = (value: number) => value.toLocaleString('en-US').replaceAll(',', ' ');
+
+  each('sparks', (figure) => {
+    const canvas = figure.querySelector('canvas')!;
+    const head = figure.querySelector<HTMLElement>('[data-read=head]')!;
+    const slot = figure.querySelector<HTMLElement>('[data-read=slot]')!;
+    const auto = toggle(action(figure, 'auto'));
+    auto.on = !reducedMotion();
+
+    const refresh = clock.cadence({ hz: 12 });
+    let nextBurst = 0;
+    let connect: typeof Connect;
+
+    action(figure, 'burst', () => shown.scene?.burst(0, -1, 400, 7));
+    action(figure, 'clear', () => shown.scene?.clear());
+    const forces = (['gravity', 'drag'] as const).map((key) => {
+      const input = slider(figure, key, (value) => {
+        shown.update((scene) => {
+          scene.forces[key] = value;
+          scene.writeForces();
+        });
+      });
+      return { key, input };
+    });
+
+    // Moves even under reduced motion: only what you burst moves, and Auto starts off
+    const shown = live(
+      figure,
+      async () => {
+        const [scene, host] = await Promise.all([
+          import('./Sparks.scene.ts'),
+          import('../../examples/host.ts'),
+        ]);
+        connect = host.connect;
+        return scene;
+      },
+      {},
+      {
+        animate: true,
+        grade: 1,
+        playing: true,
+        onFrame(frame, { scene }) {
+          if (auto.on && frame.time >= nextBurst) {
+            const half = scene.halfWidth * 0.8;
+            scene.burst((Math.random() * 2 - 1) * half, -2.5 + Math.random() * 3, 48);
+            nextBurst = frame.time + 0.3 + Math.random() * 0.4;
+          }
+
+          if (!refresh.due(frame.dt)) return;
+          head.textContent = grouped(scene.stats.born);
+          slot.textContent = grouped(scene.stats.born % scene.capacity);
+        },
+        ready(scene) {
+          for (const { key, input } of forces) scene.forces[key] = input.valueAsNumber;
+          scene.writeForces();
+          nextBurst = 0;
+          return connect(canvas, scene, { page: true });
+        },
+      },
+    );
+  });
+</script>
+
+<style>
+  figure {
+    container: sparks / inline-size;
+  }
+
+  canvas {
+    cursor: crosshair;
+  }
+
+  figure .viz-controls > .viz-readout {
+    margin-left: auto;
+  }
+
+  /* On a phone the readout comes last. */
+  @container sparks (max-width: 30rem) {
+    figure .viz-controls > .viz-readout {
+      order: 1;
+      margin: 0;
+    }
+  }
+</style>

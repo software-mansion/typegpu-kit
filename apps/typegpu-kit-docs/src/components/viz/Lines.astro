@@ -1,0 +1,89 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+import { START } from './Lines.scene.ts';
+---
+
+<figure class="viz" data-viz="lines">
+  <p class="viz-title">The same line at four depths, drawn by one set</p>
+  <canvas aria-label="The same zigzag line at four depths, with a chosen join, caps and width units"
+  ></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Choice name="units" label="width in" options={['world', 'points']} value={START.units} />
+    <Slider name="width" min={0.05} max={0.5} step={0.05} value={START.width} />
+    <div class="viz-settings">
+      <span>stroke</span>
+      <Choice name="join" label="join" options={['round', 'miter', 'bevel']} value={START.join} />
+      <Choice name="cap" label="caps" options={['round', 'square', 'butt', 'arrow']} value={START.cap} />
+      <Choice
+        name="dashed"
+        label="dashes"
+        options={[
+          { value: 'off', label: 'off' },
+          { value: 'on', label: 'on' },
+        ]}
+        value={START.dashed ? 'on' : 'off'}
+      />
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Switch the width between world units and points. In world units the far rows narrow with distance; in points every row keeps the width of the middle row.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, choice, each, live, slider } from './figure.ts';
+  import type { Cap, Join, LinesFigure, Units } from './Lines.scene.ts';
+
+  each('lines', (figure) => {
+    // A new look compiles new pipelines, so a scene takes one only once the reader picks it
+    let picked = false;
+    const remake = (scene: LinesFigure) =>
+      scene.remake({ join: join.value, cap: cap.value, units: units.value });
+    const pick = () => {
+      picked = true;
+      shown.update(remake);
+    };
+    const join = choice<Join>(figure, 'join', pick);
+    const cap = choice<Cap>(figure, 'cap', pick);
+    const units = choice<Units>(figure, 'units', pick);
+    const dashed = choice<'on' | 'off'>(figure, 'dashed', (value) => {
+      shown.update((scene) => scene.dash(value === 'on'));
+    });
+    const width = slider(
+      figure,
+      'width',
+      (value) => {
+        shown.update((scene) => scene.widen(value));
+      },
+      (value) => value.toFixed(2),
+    );
+    const shown = live(figure, () => import('./Lines.scene.ts'), undefined, {
+      animate: true,
+      grade: 1,
+      play: action(figure, 'play'),
+      ready(scene) {
+        if (picked) remake(scene);
+        scene.dash(dashed.value === 'on');
+        scene.widen(width.valueAsNumber);
+      },
+    });
+  });
+</script>
+
+<style>
+  /* The canvas runs to the figure's edges, on its ground. */
+  canvas {
+    display: block;
+    width: 100%;
+    height: clamp(240px, 32vw, 360px);
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .viz-settings > span {
+    flex-basis: 100%;
+    color: var(--text-2);
+  }
+</style>

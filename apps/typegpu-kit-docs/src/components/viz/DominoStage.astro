@@ -1,0 +1,87 @@
+---
+import type { Stage } from './DominoStage.scene.ts';
+import Slider from './Slider.astro';
+
+interface Props {
+  stage: Stage;
+}
+
+const { stage } = Astro.props;
+const label: Record<Stage, string> = {
+  floor: 'A walnut floor of long boards in a low, warm sun, fading into a dim room',
+  one: 'One saffron domino standing on the walnut floor',
+  run: 'A long run of coloured dominoes standing on the walnut floor: a curving lead, a fork and two spirals',
+  shadow: 'The run of dominoes in a low sun, each throwing a long shadow across the floor',
+  falling: 'The run of dominoes falling one after another from its first, the wave splitting at the forks',
+};
+const shadowed = stage === 'shadow' || stage === 'falling';
+---
+
+<figure class="viz" data-viz="domino-stage" data-stage={stage}>
+  <canvas aria-label={label[stage]}></canvas>
+  {
+    shadowed && (
+      <div class="viz-controls" data-pagefind-ignore>
+        {stage === 'falling' && <button data-action="play" aria-pressed="true">Pause</button>}
+        {stage === 'falling' && <button data-action="restart">Stand them up</button>}
+        <Slider name="sun" label="sun height" min={10} max={60} value={24} unit="°" />
+      </div>
+    )
+  }
+  {
+    stage === 'run' && (
+      <div class="viz-controls" data-pagefind-ignore>
+        <dl class="viz-readout">
+          <div>
+            <dt>dominoes</dt>
+            <dd data-read="dominoes">0</dd>
+          </div>
+          <div>
+            <dt>draws</dt>
+            <dd data-read="draws">0</dd>
+          </div>
+        </dl>
+      </div>
+    )
+  }
+  <figcaption class="viz-caption"><slot /></figcaption>
+</figure>
+
+<script>
+  import { action, each, live, slider } from './figure.ts';
+  import type { Stage } from './DominoStage.scene.ts';
+
+  each('domino-stage', (figure) => {
+    const stage = figure.dataset.stage as Stage;
+    const falling = stage === 'falling';
+    const sun =
+      stage === 'shadow' || falling
+        ? slider(figure, 'sun', (degrees) => {
+            shown.update((scene) => scene.sun(degrees));
+          })
+        : undefined;
+    const shown = live(
+      figure,
+      () => import('./DominoStage.scene.ts'),
+      { stage },
+      {
+        ...(falling ? { animate: true, play: action(figure, 'play') } : {}),
+        orbit: true,
+        ready(scene) {
+          if (sun) scene.sun(sun.valueAsNumber);
+          for (const [name, count] of Object.entries(scene.counts)) {
+            const read = figure.querySelector(`[data-read='${name}']`);
+            // Thousands take a space, as the prose writes them
+            if (read) read.textContent = String(count).replace(/\B(?=(\d{3})+$)/g, '\u00a0');
+          }
+        },
+      },
+    );
+    if (falling) {
+      action(figure, 'restart', () => {
+        shown.scene?.restart();
+        shown.play(true);
+      });
+    }
+  });
+</script>

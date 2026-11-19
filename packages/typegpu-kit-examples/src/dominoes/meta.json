@@ -1,0 +1,8 @@
+{
+  "title": "Domino run",
+  "category": "simulations",
+  "description": "Tap a domino to start a wave along 1 474 rounded boxes on a walnut floor. GPU picking finds the domino, and a fixed-step kernel topples the run through S-bends, three forks and twin spirals. Events count fallen dominoes, and each strike emits dust. A low sun lights and shadows the run, with bloom and a filmic tone curve. Ambient occlusion from a half-resolution depth pass darkens the sky light between dominoes and in the bends; a setting turns it off, and another shows it alone in grey. The Domino run tutorial builds it. A second layout uses a 100 \u00d7 60 field to show a portrait. A kernel samples an image over each domino's cell and paints its back with the nearest of sixteen colours, so the picture appears as the wave passes. The default picture is a kernel-drawn sunset. Drop an image to use your own.",
+  "line": "1 474 dominoes in late sun, shaded by ambient occlusion where they crowd; tap one and the wave runs.",
+  "order": 15,
+  "hint": "tap a domino to topple it \u00b7 drop an image for a portrait \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

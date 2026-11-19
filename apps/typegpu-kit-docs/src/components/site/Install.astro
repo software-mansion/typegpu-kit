@@ -1,0 +1,18 @@
+---
+import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import { linesOf, MANAGERS, type Commands } from './managers.ts';
+
+type Props = Commands;
+---
+
+{/* Every block shares one sync key, so a reader's choice holds on every page; the Markdown copy
+    of the page shows npm's (contracts/markdown.ts). */}
+<Tabs syncKey="pkg">
+  {
+    MANAGERS.map((manager) => (
+      <TabItem label={manager.name}>
+        <Code lang="sh" code={linesOf(manager, Astro.props).join('\n')} />
+      </TabItem>
+    ))
+  }
+</Tabs>

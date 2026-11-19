@@ -1,0 +1,12 @@
+{
+  "title": "Forest",
+  "category": "worlds",
+  "description": "20 000 trees sway in gusts of Perlin noise from @typegpu/noise. An instance kind deforms them within declared bounds. GPU culling runs each frame, drawing trees visible to the camera and shadows visible to the sun.",
+  "line": "20 000 swaying trees, drawn only where the camera or the sun sees them.",
+  "order": 8,
+  "card": {
+    "trees": 8000
+  },
+  "features": ["indirect-first-instance"],
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

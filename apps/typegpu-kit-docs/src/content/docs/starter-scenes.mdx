@@ -1,0 +1,353 @@
+---
+title: Starter scenes
+description: Four whole scenes to start from, a full-screen shader, a lit mesh with a shadow, a frame finished with bloom and particles stepped on the GPU.
+readFirst:
+  page: getting-started
+  for: for the project these scenes run in
+---
+
+import StarterScene from '../../components/viz/StarterScene.astro';
+
+Each scene on this page is a whole `src/scene.ts` for the project from [Getting started](/getting-started/). Replace yours with one of them and the page draws it, or have the [initializer](/getting-started/#create-a-project) start a project from one: it asks which, and `--scene` takes `shader`, `lit`, `finished` or `simulation`. The first three build on each other: a shader alone, then modules that light a mesh, then the same frame finished for the screen. The fourth moves particles on the GPU, the start of a simulation.
+
+## A full-screen shader
+
+<StarterScene scene="shader" />
+
+The initializer writes this scene unless it is asked for another. One fragment function colours every pixel, and a uniform gives it the time. It takes two types from the kit and the rest from TypeGPU:
+
+```ts twoslash title="src/scene.ts"
+import type { Frame, Surface } from '@typegpu/kit';
+import { common, d, std, tgpu, type TgpuRoot } from 'typegpu';
+
+export async function createScene(root: TgpuRoot, surface: Surface) {
+  const time = root.createUniform(d.f32);
+
+  const rings = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(({ uv }) => {
+    'use gpu';
+    const wave = std.sin(std.length(uv - 0.5) * 40 - time.$ * 3) * 0.5 + 0.5;
+    return d.vec4f(0.2, 0.6, 1, 1) * wave;
+  });
+  const drawing = root.createRenderPipeline({
+    vertex: common.fullScreenTriangle,
+    fragment: rings,
+    targets: { format: surface.format },
+  });
+
+  return {
+    frame(frame: Frame) {
+      time.write(frame.time);
+      const pass = frame.encoder.beginRenderPass({
+        colorAttachments: { view: surface.view(frame) },
+      });
+      pass.setPipeline(drawing);
+      pass.draw(3);
+      pass.end();
+    },
+  };
+}
+```
+
+`surface.view(frame)` is the canvas's texture for this frame. The pass goes into `frame.encoder`, which the host submits after `frame` returns.
+
+## A lit mesh with a shadow
+
+<StarterScene scene="lit" />
+
+Two instances of one box, the second scaled into a slab, stand under a sun that casts a shadow. [`pipelines.compile`](/kit/pipelines/) compiles the lighting's shadow pipelines and the scene's drawings before the first frame. `destroy` frees the modules the scene made:
+
+```ts twoslash title="src/scene.ts"
+import {
+  cameras,
+  instances,
+  lighting,
+  meshPool,
+  passes,
+  pipelines,
+  targets,
+  type Frame,
+  type Surface,
+} from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import type { TgpuRoot } from 'typegpu';
+
+export async function createScene(root: TgpuRoot, surface: Surface) {
+  const view = cameras.orbit(root, {
+    size: surface,
+    target: [0, 0, 0],
+    distance: 6,
+    yaw: 0.6,
+    pitch: 0.5,
+  });
+  const light = lighting.create(root, {
+    shadow: { extent: 12 },
+    settings: { sunDirection: [-0.6, 0.7, 0.5] },
+  });
+  const pool = meshPool.create(root, { capacity: 1 });
+  const box = pool.add(meshes.box());
+  const things = instances.create(root, pool, { capacity: 2 });
+  things.add(box, { position: [0, 0.5, 0], color: [0.95, 0.45, 0.2] });
+  things.add(box, { position: [0, -0.1, 0], scale: [8, 0.2, 8], color: [0.14, 0.15, 0.18] });
+  const renderer = things.renderer();
+  const screen = targets.create(root, surface, {
+    color: { format: surface.format, samples: 4 },
+    depth: { format: 'depth24plus', samples: 4 },
+  });
+  const scene = passes
+    .create(
+      root,
+      screen,
+      { color: passes.color, depth: passes.depth },
+      { resolve: { color: surface } },
+    )
+    .pipe(view.inject())
+    .beneath(light.inject());
+  const shown = scene.add(renderer);
+  const cast = light.shadow.add(renderer);
+  await pipelines.compile([light, scene]);
+  return {
+    view,
+    frame(frame: Frame) {
+      view.update(frame.dt);
+      screen.fit();
+      things.flush();
+      light.shadow.record(frame, cast);
+      scene.record(frame, shown);
+    },
+    destroy() {
+      light.destroy();
+      things.destroy();
+      pool.destroy();
+      screen.destroy();
+    },
+  };
+}
+```
+
+- [`cameras.orbit`](/kit/cameras/) is the view. `view.update` eases it towards its goal each frame.
+- [`lighting.create`](/kit/lighting/) holds the sun, and its `shadow` group gives it a [shadow map](/kit/lighting/#shadows).
+- [`meshPool`](/kit/mesh-pool/) stores the box's vertices and [`instances`](/kit/instances/) the rows drawn from them. `flush` uploads the rows that changed.
+- [`targets`](/kit/targets/) allocates multisampled colour and depth at the surface's size. `fit` reallocates them when the canvas resizes.
+- [`passes`](/kit/passes/) describes the pass that draws into them and resolves into the surface. `pipe(view.inject())` gives its drawings the camera, and `beneath(light.inject())` the light.
+- `scene.add(renderer)` and `light.shadow.add(renderer)` build the renderer's pipelines for the lit pass and for the shadow map. A frame records the shadow map first, then the pass that reads it.
+
+The scene returns its `view`, so the page can connect [orbit controls](/kit/cameras/#orbit-controls) to it:
+
+```ts twoslash title="src/index.ts"
+// @filename: scene.ts
+import type { cameras, Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+export declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): Promise<{ view: cameras.OrbitCamera; frame(frame: Frame): void; destroy(): void }>;
+// @filename: index.ts
+// ---cut---
+import * as web from '@typegpu/kit/web';
+import { createScene } from './scene.ts';
+
+const canvas = document.querySelector('canvas')!;
+web.host(createScene, {
+  canvas,
+  attach: ({ scene }) => web.orbitControls(scene.view, canvas),
+});
+```
+
+## A finished frame
+
+<StarterScene scene="finished" />
+
+The box now emits light brighter than the screen's white. Three changes to the lit scene keep that light and turn it into glow:
+
+```ts twoslash title="src/scene.ts"
+import {
+  bloom,
+  cameras,
+  finish,
+  instances,
+  lighting,
+  meshPool,
+  passes,
+  pipelines,
+  targets,
+  type Frame,
+  type Surface,
+} from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import type { TgpuRoot } from 'typegpu';
+
+export async function createScene(root: TgpuRoot, surface: Surface) {
+  const view = cameras.orbit(root, {
+    size: surface,
+    target: [0, 0, 0],
+    distance: 6,
+    yaw: 0.6,
+    pitch: 0.5,
+  });
+  const light = lighting.create(root, {
+    shadow: { extent: 12 },
+    settings: { sunDirection: [-0.6, 0.7, 0.5] },
+  });
+  const pool = meshPool.create(root, { capacity: 1 });
+  const box = pool.add(meshes.box());
+  const things = instances.create(root, pool, { capacity: 2 });
+  things.add(box, { position: [0, 0.5, 0], emission: [2, 0.4, 0.1] });
+  things.add(box, { position: [0, -0.1, 0], scale: [8, 0.2, 8], color: [0.14, 0.15, 0.18] });
+  const renderer = things.renderer();
+  const screen = targets.create(root, surface, {
+    color: { format: 'rgba16float', samples: 4 },
+    depth: { format: 'depth24plus', samples: 4 },
+    hdr: { format: 'rgba16float', sampled: true },
+  });
+  const scene = passes
+    .create(
+      root,
+      screen,
+      { color: passes.color, depth: passes.depth },
+      { resolve: { color: 'hdr' } },
+    )
+    .pipe(view.inject())
+    .beneath(light.inject());
+  const shown = scene.add(renderer);
+  const cast = light.shadow.add(renderer);
+  const source = () => screen.textures.hdr;
+  const glow = bloom.create(root, { source });
+  const final = finish.create(root, { format: surface.format, source, glow });
+  await pipelines.compile([light, scene, glow, final]);
+  return {
+    view,
+    frame(frame: Frame) {
+      view.update(frame.dt);
+      screen.fit();
+      things.flush();
+      light.shadow.record(frame, cast);
+      scene.record(frame, shown);
+      glow.record(frame);
+      final.record(frame, surface.view(frame));
+    },
+    destroy() {
+      light.destroy();
+      things.destroy();
+      pool.destroy();
+      screen.destroy();
+      glow.destroy();
+    },
+  };
+}
+```
+
+- The targets gain `hdr`, a float texture the pass resolves into, so colours above 1 survive the pass.
+- [`bloom`](/kit/finish/#bloom) reads `hdr` and blurs what is bright.
+- [`finish`](/kit/finish/) records last. It adds the glow, maps the image to the screen through a tone curve and writes the surface.
+
+## A simulation
+
+<StarterScene scene="simulation" />
+
+12 000 motes circle an eye, fall towards it and start again near the rim. They stay on the GPU between frames, and `swirl`, a `'use gpu'` function you write, moves each one a step at a time. Slow motes draw blue and fast ones ice, and their light adds up where they crowd:
+
+```ts twoslash title="src/scene.ts"
+import {
+  cameras,
+  clock,
+  Particle,
+  particles,
+  passes,
+  pipelines,
+  type Frame,
+  type Surface,
+} from '@typegpu/kit';
+import { perlin3d, randf } from '@typegpu/noise';
+import { d, std, type TgpuRoot } from 'typegpu';
+
+/** How many motes circle the eye, and how far from it they start again. */
+const MOTES = 12_000;
+const RIM = 3.2;
+/** The kit's blue for slow motes and its ice for fast ones. */
+const SLOW = d.vec3f(0.3, 0.47, 1);
+const FAST = d.vec3f(0.85, 0.94, 1);
+
+/**
+ * One step of a mote: it circles the eye, faster closer in, falls slowly towards it, drifts on
+ * noise that changes with its age and is pulled back to the disc. In the eye it starts again near
+ * the rim, as every mote does on its first step.
+ */
+const swirl = (mote: Particle) => {
+  'use gpu';
+  const p = mote.position;
+  const radius = std.max(std.length(p.xz), 0.05);
+  const around = d.vec3f(-p.z, 0, p.x) / radius;
+  const inward = d.vec3f(-p.x, 0, -p.z) / radius;
+  const spiral = (around + inward * 0.3) * (1.6 / std.sqrt(radius));
+  const at = p * 0.5 + d.vec3f(0, mote.age * 0.15, 0);
+  const drift = d.vec3f(perlin3d.sample(at), perlin3d.sample(at + 31), perlin3d.sample(at + 57));
+  const next = Particle(mote);
+  next.velocity = spiral + drift - d.vec3f(0, p.y, 0);
+  if (radius < 0.2 + mote.seed * 0.4) {
+    randf.seed2(d.vec2f(mote.seed, mote.age));
+    const rim = randf.onUnitCircle() * (RIM - randf.sample());
+    next.position = d.vec3f(rim.x, 0, rim.y);
+  }
+  return next;
+};
+
+/** A soft dot whose light adds to what is behind it, blue when slow and ice when fast. */
+const glow = (mote: Particle, local: d.v2f) => {
+  'use gpu';
+  const edge = std.saturate(1 - std.length(local));
+  const color = std.mix(SLOW, FAST, std.smoothstep(0.9, 2.4, std.length(mote.velocity)));
+  return d.vec4f(color * (edge * edge * 0.8), 0);
+};
+
+export async function createScene(root: TgpuRoot, surface: Surface) {
+  const view = cameras.orbit(root, {
+    size: surface,
+    target: [0, 0, 0],
+    distance: 8.5,
+    yaw: 0.3,
+    pitch: 0.6,
+  });
+  const sim = clock.fixedStep({ step: 1 / 60 });
+  const motes = particles.create(root, view, {
+    capacity: MOTES,
+    step: sim.step,
+    update: swirl,
+    shade: glow,
+    settings: { gravity: [0, 0, 0], drag: 0 },
+  });
+  motes.burst({ count: MOTES, position: [0, 0, 0], size: 0.05, life: 1e9 });
+  const scene = passes
+    .create(root, surface, { clear: [0.004, 0.006, 0.016, 1] })
+    .pipe(view.inject());
+  const shown = scene.add(motes.drawing);
+  await pipelines.compile([scene]);
+  return {
+    view,
+    frame(frame: Frame) {
+      view.update(frame.dt);
+      const compute = frame.encoder.beginComputePass();
+      motes.spawn(compute);
+      for (let steps = sim.update(frame.dt); steps > 0; steps--) motes.step(compute);
+      motes.compact(compute, sim.ahead);
+      compute.end();
+      scene.record(frame, shown);
+    },
+    destroy() {
+      motes.destroy();
+    },
+  };
+}
+```
+
+- [`particles.create`](/kit/particles/) keeps the motes in a GPU buffer and runs `swirl` on each one as its [`update`](/kit/particles/#update-and-shade), in kernels of its own. `glow` is its `shade`, and the default `add` blend sums the light of overlapping motes. Gravity and drag are 0 because `swirl` sets each velocity itself.
+- One `burst` starts every mote in the eye, so the first step sends it to the rim. `spawn` creates the burst's motes, `step` moves them all, and `compact` lists the live ones for drawing.
+- [`clock.fixedStep`](/kit/clock/#fixed-step) turns each frame's time into steps of 1/60 s, so the motes move at the same speed at any frame rate. `sim.ahead`, the time left over, moves each drawn mote on along its velocity.
+- `perlin3d` and `randf` come from [`@typegpu/noise`](https://www.npmjs.com/package/@typegpu/noise): smooth noise for the drift, and a random point near the rim for each mote that reaches the eye.
+
+The scene returns its `view`, so `src/index.ts` is the one from [the lit scene](#a-lit-mesh-with-a-shadow).
+
+## Next
+
+- Each [example](/examples/) is a scene of this shape and links to its source.
+- The [module map](/map/) lists what else a scene can create.
+- The [hosting page](/kit/hosting/) covers controlling a scene from the page and running it on React Native.

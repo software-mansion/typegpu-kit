@@ -1,0 +1,112 @@
+---
+import { SHAPES } from './MeshPool.program.ts';
+---
+
+<figure class="viz" data-viz="mesh-pool">
+  <p class="viz-title">Shapes fill one pool's vertex and index ranges</p>
+  <svg viewBox="0 0 560 160" role="img" aria-label="Vertex and index ranges occupied by added shapes"></svg>
+  <p class="refused" role="status"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    {SHAPES.map((shape) => <button data-action={shape}>{shape}</button>)}
+    <button data-action="clear">clear</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Add shapes until <code>add</code> throws. The pool has room for 2048 vertices and 8192 indices.
+  </figcaption>
+</figure>
+
+<style>
+  .refused {
+    margin: 0;
+    color: var(--viz-bad);
+    font-size: var(--type-small);
+  }
+
+  .refused:empty {
+    display: none;
+  }
+</style>
+
+<script>
+  import { action, each } from './figure.ts';
+  import { createProgram, INDICES, SHAPES, VERTICES, type Shape } from './MeshPool.program.ts';
+  import { plate, stipple, fitWidth, svg, text } from './svg.ts';
+
+  const LEFT = 64;
+  const ROW = 20;
+  const COLOURS = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)', 'var(--viz-e)'];
+  const DENSITIES = [0.125, 0.25, 0.5, 0.75];
+  const FIELDS = ['firstIndex', 'indexCount', 'baseVertex'] as const;
+
+  each('mesh-pool', (figure) => {
+    const drawing = figure.querySelector('svg')!;
+    const refusal = figure.querySelector<HTMLElement>('.refused')!;
+    let program = createProgram();
+
+    const add = (name: Shape) => {
+      refusal.textContent = program.add(name) ?? '';
+    };
+
+    const draw = fitWidth(
+      drawing,
+      (across) => {
+        const { meshes, names } = program;
+
+        /** A bar for `capacity` items, with each mesh's range of it. */
+        const bar = (y: number, label: string, capacity: number, range: (i: number) => [number, number]) => {
+          const scale = (across - LEFT) / capacity;
+          let used = 0;
+
+          text(drawing, 0, y + 13, label, { class: 'strong' });
+          plate(drawing, LEFT, y, across - LEFT - 4, 18, { empty: true, depth: 3 });
+
+          meshes.forEach((_, i) => {
+            const [first, count] = range(i);
+            svg('rect', { x: LEFT + first * scale, y, width: Math.max(count * scale, 1), height: 18, fill: stipple(drawing, i === meshes.length - 1 ? 'var(--viz-accent)' : COLOURS[i % COLOURS.length], DENSITIES[i % DENSITIES.length]) }, drawing);
+            used = first + count;
+          });
+
+          text(drawing, across, y + 32, `${used} of ${capacity}`, { 'text-anchor': 'end' });
+        };
+
+        bar(4, 'vertices', VERTICES, (i) => [meshes[i].baseVertex, meshes[i].vertexCount]);
+        bar(46, 'indices', INDICES, (i) => [meshes[i].firstIndex, meshes[i].indexCount]);
+
+        // A column per field of a Mesh, right-aligned, after the name
+        const column = (k: number) => across - ((FIELDS.length - 1 - k) * (across - 96)) / FIELDS.length;
+        const top = 106;
+        if (meshes.length > 0) {
+          FIELDS.forEach((field, k) => text(drawing, column(k), top, field, { 'text-anchor': 'end', class: 'strong' }));
+        }
+
+        meshes.forEach((mesh, i) => {
+          const y = top + (i + 1) * ROW;
+          svg('rect', { x: 0, y: y - 10, width: 10, height: 10, rx: 2, fill: stipple(drawing, i === meshes.length - 1 ? 'var(--viz-accent)' : COLOURS[i % COLOURS.length], DENSITIES[i % DENSITIES.length]) }, drawing);
+          text(drawing, 16, y, names[i]);
+          FIELDS.forEach((field, k) => text(drawing, column(k), y, String(mesh[field]), { 'text-anchor': 'end' }));
+        });
+
+        return meshes.length > 0 ? top + meshes.length * ROW + 8 : 84;
+      },
+      300,
+    );
+
+    for (const shape of SHAPES) {
+      action(figure, shape, () => {
+        add(shape);
+        draw();
+      });
+    }
+
+    action(figure, 'clear', () => {
+      program.destroy();
+      program = createProgram();
+      refusal.textContent = '';
+      draw();
+    });
+
+    add('box');
+    add('sphere');
+    draw();
+  });
+</script>

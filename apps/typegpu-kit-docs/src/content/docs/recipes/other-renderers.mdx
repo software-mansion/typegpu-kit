@@ -1,0 +1,196 @@
+---
+title: Beside other renderers
+description: Share one device with three.js or vgpu and pass buffers, textures and images between them and the kit.
+---
+
+The kit borrows a device through its root, so it composes with the renderer you already use. Any WebGPU library that exposes or accepts its `GPUDevice` can share one with the kit. These recipes use three.js r186 with `WebGPURenderer`, and vgpu 0.6.
+
+## Sharing a device
+
+Let three create the device, then give the kit a root on it with `tgpu.initFromDevice`. `renderer.backend` holds the device after `await renderer.init()`. The backend's `device` and `get` aren't in three's type declarations, so type them where you read them:
+
+```ts
+import * as THREE from 'three/webgpu';
+import { tgpu } from 'typegpu';
+
+const renderer = new THREE.WebGPURenderer({ canvas });
+await renderer.init();
+
+const backend = renderer.backend as unknown as {
+  readonly isWebGPUBackend?: boolean;
+  readonly device: GPUDevice;
+  get(object: object): { buffer?: GPUBuffer; texture?: GPUTexture };
+};
+if (!backend.isWebGPUBackend) throw new Error('three fell back to WebGL');
+
+const root = tgpu.initFromDevice({ device: backend.device });
+```
+
+To create the device yourself, pass it to three with `new THREE.WebGPURenderer({ canvas, device: root.device })`. Whoever creates the device requests its features and limits, such as `float32-filterable` for [`finish`](/kit/finish/) on 32-bit float sources. Each side destroys only a device it created.
+
+## Taking turns
+
+Neither library records into your encoder. Each opens its own and submits it, and one queue runs submissions in the order they arrive, with no CPU wait between them. Submit the kit's producers before three renders and its consumers after. Within one [frame](/kit/frames/), `frame.submit()` sends what the kit recorded so far:
+
+```ts
+const loop = frames.create(root, (frame) => {
+  simulation.record(frame); // the kit's producers
+  frame.submit(); // their writes reach the queue before three reads them
+  renderer.render(scene, camera);
+  overlay.record(frame); // the kit's consumers, submitted when the recorder returns
+});
+renderer.setAnimationLoop((ms) => loop.run(ms / 1000));
+```
+
+## A kit simulation moves three's instances
+
+Let three own a storage attribute and let the kit write its buffer. three creates the buffer the first time it renders the attribute. A `vec3` storage attribute is padded to `vec4`, so store `vec4` and match the schema to it:
+
+```ts
+import { positionLocal, storage } from 'three/tsl';
+
+const count = 4096;
+const positions = new THREE.StorageInstancedBufferAttribute(count, 4);
+for (let i = 0; i < count * 4; i++) positions.array[i] = Math.random() * 4 - 2;
+
+const material = new THREE.MeshStandardNodeMaterial();
+material.positionNode = positionLocal.add(storage(positions, 'vec4', count).toAttribute().xyz);
+scene.add(new THREE.InstancedMesh(new THREE.SphereGeometry(0.02), material, count));
+
+renderer.render(scene, camera);
+const swarm = root.createMutable(d.arrayOf(d.vec4f, count), backend.get(positions).buffer!);
+
+const turn = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= count) return;
+  const p = swarm.$[gid.x];
+  const c = std.cos(0.01);
+  const s = std.sin(0.01);
+  swarm.$[gid.x] = d.vec4f(p.x * c - p.z * s, p.y, p.x * s + p.z * c, 1);
+});
+const turning = root.createComputePipeline({ compute: turn });
+```
+
+Dispatch `turning` on `frame.encoder` as a producer. After the kit writes the buffer, don't set `positions.needsUpdate`, which uploads the stale CPU array over it.
+
+## A kit texture in a three material
+
+Wrap any kit texture with `THREE.ExternalTexture` and use it as a map. three samples the texture you pass and never destroys it. Write the texture as a producer, from a kernel or a pass:
+
+```ts
+const field = root
+  .createTexture({ size: [256, 256], format: 'rgba8unorm' })
+  .$usage('storage', 'sampled');
+
+const map = new THREE.ExternalTexture(root.unwrap(field));
+const material = new THREE.MeshBasicNodeMaterial({ map });
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(), material));
+```
+
+When the kit replaces the texture, as [`targets.fit()`](/kit/targets/) does on resize, make a new `ExternalTexture`.
+
+## Kit post on three's image
+
+The kit draws on the canvas three configured through a borrowed [`Screen`](/kit/passes/), so the canvas keeps one owner:
+
+```ts
+const context = canvas.getContext('webgpu')!;
+
+const screen: passes.Screen = {
+  format: navigator.gpu.getPreferredCanvasFormat(),
+  get width() {
+    return canvas.width;
+  },
+  get height() {
+    return canvas.height;
+  },
+  view: () => context.getCurrentTexture().createView(),
+};
+```
+
+three applies tone mapping and its output colour space only when it draws to the canvas, so a `HalfFloatType` render target holds linear HDR colour in `rgba16float`. Copy it into a kit target on the frame encoder, then run [`bloom`](/kit/finish/) and `finish`, which tone maps once:
+
+```ts
+const { width, height } = screen;
+const image = new THREE.RenderTarget(width, height, { type: THREE.HalfFloatType });
+renderer.initRenderTarget(image);
+const rendered = backend.get(image.texture).texture!;
+
+const hdr = targets.create(root, screen, { color: { format: 'rgba16float', sampled: true } });
+const source = () => hdr.textures.color;
+const glow = bloom.create(root, { source });
+const final = finish.create(root, { format: screen.format, source, glow });
+
+const loop = frames.create(root, (frame) => {
+  renderer.setRenderTarget(image);
+  renderer.render(scene, camera);
+  const copy = { texture: root.unwrap(source()) };
+  root.unwrap(frame.encoder).copyTextureToTexture({ texture: rendered }, copy, [width, height]);
+  glow.record(frame);
+  final.record(frame, screen.view(frame));
+});
+```
+
+The copy reads one full image a frame. On resize, call `image.setSize`, read its texture again and call `hdr.fit()`.
+
+## Kit lines, text or particles over three's scene
+
+Draw over three's finished image in a pass that keeps it, with `clear: false`. A [custom camera](/kit/cameras/) follows three's camera from its matrices, which `renderer.render` updates for WebGPU's depth range:
+
+```ts
+const view = cameras.custom(root);
+const paths = lines.create(root, { capacity: 1, length: 2 });
+paths.write(0, [0, 0, 0, 0, 2, 0], { width: 0.03, color: [0.3, 0.8, 1, 1] });
+
+const overlay = passes.create(root, screen).pipe(view.inject());
+const drawn = overlay.add(paths.drawing);
+
+const loop = frames.create(root, (frame) => {
+  renderer.render(scene, camera);
+  view.write(camera.matrixWorldInverse.elements, camera.projectionMatrix.elements);
+  overlay.record(frame, drawn, { clear: false });
+});
+```
+
+[Text](/kit/text/) and [particles](/kit/particles/) add to the same description. A `Screen` has colour only, so the overlay draws over three's objects rather than behind them.
+
+## vgpu
+
+vgpu borrows a device with `initFromDevice`, and `gpu.gpu` returns its device for `tgpu.initFromDevice`. Its `.set(...)` accepts raw buffers and textures, so `root.unwrap` hands it kit resources. vgpu's `frame` submits after its callback returns, so a kit frame run inside the callback reaches the queue first:
+
+```ts
+import { draw, frameLoop, initFromDevice, surface } from 'vgpu';
+import dotsShader from './dots.wgsl';
+
+const root = await tgpu.init();
+const gpu = await initFromDevice(root.device);
+
+const positions = root.createBuffer(d.arrayOf(d.vec4f, count)).$usage('storage');
+const dots = draw(gpu, {
+  shader: dotsShader,
+  vertices: 6,
+  instances: count,
+  set: { positions: root.unwrap(positions) },
+});
+const target = surface(gpu, canvas);
+
+const simulate = frames.create(root, step); // writes positions
+frameLoop(gpu, (f) => {
+  simulate.run(performance.now() / 1000);
+  f.pass(target, dots);
+});
+```
+
+vgpu's textures return their `GPUTexture` from `.gpu` for the kit to bind.
+
+## Limits
+
+- three falls back to WebGL where WebGPU is missing. None of this works there.
+- `renderer.backend.device` and `renderer.backend.get` are three internals and can change between releases.
+- Neither renderer accepts a pass from you, so each library draws in its own passes.
+- An overlay that hides behind three's objects needs a depth target both draw into.
+- Over three's reversed depth buffer, set the overlay up for [reversed depth](/kit/passes/#reversed-depth), with `reversed: true` on the custom camera.
+- The canvas has one owner. Don't create a `web.surface` over a canvas that three or vgpu configured.

@@ -1,0 +1,26 @@
+---
+interface Props {
+  /** The `data-control` the script finds it by, and the words before it unless `label` says others. */
+  name: string;
+  /** Shows the value as a number to drag, with the range input keeping keyboard control. */
+  inline?: boolean;
+  label?: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  /** What follows the value, its unit, with a leading space where it needs one. */
+  unit?: string;
+}
+
+const { name, label = name, min, max, step = 1, value, unit = '', inline = false } = Astro.props;
+---
+
+<label class:list={['viz-slider', { 'viz-number': inline }]}>
+  {label}
+  <span class="viz-range">
+    <input type="range" min={min} max={max} step={step} value={value} autocomplete="off" data-control={name} />
+    <output aria-hidden="true">{value}</output>
+  </span>
+  {unit}
+</label>

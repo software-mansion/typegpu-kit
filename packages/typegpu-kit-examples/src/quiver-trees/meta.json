@@ -1,0 +1,15 @@
+{
+  "title": "Quiver trees",
+  "category": "worlds",
+  "description": "8 000 quiver trees and boulders use CC0 scans from Poly Haven, with 12 000 to 50 000 triangles per model. Meshes draw within 40 m, and captured impostors draw beyond that distance. Across 8 m around that distance, each tree and boulder blends from mesh to card by multisampled samples. Try nearest, blended or parallax sampling. Both meshes and impostors receive lighting and shadows. The gravel uses height-map ray marching.",
+  "line": "Scanned quiver trees and boulders on marched gravel, impostors past 40 m, sampled three ways.",
+  "order": 9,
+  "card": {
+    "atlas": {
+      "views": 6,
+      "size": 64
+    }
+  },
+  "features": ["indirect-first-instance"],
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

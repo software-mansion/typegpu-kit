@@ -1,0 +1,203 @@
+---
+import { SHAPES } from './MeshBuild.program.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="mesh-build">
+  <p class="viz-title">A shape built one triangle at a time from its indices</p>
+  <p class="readout" data-out="shape"></p>
+  <svg viewBox="0 0 384 214" role="img" aria-label="Shape built one triangle at a time from vertex indices"></svg>
+  <p class="readout" data-out="vertex"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <label>shape <select data-control="shape" autocomplete="off">
+      {SHAPES.map((shape, i) => <option value={shape} selected={i === 0}>{shape}()</option>)}
+    </select></label>
+    <button data-action="play" aria-pressed="false">Play</button>
+    <Slider inline name="vertex" min={0} max={35} value={14} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Step through vertices to build triangles, with back faces dashed. The sphere, cylinder and torus use fewer segments than their defaults.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    max-width: 32rem;
+    margin-inline: auto;
+  }
+
+  /* HTML, not SVG text, so it keeps its size on a phone. */
+  .readout {
+    margin: 0;
+    color: var(--viz-muted);
+    font: var(--type-status)/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .readout :global(strong) {
+    color: var(--text);
+    font-weight: 500;
+  }
+</style>
+
+<script>
+  import { action, animation, control, each, slider } from './figure.ts';
+  import { createProgram, type Shape, type Vertex } from './MeshBuild.program.ts';
+  import { leader, stipple, svg, text } from './svg.ts';
+
+  type Vec3 = Vertex['position'];
+
+  const program = createProgram();
+
+  const CENTER = { x: 192, y: 107 };
+
+  const HALF_WIDTH = 170;
+  const HALF_HEIGHT = 88;
+
+  // An orthographic view from yaw 0.65 and pitch 0.5, so the +x, +y and +z faces face you
+  const YAW = 0.65;
+  const PITCH = 0.5;
+  const right = { x: Math.cos(YAW), y: 0, z: -Math.sin(YAW) };
+  const up = { x: -Math.sin(PITCH) * Math.sin(YAW), y: Math.cos(PITCH), z: -Math.sin(PITCH) * Math.cos(YAW) };
+  const toward = { x: Math.cos(PITCH) * Math.sin(YAW), y: Math.sin(PITCH), z: Math.cos(PITCH) * Math.cos(YAW) };
+
+  const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+  const projectAt = (scale: number) => (p: Vec3): [number, number] => [
+    CENTER.x + dot(p, right) * scale,
+    CENTER.y - dot(p, up) * scale,
+  ];
+
+  // Each shape is drawn as large as fits, so the coarse ones are as easy to follow as the box
+  const fit = (vertices: readonly Vertex[]) => {
+    const across = Math.max(...vertices.map((v) => Math.abs(dot(v.position, right))));
+    const tall = Math.max(...vertices.map((v) => Math.abs(dot(v.position, up))));
+    return Math.min(HALF_WIDTH / across, HALF_HEIGHT / tall);
+  };
+  const along = (p: Vec3, n: Vec3, length: number) => ({ x: p.x + n.x * length, y: p.y + n.y * length, z: p.z + n.z * length });
+
+  const number = (value: number) => {
+    const rounded = Math.round(value * 100) / 100;
+    return Math.abs(rounded) < 1e-9 ? '0' : String(rounded).replace('-', '−');
+  };
+  const vector = (values: Iterable<number>) => `(${[...values].map(number).join(', ')})`;
+  const points = (list: [number, number][]) => list.map((point) => point.join(',')).join(' ');
+
+  /** The first line strong, one line each. */
+  const lines = (out: HTMLElement, first: string, ...rest: string[]) => {
+    const strong = document.createElement('strong');
+    strong.textContent = first;
+    out.replaceChildren(strong, ...rest.flatMap((line) => [document.createElement('br'), line]));
+  };
+
+  each('mesh-build', (root) => {
+    const figure = root.querySelector('svg')!;
+    const vertexInput = slider(root, 'vertex', () => build.redraw());
+    const shapeInput = control<HTMLSelectElement>(root, 'shape');
+    const shapeOut = root.querySelector<HTMLElement>('[data-out=shape]')!;
+    const vertexOut = root.querySelector<HTMLElement>('[data-out=vertex]')!;
+
+    const label = (x: number, y: number, from: [number, number], content: string) => {
+      const length = Math.hypot(x - from[0], y - from[1]) || 1;
+      const tx = x + ((x - from[0]) / length) * 16;
+      const ty = y + ((y - from[1]) / length) * 16;
+      leader(figure, tx, ty, x, y);
+      text(figure, tx, ty + 4, content, {
+        'text-anchor': 'middle',
+        class: 'strong',
+      });
+    };
+
+    const draw = () => {
+      figure.replaceChildren();
+      const { code, corners: vertices, indices: indexOf, uses } = program.build(shapeInput.value as Shape);
+      const index = Math.min(Number(vertexInput.value), vertices.length - 1);
+      const scale = fit(vertices);
+      const project = projectAt(scale);
+
+      lines(shapeOut, `meshes.${code}`, `${uses.length} vertices, ${indexOf.length} indices; unindexed, vertexCount ${vertices.length}`);
+
+      const current = Math.floor(index / 3);
+      const triangles = Array.from({ length: vertices.length / 3 }, (_, t) => {
+        const three = vertices.slice(t * 3, t * 3 + 3);
+        const [a, b, c] = three.map((v) => v.position) as [Vec3, Vec3, Vec3];
+        // The winding's normal, from the positions, decides which side faces you
+        const face = {
+          x: (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y),
+          y: (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z),
+          z: (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x),
+        };
+        const depth = dot({ x: (a.x + b.x + c.x) / 3, y: (a.y + b.y + c.y) / 3, z: (a.z + b.z + c.z) / 3 }, toward);
+        return { t, screen: three.map((v) => project(v.position)), front: dot(face, toward) > 0, depth };
+      });
+
+      // Far to near, so nearer triangles cover farther ones
+      const ordered = triangles.toSorted((p, q) => p.depth - q.depth);
+      for (const { t, screen, front } of ordered) {
+        const done = t < current || (t === current && index % 3 === 2);
+        svg('polygon', {
+          points: points(screen),
+          fill: done ? stipple(figure, 'var(--viz-accent)', 0.5) : 'var(--sl-color-bg, transparent)',
+          'fill-opacity': done ? (front ? 0.35 : 0.08) : front ? 0.6 : 0,
+          stroke: 'var(--viz-line)',
+          'stroke-width': 0.75,
+          'stroke-dasharray': front ? 'none' : '2 2',
+          'stroke-opacity': done ? 1 : 0.45,
+        }, figure);
+      }
+
+      // The current triangle so far, its corners numbered in order
+      const triangle = triangles[current];
+      const corner = index % 3;
+      const drawn = triangle.screen.slice(0, corner + 1);
+      svg(corner === 2 ? 'polygon' : 'polyline', { points: points(drawn), fill: 'none', stroke: 'var(--viz-accent)', 'stroke-width': 2 }, figure);
+
+      const middle: [number, number] = [
+        triangle.screen.reduce((sum, [x]) => sum + x, 0) / 3,
+        triangle.screen.reduce((sum, [, y]) => sum + y, 0) / 3,
+      ];
+      drawn.forEach(([x, y], k) => label(x, y, middle, String(current * 3 + k)));
+
+      // The vertex and its normal, 30 units long on screen
+      const vertex = vertices[index];
+      const [x, y] = project(vertex.position);
+      const [toX, toY] = project(along(vertex.position, vertex.normal, 30 / scale));
+      svg('line', { x1: x, y1: y, x2: toX, y2: toY, stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, figure);
+      svg('circle', { cx: toX, cy: toY, r: 2.5, fill: 'var(--viz-accent)' }, figure);
+      svg('circle', { cx: x, cy: y, r: 4, fill: 'var(--viz-accent)' }, figure);
+
+      const shared = indexOf[index];
+      const corners = uses[shared];
+      lines(
+        vertexOut,
+        `vertexAt(${index}): triangle ${current}, corner ${corner}`,
+        `indexAt(${index}) = ${shared}, ${corners === 1 ? 'a vertex no other corner uses' : `a vertex ${corners} corners use`}`,
+        `position ${vector([vertex.position.x, vertex.position.y, vertex.position.z])}`,
+        `normal ${vector([vertex.normal.x, vertex.normal.y, vertex.normal.z])}  uv ${vector([vertex.uv.x, vertex.uv.y])}`,
+      );
+    };
+
+    // A triangle per step, so the larger shapes fill in a few seconds
+    const build = animation(root, {
+      every: 0.16,
+      step() {
+        const count = Number(vertexInput.max) + 1;
+        show((Math.floor(vertexInput.valueAsNumber / 3) * 3 + 5) % count);
+      },
+      draw,
+      play: action(root, 'play'),
+      playing: false,
+    });
+
+    /** Moves the slider as the reader would, which draws. */
+    const show = (value: number) => {
+      vertexInput.value = String(value);
+      vertexInput.dispatchEvent(new Event('input'));
+    };
+
+    shapeInput.addEventListener('change', () => {
+      const count = program.build(shapeInput.value as Shape).corners.length;
+      vertexInput.max = String(count - 1);
+      show(Math.min(vertexInput.valueAsNumber, count - 1));
+    });
+  });
+</script>

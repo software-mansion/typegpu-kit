@@ -1,0 +1,95 @@
+---
+---
+
+<figure class="viz viz-wide" data-viz="module-life">
+  <p class="viz-title">GPU resources across the flow field's lifetime</p>
+  <svg viewBox="0 0 640 240" role="img" aria-label="GPU resource creation and destruction across the flow field lifetime"></svg>
+  <figcaption class="viz-caption">
+    Follow resources from creation to teardown. Frames after the first allocate nothing, <code>destroy()</code> frees the particle buffer, and the borrowed surface remains.
+    <span class="more">{' '}Scroll the figure sideways to see the later steps.</span>
+  </figcaption>
+</figure>
+
+<style>
+  figure {
+    container-type: inline-size;
+  }
+
+  .more {
+    display: none;
+  }
+
+  /* Narrower than the drawing's least width in viz.css, the figure scrolls. */
+  @container (width < 34rem) {
+    .more {
+      display: inline;
+    }
+  }
+</style>
+
+<script>
+  import { each, whenNear } from './figure.ts';
+  import { createProgram, STEPS, type Life } from './ModuleLife.program.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const MIN_WIDTH = 544;
+  const ROW = 22;
+  const TOP = 34;
+  const LABEL = 132;
+
+  /** Draws each object's life at `width`, and returns the drawing's height. */
+  function draw(figure: SVGSVGElement, width: number, lives: Life[]) {
+    const column = (width - LABEL) / STEPS.length;
+    const middle = (i: number) => LABEL + (i + 0.5) * column;
+
+    STEPS.forEach((step, i) => {
+      text(figure, middle(i), 12, step, { 'text-anchor': 'middle', class: 'strong' });
+      svg('line', { x1: middle(i), x2: middle(i), y1: 20, y2: TOP + lives.length * ROW, stroke: 'var(--viz-line)', 'stroke-opacity': 0.35 }, figure);
+    });
+
+    lives.forEach((life, row) => {
+      const y = TOP + row * ROW;
+      text(figure, 0, y + 14, life.label, life.borrowed ? {} : { class: 'strong' });
+
+      const start = life.from < 0 ? LABEL - 6 : middle(life.from);
+      const end = life.to === undefined ? width : middle(life.to);
+      svg('rect', {
+        x: start,
+        y: y + 5,
+        width: end - start,
+        height: 11,
+        rx: 2,
+        fill: life.borrowed ? stipple(figure, 'var(--viz-b)', 0.5) : stipple(figure, 'var(--viz-d)', 0.5),
+        'fill-opacity': life.borrowed ? 0.3 : 0.55,
+      }, figure);
+
+      if (life.from >= 0) svg('circle', { cx: start, cy: y + 10.5, r: 4, fill: 'var(--viz-d)' }, figure);
+      if (life.to !== undefined) {
+        const d = `M ${end - 4} ${y + 6.5} L ${end + 4} ${y + 14.5} M ${end + 4} ${y + 6.5} L ${end - 4} ${y + 14.5}`;
+        svg('path', { d, stroke: 'var(--viz-c)', 'stroke-width': 2 }, figure);
+      }
+    });
+
+    const bottom = TOP + lives.length * ROW + 8;
+    svg('circle', { cx: 4, cy: bottom + 6, r: 4, fill: 'var(--viz-d)' }, figure);
+    text(figure, 14, bottom + 10, 'created');
+    svg('path', { d: `M 84 ${bottom + 2} L 92 ${bottom + 10} M 92 ${bottom + 2} L 84 ${bottom + 10}`, stroke: 'var(--viz-c)', 'stroke-width': 2 }, figure);
+    text(figure, 100, bottom + 10, 'destroyed');
+    svg('rect', { x: 184, y: bottom + 1, width: 22, height: 11, rx: 2, fill: stipple(figure, 'var(--viz-b)', 0.5) }, figure);
+    text(figure, 212, bottom + 10, 'borrowed');
+
+    return bottom + 16;
+  }
+
+  each('module-life', (root) => {
+    const figure = root.querySelector('svg')!;
+    let lives: Life[] | undefined;
+    const redraw = fitWidth(figure, (width) => (lives ? draw(figure, width, lives) : 0), MIN_WIDTH);
+
+    // Building the field resolves its shaders, so wait until the figure is near
+    whenNear(root, async () => {
+      lives = await createProgram();
+      redraw();
+    });
+  });
+</script>

@@ -1,0 +1,106 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+import { LENGTH, SHADES, START } from './Text.scene.ts';
+---
+
+<figure class="viz" data-viz="text">
+  <p class="viz-title">A label drawn from an MSDF atlas</p>
+  <canvas class="viz-bleed" aria-label="Inter label rendered from an MSDF atlas"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <label>
+      text <input type="text" data-control="words" value={START.words} maxlength={LENGTH} autocomplete="off" spellcheck="false" />
+    </label>
+    <Slider name="size" min={12} max={128} value={START.size} unit=" pt" />
+    <Choice name="shade" label="shade" options={SHADES} value={START.shade} />
+    <div class="viz-settings">
+      <Slider name="width" min={0.5} max={12} step={0.5} value={START.width} unit=" px" />
+      <dl class="viz-readout">
+        <div><dt>reach</dt><dd data-read="reach">6.4 px</dd></div>
+      </dl>
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Type a label and select <code>distance</code> or <code>round</code> to see bands every three screen pixels. Distances stop at <code>reach</code>, which grows with size; wider outlines or glows fill the glyph quad.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, control, each, live, slider } from './figure.ts';
+  import type { Shade, TextFigure } from './Text.scene.ts';
+
+  /** Canvas pixels to a point of size that fit the starting words with a margin. */
+  const FIT = 6.5;
+
+  each('text', (figure) => {
+    const reach = figure.querySelector<HTMLElement>('[data-read=reach]')!;
+    const words = control(figure, 'words');
+    // A narrow canvas starts the label smaller, so all of it shows
+    const room = Math.floor(figure.querySelector('canvas')!.clientWidth / FIT);
+    const start = control(figure, 'size');
+    if (room > 0 && room < start.valueAsNumber) start.valueAsNumber = room;
+    const size = slider(figure, 'size', (points) => {
+      shown.update((scene) => scene.resize(points));
+    });
+    const width = slider(
+      figure,
+      'width',
+      (pixels) => {
+        shown.update((scene) => scene.widen(pixels));
+      },
+      (pixels) => pixels.toFixed(1),
+    );
+    const shade = choice<Shade>(figure, 'shade', (chosen) => {
+      shown.update((scene) => scene.shade(chosen));
+    });
+    words.addEventListener('input', () => {
+      shown.update((scene) => scene.write(words.value));
+    });
+
+    const read = (label: TextFigure) => {
+      reach.textContent = `${label.reach.toFixed(1)} px`;
+      reach.classList.toggle('past', width.valueAsNumber > label.reach);
+    };
+    const shown = live(figure, () => import('./Text.scene.ts'), undefined, {
+      onFrame: (_frame, { scene }) => read(scene),
+      ready(scene) {
+        scene.write(words.value);
+        scene.resize(size.valueAsNumber);
+        scene.widen(width.valueAsNumber);
+        scene.shade(shade.value);
+      },
+    });
+  });
+</script>
+
+<style>
+  canvas.viz-bleed {
+    height: clamp(200px, 26vw, 300px);
+    touch-action: auto;
+  }
+
+  input[type='text'] {
+    width: 12ch;
+    height: 30px;
+    padding: 0 var(--s-2);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text);
+    font: var(--type-status) var(--font-mono);
+  }
+
+  input[type='text']:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  figure .viz-readout dd {
+    min-width: 7ch;
+  }
+
+  /* An outline or a glow wider than the reach fills each glyph's quad. */
+  figure .viz-readout dd.past {
+    color: var(--viz-bad);
+  }
+</style>

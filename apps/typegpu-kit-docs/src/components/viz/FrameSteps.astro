@@ -1,0 +1,652 @@
+---
+/** A line of the recorder and the events it stands for: a module's call by its `by`, the program's own by their `kind`. */
+interface Line {
+  code: string;
+  by?: string;
+  kind?: string;
+}
+
+const LINES: Line[] = [
+  { code: 'frames.create(root, (frame) => {', kind: 'start' },
+  { code: '  const compute = frame.encoder.beginComputePass();', kind: 'begin-compute' },
+  { code: '  sparks.spawn(compute);', by: 'particles.spawn' },
+  { code: '  field.step(compute);', by: 'field.step' },
+  { code: '  sparks.step(compute);', by: 'particles.step' },
+  { code: '  sparks.compact(compute, sim.ahead);', by: 'particles.compact' },
+  { code: '  compute.end();', kind: 'end-compute' },
+  { code: '' },
+  { code: '  probe.capture(frame);', by: 'readback.capture' },
+  { code: '' },
+  { code: '  const pass = scene.begin(frame);', kind: 'begin-render' },
+  { code: '  field.draw(pass);', by: 'field.draw' },
+  { code: '  sparks.draw(pass);', by: 'particles.draw' },
+  { code: '  pass.end();', kind: 'end-render' },
+  { code: '});', kind: 'submit' },
+  { code: '// after the submit, probe maps its copy', kind: 'map' },
+];
+---
+
+<figure class="viz" data-viz="frame-steps">
+  <p class="viz-title">What each line of a frame records, and what it sends at once</p>
+  <div class="frame-steps not-content">
+    <div class="stage">
+      <div class="lines">
+        {
+          LINES.map((line) =>
+            line.code ? (
+              <span class="line" data-by={line.by} data-kind={line.kind}>
+                <code>{line.code}</code>
+                <i class="sent" />
+              </span>
+            ) : (
+              <span class="blank">&nbsp;</span>
+            ),
+          )
+        }
+      </div>
+      <div class="plates">
+        <div class="plate" data-plate="encoder">
+          <p class="lane">Encoder <b></b></p>
+          <div class="hold"></div>
+        </div>
+        <div class="plate" data-plate="gpu">
+          <p class="lane">GPU <b></b></p>
+          <div class="hold"></div>
+        </div>
+        <div class="plate" data-plate="after">
+          <p class="lane">After the submit <b></b></p>
+          <div class="hold"></div>
+        </div>
+      </div>
+      <svg class="wires" aria-hidden="true"></svg>
+    </div>
+  </div>
+  <p class="viz-status" aria-live="polite" style="--lines: 2"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="back">Back</button>
+    <button data-action="step">Step</button>
+    <button data-action="play" aria-pressed="false">Play</button>
+    <button data-action="throw" aria-pressed="false">Throw here</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Throw on any line. The writes already sent stay, and the encoder's passes never reach the GPU.
+  </figcaption>
+</figure>
+
+<style>
+  .frame-steps {
+    container-type: inline-size;
+  }
+
+  .stage {
+    --compute: var(--viz-b);
+    --render: var(--viz-e);
+    --copy: var(--viz-d);
+    --write: var(--viz-c);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 25.5rem) minmax(0, 1fr);
+    gap: var(--s-4) var(--s-7);
+    align-items: start;
+    font: var(--type-status) / 1.6 var(--font-mono);
+  }
+
+  /* The recorder: a rule on the left, the line that ran last marked on it. */
+  .lines {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule-strong) transparent;
+  }
+
+  .line,
+  .blank {
+    display: flex;
+    gap: var(--s-3);
+    align-items: center;
+    min-width: max-content;
+    padding-inline: var(--s-3) var(--s-2);
+    border-left: 2px solid var(--rule);
+    color: var(--muted);
+    line-height: 1.75;
+  }
+
+  .line {
+    cursor: pointer;
+  }
+
+  .line code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    white-space: pre;
+  }
+
+  .line.ran {
+    color: var(--text-2);
+  }
+
+  .line.now {
+    border-left-color: var(--accent);
+    color: var(--text);
+  }
+
+  .line.threw {
+    border-left-color: var(--viz-bad);
+    color: var(--viz-bad);
+  }
+
+  @media (hover: hover) {
+    .line:hover:not(.now, .threw) {
+      border-left-color: var(--rule-strong);
+      color: var(--text);
+    }
+  }
+
+  /* The writes a line sent, at its end. */
+  .sent {
+    display: flex;
+    gap: 3px;
+    visibility: hidden;
+  }
+
+  .line:is(.ran, .now, .threw) .sent {
+    visibility: visible;
+  }
+
+  .sent :global(i),
+  .plates :global(.write i) {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--write);
+  }
+
+  .plates {
+    display: grid;
+    gap: var(--s-3);
+  }
+
+  .lane {
+    margin: 0 0 var(--s-1);
+    color: var(--muted);
+    font: var(--type-label) / 1.6 var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .lane b {
+    margin-left: var(--s-2);
+    color: var(--text-2);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .hold {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2) var(--s-3);
+    align-items: center;
+    min-height: 2.6rem;
+    padding: var(--s-2);
+    border: 1px solid var(--viz-line);
+    border-radius: 2px;
+  }
+
+  [data-plate='encoder'] .hold {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .plates :global([data-at='later']) {
+    visibility: hidden;
+  }
+
+  /* A pass in the encoder: dashed while it is open. */
+  .plates :global(.pass) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--s-3);
+    align-items: baseline;
+    padding: var(--s-1) var(--s-2);
+    border: 1px solid var(--kind);
+    border-radius: 2px;
+  }
+
+  .plates :global(.pass.open) {
+    border-style: dashed;
+  }
+
+  .plates :global([data-kind='compute']) {
+    --kind: var(--compute);
+  }
+
+  .plates :global([data-kind='render']) {
+    --kind: var(--render);
+  }
+
+  .plates :global([data-kind='copy']) {
+    --kind: var(--copy);
+  }
+
+  .plates :global(.pass > b) {
+    flex: none;
+    width: 100%;
+    color: var(--kind);
+    font: var(--type-label) / 1.8 var(--font-mono);
+  }
+
+  .plates :global(.call) {
+    --wire: var(--kind);
+    color: var(--text-2);
+  }
+
+  .plates :global(.call i) {
+    margin-left: 0.5ch;
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  .plates :global(.call[data-at='now']) {
+    color: var(--kind);
+    font-weight: 600;
+  }
+
+  .plates :global(.pass[data-at='now']),
+  .plates :global(.pass.closing) {
+    --wire: var(--kind);
+  }
+
+  .plates :global(.write) {
+    --wire: var(--write);
+    display: inline-flex;
+    gap: 3px;
+    align-items: center;
+    color: var(--text-2);
+  }
+
+  .plates :global(.write span) {
+    margin-left: var(--s-1);
+  }
+
+  .plates :global(.write[data-at='now']) {
+    color: var(--write);
+    font-weight: 600;
+  }
+
+  /* The encoder's passes, submitted as one. */
+  .plates :global(.buffer) {
+    --wire: var(--viz-accent);
+    display: inline-flex;
+    gap: var(--s-2);
+    align-items: baseline;
+    padding: 1px var(--s-2);
+    border: 1px solid var(--viz-accent);
+    border-radius: 2px;
+    color: var(--text);
+  }
+
+  .plates :global(.buffer i) {
+    color: var(--kind);
+    font-style: normal;
+  }
+
+  .plates :global(.later) {
+    --wire: var(--text-2);
+    padding: 1px var(--s-2);
+    border: 1px dashed var(--viz-line);
+    border-radius: 2px;
+    color: var(--muted);
+  }
+
+  .plates :global(.later.ran) {
+    border-style: solid;
+    border-color: var(--muted);
+    color: var(--text);
+  }
+
+  /* Submitted: the passes are the GPU's now. */
+  [data-state='submitted'] :global(.pass) {
+    opacity: 0.32;
+  }
+
+  /* Thrown: what the encoder held never arrives, and neither does a callback. */
+  [data-state='dropped'] .lane b {
+    color: var(--viz-bad);
+  }
+
+  [data-state='dropped'] :global(:is(.pass, .later)) {
+    --kind: var(--viz-bad);
+    border-style: dashed;
+    border-color: var(--viz-bad);
+  }
+
+  [data-state='dropped'] :global(:is(.call, .later)) {
+    color: var(--viz-bad);
+    font-weight: 400;
+    text-decoration: line-through;
+  }
+
+  .stage .wires {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  .stage .wires :global(path) {
+    fill: none;
+    stroke-width: 1.25;
+  }
+
+  @container (max-width: 40rem) {
+    .stage {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .stage .wires {
+      display: none;
+    }
+
+    .line,
+    .blank {
+      gap: var(--s-2);
+      padding-inline: var(--s-2) 0;
+      font-size: var(--type-label);
+      line-height: 1.7;
+    }
+  }
+</style>
+
+<script>
+  import type { Event } from './FrameAnatomy.program.ts';
+  import { clamp } from '../home/geometry.ts';
+  import { action, animation, each, plural, statusLine, whenNear } from './figure.ts';
+  import { svg } from './svg.ts';
+
+  interface Step {
+    line: HTMLElement;
+    /** The call on the line, such as `sparks.spawn`. */
+    call: string;
+    events: Event[];
+  }
+
+  const isCommand = (kind: string) => kind.startsWith('dispatch') || kind.startsWith('draw');
+
+  const make = (tag: string, name: string, parent: Element, content = '') => {
+    const element = document.createElement(tag);
+    element.className = name;
+    element.textContent = content;
+    parent.append(element);
+    return element;
+  };
+
+  const tag = (element: HTMLElement, step: number) => {
+    element.dataset.step = String(step);
+    return element;
+  };
+
+  /** Gives each line the events it stands for, in the order the frame made them. */
+  function stepsOf(lines: HTMLElement[], events: readonly Event[]): Step[] {
+    const steps = lines.map((line) => ({
+      line,
+      call: line.textContent!.trim().replace(/\(.*$/, ''),
+      events: [] as Event[],
+    }));
+
+    for (const event of events) {
+      const own = event.by === 'you' || event.kind === 'submit' || event.kind === 'map';
+      const step = steps.find(({ line }) =>
+        own ? line.dataset.kind === event.kind : line.dataset.by === event.by,
+      );
+      step?.events.push(event);
+    }
+    return steps;
+  }
+
+  /** Fills the plates with everything the frame puts in them, each piece tagged with its step. */
+  function build(root: HTMLElement, steps: Step[]) {
+    const hold = (plate: string) => root.querySelector(`[data-plate='${plate}'] .hold`)!;
+    const [encoder, gpu, after] = [hold('encoder'), hold('gpu'), hold('after')];
+    for (const plate of [encoder, gpu, after]) plate.replaceChildren();
+
+    const pass = (kind: string, name: string, step: number) => {
+      const made = tag(make('div', 'pass', encoder), step);
+      made.dataset.kind = kind;
+      make('b', '', made, name);
+      return made;
+    };
+
+    let open: HTMLElement | undefined;
+    const kinds: string[] = [];
+
+    steps.forEach(({ line, call, events }, at) => {
+      const of = (test: (kind: string) => boolean) => events.filter(({ kind }) => test(kind)).length;
+      const writes = of((kind) => kind === 'write');
+      const commands = of(isCommand);
+
+      for (const { kind } of events) {
+        if (kind === 'begin-compute' || kind === 'begin-render') {
+          const name = kind.slice('begin-'.length);
+          open = pass(name, `${name} pass`, at);
+          kinds.push(name);
+        } else if (kind === 'copy-buffer') {
+          tag(make('span', 'call', pass('copy', 'copy', at), call), at);
+          kinds.push('copy');
+        } else if (kind.startsWith('end-') && open) {
+          open.dataset.end = String(at);
+        } else if (kind === 'map') {
+          // The call that recorded the copy asked for it
+          const asked = steps.findIndex((step) => step.line.dataset.by === 'readback.capture');
+          tag(make('span', 'later', after, 'probe maps its copy'), asked).dataset.ran = String(at);
+        } else if (kind === 'submit') {
+          const buffer = tag(make('span', 'buffer', gpu, 'command buffer'), at);
+          for (const name of kinds) make('i', '', buffer, name).dataset.kind = name;
+        }
+      }
+
+      if (commands > 0 && open) {
+        const chip = tag(make('span', 'call', open, call), at);
+        if (commands > 1) make('i', '', chip, `×${commands}`);
+      }
+
+      const sent = line.querySelector('.sent')!;
+      sent.replaceChildren();
+      if (writes > 0) {
+        const chip = tag(make('span', 'write', gpu), at);
+        for (let i = 0; i < writes; i++) {
+          make('i', '', chip);
+          make('i', '', sent);
+        }
+        make('span', '', chip, call);
+      }
+    });
+  }
+
+  /** What the line did, in a sentence. */
+  function say(steps: Step[], at: number) {
+    const { call, events, line } = steps[at];
+    const of = (test: (kind: string) => boolean) => events.filter(({ kind }) => test(kind)).length;
+    const kind = line.dataset.kind;
+
+    if (kind === 'start') return 'The loop makes an encoder and calls your recorder with the frame.';
+    if (kind === 'begin-compute') return 'A compute pass opens in the encoder. Nothing has reached the GPU.';
+    if (kind === 'begin-render') return 'A render pass opens in the encoder.';
+    if (kind === 'end-compute') return 'The compute pass closes. It still waits in the encoder.';
+    if (kind === 'end-render') return 'The render pass closes. The encoder holds the whole frame.';
+    if (kind === 'submit') {
+      const before = steps.reduce((sum, step) => sum + step.events.filter((event) => event.kind === 'write').length, 0);
+      return `Your recorder returned, so the loop submits the encoder as one command buffer. The GPU runs it after the ${plural(before, 'write')}.`;
+    }
+    if (kind === 'map') return 'The submit is done, so probe maps its copy and reads it on the CPU.';
+
+    const writes = of((made) => made === 'write');
+    const dispatches = of((made) => made.startsWith('dispatch'));
+    const draws = of((made) => made.startsWith('draw'));
+    const parts = [
+      dispatches && `records ${plural(dispatches, 'dispatch', 'dispatches')}`,
+      draws && `records ${plural(draws, 'draw')}`,
+      of((made) => made === 'copy-buffer') && 'records a copy between the passes, to map after the submit',
+      writes && `writes ${plural(writes, 'buffer')} at once`,
+    ].filter(Boolean);
+    return `${call} ${parts.join(' and ')}.`;
+  }
+
+  function sayThrown(steps: Step[], at: number) {
+    const ran = steps.slice(0, at + 1).flatMap((step) => step.events);
+    const writes = ran.filter(({ kind }) => kind === 'write').length;
+    const commands = ran.filter(({ kind }) => isCommand(kind) || kind === 'copy-buffer').length;
+    const kept = writes > 0 ? `The ${plural(writes, 'write')} already sent ${writes === 1 ? 'stays' : 'stay'}` : 'Nothing was written';
+    return `The recorder throws here. ${kept}, the ${plural(commands, 'command')} in the encoder never reach the GPU, and the clock does not advance.`;
+  }
+
+  each('frame-steps', (root) => {
+    const stage = root.querySelector<HTMLElement>('.stage')!;
+    const wires = root.querySelector<SVGSVGElement>('.wires')!;
+    const lines = [...root.querySelectorAll<HTMLElement>('.line')];
+    const status = statusLine(root);
+    const state = (plate: string, word: string, name = '') => {
+      const element = root.querySelector<HTMLElement>(`[data-plate='${plate}']`)!;
+      element.dataset.state = name;
+      element.querySelector('.lane b')!.textContent = word;
+    };
+
+    let steps: Step[] | undefined;
+    // Opens on a line that records and writes, so the picture reads before a click
+    let at = lines.findIndex((line) => line.dataset.by === 'particles.compact');
+    let thrown = false;
+
+    const back = action(root, 'back');
+    const next = action(root, 'step');
+    const thrower = action(root, 'throw');
+
+    const wire = () => {
+      wires.replaceChildren();
+      if (!steps || thrown || getComputedStyle(wires).display === 'none') return;
+
+      const frame = stage.getBoundingClientRect();
+      const { line } = steps[at];
+      const column = line.parentElement!.getBoundingClientRect();
+      // From the end of the line: its code, or the writes after it
+      const sent = line.querySelector('.sent')!;
+      const end = (sent.childElementCount > 0 ? sent : line.querySelector('code')!).getBoundingClientRect();
+      const lit = [...stage.querySelectorAll<HTMLElement>('.plates [data-at="now"]')];
+      const chips = lit.filter((element) => !element.classList.contains('pass'));
+      const closing = [...stage.querySelectorAll<HTMLElement>('.pass.closing')];
+
+      for (const target of chips.length > 0 ? chips : [...lit, ...closing]) {
+        // A pass is met at its name, a call or a write at itself
+        const aim = target.classList.contains('pass') ? target.firstElementChild! : target;
+        const to = aim.getBoundingClientRect();
+        const plate = target.closest('.hold')!.getBoundingClientRect();
+        const [x0, y0] = [end.right - frame.left + 8, end.top + end.height / 2 - frame.top];
+        const [x1, y1] = [plate.left - frame.left, to.top + to.height / 2 - frame.top];
+        const turn = Math.max(x0, column.right - frame.left);
+        const mid = (turn + x1) / 2;
+
+        const path = svg('path', { d: `M${x0} ${y0}H${turn}C${mid} ${y0} ${mid} ${y1} ${x1} ${y1}` }, wires);
+        path.style.stroke = getComputedStyle(target).getPropertyValue('--wire');
+      }
+    };
+
+    const draw = () => {
+      if (!steps) return;
+      const submit = steps.findIndex((step) => step.line.dataset.kind === 'submit');
+
+      steps.forEach(({ line }, i) => {
+        line.classList.toggle('ran', i < at);
+        line.classList.toggle('now', i === at && !thrown);
+        line.classList.toggle('threw', i === at && thrown);
+      });
+
+      for (const piece of stage.querySelectorAll<HTMLElement>('.plates [data-step]')) {
+        const [step, ran, end] = [piece.dataset.step, piece.dataset.ran, piece.dataset.end].map(Number);
+        const now = !thrown && (step === at || ran === at);
+        piece.dataset.at = step > at ? 'later' : now ? 'now' : 'done';
+        piece.classList.toggle('open', at < end);
+        piece.classList.toggle('closing', !thrown && end === at);
+        piece.classList.toggle('ran', at >= ran);
+      }
+
+      const recorded = stage.querySelector('.pass:not([data-at="later"])') !== null;
+      const written = stage.querySelector('.write:not([data-at="later"])') !== null;
+      const asked = stage.querySelector('.later:not([data-at="later"])') !== null;
+
+      if (thrown) {
+        state('encoder', 'dropped', 'dropped');
+        state('gpu', written ? 'keeps the writes' : 'has nothing');
+        state('after', asked ? 'never runs' : '', 'dropped');
+      } else if (at >= submit) {
+        state('encoder', 'submitted', 'submitted');
+        state('gpu', 'runs the writes, then the buffer');
+        state('after', at > submit ? 'ran' : 'next');
+      } else {
+        state('encoder', recorded ? 'waits' : 'empty');
+        state('gpu', written ? 'already has' : 'has nothing yet');
+        state('after', asked ? 'waits' : '');
+      }
+
+      status.textContent = thrown ? sayThrown(steps, at) : say(steps, at);
+
+      const last = at === steps.length - 1;
+      back.disabled = at === 0;
+      next.textContent = last || thrown ? 'Again' : 'Step';
+      thrower.disabled = at === 0 || at >= submit;
+      thrower.setAttribute('aria-pressed', String(thrown));
+      wire();
+    };
+
+    const go = (to: number) => {
+      if (!steps) return;
+      at = clamp(to, 0, steps.length - 1);
+      thrown = false;
+      player.redraw();
+    };
+    const forward = () => go(thrown || at === (steps?.length ?? 0) - 1 ? 0 : at + 1);
+
+    const player = animation(root, {
+      every: 0.9,
+      step() {
+        forward();
+        if (steps && at === steps.length - 1) player.play(false);
+      },
+      draw,
+      play: action(root, 'play'),
+      playing: false,
+      onPlay() {
+        if (thrown || (steps && at === steps.length - 1)) go(0);
+      },
+    });
+
+    const manual = (run: () => void) => () => {
+      player.play(false);
+      run();
+    };
+
+    back.addEventListener('click', manual(() => go(at - 1)));
+    next.addEventListener('click', manual(forward));
+    thrower.addEventListener(
+      'click',
+      manual(() => {
+        thrown = !thrown;
+        player.redraw();
+      }),
+    );
+    lines.forEach((line, i) => line.addEventListener('click', manual(() => go(i))));
+
+    new ResizeObserver(wire).observe(stage);
+
+    // Building the modules compiles their shaders, so wait until the figure is near
+    whenNear(root, async () => {
+      const { createProgram } = await import('./FrameAnatomy.program.ts');
+      const frame = { field: true, particles: true, readback: true, burst: true, fail: false };
+      steps = stepsOf(lines, createProgram().run(frame).events);
+      build(root, steps);
+      player.redraw();
+    });
+  });
+</script>

@@ -1,0 +1,299 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="cascades">
+  <p class="viz-title">A view cut into shadow cascades, seen from a sun overhead</p>
+  <svg class="viz-keys" viewBox="0 0 720 420" aria-label="The camera's view seen from the sun, cut into slices, each inside the square its cascade covers"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="cascades" label="cascades" options={[1, 2, 3, 4]} value={3} />
+    <Choice name="splits" label="splits" options={['default', 'even']} value="default" />
+    <Slider inline name="far" min={40} max={320} step={10} value={120} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the point away from the camera. It takes the first square that holds it, so its texels grow
+    at each edge it leaves. Every square is one layer of the map, ruled here 16 cells across.
+  </figcaption>
+</figure>
+
+<script>
+  import type { Cascade, Count, Point } from './Cascades.program.ts';
+  import { clamp } from '../home/geometry.ts';
+  import { choice, each, onKeys, rounded, slider, statusLine, whenNear } from './figure.ts';
+  import { CHAR, fitWidth, onStroke, stipple, svg, text } from './svg.ts';
+
+  /** Cascades in order take the series colours. */
+  const COLOURS = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)', 'var(--viz-e)'];
+  /** Rules across each square, so a cell is a sixteenth of a layer. */
+  const CELLS = 16;
+  const COUNTS: readonly Count[] = [1, 2, 3, 4];
+  /** The column beside the picture, and the figure width from which it fits there. */
+  const SIDE = 280;
+  const WIDE = 640;
+  const ROW = 22;
+  /** Room in the frame for radii that round up by a part in 256, differently at each `far`. */
+  const SLACK = 1 + 1 / 128;
+  /** Lengths the ruler may show, in world units. */
+  const RULERS = [50, 20, 10, 5, 2];
+  /** The picture's foot, which holds the ruler. */
+  const FOOT = 22;
+  /** The ground the lens shows around the point, in world units. */
+  const PATCH = 0.5;
+
+  const short = (value: number) => (value >= 10 ? String(Math.round(value)) : rounded(value, 1));
+
+  /** Positive where the path from `o` through `a` to `b` turns left. */
+  const turn = (o: Point, a: Point, b: Point) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+
+  /** One side of the convex outline of `sorted` points, without its last. */
+  const side = (sorted: readonly Point[]) => {
+    const chain: Point[] = [];
+    for (const point of sorted) {
+      while (chain.length > 1 && turn(chain.at(-2)!, chain.at(-1)!, point) <= 0) chain.pop();
+      chain.push(point);
+    }
+    return chain.slice(0, -1);
+  };
+
+  /** The convex outline of `points`, as an SVG path. */
+  const hull = (points: readonly Point[]) => {
+    const sorted = points.toSorted((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const outline = [...side(sorted), ...side(sorted.toReversed())];
+    return `M${outline.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join('L')}Z`;
+  };
+
+  /** The first cascade whose square holds `point`, as shading picks it; -1 outside them all. */
+  const holding = (cascades: readonly Cascade[], [x, y]: Point) =>
+    cascades.findIndex((cascade) => Math.max(Math.abs(x - cascade.x), Math.abs(y - cascade.y)) < cascade.radius);
+
+  each('cascades', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+
+    whenNear(root, async () => {
+      const { createProgram } = await import('./Cascades.program.ts');
+      const count = choice<`${Count}`>(root, 'cascades', () => reshape());
+      const splits = choice<'default' | 'even'>(root, 'splits', () => reshape());
+      const far = slider(root, 'far', (value) => {
+        program.far(value);
+        draw();
+      });
+      const program = createProgram({ far: far.valueAsNumber });
+
+      // One frame holds every shape at this `far`, so the picture keeps its scale as they change.
+      // Cascades grow with `far` from the eye, and the frame with them
+      const reach = { left: 0, right: 0, bottom: 0, top: 0 };
+      const [eyeX, eyeY] = program.fit.eye;
+      for (const cascades of COUNTS) {
+        for (const even of [false, true]) {
+          program.shape({ cascades, even });
+          for (const { x, y, radius } of program.fit.cascades) {
+            reach.left = Math.min(reach.left, (x - radius - eyeX) * SLACK);
+            reach.right = Math.max(reach.right, (x + radius - eyeX) * SLACK);
+            reach.bottom = Math.min(reach.bottom, (y - radius - eyeY) * SLACK);
+            reach.top = Math.max(reach.top, (y + radius - eyeY) * SLACK);
+          }
+        }
+      }
+      const fitted = program.fit.far;
+      let frame = reach;
+      const reframe = () => {
+        const grown = far.valueAsNumber / fitted;
+        frame = {
+          left: eyeX + reach.left * grown,
+          right: eyeX + reach.right * grown,
+          bottom: eyeY + reach.bottom * grown,
+          top: eyeY + reach.top * grown,
+        };
+      };
+      const shape = () => program.shape({ cascades: Number(count.value) as Count, even: splits.value === 'even' });
+      const reshape = () => {
+        shape();
+        draw();
+      };
+
+      let point: Point = [0, 0];
+      /** The cascade the picture marks as holding the point. */
+      let shown = -2;
+      // Where the last layout put the picture and the lens, in SVG units
+      let origin: Point = [0, 0];
+      let scale = 1;
+      let lens = { x: 0, y: 0, size: 0, textX: 0, textY: 0, wire: 0 };
+      const marks = svg('g');
+      const ground = svg('rect', { fill: 'transparent', style: 'touch-action: none; cursor: crosshair' });
+      const place = ([x, y]: Point): Point => [origin[0] + (x - frame.left) * scale, origin[1] + (frame.top - y) * scale];
+
+      /** The point, and the texels of its cascade under it. */
+      const mark = () => {
+        const { cascades, size } = program.fit;
+        const at = holding(cascades, point);
+        if (at !== shown) return draw();
+        marks.replaceChildren();
+
+        const [x, y] = place(point);
+        svg('circle', { cx: x, cy: y, r: 8, fill: 'var(--ground)', 'fill-opacity': 0.5, stroke: 'var(--viz-accent)' }, marks);
+        svg('circle', { cx: x, cy: y, r: 2.5, fill: 'var(--viz-a)' }, marks);
+        if (lens.wire) {
+          const middle = lens.y + lens.size / 2;
+          svg(
+            'path',
+            { d: `M${x + 8},${y}H${lens.wire}V${middle}H${lens.x}`, fill: 'none', stroke: 'var(--viz-accent)', 'stroke-opacity': 0.5 },
+            marks,
+          );
+        }
+
+        const cascade = cascades[at];
+        const box = { x: lens.x + 0.5, y: lens.y + 0.5, width: lens.size, height: lens.size, rx: 2 };
+        if (cascade) {
+          // A layer's texels start at its square's edge, which lies on a whole texel
+          const texel = (cascade.radius * 2) / size;
+          const cell = (texel / PATCH) * lens.size;
+          /** Where the texel edges cross the patch around `centre`, in SVG units from its start. */
+          const edges = (centre: number) => {
+            const from = centre - PATCH / 2;
+            const crossed: number[] = [];
+            for (let i = Math.ceil(from / texel); i * texel < from + PATCH; i++) {
+              crossed.push(Math.round(((i * texel - from) / PATCH) * lens.size * 10) / 10 + 0.5);
+            }
+            return crossed;
+          };
+          const rules =
+            edges(point[0]).map((edge) => `M${lens.x + edge},${lens.y}v${lens.size}`).join('') +
+            edges(-point[1]).map((edge) => `M${lens.x},${lens.y + edge}h${lens.size}`).join('');
+          if (cell >= 2) svg('path', { d: rules, stroke: COLOURS[at], 'stroke-opacity': 0.7, fill: 'none' }, marks);
+          else svg('rect', { ...box, fill: stipple(figure, COLOURS[at], 0.5) }, marks);
+        }
+        svg('rect', { ...box, fill: 'none', stroke: 'var(--viz-accent)', ...(cascade ? {} : { 'stroke-dasharray': '3 3' }) }, marks);
+        text(marks, lens.textX, lens.textY, `${PATCH} units around the point`);
+        text(marks, lens.textX, lens.textY + 16, cascade ? `${short(cascade.density * PATCH)} texels across` : 'no texels', {
+          class: 'strong',
+        });
+      };
+
+      const draw = fitWidth(
+        figure,
+        (width) => {
+          const { eye, cascades, size } = program.fit;
+          reframe();
+          const wide = width >= WIDE;
+          const across = wide ? width - SIDE - 32 : width;
+          origin = [2, 2];
+          scale = Math.min((across - 4) / (frame.right - frame.left), 440 / (frame.top - frame.bottom));
+          const picture = { width: (frame.right - frame.left) * scale, height: (frame.top - frame.bottom) * scale };
+          shown = holding(cascades, point);
+
+          // Nearer squares cover farther ones, as the first that holds a point shades it
+          for (let k = cascades.length - 1; k >= 0; k--) {
+            const { x, y, radius } = cascades[k];
+            const [x0, y0] = place([x - radius, y + radius]);
+            const span = radius * 2 * scale;
+            const cell = span / CELLS;
+            svg('rect', { x: x0, y: y0, width: span, height: span, fill: 'var(--ground)' }, figure);
+            let rules = '';
+            for (let i = 1; i < CELLS; i++) rules += `M${x0 + i * cell},${y0}v${span}M${x0},${y0 + i * cell}h${span}`;
+            svg('path', { d: rules, stroke: COLOURS[k], 'stroke-opacity': k === shown ? 0.45 : 0.2, fill: 'none' }, figure);
+          }
+
+          cascades.forEach(({ corners }, k) => {
+            svg('path', { d: hull(corners.map(place)), fill: stipple(figure, COLOURS[k], 0.25), stroke: COLOURS[k] }, figure);
+          });
+          cascades.forEach(({ x, y, radius }, k) => {
+            const [x0, y0] = place([x - radius, y + radius]);
+            const span = radius * 2 * scale;
+            svg(
+              'rect',
+              { x: x0, y: y0, width: span, height: span, fill: 'none', stroke: COLOURS[k], 'stroke-width': k === shown ? 2 : 1 },
+              figure,
+            );
+          });
+
+          const [cameraX, cameraY] = place(eye);
+          const below = cameraY + 13.5;
+          svg('path', { d: `M${cameraX},${cameraY}V${below}h14`, fill: 'none', stroke: 'var(--viz-muted)' }, figure);
+          svg('circle', { cx: cameraX, cy: cameraY, r: 2, fill: 'var(--text-2)' }, figure);
+          text(figure, cameraX + 20, below + 4, 'camera');
+
+          // A ruler of whole units, under the picture's corner
+          const units = RULERS.find((length) => length * scale <= 48) ?? 1;
+          const ruler = below;
+          svg('path', { d: `M${origin[0] + 0.5},${ruler - 3}v6m0,-3h${units * scale}m0,-3v6`, stroke: 'var(--viz-muted)', fill: 'none' }, figure);
+          text(figure, origin[0] + units * scale + 8, ruler + 4, `${units} units`);
+
+          // The table: beside the picture, or under it on a narrow page
+          const tableX = wide ? width - SIDE - 2 : 0;
+          const tableY = wide ? 12 : origin[1] + picture.height + FOOT + 26;
+          const columns = [tableX + 108, tableX + 180, tableX + SIDE];
+          const head = { 'text-anchor': 'end' };
+          text(figure, columns[0], tableY, 'slice', head);
+          text(figure, columns[1], tableY, 'square', head);
+          // How the picture draws each: a slice of the view dotted, the square its layer covers ruled
+          const key = { stroke: 'var(--viz-muted)' };
+          const slice = columns[0] - 5 * CHAR - 20;
+          svg('path', { d: `M${slice + 0.5},${tableY - 8.5}h12l-3,8h-6Z`, fill: stipple(figure, 'var(--viz-muted)', 0.5), ...key }, figure);
+          svg('path', { d: `M${columns[1] - 6 * CHAR - 16.5},${tableY - 8.5}h8v8h-8Zm4,0v8m-4,-4h8`, fill: 'none', ...key }, figure);
+          text(figure, columns[2], tableY, 'texels a unit', head);
+          svg('line', { x1: tableX, x2: tableX + SIDE, y1: tableY + 8.5, y2: tableY + 8.5, stroke: 'var(--viz-line)' }, figure);
+          cascades.forEach(({ near, farther, radius, density }, k) => {
+            const y = tableY + 8 + (k + 1) * ROW - 6;
+            const cells = k === shown ? { ...head, class: 'strong' } : head;
+            svg(
+              'rect',
+              { x: tableX + 0.5, y: y - 9.5, width: 10, height: 10, fill: stipple(figure, COLOURS[k], 0.25), stroke: COLOURS[k] },
+              figure,
+            );
+            text(figure, tableX + 20, y, String(k), k === shown ? { class: 'strong' } : {});
+            text(figure, columns[0], y, `${short(near)} to ${short(farther)}`, cells);
+            text(figure, columns[1], y, short(radius * 2), cells);
+            text(figure, columns[2], y, short(density), k === shown ? { ...head, fill: 'var(--viz-accent)' } : head);
+          });
+          const foot = tableY + 8 + cascades.length * ROW + 16;
+          text(figure, tableX, foot, `each square, ${size} × ${size} texels`);
+
+          // The lens keeps its place under the longest table
+          const lensY = tableY + 8 + COUNTS.length * ROW + 36;
+          const lensSize = wide ? 168 : 112;
+          lens = wide
+            ? { x: tableX, y: lensY, size: lensSize, textX: tableX, textY: lensY + lensSize + 18, wire: tableX - 16 }
+            : { x: 0, y: lensY, size: lensSize, textX: lensSize + 16, textY: lensY + lensSize / 2 - 4, wire: 0 };
+
+          Object.entries({ x: origin[0], y: origin[1], ...picture }).forEach(([name, value]) =>
+            ground.setAttribute(name, String(value)),
+          );
+          figure.append(marks, ground);
+          mark();
+
+          const { density } = cascades[shown] ?? {};
+          status.textContent = density
+            ? `The point takes its shadow from cascade ${shown}, at ${short(density)} texels a unit.`
+            : 'No square holds the point, so it stays lit.';
+          const column = wide ? lens.textY + 24 : lens.y + lens.size + 4;
+          return Math.max(origin[1] + picture.height + FOOT, column);
+        },
+        340,
+      );
+
+      const move = (next: Point) => {
+        point = [clamp(next[0], frame.left, frame.right), clamp(next[1], frame.bottom, frame.top)];
+        mark();
+      };
+      onStroke(figure, [
+        [ground, ({ x, y }) => move([frame.left + (x - origin[0]) / scale, frame.top - (y - origin[1]) / scale])],
+      ]);
+      onKeys(
+        figure,
+        { arrow: (dx, dy) => move([point[0] + (dx * 4) / scale, point[1] - (dy * 4) / scale]) },
+        'arrow keys move the point',
+      );
+
+      // The point starts on the view's axis, a short way past the first square of three
+      shape();
+      const { eye, cascades } = program.fit;
+      const last = cascades.at(-1)!;
+      point = [eye[0] + (last.x - eye[0]) * 0.28, eye[1] + (last.y - eye[1]) * 0.28];
+      draw();
+    });
+  });
+</script>

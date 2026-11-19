@@ -1,0 +1,129 @@
+---
+// The key to a module's card: a card as its page shows it, then what each mark on it states. The
+// sentences are the ones the card's own tooltips show
+import { capital, facetOf, kinds, meanings, roles } from '../../contracts/facets.ts';
+import { loadModules } from './load.ts';
+import ModuleSheet from './ModuleSheet.astro';
+import { moduleById } from './modules.ts';
+
+interface Props {
+  /** The module whose card shows, by id. */
+  id: string;
+}
+
+const modules = await loadModules();
+const module = moduleById(modules, Astro.props.id);
+
+const words: Record<keyof typeof roles, string> = {
+  borrows: 'The root. The module uses it and never destroys it.',
+  takes: 'A value the call reads. The row under the call says what it is. An options object opens its fields.',
+  needs: 'Another module. The name opens its page.',
+  returns: 'What you get back. The name opens its members.',
+};
+---
+
+<div class="key not-content" data-pagefind-ignore>
+  <div class="sample"><ModuleSheet module={module} modules={modules} /></div>
+
+  <h3>Underlines in a call</h3>
+  <dl class="key-list">
+    {
+      (Object.keys(roles) as (keyof typeof roles)[]).map((role) => (
+        <div>
+          <dt>
+            <code class="arg" data-role={role}>
+              {role === 'returns' ? 'Result' : role === 'borrows' ? 'root' : role === 'needs' ? 'camera' : 'options'}
+            </code>
+          </dt>
+          <dd>{words[role]}</dd>
+        </div>
+      ))
+    }
+  </dl>
+
+  <h3>Labels</h3>
+  <dl class="key-list">
+    {
+      (Object.keys(meanings) as (keyof typeof meanings)[]).map((key) => (
+        <div id={key}>
+          <dt class="fact" data-facet={facetOf[key]}>
+            {key === 'usedBy' ? 'used by' : key}
+          </dt>
+          <dd>{meanings[key]}</dd>
+        </div>
+      ))
+    }
+  </dl>
+
+  <h3>Kinds</h3>
+  <dl class="key-list">
+    {
+      Object.entries(kinds).map(([kind, means]) => (
+        <div>
+          <dt>
+            <span class="pill" data-facet="kind">
+              {kind}
+            </span>
+          </dt>
+          <dd>{capital(means)}.</dd>
+        </div>
+      ))
+    }
+  </dl>
+</div>
+
+<style>
+  .key {
+    margin-block: var(--s-5);
+  }
+
+  .sample {
+    container: modules / inline-size;
+  }
+
+  h3 {
+    margin: var(--s-6) 0 var(--s-2);
+    color: var(--text);
+    font: 500 18px/1.3 var(--font-sans);
+    letter-spacing: -0.02em;
+  }
+
+  dl {
+    margin: 0;
+  }
+
+  dt {
+    color: var(--text);
+    font: 400 13.5px/24px var(--font-mono);
+  }
+
+  dt code {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+  }
+
+  /* A label as a card shows it: a dot and the word in its facet's colour. */
+  .fact {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    color: color-mix(in oklab, var(--dot, var(--muted)) 80%, var(--muted));
+    font: 500 11px/24px var(--font-mono);
+  }
+
+  .fact::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--dot, var(--rule-control));
+  }
+
+  dd {
+    margin: 0;
+    color: var(--text-2);
+    font: 400 15px/24px var(--font-sans);
+  }
+</style>

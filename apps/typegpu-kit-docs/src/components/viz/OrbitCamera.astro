@@ -1,0 +1,143 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="orbit-camera">
+  <p class="viz-title">An orbit camera eases toward its goal, in two views</p>
+  <svg viewBox="0 0 340 256" role="group" aria-label="Orbit camera easing toward a goal, seen from above and the side"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="turn">Turn 90°</button>
+    <Slider inline name="damping" min={2} max={40} value={14} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag either view to move the goal marked by the dashed ring. Each frame calls <code>update(dt)</code> and writes the uniform only while the camera moves.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    max-width: 36rem;
+    margin-inline: auto;
+  }
+</style>
+
+<script>
+  import { action, animation, each, slider } from './figure.ts';
+  import { createProgram, TRAIL, type Vec3 } from './OrbitCamera.program.ts';
+  import { FONT, onStroke, stipple, svg, text } from './svg.ts';
+
+  const WIDTH = 340; // of the drawing, in SVG units
+  const SCALE = 9; // SVG units per world unit
+  const ABOVE = { x: 100, y: 120 }; // the target, seen from above, +z down the page
+  const SIDE = { x: 214, y: 150 }; // the target, seen from the side
+
+  const above = ([x, , z]: Vec3) => [ABOVE.x + x * SCALE, ABOVE.y + z * SCALE] as const;
+  /** A view's drag area, which arrow keys also move the goal in. */
+  const area = (name: string) => ({
+    fill: 'transparent',
+    style: 'touch-action: none; cursor: crosshair',
+    tabindex: 0,
+    role: 'application',
+    'aria-label': `Goal seen ${name}; arrow keys move it`,
+  });
+  const side = ([x, y, z]: Vec3) => [SIDE.x + Math.hypot(x, z) * SCALE, SIDE.y - y * SCALE] as const;
+
+  each('orbit-camera', (root) => {
+    const figure = root.querySelector('svg')!;
+    // The drawing scales with the figure; its text keeps the size it has in viz.css
+    new ResizeObserver(([entry]) => {
+      const scale = entry.contentRect.width / WIDTH;
+      figure.style.fontSize = scale > 0 ? `${FONT / scale}px` : '';
+    }).observe(figure);
+    const damping = slider(root, 'damping', (value) => {
+      program.damp(value);
+      shown.redraw();
+    });
+    const program = createProgram({ damping: damping.valueAsNumber });
+
+    const dynamic = svg('g', {}, figure);
+    const aboveArea = svg('rect', { x: 10, y: 30, width: 180, height: 180, ...area('from above') }, figure);
+    const sideArea = svg('rect', { x: 204, y: 30, width: 130, height: 170, ...area('from the side') }, figure);
+
+    const goalPosition = (): Vec3 => {
+      const { yaw, pitch, distance } = program.goal;
+      const flat = distance * Math.cos(pitch);
+      return [flat * Math.sin(yaw), distance * Math.sin(pitch), flat * Math.cos(yaw)];
+    };
+
+    const view = (project: (point: Vec3) => readonly [number, number], center: { x: number; y: number }) => {
+      const [x, y] = project(program.eye());
+      const [goalX, goalY] = project(goalPosition());
+
+      program.trail.forEach((point, i) => {
+        const [px, py] = project(point);
+        svg('circle', { cx: px, cy: py, r: 1.5, fill: 'var(--viz-accent)', 'fill-opacity': (i + 1) / TRAIL }, dynamic);
+      });
+
+      svg('rect', { x: center.x - 3, y: center.y - 3, width: 6, height: 6, fill: stipple(figure, 'var(--viz-muted)', 0.5) }, dynamic);
+      svg('line', { x1: x, y1: y, x2: center.x, y2: center.y, stroke: 'var(--viz-line)' }, dynamic);
+      svg('circle', { cx: goalX, cy: goalY, r: 7, fill: 'none', stroke: 'var(--viz-accent)', 'stroke-dasharray': '2 2' }, dynamic);
+      svg('circle', { cx: x, cy: y, r: 4.5, fill: 'var(--viz-accent)' }, dynamic);
+    };
+
+    const draw = () => {
+      dynamic.replaceChildren();
+      const guide = { stroke: 'var(--viz-line)', 'stroke-dasharray': '1 3' };
+
+      text(dynamic, 0, 12, 'from above', { class: 'strong' });
+      svg('line', { x1: 10, x2: 190, y1: ABOVE.y, y2: ABOVE.y, ...guide }, dynamic);
+      svg('line', { x1: ABOVE.x, x2: ABOVE.x, y1: 30, y2: 210, ...guide }, dynamic);
+      text(dynamic, 190, ABOVE.y - 4, '+x', { 'text-anchor': 'end' });
+      text(dynamic, ABOVE.x + 4, 208, '+z');
+      view(above, ABOVE);
+
+      text(dynamic, 204, 12, 'from the side', { class: 'strong' });
+      svg('line', { x1: 204, x2: 334, y1: SIDE.y, y2: SIDE.y, ...guide }, dynamic);
+      text(dynamic, 334, SIDE.y + 14, 'ground', { 'text-anchor': 'end' });
+      view(side, SIDE);
+
+      const { writes, frames, moving } = program;
+      const status = text(dynamic, 0, 232, `uniform writes ${writes} · frames ${frames} · `);
+      const state = svg('tspan', moving ? { style: 'fill: var(--viz-accent)' } : { class: 'strong' }, status);
+      state.textContent = moving ? 'moving' : 'still';
+
+      const halfLife = Math.round((1000 * Math.LN2) / damping.valueAsNumber);
+      text(dynamic, 0, 250, `damping ${damping.value}: half the gap closes in ${halfLife} ms`);
+    };
+
+    onStroke(figure, [
+      [
+        aboveArea,
+        (point) => {
+          const x = (point.x - ABOVE.x) / SCALE;
+          const z = (point.y - ABOVE.y) / SCALE;
+          program.goal.yaw = Math.atan2(x, z);
+          program.goal.distance = Math.hypot(x, z) / Math.cos(program.goal.pitch);
+        },
+        () => new DOMPoint(...above(goalPosition())),
+      ],
+      [
+        sideArea,
+        (point) => {
+          const flat = Math.max((point.x - SIDE.x) / SCALE, 0.01);
+          const y = (SIDE.y - point.y) / SCALE;
+          program.goal.pitch = Math.atan2(y, flat);
+          program.goal.distance = Math.hypot(flat, y);
+        },
+        () => new DOMPoint(...side(goalPosition())),
+      ],
+    ]);
+
+    action(root, 'turn', () => {
+      program.goal.yaw += Math.PI / 2;
+    });
+
+    // The camera moves only when the goal does, so it runs without a pause; off screen, it stops
+    const shown = animation(root, {
+      step: program.frame,
+      draw,
+      playing: true,
+      destroy: program.destroy,
+    });
+  });
+</script>

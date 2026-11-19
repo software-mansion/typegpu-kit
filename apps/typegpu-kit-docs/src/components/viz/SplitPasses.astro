@@ -1,0 +1,108 @@
+---
+---
+
+<figure class="viz" data-viz="split-passes">
+  <p class="viz-title">Five dispatches timed as one pass or one each</p>
+  <svg viewBox="0 0 640 230" role="img" aria-label="Five compute dispatches timed together or as separate passes"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="split" aria-pressed="true">Per dispatch</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Turn off <strong>Per dispatch</strong> to combine five dispatches into one compute-pass timing.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, each, toggle } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const dispatches = [
+    { name: 'spawn', length: 3 },
+    { name: 'step', length: 9 },
+    { name: 'step', length: 9 },
+    { name: 'compact', length: 5 },
+    { name: 'finish', length: 2 },
+  ];
+
+  const COLOURS: Record<string, string> = { spawn: 'var(--viz-b)', step: 'var(--viz-c)', compact: 'var(--viz-d)', finish: 'var(--viz-e)' };
+  const colorOf = (name: string) => COLOURS[name] ?? 'var(--viz-muted)';
+  const PASS = 1.2;
+  const GAP = 4;
+  const TOTAL = dispatches.reduce((sum, { length }) => sum + length, 0);
+  const LANE = 34;
+  const HEIGHT = 26;
+
+  each('split-passes', (root) => {
+    const figure = root.querySelector('svg')!;
+    const split = toggle(action(root, 'split'), () => draw());
+    let width = 0;
+    let scale = 1;
+
+    const stamp = (x: number) => {
+      svg('path', { d: `M ${x - 4} ${LANE - 11} L ${x + 4} ${LANE - 11} L ${x} ${LANE - 4} Z`, fill: 'var(--viz-accent)' }, figure);
+    };
+
+    /** One pass: its state, then its dispatches, framed by its two timestamps. */
+    const pass = (x: number, members: typeof dispatches) => {
+      const state = PASS * scale;
+      svg('rect', { x, y: LANE, width: state, height: HEIGHT, fill: stipple(figure, 'var(--viz-muted)', 0.5) }, figure);
+
+      let cursor = x + state;
+      for (const { name, length } of members) {
+        const span = length * scale;
+        svg('rect', { x: cursor + 0.5, y: LANE, width: span - 1, height: HEIGHT, rx: 2, fill: stipple(figure, colorOf(name), 0.5) }, figure);
+        const middle = Math.min(cursor + span / 2, width - name.length * 3.7);
+        text(figure, middle, LANE + HEIGHT + 16, name, { 'text-anchor': 'middle', fill: colorOf(name) });
+        cursor += span;
+      }
+
+      svg('rect', { x, y: LANE, width: cursor - x, height: HEIGHT, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+      stamp(x);
+      stamp(cursor);
+
+      return cursor;
+    };
+
+    const draw = fitWidth(figure, (laid) => {
+      width = laid;
+      scale = (width - 8 - GAP * 4) / (TOTAL + PASS * dispatches.length);
+      text(figure, 0, 12, 'GPU time', { class: 'strong' });
+
+      const rows: { name: string; length: number }[] = [];
+      if (split.on) {
+        let x = 4;
+        for (const dispatch of dispatches) {
+          x = pass(x, [dispatch]) + GAP;
+          rows.push({ name: dispatch.name, length: dispatch.length + PASS });
+        }
+      } else {
+        pass(4, dispatches);
+        rows.push({ name: 'the pass', length: TOTAL + PASS });
+      }
+
+      const narrow = width < 420;
+      let y = LANE + HEIGHT + 44;
+      svg('path', { d: `M 0 ${y - 8} L 8 ${y - 8} L 4 ${y - 1} Z`, fill: 'var(--viz-accent)' }, figure);
+      text(figure, 14, y, 'timestamp');
+      const second = narrow ? 0 : 100;
+      if (narrow) y += 18;
+      svg('rect', { x: second, y: y - 9, width: 10, height: 10, fill: stipple(figure, 'var(--viz-muted)', 0.5) }, figure);
+      text(figure, second + 16, y, 'beginning a pass and setting its state');
+
+      y += 34;
+      text(figure, 0, y, 'what the panel lists', { class: 'strong' });
+      const barLeft = 72;
+      const barScale = (width - barLeft) / (TOTAL + PASS);
+      rows.forEach(({ name, length }, i) => {
+        const row = y + 20 + i * 16;
+        text(figure, 0, row, name);
+        svg('rect', { x: barLeft, y: row - 9, width: length * barScale, height: 10, rx: 2, fill: stipple(figure, colorOf(name), 0.5) }, figure);
+      });
+
+      // Room for five rows either way, so the controls stay put
+      return y + 20 + 5 * 16 - 6;
+    }, 320);
+
+    draw();
+  });
+</script>
