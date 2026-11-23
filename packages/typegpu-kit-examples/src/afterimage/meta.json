@@ -1,0 +1,9 @@
+{
+  "title": "Afterimage",
+  "category": "worlds",
+  "rarity": "common",
+  "description": "A bronze Foucault pendulum swings in a brutalist concrete hall, with the low sun streaming through the piers. It's drawn the way a sixth-gen console game would be, at low resolution with 5-bit colour and an ordered dither, and its light is baked into the vertex colours as games of that era did. Turn on feedback for a short trail, or switch to the clean render to compare. The hall and pendulum were modelled in Blender for the kit (CC0).",
+  "line": "A Foucault pendulum in a sunlit concrete hall, drawn like a PS2-era game.",
+  "order": 4,
+  "hint": "drag to orbit · wheel to zoom · compare clean and processed"
+}

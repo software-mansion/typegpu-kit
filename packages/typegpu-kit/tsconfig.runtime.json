@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["@webgpu/types"] },
+  "include": ["src/**/*"],
+  "exclude": ["src/text/bake.ts", "src/testing/**", "src/testing.ts", "src/native/**"]
+}

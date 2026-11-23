@@ -1,0 +1,242 @@
+---
+title: Surfaces
+description: A canvas configured for your root, with a drawing buffer that follows its layout, on the web and React Native.
+modules: [kit/web, kit/native]
+---
+
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import SurfaceSize from '../../../components/viz/SurfaceSize.astro';
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+<Module id="kit/web" />
+
+A page lays out a canvas in CSS pixels, while its drawing buffer measures `canvas.width` by `canvas.height` device pixels. Layout, screen and zoom changes can make those sizes disagree, blurring or stretching the picture. A **surface** configures the canvas for your root and keeps the drawing buffer matched to its layout.
+
+<SurfaceSize />
+
+<Tabs syncKey="platform">
+<TabItem label="Web">
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+import * as web from '@typegpu/kit/web';
+
+const canvas = document.querySelector('canvas')!;
+const surface = web.surface(root, canvas);
+
+const loop = frames.create(root, (frame) => {
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: surface.view(frame) } });
+  // draw
+  pass.end();
+});
+
+frames.animate(loop); // runs the loop at every animation frame
+```
+
+</TabItem>
+<TabItem label="React Native">
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as native from '@typegpu/kit/native';
+declare const canvas: native.Canvas;
+declare const PixelRatio: { get(): number };
+declare const AppState: {
+  addEventListener(type: 'change', listener: (state: string) => void): void;
+};
+// ---cut---
+
+// react-native-webgpu requests implicit-device-synchronization for every device
+const root = await tgpu.init();
+
+// `canvas` is the CanvasRef from <Canvas ref>; its onLayout calls surface.resize(width, height)
+const surface = native.surface(root, canvas, { pixelRatio: PixelRatio.get() });
+AppState.addEventListener('change', (state) =>
+  state === 'active' ? surface.resume() : surface.pause(),
+);
+
+const loop = frames.create(root, (frame) => {
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: surface.view(frame) } });
+  // draw
+  pass.end();
+});
+
+frames.animate(loop, { surface }); // runs no frames while the surface is paused
+```
+
+</TabItem>
+</Tabs>
+
+## How big the drawing buffer gets
+
+- The drawing buffer is the layout size times the screen's pixel ratio, capped at `maxPixelRatio`, 2 by default. On a 3× phone that leaves about 44% of the full-resolution pixels, so full-size targets use less than half the memory.
+- Multiply sizes in points, such as dots, hairlines and margins, by the surface's `pixelRatio`. The screen's own ratio can exceed the cap.
+- `maxPixelRatio` caps the ratio but never raises it above the screen's ratio. To render more pixels, draw into a [target](/kit/targets/) sized with `targets.scaled(surface, 2)` and filter it down. To use the same size on every screen, [fix the size](#a-fixed-size).
+- The size is clamped to the device's `maxTextureDimension2D`.
+- For fewer pixels, or a resolution that changes while the game runs, render at a [resolution](/kit/targets/#resolution-scale) below the surface.
+
+<ExampleFigure
+  example="flow-field"
+  controls={['speed', 'pointSize', 'reseed']}
+  loupe
+  caption="This canvas hosts the flow field scene. The loupe shows drawing-buffer pixels one for one with screen pixels, up to a pixel ratio of 2. Point size is measured in drawing-buffer pixels."
+/>
+
+## A fixed size
+
+A benchmark, GPU capture or offline render needs a fixed pixel size, such as 2560 × 1440. Pass `size` in pixels to set the drawing buffer before `surface` returns. Layout and pixel ratio changes leave it unchanged. The canvas's CSS size still scales the image on screen. The benchmark below [steps frames by hand](/kit/frames/#stepping-by-hand):
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import type { TgpuRoot } from 'typegpu';
+import { frames, type Frame, type Surface } from '@typegpu/kit';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas')!;
+declare function createScene(root: TgpuRoot, surface: Surface): { frame(frame: Frame): void };
+// ---cut---
+import * as web from '@typegpu/kit/web';
+
+const surface = web.surface(root, canvas, { size: { width: 2560, height: 1440 } });
+const scene = createScene(root, surface);
+const loop = frames.create(root, (frame) => scene.frame(frame));
+
+for (let i = 0; i < 600; i++) loop.run(i / 60);
+await root.device.queue.onSubmittedWorkDone();
+```
+
+- The surface's `pixelRatio` is then the `pixelRatio` you give in `size`, 1 by default. A size in points gives the same number of pixels on every screen. `maxPixelRatio` doesn't apply.
+- Use `setSize` for a run at several resolutions. `web.host` takes `size` too, and its page reaches `setSize` through `send(({ surface }) => …)`.
+- A size that isn't whole pixels from 1 to `maxTextureDimension2D` throws.
+- On React Native, `native.surface` and the React Native `host` take `size` too. `resize` then changes nothing until `setSize(undefined)`, and `setSize` applies at once.
+
+## When the size changes
+
+- On the web, a `ResizeObserver` watches the canvas's device-pixel box, the screen pixels it covers, so the drawing buffer matches the screen pixel for pixel. Without that box, the size is the CSS size times the ratio, rounded.
+- A size change reaches the canvas at the next `view()`, the frame in which your [render targets](/kit/targets/) follow it through `fit()`. Waiting until then keeps the resize from clearing a frame already drawn.
+
+<Aside type="caution" title="WebKit">
+  Safari has no device-pixel box. The size is rounded from CSS pixels, and a ratio change without a
+  layout change, such as dragging the window to another screen, waits for the next layout change.
+</Aside>
+
+## Drawing to it
+
+A pass that uses `surface.context` directly skips pending size changes, so take views from `view(frame)`.
+
+Use the `Surface` type from `@typegpu/kit` for code shared by both platforms and its [tests](/kit/testing/#a-frame-without-a-canvas). Pass the frame to `view` so React Native can present after submit.
+
+```ts twoslash
+import type { TgpuRoot } from 'typegpu';
+// ---cut---
+import type { Frame, Surface } from '@typegpu/kit';
+
+export function createScene(root: TgpuRoot, surface: Surface) {
+  return {
+    frame(frame: Frame) {
+      const pass = frame.encoder.beginRenderPass({
+        colorAttachments: { view: surface.view(frame) },
+      });
+      // draw
+      pass.end();
+    },
+  };
+}
+```
+
+## Pacing frames
+
+With `--disable-gpu-vsync --disable-frame-rate-limit`, Chrome can schedule frames faster than the GPU finishes them. Use `web.paced(queue)` as `schedule` to bound queued work. It waits until at most `inFlight` frames remain, 2 by default, before scheduling another frame. Normal vsync needs no extra pacing.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const loop = frames.create(root, () => {});
+// ---cut---
+frames.animate(loop, { schedule: web.paced(root.device.queue) });
+```
+
+## Pointer input
+
+`web.pointer(element, options)` follows the mouse, touch or pen on an element in the coordinates a camera's [`rayAt`](/kit/cameras/) takes:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 800, height: 600 },
+  target: [0, 0, 0],
+  distance: 12,
+});
+declare const canvas: HTMLCanvasElement;
+declare function select(point: number[]): void;
+// ---cut---
+import * as web from '@typegpu/kit/web';
+
+const ray = { origin: [0, 0, 0], direction: [0, 0, 0] };
+const ground = [0, 0, 0];
+
+const mouse = web.pointer(canvas, {
+  down(x, y, event) {
+    if (event.button !== 0) return;
+    view.rayAt(x, y, ray);
+    if (cameras.hitHeight(ray, 0, ground) !== undefined) select(ground);
+  },
+});
+
+// Each frame, the ground under the pointer
+if (mouse.over) {
+  view.rayAt(mouse.x, mouse.y, ray);
+  cameras.hitHeight(ray, 0, ground);
+}
+```
+
+<Rules>
+
+- **Position** Read `x` and `y` each frame, or take them in `move`, `down` and `up`.
+- **Zoom** `zoom(by)` runs as the wheel turns and as two fingers pinch. For the wheel, `by` is e<sup>deltaY·0.001</sup>. For a pinch, it is the old distance between the fingers divided by the new one. Multiply your distance by `by`. A value above 1 means farther away.
+- **Drags** A press keeps the pointer until its button comes up, so a drag continues outside the element, with positions past 0 and 1. `up` also runs when the browser cancels a pointer.
+- **Touch and menu** It sets the element's `touch-action` to `none`. With `page: true`, it sets `pan-y` so vertical touch drags can scroll the page. In that mode, the wheel zooms only while you hold Ctrl or ⌘. `menu: false` keeps the context menu shut for drags with the secondary button.
+- **Hosted pages** Create the pointer in [`attach`](/kit/hosting/#on-the-web) on a hosted page to dispose it with the scene.
+- **React Native** On React Native, divide a gesture's position by the canvas's layout size for the same coordinates.
+
+</Rules>
+
+## React Native
+
+<Module id="kit/native" />
+
+`@typegpu/kit/native` has no React Native imports. Pass it the canvas, pixel ratio and layout.
+
+<Rules>
+
+- **The surface** `native.surface` takes the `CanvasRef` that `<Canvas ref>` holds, the web's canvas options and the `pixelRatio`. The drawing buffer's size is on its context's `canvas`.
+- **Presenting** `view(frame)` schedules `context.present()` after submit. React Native requires an explicit present. Dawn rejects presenting without first acquiring the canvas texture.
+- **Pausing** A backgrounded app must not submit GPU work. `pause()` sets `paused`, which [`frames.animate`](/kit/frames/#running-the-loop) checks before every frame when you pass it the surface. `view()` throws while the surface is paused, so a loop of your own fails at once instead of submitting in the background.
+- **Resuming** After a long background pause, the first `getCurrentTexture` after `resume()` can block the JS thread.
+- **Device errors** `device.lost` and `uncapturederror` reach only the main JS runtime.
+- **Features** `tgpu.init({ device: { optionalFeatures } })` keeps each feature the adapter has; `device.features` says which it got.
+
+</Rules>
+
+<Aside type="caution" title="One device, two threads">
+  A Dawn device used from two threads crashes on iOS in a Metal assertion unless it has the
+  `implicit-device-synchronization` feature. react-native-webgpu requests it for every device, so
+  don't pass `implicitDeviceSynchronization: false`. `native.checkDevice(device)` throws for a
+  device without it, and so does a host that runs its scene off the JS thread.
+</Aside>
+
+## Limits
+
+- Above the cap, the device-pixel size is scaled by `maxPixelRatio / ratio`, so the drawing buffer matches the screen pixel for pixel only at or below the cap.
+- On React Native, a frame that takes the view and never finishes loses its present callback. The next frame that takes the view and reaches its after-submit callbacks presents the canvas.
+- The web surface's `view()` doesn't throw while paused, since a submit from a paused page does no harm.
+- `implicit-device-synchronization` costs one uncontended mutex per API call.

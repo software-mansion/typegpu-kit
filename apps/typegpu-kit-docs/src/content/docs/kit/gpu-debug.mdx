@@ -1,0 +1,284 @@
+---
+title: GPU debug panel
+description: A panel that profiles any WebGPU page without changing its program.
+modules: [kit/gpuDebug, kit/recording, kit/gpuDebugPanel]
+---
+
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import DebugPanel from '../../../components/viz/DebugPanel.astro';
+import OwnTime from '../../../components/viz/OwnTime.astro';
+import SplitPasses from '../../../components/viz/SplitPasses.astro';
+
+<Module id="kit/gpuDebug" />
+
+A missed frame budget does not identify the slow pass. Install the panel before requesting the device. It patches WebGPU to add timestamp queries without changing module code. Start profiling to time and name each pass and dispatch, with results overlaid on the page.
+
+<DebugPanel />
+
+```ts twoslash
+declare const button: HTMLButtonElement;
+// ---cut---
+import { gpuDebug } from '@typegpu/kit/debug';
+
+// Install before requesting the device, including before tgpu.init()
+const debug = gpuDebug.install();
+
+button.addEventListener('click', () => {
+  if (debug.running) debug.stop();
+  else debug.start();
+});
+```
+
+- `start()` mounts the panel. `stop()` removes it while the page keeps running. `destroy()` also removes the WebGPU patches. Installing again destroys the previous installation.
+- To profile from the first frame, call `start()` right after `install()`. The examples on this site do so when the address ends in `?debug`, such as the [fish tank](/examples/fishtank/?debug).
+
+## Profiling from the address
+
+To profile a page you host with [`web.host`](/kit/hosting/#on-the-web), install the panel before the host requests its device, and only when the address asks for it:
+
+```ts twoslash
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+declare function createScene(
+  root: TgpuRoot,
+  surface: Surface,
+): { frame(frame: Frame): void; destroy(): void };
+declare const canvas: HTMLCanvasElement;
+// ---cut---
+import * as web from '@typegpu/kit/web';
+
+if (new URLSearchParams(location.search).has('profile')) {
+  const { gpuDebug } = await import('@typegpu/kit/debug');
+  gpuDebug.install().start();
+}
+
+web.host(createScene, { canvas });
+```
+
+- `install()` adds `timestamp-query` to every device requested after it when the adapter has the feature, so the host's device times each pass. A root or device created before `install()` times nothing.
+- The dynamic import loads the panel only on `?profile`, so pages opened without it don't download it.
+
+## Reading a frame
+
+<Rules>
+
+- **Graphs** The graphs show GPU and CPU milliseconds per frame. Each column covers 100 ms, with reference lines at 8.33 and 16.67 ms. Legends list the largest contributors over the last five columns. GPU timings can arrive half a second after the frame.
+
+  The GPU graph's title reads `gpu 4.00ms at vsync`. Timings under vsync include clock scaling; compare passes within a frame, and use **Measure** for what a frame costs.
+
+- **Freezing** Hover a column to freeze the graphs on it.
+
+- **Capture** records the next frame's passes, copies and uploads, including timings and resource reads and writes. Each read identifies the last command that wrote that resource in the frame, such as `#2`, or `earlier frame`. The console receives both a line per command and structured data.
+
+- **Save trace** downloads recent frames as a Chrome trace for [Perfetto](https://ui.perfetto.dev).
+
+- **Measure** runs the scene's frames back to back for a second at full clock and prints the result under the graph and to the console. See [measuring](#measuring).
+
+- **Log** prints mean frame times over the last second to the console. It lists totals, then GPU and CPU contributors from largest to smallest. Passes that write their own timestamps follow the GPU contributors as `untimed`.
+
+  ```
+  [gpu debug]
+  60 fps · gpu 10.00ms over 60 frames · cpu 1.00ms over 60 frames
+  gpu   8.00ms  scene
+  gpu   2.00ms  post
+  gpu  untimed  shadows
+  ```
+
+</Rules>
+
+Drag the title bar to move the panel or drag its corner to resize it. The panel remembers its position.
+
+## From code
+
+<Module id="kit/recording" />
+
+Call `debug.capture()`, `debug.trace()`, `debug.summary()` or `debug.measure()` from scripts such as smoke tests. They perform the same actions as the Capture, Save trace, Log and Measure buttons:
+
+```ts twoslash
+import { gpuDebug } from '@typegpu/kit/debug';
+const debug = gpuDebug.install();
+declare function report(line: string): void;
+// ---cut---
+debug.start();
+const frame = await debug.capture(); // the next frame, once its timestamps are back
+
+if (frame.timings === 'complete') {
+  for (const command of frame.commands) {
+    const after = command.after.map(({ from }) => (from === undefined ? 'prev' : `#${from}`));
+    report(`${command.displayName} ${command.ms?.toFixed(2)} ms, after ${after.join(' ')}`);
+  }
+}
+report(debug.summary());
+```
+
+These methods throw synchronously while the panel is idle with `Call gpuDebug.start() before capture(), trace(), summary() or measure().`. Calls to `capture` share the pending capture until it resolves. `stop()` rejects it.
+
+A capture is a `FrameCapture` that you can serialize with `JSON.stringify`. It has a `frame`, `commands` in submission order and `timings`. The timing status is `'complete'` or one of:
+
+- `'dropped'` when every query set was still waiting for its readback, or reading the timestamps failed;
+- `'late'` when some timestamps weren't back after two seconds;
+- `'none'` when no command was timed, because `timestamp-query` is unavailable, passes write their own timestamps or the frame only copies.
+
+Each command has `index`, `kind`, `displayName`, `label` and `pipelines`. Its `kind` is `'render'`, `'compute'`, `'copy'` or `'upload'`. It also has:
+
+- `ms`, the time charged to it in the graph;
+- `start` and `end`, in milliseconds from the start of the frame's first timed command;
+- `uses`, the resources and their `access` modes;
+- `after`, the last writer for each read in `from`, or `undefined` for an earlier frame.
+
+`debug.detail` reads or sets the [detail](#detail), as the detail button does.
+
+`trace()` returns the last two seconds of frames as a Chrome trace object. Its clock starts at the first timestamp after `start()`, so traces from one profiling session align. Stopping and starting resets that clock.
+
+## What it measures
+
+- **GPU time.** The panel adds `timestamp-query` to the device and timestamps each pass.
+- **CPU time.** The panel times each animation frame callback and uses its name.
+- **Names.** A pass uses its label or the names of its pipelines. A pipeline uses its label, which TypeGPU derives from its variable, or its entry point. The kit's modules name their pipelines, such as `taa`, `exposure` and `finish`.
+
+Pass timestamps can overlap. Tile-based GPUs, including Apple GPUs and most phone GPUs, can begin vertex work while an earlier pass finishes fragment work. See [what a timing means](/kit/profiler/#what-a-timing-means). The panel charges each pass only for time not covered by an earlier pass, so each column totals the GPU's busy time.
+
+<OwnTime />
+
+The trace preserves each pass's start and end.
+
+## Detail
+
+The detail button in the title bar sets what GPU time is split into:
+
+- **Per pass**, each pass by its label or pipelines.
+- **Per group**, each pass by the debug groups around it, so many passes read as one step such as `sim`.
+- **Per dispatch**, each compute dispatch on its own, under its groups. This is the default.
+
+A compute pass has one pair of timestamps, which can hide a slow dispatch among others. To see the dispatches, the panel splits it into one pass per dispatch. A stand-in pass remembers `setPipeline` and `setBindGroup` calls. Each dispatch opens a real pass, restores that state, dispatches and ends.
+
+<SplitPasses />
+
+Splitting drains the GPU between dispatches, so a split frame takes longer than the frame it splits. The panel splits only every eighth frame and the next capture. It times the other frames whole, and divides each pass's time between its dispatches by their shares in the latest split frames. The graph's total comes from whole frames only.
+
+Debug groups name a step that spans several passes or dispatches. Push them on the encoder or on a pass, through `root.unwrap` for TypeGPU objects:
+
+```ts
+const encoder = root.createCommandEncoder();
+const raw = root.unwrap(encoder);
+raw.pushDebugGroup('sim');
+// the water step's passes
+raw.popDebugGroup();
+```
+
+A name joins its groups with `›`, such as `sim › advect`. Repeated dispatches with one name add up into one entry, counted as `×5`.
+
+## Measuring
+
+Under vsync the GPU idles between frames and lowers its clock, so live timings depend on the clock the GPU chose. **Measure**, or `debug.measure()`, runs the scene's frames back to back, unpaced by the display, so the GPU stays at full clock.
+
+```ts twoslash
+import { gpuDebug } from '@typegpu/kit/debug';
+const debug = gpuDebug.install();
+// ---cut---
+debug.start();
+const result = await debug.measure({ seconds: 1, dt: 1 / 120, detail: 'group' });
+console.log(gpuDebug.measureText(result));
+```
+
+It prints, for example:
+
+```
+measured 500 frames back to back, 8.33ms of scene time apart
+gpu 1.50ms (1.40 to 2.00, max 3.10) · a frame every 2.00ms · cpu 0.20ms
+gpu   1.20ms  scene ×9
+gpu   0.30ms  post
+```
+
+<Rules>
+
+- **Duration** It warms up for a quarter second, then measures for `seconds`, 1 by default.
+- **Scene time** Each frame advances scene time by `dt` seconds, so it does a displayed frame's work. It defaults to the live frame interval. A scene with a fixed step, such as 1/120 s, does one step per frame at `dt: 1 / 120`.
+- **Readings** `gpu` is the median busy time per frame with the 10th and 90th percentiles and the slowest frame's `max`, from the first timed pass's start to the last one's end, without the gaps between frames. `wall` is the interval between frames finishing, the frame rate's interval with no display to wait for, and `NaN` when every frame finished in one burst, which `measureText` then leaves out. `cpu` is the mean of the frame callbacks.
+- **Parts** `parts` splits `gpu` at `detail`, the panel's by default. With per group or per dispatch detail, it then runs a quarter second of split frames to learn the shares.
+- **Untimed passes** `untimed` names the passes that write their own timestamps, which `measureText` lists after the parts.
+- **Page callbacks** The page's animation frame callbacks run in the measured frames with one timestamp each, `dt` apart. `animate` loops run there too. Live frames wait and resume with time continuing from the last measured frame.
+- **Canvases** While it measures, each canvas returns a stand-in texture of its size and format, so frames don't wait for the display. The page shows the last live frame.
+- **Failure** It rejects if no frame runs within two seconds, the GPU reports no frame finished before the measurement ends, a frame throws or the panel stops.
+
+</Rules>
+
+## Idle
+
+While idle, the panel adds `timestamp-query` to the device and records WebGPU object metadata as objects are created. This includes pipeline names, bind-group resources, view textures, canvas textures and shader code. A recording collects the shader code and the resources each command uses only for a captured frame. `finish` and `submit` look up command buffers so timings begun before a stop can still resolve. Other patched calls check a flag and call the original without query sets, timestamp writes or readbacks.
+
+- Profiling starts with the next command encoder, so the first frame after `start()` is missing from the graphs.
+- Passes begun before a stop keep their timestamps, and their query sets come back once their encoders are submitted.
+
+## React Native
+
+<Module id="kit/gpuDebugPanel" />
+
+`<GpuDebugPanel>` shows the same graphs over a scene hosted with [`useScene`](/kit/hosting/#on-react-native). It records while it is mounted and times frames on the scene's runtime, including a worker. While the app is in the background, it stops reading the scene and drawing its graph, as the hosted scene stops its frames. Request `timestamp-query` with the scene's device. Without it, the panel shows CPU times only.
+
+```tsx
+import { GpuDebugPanel } from '@typegpu/kit/debug/gpuDebugPanel';
+import { useScene } from '@typegpu/kit/native/react';
+import { Share, View } from 'react-native';
+import { Canvas } from 'react-native-webgpu';
+import { blockfall } from './blockfall.ts';
+
+export function BlockfallScreen() {
+  const { canvas, scene } = useScene(blockfall, {}, { optionalFeatures: ['timestamp-query'] });
+  return (
+    <View style={{ flex: 1 }}>
+      <Canvas {...canvas} style={{ flex: 1 }} />
+      <GpuDebugPanel
+        scene={scene}
+        onLog={(message) => Share.share({ message })}
+        onTrace={(message) => Share.share({ message })}
+        style={{ position: 'absolute', left: 8, right: 8, bottom: 8 }}
+      />
+    </View>
+  );
+}
+```
+
+- The title bar has the detail button, **Measure**, **Capture** and **Log**. Their text appears under the graph. `onLog` receives the log instead, such as to share it. `onTrace` adds **Trace**, which passes the Chrome trace as JSON.
+- Tap the arrow to collapse the panel to its title bar. On a narrow screen, the title bar drops its title.
+- The panel draws its graph with `device`, the nearest `<GPUDeviceProvider>` device or a device it requests. It does not record its own draws.
+- Mounting the panel patches WebGPU on the scene's runtime, and the patches stay until the runtime ends. A pipeline created before that is named by its label.
+
+## Without the panel
+
+`@typegpu/kit/debug/recording` provides the instrumentation the panel uses. `instrument()` patches WebGPU in an idle state and allows one installation at a time. It returns `start(hooks)`, `stop()` and `[Symbol.dispose]()`. `createRecorder()` creates the hooks used by the panel. Its `stop()` rejects a pending capture; call it when you stop recording. Without `window`, frames are those that the kit's `animate` runs. Pass `frames` to choose.
+
+`watchFrames` wraps every frame that `animate` runs on the current runtime, such as a React Native worker, which has no `requestAnimationFrame` to patch. The watch receives the frame's timestamp and `run`. Call `run` once to run the frame, or several times with later timestamps to run frames back to back:
+
+```ts twoslash
+declare function report(ms: number): void;
+// ---cut---
+import { watchFrames } from '@typegpu/kit/debug/recording';
+
+watchFrames((milliseconds, run) => {
+  const start = performance.now();
+  run(milliseconds);
+  report(performance.now() - start);
+});
+
+// Stop watching
+watchFrames(undefined);
+```
+
+A runtime holds one watch, and a later call replaces it. `instrument()` with `frames: 'animate'` holds the watch until it is disposed.
+
+## Limits
+
+<Rules>
+
+- **Late install** Installing after device creation cannot add `timestamp-query`. Pipelines and bind groups created before installation lack recorded names or resource metadata.
+- **Own timers** On the web, a frame is an animation or video frame callback. A loop driven by its own timer produces empty graphs and captures that never resolve.
+- **Overlap** Overlapping time goes to the pass submitted first. This undercounts passes with heavy vertex work and independent passes that run together. The trace shows their full intervals.
+- **Own timestamps** Passes with their own timestamps, such as the kit [profiler](/kit/profiler/), keep them and appear untimed in captures, the log and measurements.
+- **Query sets** Encoders submitted in one task share a query set with room for 256 timed passes. A frame uses one set per 256 passes, counting each split dispatch as a pass. An encoder that begins a timed pass and is finished but never submitted retains its set. One never finished, as in a frame that threw, gives its set back once every set is taken. A set whose read fails comes back too, and its frames are dropped.
+- **Chrome rounding** Chrome rounds timestamps to 100 µs unless `chrome://flags/#enable-webgpu-developer-features` is enabled. Shorter passes can measure zero and do not appear.
+- **Wall clock** Measuring runs the page's own frames, so a scene that reads the wall clock rather than its frame time does more or less work per frame than live.
+- **Without vsync** Without vsync, frames can outrun timestamp readbacks. With 16 query sets, the panel times only some frames. A timed frame can include overlapping work from untimed frames. Count frames to measure throughput.
+
+</Rules>

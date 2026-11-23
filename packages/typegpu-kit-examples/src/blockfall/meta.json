@@ -1,0 +1,12 @@
+{
+  "title": "Blockfall",
+  "category": "games",
+  "rarity": "uncommon",
+  "description": "A falling-block puzzle in 3D. Painted stone blocks drop into a gold-edged glass well, and a ghost shows where each piece will land. Fill a layer and its blocks flash and shatter into stone chips that tumble to the floor. A warm spot light and a cool sun cast the shadows, which only redraw while something moves.",
+  "line": "A 3D falling-block puzzle in stone and glass. Clear a layer and it shatters.",
+  "order": 29,
+  "hint": "arrows move · Z X C rotate · space drops · Q E turn the view · drag to orbit",
+  "poster": {
+    "seconds": 32
+  }
+}

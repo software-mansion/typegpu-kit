@@ -1,0 +1,119 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="warmup-budget">
+  <p class="viz-title">Ten pipelines warm up within a per-frame budget</p>
+  <svg viewBox="0 0 480 224" role="img" aria-label="Pipeline starts, compilation and progress over simulated time"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="budget" min={1} max={32} value={8} unit=" ms" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise the budget to 32 ms. Frames then run past the display's 16.7 ms.
+  </figcaption>
+</figure>
+
+<script>
+  import { each, fail, plural, slider } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+  import { COVER, createProgram, THREADS, VSYNC, type Run } from './WarmupBudget.program.ts';
+
+  const py = (fraction: number) => 176 - fraction * 32; // the progress chart's y
+
+  each('warmup-budget', (root) => {
+    const figure = root.querySelector('svg')!;
+    let generation = 0;
+    let shown: { run: Run; budget: number } | undefined;
+
+    const draw = fitWidth(figure, (width) => {
+      if (!shown) return 224;
+      const { run, budget } = shown;
+      const narrow = width < 420;
+
+      const span = Math.max(250, run.ready + 30);
+      const x = (t: number) => (t / span) * width;
+
+      for (let t = 0; t < span; t += VSYNC) {
+        svg('line', { x1: x(t), x2: x(t), y1: 18, y2: 50, stroke: 'var(--viz-line)', 'stroke-opacity': 0.5 }, figure);
+      }
+
+      text(figure, 0, 12, 'frames with starts and loading screen', { class: 'strong' });
+      for (const frame of run.frames) {
+        const late = frame.busy > VSYNC;
+        const used = frame.start + frame.busy;
+
+        svg('rect', {
+          x: x(frame.start) + 0.5, y: 22, width: Math.max(x(frame.next) - x(frame.start) - 1.5, 1), height: 24, rx: 2,
+          fill: 'none', stroke: late ? 'var(--viz-bad)' : 'var(--viz-line)', 'stroke-width': late ? 1.5 : 1,
+        }, figure);
+
+        for (const start of frame.starts) {
+          svg('rect', {
+            x: x(start.at) + 0.5, y: 25, width: Math.max(x(start.end) - x(start.at) - 1, 0.5), height: 18,
+            fill: stipple(figure, 'var(--viz-accent)', 0.5),
+          }, figure);
+        }
+
+        svg('rect', { x: x(used - COVER) + 0.5, y: 25, width: Math.max(x(COVER) - 1, 0.5), height: 18, fill: stipple(figure, 'var(--viz-muted)', 0.5) }, figure);
+
+        if (frame.starts.length > 0 && budget < frame.next - frame.start) {
+          const bx = x(frame.start + budget);
+          svg('line', { x1: bx, x2: bx, y1: 20, y2: 48, stroke: 'var(--viz-accent)', 'stroke-dasharray': '2 2' }, figure);
+        }
+      }
+
+      text(figure, 0, 70, `compiling, ${THREADS} at a time`, { class: 'strong' });
+      for (const compile of run.compiles) {
+        svg('rect', {
+          x: x(compile.begin) + 0.5, y: 78 + compile.lane * 18, width: Math.max(x(compile.end) - x(compile.begin) - 1, 0.5), height: 14, rx: 2,
+          fill: stipple(figure), stroke: 'var(--viz-line)',
+        }, figure);
+      }
+
+      text(figure, 0, 136, 'onProgress', { class: 'strong' });
+      let points = `0,${py(0)}`;
+      let last = 0;
+      for (const { at, fraction } of run.progress) {
+        points += ` ${x(at)},${py(last)} ${x(at)},${py(fraction)}`;
+        last = fraction;
+      }
+      points += ` ${x(run.ready)},${py(last)}`;
+      svg('polyline', { points, fill: 'none', stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, figure);
+
+      const rx = x(run.ready);
+      svg('circle', { cx: rx, cy: py(1), r: 3.5, fill: 'var(--viz-accent)' }, figure);
+      text(figure, rx, py(1) - 8, `done at ${Math.round(run.ready)} ms`, { 'text-anchor': rx > width - 60 ? 'end' : 'middle' });
+
+      for (let t = 0; t < span; t += 50) {
+        svg('line', { x1: x(t), x2: x(t), y1: 178, y2: 182, stroke: 'var(--viz-line)' }, figure);
+        text(figure, x(t) + (t === 0 ? 0 : 2), 192, t === 0 ? '0' : `${t} ms`);
+      }
+
+      const starting = run.frames.filter((frame) => frame.starts.length > 0).length;
+      const late = run.frames.filter((frame) => frame.busy > VSYNC).length;
+      const spread = `starts spread over ${plural(starting, 'frame')}`;
+      const lateText = late === 0 ? 'every frame on time' : `${plural(late, 'frame')} late`;
+      const style = { class: late > 0 ? '' : 'strong', style: late > 0 ? 'fill: var(--viz-bad)' : '' };
+      if (narrow) {
+        text(figure, 0, 216, spread, { class: 'strong' });
+        text(figure, 0, 232, lateText, style);
+      } else {
+        text(figure, 0, 216, `${spread} · ${lateText}`, style);
+      }
+      return narrow ? 238 : 224;
+    });
+
+    const update = async (budget: number) => {
+      const mine = ++generation;
+      const run = await createProgram({ budget });
+      if (mine !== generation) return;
+      shown = { run, budget };
+      draw();
+    };
+
+    const input = slider(root, 'budget', (budget) => {
+      update(budget).catch((error: unknown) => fail(root, error));
+    });
+    return update(input.valueAsNumber);
+  });
+</script>

@@ -1,0 +1,219 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+import { exposure } from '@typegpu/kit';
+
+const { rise, fall } = exposure.defaults;
+---
+
+<figure class="viz" data-viz="exposure-adapt">
+  <p class="viz-title">Exposure catching up with a change of light</p>
+  <svg viewBox="0 0 640 220" role="img" aria-label="The light, the exposure easing towards its target, and the screen, over the last eight seconds"></svg>
+  <p class="viz-status" aria-live="polite" style="--lines: 2"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="step">Step</button>
+    <Choice name="light" label="light" options={['dark', 'bright']} value="bright" />
+    <div class="speeds">
+      <Slider inline name="rise" min={0.25} max={6} step={0.25} value={rise} unit="/s" />
+      <Slider inline name="fall" min={0.25} max={6} step={0.25} value={fall} unit="/s" />
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Switch the light, then change <code>rise</code> or <code>fall</code>. The screen stays too bright or too dark until the exposure reaches its target.
+  </figcaption>
+</figure>
+
+<style>
+  /* The two speeds wrap as one. */
+  .speeds {
+    display: flex;
+    gap: var(--s-4);
+    align-items: center;
+  }
+
+  .viz-controls .speeds > :global(*) {
+    margin: 0;
+  }
+</style>
+
+<script>
+  import { action, animation, choice, each, rounded, slider, statusLine } from './figure.ts';
+  import { CHAR, fitWidth, stipple, svg, text } from './svg.ts';
+  import { createProgram, LIGHTS, screen, type Light } from './ExposureAdapt.program.ts';
+
+  const HEIGHT = 220;
+  const LEFT = 52;
+  /** Room right of the newest moment, for the exposure's value. */
+  const RIGHT = 38;
+  const LEGEND = 10;
+  const LIGHT = 22;
+  /** Where an exposure of 1 sits, and the pixels a stop takes. */
+  const MID = 100;
+  const PER_STOP = 23;
+  const SHOWN = 166;
+  const AXIS = 214;
+
+  /** Seconds the figure shows. */
+  const WINDOW = 8;
+  /** Seconds a frame of the past and of a step takes, and seconds a step advances. */
+  const FRAME = 1 / 60;
+  const STEP = 0.25;
+  /** Stops from the target within which the exposure counts as settled. */
+  const SETTLED = 0.05;
+  /** The lights before the reader's first switch, each for its seconds, filling the window. */
+  const PAST: readonly (readonly [Light, number])[] = [
+    ['bright', 1.2],
+    ['dark', 4.8],
+    ['bright', 2],
+  ];
+  /** Tones a strip prints, as dither densities: the key's mid grey prints as an even half. */
+  const TONES = 8;
+
+  interface Sample {
+    /** Seconds at the end of the frame. */
+    readonly t: number;
+    readonly target: number;
+    readonly exposure: number;
+    /** What the screen would show of the light at exposure 1, and shows at this one, as tones. */
+    readonly light: number;
+    readonly shown: number;
+  }
+
+  const printed = (light: number) => Math.round(screen(light) * TONES) / TONES;
+  const y = (exposure: number) => MID - Math.log2(exposure) * PER_STOP;
+
+  each('exposure-adapt', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const eye = createProgram();
+    const samples: Sample[] = [];
+    let now = 0;
+
+    const record = (average: number, dt: number) => {
+      now += dt;
+      const exposure = eye.record(average, dt);
+      samples.push({ t: now, target: eye.target(average), exposure, light: printed(average), shown: printed(average * exposure) });
+      while (samples.length > 2 && samples[1].t < now - WINDOW) samples.shift();
+    };
+
+    const advance = (average: number, seconds: number) => {
+      for (let left = seconds; left > 1e-6; left -= FRAME) record(average, Math.min(FRAME, left));
+    };
+
+    const say = () => {
+      const { target, exposure } = samples.at(-1)!;
+      const stops = Math.log2(exposure / target);
+      const state =
+        Math.abs(stops) < SETTLED
+          ? 'exposure on target'
+          : stops > 0
+            ? 'exposure too high: the screen is too bright'
+            : 'exposure too low: the screen is too dark';
+      const line = `target = key / average = ${eye.settings.key} / ${LIGHTS[light.value]} = ${rounded(target)}\n${state}`;
+      if (status.textContent !== line) status.textContent = line;
+    };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const right = width - RIGHT;
+        const x = (t: number) => LEFT + Math.max((t - now) / WINDOW + 1, 0) * (right - LEFT);
+
+        /** A row of the picture's tones over time, printed through the dither. */
+        const strip = (label: string, top: number, height: number, of: (sample: Sample) => number) => {
+          text(figure, 0, top + height / 2 + 4, label);
+
+          let start = LEFT;
+          samples.forEach((sample, i) => {
+            const next = samples[i + 1];
+            if (next && of(next) === of(sample)) return;
+
+            const end = x(sample.t);
+            if (of(sample) > 0 && end > start) {
+              svg('rect', { x: start, y: top, width: end - start, height, fill: stipple(figure, 'var(--text-2)', of(sample)) }, figure);
+            }
+            start = end;
+          });
+          svg('rect', { x: LEFT, y: top + 0.5, width: right - LEFT, height: height - 1, fill: 'none', stroke: 'var(--viz-line)' }, figure);
+        };
+
+        for (const [stops, label] of [[2, '4'], [0, '1'], [-2, '1/4']] as const) {
+          const at = MID - stops * PER_STOP;
+          svg('line', { x1: LEFT, x2: right, y1: at, y2: at, stroke: 'var(--viz-line)', 'stroke-dasharray': '2 3' }, figure);
+          text(figure, LEFT - 6, at + 4, label, { 'text-anchor': 'end' });
+        }
+
+        const line: string[] = [];
+        const steps: string[] = [];
+        samples.forEach((sample, i) => {
+          const at = x(sample.t).toFixed(1);
+          const before = samples[i - 1];
+          if (before && before.target !== sample.target) {
+            const flip = x(before.t).toFixed(1);
+            svg('line', { x1: flip, x2: flip, y1: LIGHT + 14, y2: SHOWN, stroke: 'var(--viz-line)', 'stroke-dasharray': '1 3' }, figure);
+            steps.push(`${flip},${y(sample.target).toFixed(1)}`);
+          }
+          steps.push(`${at},${y(sample.target).toFixed(1)}`);
+          line.push(`${at},${y(sample.exposure).toFixed(1)}`);
+        });
+
+        // The stops still to close: the screen is off its key by this much
+        svg('polygon', { points: [...line, ...steps.toReversed()].join(' '), fill: stipple(figure, 'var(--viz-c)', 0.25) }, figure);
+        svg('polyline', { points: steps.join(' '), fill: 'none', stroke: 'var(--viz-b)' }, figure);
+        svg('polyline', { points: line.join(' '), fill: 'none', stroke: 'var(--viz-c)', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, figure);
+
+        const { exposure } = samples.at(-1)!;
+        svg('circle', { cx: right, cy: y(exposure), r: 3, fill: 'var(--viz-accent)' }, figure);
+        text(figure, right + 7, y(exposure) + 4, exposure.toFixed(2), { fill: 'var(--accent-high)' });
+
+        let at = LEFT;
+        for (const [name, colour, stroke] of [['exposure', 'var(--viz-c)', 1.5], ['target', 'var(--viz-b)', 1]] as const) {
+          svg('line', { x1: at, x2: at + 14, y1: LEGEND - 4, y2: LEGEND - 4, stroke: colour, 'stroke-width': stroke }, figure);
+          text(figure, at + 19, LEGEND, name, { fill: colour });
+          at += 19 + name.length * CHAR + 16;
+        }
+
+        strip('light', LIGHT, 14, (sample) => sample.light);
+        strip('screen', SHOWN, 28, (sample) => sample.shown);
+
+        for (let ago = 0; ago < WINDOW; ago += 2) {
+          const tick = x(now - ago);
+          svg('line', { x1: tick, x2: tick, y1: SHOWN + 28, y2: SHOWN + 32, stroke: 'var(--viz-line)' }, figure);
+          text(figure, tick, AXIS, ago === 0 ? 'now' : `−${ago} s`, { 'text-anchor': 'middle' });
+        }
+
+        say();
+        return HEIGHT;
+      },
+      300,
+    );
+
+    const shown = animation(root, {
+      step(dt) {
+        if (dt > 0) record(LIGHTS[light.value], dt);
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+
+    /** Paused, a step shows what a change did. */
+    const step = () => {
+      advance(LIGHTS[light.value], STEP);
+      shown.redraw();
+    };
+
+    const light = choice<Light>(root, 'light', () => {
+      if (!shown.playing) step();
+    });
+    slider(root, 'rise', (value) => (eye.settings.rise = value));
+    slider(root, 'fall', (value) => (eye.settings.fall = value));
+    action(root, 'step', () => {
+      shown.play(false);
+      step();
+    });
+
+    record(LIGHTS[PAST[0][0]], 0);
+    for (const [name, seconds] of PAST) advance(LIGHTS[name], seconds);
+  });
+</script>

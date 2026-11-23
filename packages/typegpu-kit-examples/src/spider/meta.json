@@ -1,0 +1,9 @@
+{
+  "title": "Spider",
+  "category": "animation",
+  "rarity": "uncommon",
+  "description": "A spider walks over the hills toward wherever you point. Its legs are FABRIK chains and its body rides on springs, both solved with pmndrs/math on the CPU. The hills are fractal Perlin noise generated on the GPU, and a single readback lets the feet land on exactly the triangles you see.",
+  "line": "A spider walking over GPU-made hills toward wherever you point.",
+  "order": 23,
+  "hint": "point at the ground \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

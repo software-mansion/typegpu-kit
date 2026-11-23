@@ -1,0 +1,105 @@
+---
+---
+
+<figure class="viz" data-viz="slots">
+  <p class="viz-title">A table's slots beside a last-freed-first list</p>
+  <svg viewBox="0 0 640 168" role="img" aria-label="Table slots under matching additions and removals"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="false">Play waves</button>
+    <button data-action="add">Add 6</button>
+    <button data-action="remove">Remove 6</button>
+    <button data-action="reset">Reset</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Play matching additions and removals in the table and a last-freed-first list. Kernels visit the full span, so a larger live fraction means less wasted work.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, animation, each } from './figure.ts';
+  import { CAPACITY, createProgram, type Slots } from './SlotAllocation.program.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const SIZE = 11;
+  const HEIGHT = 146;
+
+  const percent = (fraction: number) => `${Math.round(fraction * 100)} %`;
+
+  /** A population past its first trough, where the two ways of filling slots differ. */
+  const settled = () => {
+    const made = createProgram();
+    made.add(20);
+    for (let i = 0; i < 50; i++) made.wave();
+    return made;
+  };
+
+  each('slots', (root) => {
+    const figure = root.querySelector('svg')!;
+    let program = settled();
+
+    const row = (y: number, label: string, slots: Slots, cell: number) => {
+      const { live, span, count, mean } = slots;
+      text(figure, 0, y - 8, label, { class: 'strong' });
+
+      for (let slot = 0; slot < CAPACITY; slot++) {
+        const on = live.has(slot);
+
+        svg('rect', {
+          x: slot * cell,
+          y,
+          width: cell - 2,
+          height: SIZE,
+          rx: 2,
+          fill: on ? stipple(figure, 'var(--viz-d)', 0.5) : slot < span ? stipple(figure) : 'none',
+          stroke: on ? 'none' : 'var(--viz-line)',
+          'stroke-opacity': slot < span ? 1 : 0.4,
+        }, figure);
+      }
+
+      svg('line', {
+        x1: 0, x2: Math.max(span * cell - 2, 0), y1: y + SIZE + 5, y2: y + SIZE + 5,
+        stroke: 'var(--viz-accent)', 'stroke-width': 2,
+      }, figure);
+
+      const occupancy = span > 0 ? count / span : 1;
+      const average = mean === undefined ? '' : ` · mean ${percent(mean)}`;
+      text(figure, 0, y + SIZE + 20, `span ${span} · ${count} live, ${percent(occupancy)}${average}`);
+    };
+
+    const draw = fitWidth(figure, (width) => {
+      const cell = Math.min(16, width / CAPACITY);
+      row(18, 'table: lowest free first', program.kit, cell);
+      row(92, 'LIFO free list', program.lifo, cell);
+      return HEIGHT;
+    });
+
+    const waves = animation(root, {
+      every: 0.14,
+      step: () => program.wave(),
+      draw,
+      play: action(root, 'play'),
+      keepLabel: true,
+      playing: false,
+      destroy: () => program.destroy(),
+    });
+
+    action(root, 'add', () => {
+      program.add(6);
+      program.sample();
+      waves.redraw();
+    });
+
+    action(root, 'remove', () => {
+      program.remove(6);
+      program.sample();
+      waves.redraw();
+    });
+
+    action(root, 'reset', () => {
+      waves.play(false);
+      program.destroy();
+      program = settled();
+      waves.redraw();
+    });
+  });
+</script>

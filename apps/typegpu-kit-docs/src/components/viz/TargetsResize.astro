@@ -1,0 +1,351 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="targets-resize">
+  <p class="viz-title">Targets that follow the canvas, and two bind groups that read <code>hdr</code></p>
+  <svg
+    viewBox="0 0 760 340"
+    role="group"
+    aria-label="A canvas to resize, the five targets rebuilt at its size, and two bind groups that read the hdr target"
+  ></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="ratio" label="pixel ratio" options={[1, 1.5, 2, 3]} value={2} />
+    <Slider inline name="resolution" min={0.25} max={1} step={0.05} value={1} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the canvas corner. Every target is rebuilt at the new size and <code>memo</code> makes a bind group for the new <code>hdr</code>, while the group made once still holds the first one, which <code>fit()</code> destroyed. A lower resolution draws less of each target and rebuilds nothing.
+  </figcaption>
+</figure>
+
+<script>
+  import { clamp, smooth } from '../home/geometry.ts';
+  import { animation, choice, each, plural, reducedMotion, slider } from './figure.ts';
+  import { CHAR, fitWidth, onStroke, plate, stipple, svg, text } from './svg.ts';
+  import { createProgram, MAX_PIXEL_RATIO } from './TargetsResize.program.ts';
+
+  /** The canvas's limits, the size the group made once sees and the size it opens to, in CSS pixels. */
+  const MIN = { width: 240, height: 160 };
+  const MAX = { width: 800, height: 480 };
+  const START = { width: 512, height: 288 };
+  const OPEN = { width: 640, height: 360 };
+  /** Seconds the canvas waits at its first size, then takes to open, and milliseconds a rebuilt plate stays in the accent. */
+  const WAIT = 0.8;
+  const OPENING = 0.9;
+  const FLASH = 450;
+  /** The figure width from which the canvas stands beside its targets. */
+  const WIDE = 620;
+  const DEPTH = 3;
+  const READ = 'var(--viz-b)';
+  const LOST = 'var(--viz-bad)';
+  const NEW = 'var(--viz-accent)';
+
+  type Size = readonly [number, number];
+  interface Box {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+
+  const sizeOf = (texture: { props: { size: readonly number[] } }): Size => [
+    texture.props.size[0] ?? 1,
+    texture.props.size[1] ?? 1,
+  ];
+  const format = ([width, height]: Size) => `${width} × ${height}`;
+
+  each('targets-resize', (root) => {
+    const figure = root.querySelector('svg')!;
+    const ratio = choice(root, 'ratio', () => {
+      program.settings.ratio = Number(ratio.value);
+      changed();
+    });
+    const resolution = slider(root, 'resolution', (value) => {
+      program.settings.resolution = value;
+      changed();
+    });
+    const program = createProgram({ ...START, ratio: Number(ratio.value), resolution: resolution.valueAsNumber });
+
+    // The canvas and its handle outlive a draw, so a drag keeps its target and the handle its focus
+    const dynamic = svg('g');
+    const resizable = { style: 'touch-action: none; cursor: nwse-resize' };
+    const canvas = svg('rect', { stroke: 'var(--viz-line)', ...resizable });
+    const handle = svg('rect', {
+      width: 10,
+      height: 10,
+      fill: NEW,
+      tabindex: 0,
+      role: 'slider',
+      'aria-label': 'Canvas size; arrow keys resize it',
+      'aria-valuemin': MIN.width,
+      'aria-valuemax': MAX.width,
+      ...resizable,
+    });
+
+    let width = 0;
+    /** SVG units per CSS pixel of the canvas, and its top edge. */
+    let css = 0.3;
+    let canvasTop = 0;
+    /** Seconds since the canvas started to open; it opens once. */
+    let opening = 0;
+    let rebuiltAt = -Infinity;
+    /** Whether the last change rebuilt the set, which holds the accent where nothing moves. */
+    let rebuilt = false;
+    let dirty = true;
+    let flashed = false;
+    let calls: SVGTextElement | undefined;
+
+    const flashing = () => (shown.playing ? performance.now() - rebuiltAt < FLASH : rebuilt);
+    const callsText = () => plural(program.frames, 'call');
+
+    const frame = () => {
+      rebuilt = program.frame();
+      if (!rebuilt) return;
+      rebuiltAt = performance.now();
+      dirty = true;
+    };
+
+    /** A line from a bind group's left edge at (`x`, `y`) to the texture it holds, ending in a dot. */
+    const wire = (x: number, y: number, to: Box, colour: string) => {
+      const endX = to.x + to.width - Math.min(to.width / 3, 10);
+      const endY = to.y + Math.min(to.height / 2, 10);
+      const d = Math.abs(endY - y) < 0.5 ? `M${x},${y}H${endX}` : `M${x},${y}H${x - 8}V${endY}H${endX}`;
+      svg('path', { d, fill: 'none', stroke: colour }, dynamic);
+      svg('circle', { cx: endX, cy: endY, r: 2.5, fill: colour }, dynamic);
+    };
+
+    const group = (x: number, y: number, across: number, label: string, colour: string) => {
+      svg('rect', { x, y: y + 0.5, width: across, height: 20, rx: 2, fill: 'var(--ground)', stroke: colour }, dynamic);
+      text(dynamic, x + across / 2, y + 14.5, label, { class: 'strong', 'text-anchor': 'middle' });
+    };
+
+    const paint = () => {
+      dynamic.replaceChildren();
+      dirty = false;
+      flashed = flashing();
+      const { screen, settings } = program;
+      const wide = width >= WIDE;
+      css = wide ? 0.3 : 0.25;
+      canvasTop = 22;
+
+      // The canvas, the room it has to grow and the drawing buffer it gives the set
+      const below = canvasTop + MAX.height * css;
+      svg(
+        'rect',
+        {
+          x: 0.5,
+          y: canvasTop + 0.5,
+          width: MAX.width * css,
+          height: MAX.height * css,
+          fill: 'none',
+          stroke: 'var(--rule)',
+          'stroke-dasharray': '2 4',
+        },
+        dynamic,
+      );
+      const shape = { x: 0.5, y: canvasTop + 0.5, width: settings.width * css, height: settings.height * css };
+      for (const [name, value] of Object.entries(shape)) canvas.setAttribute(name, String(value));
+      canvas.setAttribute('fill', stipple(dynamic));
+      handle.setAttribute('x', String(shape.x + shape.width - 5));
+      handle.setAttribute('y', String(shape.y + shape.height - 5));
+      handle.setAttribute('aria-valuenow', String(settings.width));
+      handle.setAttribute('aria-valuetext', `${settings.width} by ${settings.height} CSS pixels`);
+      text(dynamic, 0, 12, 'canvas', { class: 'strong' });
+      text(dynamic, 7 * CHAR, 12, `${format([settings.width, settings.height])} CSS px`);
+
+      const capped = Math.min(settings.ratio, MAX_PIXEL_RATIO);
+      const times = `× ${capped} ratio${capped < settings.ratio ? ` (${settings.ratio} capped)` : ''} = `;
+      text(dynamic, 0, below + 22, times);
+      text(dynamic, times.length * CHAR, below + 22, `${format([screen.width, screen.height])} px`, {
+        class: 'strong',
+      });
+      if (settings.resolution < 1) {
+        const region = screen.regions.hdr;
+        text(dynamic, 0, below + 38, `drawn ${format([region.width, region.height])} at ${settings.resolution}`);
+      }
+
+      // Three columns of targets and one of bind groups, beside the canvas or under it
+      const side = wide ? 96 : 84;
+      const gap = wide ? 16 : 6;
+      const left = wide ? MAX.width * css + 28 : 0;
+      const top = wide ? 0 : below + 56;
+      const groupX = width - side - 0.5;
+      const slot = (groupX - (wide ? 14 : 8) - left) / 3 - gap;
+      const texel = (slot - DEPTH - 1) / (MAX.width * MAX_PIXEL_RATIO);
+      const rowA = top + 58;
+      const rowB = rowA + MAX.height * MAX_PIXEL_RATIO * texel + DEPTH + 52;
+      const column = (i: number) => left + i * (slot + gap);
+      const scaled = ([across, down]: Size): Size => [Math.max(across * texel, 1), Math.max(down * texel, 1)];
+
+      text(dynamic, left, top + 12, 'targets', { class: 'strong' });
+      text(dynamic, left + 8 * CHAR, top + 12, `rebuilt ${program.rebuilds}×`, flashed ? { fill: NEW } : {});
+
+      /** A plate, with the region passes draw in it when that is less than the whole. */
+      const slab = (x: number, y: number, size: Size, drawn: Size, transient = false, depth = DEPTH) => {
+        const [across, down] = scaled(size);
+        const lift = Math.min(depth, Math.floor(Math.min(across, down) / 3));
+        plate(dynamic, x + 0.5, y + 0.5, across, down, { active: flashed, empty: transient, depth: lift });
+        if (drawn[0] < size[0] || drawn[1] < size[1]) {
+          const [inX, inY] = scaled(drawn);
+          const colour = flashed ? NEW : 'var(--viz-muted)';
+          svg(
+            'rect',
+            {
+              x: x + 0.5,
+              y: y + 0.5,
+              width: inX,
+              height: inY,
+              rx: 1,
+              fill: transient ? 'none' : stipple(dynamic, colour, 0.5),
+              stroke: colour,
+            },
+            dynamic,
+          );
+        }
+        return { x, y, width: across, height: down };
+      };
+
+      const target = (name: keyof typeof screen.textures, i: number, y: number): Box => {
+        const texture = screen.textures[name];
+        const size = sizeOf(texture);
+        const region = screen.regions[name];
+        const x = column(i);
+        text(dynamic, x, y - 24, name, { class: 'strong' });
+        const samples = (texture.props as { sampleCount?: number }).sampleCount ?? 1;
+        if (samples > 1) text(dynamic, x + (name.length + 1) * CHAR, y - 24, `×${samples}`);
+        text(dynamic, x, y - 10, format(size), flashed ? { fill: NEW } : {});
+        const drawn: Size = [region.width, region.height];
+        const box = slab(x, y, size, drawn, screen.transient[name]);
+        const whole = drawn[0] === size[0] && drawn[1] === size[1];
+        if (screen.transient[name] && whole && box.width >= 10 * CHAR && box.height >= 18) {
+          text(dynamic, x + box.width / 2, y + box.height / 2 + 4, 'transient', { 'text-anchor': 'middle' });
+        }
+        return box;
+      };
+
+      target('scene', 0, rowA);
+      target('depth', 1, rowA);
+      const hdr = target('hdr', 2, rowA);
+      const bloom = target('bloom', 0, rowB);
+      target('blur', 1, rowB);
+
+      // The rest of bloom's mip chain, the first level beside it and each smaller one under the last
+      const [bloomWidth, bloomHeight] = sizeOf(screen.textures.bloom);
+      const mipX = bloom.x + bloom.width + DEPTH + 3;
+      let mipY = rowB;
+      for (let level = 1; level < screen.levels.bloom.length; level++) {
+        const size: Size = [Math.max(1, bloomWidth >> level), Math.max(1, bloomHeight >> level)];
+        mipY += slab(mipX, mipY, size, size, false, 2).height + 4;
+      }
+
+      // The first hdr, which only the group made once still holds
+      const first = sizeOf(program.once);
+      const [ghostWidth, ghostHeight] = scaled(first);
+      const ghost: Box = { x: column(2), y: rowB, width: ghostWidth, height: ghostHeight };
+      if (program.stale) {
+        text(dynamic, ghost.x, rowB - 24, 'hdr', { fill: LOST });
+        text(dynamic, ghost.x, rowB - 10, format(first), { fill: LOST });
+        const struck = rowB - 13.5;
+        svg('path', { d: `M${ghost.x},${struck}h${format(first).length * CHAR}`, stroke: LOST }, dynamic);
+        const dead = plate(dynamic, ghost.x + 0.5, rowB + 0.5, ghost.width, ghost.height, { depth: DEPTH });
+        for (const part of dead.children) part.setAttribute('stroke', LOST);
+        dead.lastElementChild?.setAttribute('fill', stipple(dynamic, LOST, 0.12));
+        svg(
+          'path',
+          {
+            d: `M${ghost.x - 3},${rowB + ghost.height + 4}L${ghost.x + ghost.width + 5},${rowB - 3}`,
+            stroke: LOST,
+            'stroke-width': 1.5,
+          },
+          dynamic,
+        );
+        text(dynamic, ghost.x, rowB + ghost.height + DEPTH + 16, 'destroyed', { fill: LOST });
+      }
+
+      text(dynamic, groupX, top + 12, 'bind groups', { class: 'strong' });
+      wire(groupX, rowA + 10.5, hdr, flashed ? NEW : READ);
+      group(groupX, rowA, side, 'memo(hdr)', flashed ? NEW : READ);
+      text(dynamic, groupX, rowA + 38, plural(program.groups, 'group'), flashed ? { fill: NEW } : {});
+      calls = text(dynamic, groupX, rowA + 54, callsText());
+
+      wire(groupX, rowB + 10.5, program.stale ? ghost : hdr, program.stale ? LOST : READ);
+      group(groupX, rowB, side, 'made once', program.stale ? LOST : READ);
+      text(dynamic, groupX, rowB + 38, plural(1, 'group'));
+
+      // Room for the largest bloom and the first hdr, so a drag never moves the page
+      const lowest = Math.max(MAX.height * texel, ghost.height) + DEPTH;
+      return Math.max(rowB + lowest + 24, rowB + 46, below + 44);
+    };
+
+    const layout = fitWidth(
+      figure,
+      (measured) => {
+        width = measured;
+        figure.append(dynamic, canvas, handle);
+        return paint();
+      },
+      340,
+    );
+
+    const resizeTo = (across: number, down: number) => {
+      const { settings } = program;
+      settings.width = clamp(Math.round(across / 8) * 8, MIN.width, MAX.width);
+      settings.height = clamp(Math.round(down / 8) * 8, MIN.height, MAX.height);
+      dirty = true;
+    };
+
+    const shown = animation(root, {
+      step(dt) {
+        if (opening < WAIT + OPENING) {
+          opening = Math.min(WAIT + OPENING, opening + dt);
+          const t = Math.max(0, opening - WAIT) / OPENING;
+          const eased = smooth(t);
+          if (t > 0) {
+            resizeTo(
+              START.width + (OPEN.width - START.width) * eased,
+              START.height + (OPEN.height - START.height) * eased,
+            );
+          }
+        }
+        frame();
+      },
+      draw() {
+        if (width === 0) layout();
+        else if (dirty || flashing() !== flashed) paint();
+        else if (calls) calls.textContent = callsText();
+      },
+      playing: !reducedMotion(),
+      destroy: program.destroy,
+    });
+
+    /** What the reader changed takes the next frame, or one of its own where none run. */
+    const changed = () => {
+      opening = WAIT + OPENING;
+      dirty = true;
+      if (!shown.playing) frame();
+      shown.redraw();
+    };
+
+    const drag = (point: DOMPoint) => {
+      resizeTo((point.x - 0.5) / css, (point.y - canvasTop - 0.5) / css);
+      changed();
+    };
+    const corner = () => {
+      const { width: across, height: down } = program.settings;
+      return new DOMPoint(0.5 + across * css, canvasTop + 0.5 + down * css);
+    };
+    onStroke(figure, [
+      [canvas, drag],
+      [handle, drag, corner],
+    ]);
+
+    // Where nothing moves, the canvas is already open
+    if (!shown.playing) {
+      opening = WAIT + OPENING;
+      resizeTo(OPEN.width, OPEN.height);
+    }
+    frame();
+    rebuilt = false;
+  });
+</script>

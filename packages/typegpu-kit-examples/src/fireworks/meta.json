@@ -1,0 +1,12 @@
+{
+  "title": "Fireworks",
+  "category": "worlds",
+  "rarity": "rare",
+  "description": "Fireworks over a castle on a lake. Click the sky to launch a shell. Every burst is a point light, so the castle, the hills and the smoke light up with it, and the lake reflects the whole scene through its ripples. Auto-exposure reacts the way your eyes would, so a big volley darkens the picture and it slowly brightens again after. The castle and pines are from Kenney's Castle Kit and Nature Kit (CC0).",
+  "line": "Fireworks over a castle lake. Every burst lights up everything around it.",
+  "order": 6,
+  "hint": "click the sky to fire a shell \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 11
+  }
+}

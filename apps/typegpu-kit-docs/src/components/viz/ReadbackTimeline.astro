@@ -1,0 +1,141 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="readback">
+  <p class="viz-title">Each copy reaches the CPU when its staging buffer maps</p>
+  <svg viewBox="0 0 640 200" role="img" aria-label="A buffer holding its frame's index, its copies carried in staging buffers, and the value the CPU holds frames later"></svg>
+  <p class="viz-status" aria-live="polite" style="--lines: 2"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="read">read()</button>
+    <Choice name="hz" label="hz" options={[...[60, 30, 10].map((hz) => ({ value: hz, label: String(hz) })), { value: 0, label: 'none' }]} value={30} />
+    <Slider inline name="latency" label="map takes" min={1} max={8} value={3} unit=" frames" />
+    <Slider inline name="slots" label="staging" min={1} max={3} value={3} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag <code>map takes</code> and the bars stretch into more staging buffers, then lower <code>staging</code> to see captures skipped while every buffer maps. <code>read()</code> waits for the next copy.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, choice, each, plural, slider, statusLine } from './figure.ts';
+  import { createProgram, type Column } from './ReadbackTimeline.program.ts';
+  import { CHAR, fitWidth, svg, text } from './svg.ts';
+  import {
+    columnsIn,
+    drawTrips,
+    frameAxis,
+    heldValue,
+    KEPT,
+    lanes,
+    LEFT,
+    skipped,
+    steppedRun,
+    type Trip,
+  } from './timeline.ts';
+
+  each('readback', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const hz = choice(root, 'hz', () => run.reset());
+    const latency = slider(root, 'latency', () => run.reset());
+    const slots = slider(root, 'slots', () => run.reset());
+
+    const run = steppedRun(root, {
+      create: () =>
+        createProgram({
+          latency: latency.valueAsNumber,
+          slots: slots.valueAsNumber,
+          hz: Number(hz.value),
+        }),
+      // A read asked for near the end of the first frames, so the opening shows one resolve
+      before(program, frame) {
+        if (frame === KEPT - 9) program.ask();
+      },
+      draw: () => draw(),
+    });
+
+    const draw = fitWidth(figure, (width) => {
+      const program = run.program;
+      const staging = program?.busy.length ?? slots.valueAsNumber;
+      const at = lanes(staging);
+      if (!program) return at.height;
+
+      const view = columnsIn(program.columns, width);
+      const { columns, x, end } = view;
+      frameAxis(figure, view, at, staging, 'read()');
+
+      // The pass writes the buffer every frame
+      for (const column of columns) {
+        const fx = x(column.index);
+        svg('line', { x1: fx, x2: fx, y1: at.gpu - 5, y2: at.gpu + 5, stroke: 'var(--viz-b)' }, figure);
+      }
+
+      const trips: Trip[] = program.columns.flatMap(({ index, copy }) =>
+        copy ? [{ from: index, slot: copy.slot, until: copy.until, look: copy.answers ? ('answer' as const) : undefined }] : [],
+      );
+      drawTrips(figure, view, at, trips);
+      for (const column of columns) if (column.full && column.wanted) skipped(figure, x(column.index), at);
+
+      heldValue(figure, view, at.cpu, columns.map((column) => column.value?.toString()), 'var(--viz-c)', 'below');
+
+      // How old the CPU's value is: from the frame that copied it to now
+      const now = columns.at(-1)!;
+      if (now.latest >= 0) {
+        const y = at.cpu + 30;
+        const x0 = Math.max(x(now.latest), x(columns[0].index));
+        const x1 = x(now.index);
+        svg('path', { d: `M${x0},${y - 4}v8M${x0},${y}H${x1}M${x1},${y - 4}v8`, stroke: 'var(--viz-c)', fill: 'none' }, figure);
+        const label = `age ${now.index - now.latest}`;
+        const room = label.length * CHAR + 8;
+        if (x0 - room > LEFT) text(figure, x0 - 6, y + 4, label, { 'text-anchor': 'end', style: 'fill: var(--viz-c)' });
+        else {
+          svg('rect', { x: (x0 + x1 - room) / 2, y: y - 7, width: room, height: 14, fill: 'var(--ground)' }, figure);
+          text(figure, (x0 + x1) / 2, y + 4, label, { 'text-anchor': 'middle', style: 'fill: var(--viz-c)' });
+        }
+      }
+
+      // Each read waits from the frame it was asked in until its copy lands. Circles go over the
+      // lines, and a resolve over a later read's start
+      const left = x(columns[0].index);
+      const reads = program.columns.flatMap((column) => {
+        if (!column.asked) return [];
+        const resumed = program.columns.find((later) => later.resumed.includes(column.index));
+        return [{ x0: x(column.index), x1: resumed ? x(resumed.index) : end, resumed: !!resumed }];
+      });
+      for (const { x0, x1 } of reads) {
+        if (x1 >= left) svg('line', { x1: Math.max(x0, left), x2: x1, y1: at.below, y2: at.below, stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, figure);
+      }
+      for (const { x0 } of reads) {
+        if (x0 >= left) svg('circle', { cx: x0, cy: at.below, r: 3.5, fill: 'var(--ground)', stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, figure);
+      }
+      for (const { x1, resumed } of reads) {
+        if (resumed && x1 >= left) svg('circle', { cx: x1, cy: at.below, r: 3.5, fill: 'var(--viz-accent)' }, figure);
+      }
+
+      say(program.columns);
+      return at.height;
+    });
+
+    const say = (columns: readonly Column[]) => {
+      const now = columns.at(-1);
+      if (!now) return;
+      const age = now.index - now.latest;
+      const asked = columns.findLast((column) => column.asked);
+      const resumed = asked && columns.find((column) => column.resumed.includes(asked.index));
+      status.textContent = [
+        now.latest < 0 ? 'latest = undefined' : `latest = ${now.value}, copied ${plural(age, 'frame')} ago`,
+        !asked
+          ? ''
+          : resumed
+            ? `read() from frame ${asked.index} resolved in frame ${resumed.index} with ${resumed.latest}`
+            : `read() from frame ${asked.index} waits for the next copy`,
+      ].join('\n');
+    };
+
+    action(root, 'read', () => run.act((program) => program.ask()));
+    run.reset();
+  });
+</script>

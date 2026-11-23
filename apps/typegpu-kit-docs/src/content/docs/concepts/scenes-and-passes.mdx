@@ -1,0 +1,88 @@
+---
+title: Scenes and passes
+description: Say once which textures a frame draws into and what each holds, and every renderer draws into the scene, its shadow and every other view.
+readFirst:
+  page: concepts/how-the-kit-works
+  for: for the frame and the seven rules every module follows
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+
+<ExampleFigure
+  example="lattice"
+  controls={['view']}
+  values={{ view: 'depth' }}
+  caption="One description writes colour, motion and depth for every drawing in the scene. Switch the view to see each target the drawings filled. Drag to turn the camera."
+/>
+
+A scene has three parts. **Targets** are the textures a frame draws into. A **description**, made with [`passes.create`](/kit/passes/), says what each target holds. **Drawings** are what renderers hand over: what each vertex carries to its pixels, what a pixel looks like and the draw call. `scene.add(drawing)` builds the pipeline that writes every target the description lists.
+
+The sun's shadow is a description too, one of depth alone. A lit renderer therefore casts its shadow from the same drawing:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, instances, lighting, meshPool } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+import { passes, targets } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth24plus' },
+});
+const light = lighting.create(root, { shadow: { extent: 9 } });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+
+const renderer = things.renderer(); // a drawing
+const drawn = scene.add(renderer); // colour and depth, seen by the camera
+const cast = light.shadow.add(renderer); // depth alone, seen by the sun
+
+frames.animate(
+  frames.create(root, (frame) => {
+    screen.fit();
+    things.flush();
+    light.shadow.record(frame, cast);
+    scene.record(frame, drawn);
+  }),
+);
+```
+
+## Every renderer is a drawing
+
+[Instances](/kit/instances/), [particles](/kit/particles/), [trails](/kit/trails/), [lines](/kit/lines/) and [text](/kit/text/) each give a drawing and hold no pipeline. Each description they are added to builds the pipelines it needs, for its targets, sample count and fills:
+
+- One drawing can go into several descriptions. A particle system added to the scene and to the canvas draws the same particles into both.
+- A drawing can be a [compound](/kit/passes/#compound-drawings) of several pipelines, with resources for each view such as the list of objects a camera sees. The shadow and the scene then cull separately.
+- Your own drawing is a plain object, typed `passes.Drawing<Vertex, Pixel>`. [`passes.fullScreen`](/kit/passes/#drawings) gives the vertex for one that covers the screen, such as a sky.
+
+## Outputs every drawing writes
+
+An output is a value each drawing writes at every pixel, beside its colour. The description runs every output for every drawing, so adding one changes the description and no renderer:
+
+- [TAA](/kit/taa/) needs to know where each pixel was last frame. `taa.motion` computes it for every drawing from its vertices this frame and last.
+- An output whose `write` takes the pixel's `id` writes an id at every pixel, for a pick of your own. The [picker](/kit/picker/) instead projects candidates.
+- A drawing that lacks the data an output needs fails to type-check in `scene.add`. Add it through `scene.without('id')`, or give it an output of its own with `scene.instead`.
+
+## Last frame's vertices
+
+Motion needs each vertex where it was last frame. State that moves vertices lives in [`history`](/kit/history/), which keeps last frame's copy. A drawing's vertex code runs once more with `history.previously` to read that copy. A table created with `history: true` keeps its rows that way, so instances moved by your kernels write correct motion.
+
+## Several views
+
+A description draws through the camera piped into it, so another view is another description over the same drawings:
+
+- The sun's shadow and each point and spot shadow are descriptions of depth alone, from the light.
+- [Ambient occlusion](/kit/ao/) reads a depth prepass, a description of depth alone, often at half resolution.
+- A description drawn into [layers](/kit/passes/#layers) draws the same drawings into each layer of one texture, each layer through its own view. The sun's shadow cascades are drawn this way.
+
+## After the passes
+
+Post-processing reads the targets the scene filled. [Bloom](/kit/finish/#bloom), [TAA](/kit/taa/), [depth of field](/kit/dof/), [FXAA](/kit/fxaa/) and [the final pass](/kit/finish/) each take the frame, or its encoder, and open passes of their own. Each reads its source on every `record`, through a function or another module's picture, such as `source: aa`. A target rebuilt on resize therefore keeps working. When the scene draws below full resolution with [dynamic resolution](/kit/profiler/), a `region` option reads part of the source. A module's picture brings its region along.

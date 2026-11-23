@@ -1,0 +1,257 @@
+---
+title: Picker
+description: Find a candidate under the pointer on the GPU, then use it in the same frame or read it back to the CPU.
+modules: [kit/picker]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+Wisps move on the GPU, so the CPU needs their positions to find one under a finger. Reading all positions copies the whole set and adds a frame or two of delay. A picking kernel instead projects every candidate with your camera and selects the nearest within reach. It returns one index. Later kernels can use that index in the same frame, before it reaches the CPU.
+
+<Hidden card="star-map">
+  <ExampleFigure
+    example="star-map"
+    controls={['reach', 'nearest', 'result', 'picked in frame', 'drawn in frame']}
+  >
+    Hover a star to light it in the same frame through <code>found()</code>. <code>result</code>{' '}
+    reaches the CPU frames later. The dashed ring shows <code>reach</code> around the pointer. Set{' '}
+    <code>nearest</code> to <code>eye</code> to choose the frontmost star within reach. The picker's{' '}
+    <code>rank</code> reads this choice from a uniform. Click a star to select it.
+  </ExampleFigure>
+</Hidden>
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, frames, picker } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas')!;
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 12 });
+const wisps = root.createReadonly(d.arrayOf(d.vec3f, 512));
+declare function select(wisp: number | null): void;
+// ---cut---
+const hits = picker.create(root, view, {
+  capacity: 512,
+  size: surface,
+  position: (i) => {
+    'use gpu';
+    return d.vec3f(wisps.$[i]);
+  },
+});
+
+let tap: [number, number] | undefined;
+canvas.addEventListener('pointerup', (event) => {
+  tap = [event.offsetX / canvas.clientWidth, event.offsetY / canvas.clientHeight];
+});
+
+frames.create(root, (frame) => {
+  const compute = frame.encoder.beginComputePass();
+  // ... the steps that move the wisps
+  if (tap) hits.pick(compute, ...tap);
+  compute.end();
+  hits.result.capture(frame);
+  tap = undefined;
+
+  const found = hits.result.take(); // undefined until a pick comes back
+  if (found !== undefined) select(found);
+});
+```
+
+<Rules>
+
+- **The point** `x` and `y` run from 0 to 1 across the view from its top-left corner, as a host's `pointing` and a camera's `rayAt` take them.
+- **Reach** `settings.reach` is a distance in points. The picker reads `size` and its `pixelRatio` at each pick, as [text](/kit/text/) does, so reach stays the same when a window moves between screens. Without a `pixelRatio`, a point is a pixel.
+- **Candidates** A candidate is within reach when its centre is within `reach` points, plus its `radius` as it looks from the eye. One behind the eye, or one `alive` turns down, is never picked.
+- **One pick** `pick` writes the point and clears the result with queue writes, so a frame picks once. A second pick into the same pass replaces the point and records no second dispatch.
+- **The result** `result` is a [readback](/kit/readback/) of the candidate's index, or `null` for nothing. Capture it after the pass that picks. Without `hz`, each tap comes back once, a frame or two later.
+
+</Rules>
+
+## Which one
+
+Several candidates can be within reach. `rank` is a `'use gpu'` function that maps a `picker.Candidate` to a number from 0 to 1. The lowest rank wins. Ties go to the lower index. A candidate holds:
+
+- `index`;
+- `gap`, from the point to its centre on the screen, as a fraction of the screen's diagonal;
+- `depth`, 0 at the near plane and 1 at the far, in equal steps of distance;
+- `position`, its centre in the world;
+- `ray`, the ray through the point, as `cameras.rayOf` gives it.
+
+`picker.byPointer`, the default, ranks by `gap`, for wisps a finger covers. `picker.byEye` ranks by `depth`, the one in front, for a hover among stars that overlap on the screen.
+
+A rank that reads a uniform switches between them without a new picker, as the star map's `nearest` does:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, picker } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 800, height: 600 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 12 });
+const stars = root.createReadonly(d.arrayOf(d.vec3f, 512));
+// ---cut---
+const byEye = root.createUniform(d.u32, 0);
+const hits = picker.create(root, view, {
+  capacity: 512,
+  size,
+  position: (i) => {
+    'use gpu';
+    return d.vec3f(stars.$[i]);
+  },
+  rank: (candidate) => {
+    'use gpu';
+    return std.select(picker.byPointer(candidate), picker.byEye(candidate), byEye.$ === 1);
+  },
+});
+
+byEye.write(1); // the next pick keeps the star in front
+```
+
+`radius`, in world units, makes a big candidate easier to hit, and grows on the screen as it comes closer. One picker spans every kind of object a pointer can land on. Give each kind a range of indices, and the best rank of any kind wins. Here guns follow the wisps and are wider:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, picker } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 800, height: 600 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 12 });
+const WISPS = 480;
+const wisps = root.createReadonly(d.arrayOf(d.vec4f, WISPS));
+const guns = root.createReadonly(d.arrayOf(d.vec3f, 32));
+// ---cut---
+const hits = picker.create(root, view, {
+  capacity: WISPS + 32,
+  size,
+  position: (i) => {
+    'use gpu';
+    if (i < WISPS) return wisps.$[i].xyz;
+    return d.vec3f(guns.$[i - WISPS]);
+  },
+  radius: (i) => {
+    'use gpu';
+    return std.select(0, 0.6, i >= WISPS);
+  },
+  alive: (i) => {
+    'use gpu';
+    return i >= WISPS || wisps.$[i].w > 0;
+  },
+});
+```
+
+The picker kernel compiles these callbacks. They can read `cameras.current.$` and any instance's members, such as `stars.gpu.position`. Candidates in a table take its capacity, `alive` and span from `stars.live()`: `picker.create(root, view, { ...stars.live(), size, position })`.
+
+## Exact shapes
+
+A centre and a radius only approximate a tall or long candidate, and reach admits candidates the pointer is only near. A negative rank turns a candidate down, so `rank` can test the real shape against `candidate.ray`. Returning the distance along the ray also puts the nearest hit first. Here each wisp is a ball, picked only where the ray passes through it:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, picker } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 800, height: 600 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 12 });
+const wisps = root.createReadonly(d.arrayOf(d.vec4f, 512));
+// ---cut---
+const RANGE = 100; // farther than any wisp is from the eye
+
+const hits = picker.create(root, view, {
+  capacity: 512,
+  size,
+  position: (i) => {
+    'use gpu';
+    return wisps.$[i].xyz;
+  },
+  radius: (i) => {
+    'use gpu';
+    return wisps.$[i].w;
+  },
+  rank: (candidate) => {
+    'use gpu';
+    const to = candidate.position - candidate.ray.origin;
+    const along = std.dot(to, candidate.ray.direction);
+    const beside = std.length(to - candidate.ray.direction * along);
+    return std.select(d.f32(-1), along / RANGE, beside < wisps.$[candidate.index].w);
+  },
+});
+```
+
+For a box or a capsule, return where the ray enters it, as a fraction of a distance nothing lies beyond. Only candidates within reach are ranked, so `radius` must cover the shape.
+
+For a finger, return half the hit's rank and `0.5 + candidate.gap * 0.5` for a miss in place of the negative number, so hits come first and reach still finds a candidate when the ray meets none. A miss then ranks by the gap to its centre, which suits compact shapes.
+
+## In the same frame
+
+`hits.found()` is the candidate the last pick found, or `picker.none`, in any shader. `hits.ray()` is the ray of that pick, in a pipeline piped with the camera, for a kernel that needs where the pick landed or which way to push. A kernel after `pick` sees this frame's pick, so a tapped wisp lights up the frame the tap lands:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { picker, type Picker } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const hits: Picker;
+const marked = root.createMutable(d.arrayOf(d.u32, 512));
+const focus = root.createMutable(d.u32);
+// ---cut---
+const mark = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  const wisp = hits.found();
+  if (wisp === picker.none) return;
+
+  marked.$[focus.$] = 0;
+  marked.$[wisp] = 1;
+  focus.$ = wisp;
+});
+
+const marking = root.createComputePipeline({ compute: mark });
+```
+
+## Hovering
+
+For hovering, pick every frame and set `hz` to control readback. Only captures due at that rate copy the result. The star map reads at 20 Hz. `result.latest` holds the newest completed read, a frame or two behind. `result.latestFrame` identifies the frame that picked it. `take()` returns each completed read once.
+
+When the pointer leaves, call `hits.clear()` and stop picking. `found()` returns `none` from then on, and the next capture reads `null`, without a dispatch.
+
+## Many at once
+
+A picker finds one candidate. To select everything inside a dragged box, list the candidates with [live lists](/kit/live-lists/), whose `alive` can be any test, such as whether a centre lies between two corners of the screen:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, liveLists } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 800, height: 600 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 12 });
+const wisps = root.createReadonly(d.arrayOf(d.vec3f, 512));
+// ---cut---
+const box = root.createUniform(d.vec4f); // two corners, from -1 to 1 with +y up
+
+const selected = liveLists.create(root, {
+  capacity: 512,
+  alive: tgpu
+    .fn((i: number) => {
+      'use gpu';
+      const clip = cameras.toClip(wisps.$[i]);
+      const at = clip.xy / clip.w;
+      const inside = std.all(std.ge(at, box.$.xy)) && std.all(std.le(at, box.$.zw));
+      return clip.w > 0 && inside;
+    })
+    .pipe(view.inject()),
+});
+```
+
+Write the corners into `box` and record `selected.compact(pass)` in each frame that drags. `selected.count(0)` and `selected.slot(0, i)` give the selection to any shader, `selected.dispatch` runs a kernel over it, and a readback of `selected.slots`, with its count in `selected.args`, brings it to the CPU.
+
+## On the CPU
+
+For a few candidates already on the CPU, use the camera's [projection](/kit/cameras/#on-the-cpu) to compare their screen positions without a kernel.
+
+## Limits
+
+<Rules>
+
+- **Rank precision** Rank and index share one `u32`, which leaves rank about 2^(32 − ceil(log2 `capacity`)) levels, at most 2^24. That is 4 096 levels at a capacity of 2^20 and 256 at 2^24. Closer ranks tie, so a very large capacity ranks coarsely.
+- **Second pointer** A second pointer needs a picker of its own.
+- **Capacity** A pick runs a thread a candidate, 64 to a workgroup, so `create` throws past 64 times the device's `maxComputeWorkgroupsPerDimension`: 4 194 240 candidates at WebGPU's default.
+
+</Rules>

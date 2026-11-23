@@ -1,0 +1,9 @@
+{
+  "title": "Ocean",
+  "category": "simulations",
+  "rarity": "legendary",
+  "description": "A near gale at dusk on the open sea. The waves come from four FFT cascades of a measured ocean spectrum (JONSWAP), recomputed every frame and laid over a clipmap that reaches the horizon, and far waves fade into roughness instead of sparkle. The water is shaded after the Atlas water model, as Ethan Truong's GodotOceanWaves (MIT) implements it, so the sun glows through the backs of the waves. Foam gathers on the crests and trails behind them. The sky and its volumetric clouds, after Hillaire's atmosphere, show up in the reflections. Change the wind, or move the sun from below the horizon up to 60°.",
+  "line": "A near gale at dusk, with FFT waves, foam on the crests and a low sun.",
+  "order": 12,
+  "hint": "drag to look around"
+}

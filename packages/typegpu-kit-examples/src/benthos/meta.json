@@ -1,0 +1,12 @@
+{
+  "title": "Benthos",
+  "category": "simulations",
+  "rarity": "common",
+  "description": "Light shafts fall through deep, foggy water onto 24 000 flecks of marine snow and a few glowing motes. Move the pointer to stir them.",
+  "line": "Light through deep water and marine snow. Move the pointer to stir it.",
+  "order": 18,
+  "card": {
+    "snow": 8000
+  },
+  "hint": "move the pointer to stir \u00b7 drag to look around \u00b7 wheel to zoom"
+}

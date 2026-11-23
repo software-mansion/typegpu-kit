@@ -1,0 +1,623 @@
+---
+title: Particles
+description: GPU particles with your own update and shading.
+modules: [kit/particles]
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import ParticleRing from '../../../components/viz/ParticleRing.astro';
+import Sparks from '../../../components/viz/Sparks.astro';
+
+Moving thousands of short-lived sparks, dust particles or bubbles on the CPU requires position uploads every frame. On phones, that loop can take the whole frame budget under Hermes. Queue **bursts** on the CPU and use the GPU to spawn, move and draw particles without readback.
+
+<Hidden card="jellies">
+  <Sparks />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, clock, frames, passes } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+// ---cut---
+import { particles } from '@typegpu/kit';
+
+const sim = clock.fixedStep({ step: 1 / 60 });
+const sparks = particles.create(root, view, {
+  capacity: 4096,
+  step: sim.step,
+  blend: 'add',
+  settings: { gravity: [0, -9, 0], drag: 0.8 },
+});
+const canvas = passes.create(root, surface).pipe(view.inject());
+const drawn = canvas.add(sparks.drawing);
+await canvas.initAsync();
+
+sparks.burst({ count: 40, position: [0, 1, 0], scatter: 4, color: [4, 2, 0.5, 1], life: 0.8 });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    const compute = frame.encoder.beginComputePass();
+    sparks.spawn(compute);
+    for (let steps = sim.update(frame.dt); steps > 0; steps--) sparks.step(compute);
+    sparks.compact(compute, sim.ahead);
+    compute.end();
+
+    canvas.record(frame, drawn);
+  }),
+);
+```
+
+<Rules>
+
+- **Compiling** `canvas.initAsync()` compiles the drawing pipelines a [pass description](/kit/passes/) built and the particle kernels. For a system without a drawing, call `sparks.initAsync()`.
+- **Each frame** Call `spawn`, then `step` for every fixed step, then `compact`. Particles spawned before the steps move in that frame. Those spawned afterward still appear, but start moving on the next step.
+- **Spawning** For each system, call `spawn` with bursts once per submission. A second call with bursts in the same pass throws. Across passes or encoders, a second upload before submission replaces the first burst data. To spawn at several moments while loading, such as a prewarm, submit after each `spawn`.
+- **Capacity** `step` and `compact` each run one thread per slot, including dead slots. Size capacity for the maximum simultaneous live count. Drawing visits only live particles. Each fragment reads its whole particle, 64 bytes for a `Particle`.
+- **Live count** The draw is indirect, so the live count stays on the GPU unless you [read it](#how-many-are-alive).
+- **Between steps** Pass `sim.ahead` to `compact`. It is the time left after the fixed steps, capped at one step. `compact` updates a uniform when the current or previous draw's offset changes. Drawing extrapolates each particle by that time along its velocity, so motion updates on every frame of a 120 Hz display. Pass 0 to draw particles where the last step left them.
+- **Defaults** `particles.defaults` uses Earth's gravity and drag that retains one third of speed after a second. Change drag with `sparks.settings.patch({ drag: 2 })`.
+
+</Rules>
+
+## The pool
+
+<ParticleRing />
+
+A new particle, from a burst or a kernel, takes slot `head++ % capacity`. It is alive while `age < life`.
+
+- Size capacity for the maximum simultaneous live count. A Blockfall piece can clear four layers of 36 blocks, and each block leaves one patch of dust, so its dust pool holds 144.
+- When spawning exceeds capacity, the newest particles replace the oldest, even if alive. Bubbles can disappear before reaching the surface if the pool is too small.
+- Give persistent effects their own system so other bursts cannot overwrite them. The [Benthos](/examples/benthos/) example fills its water with one burst using `life: 1e9`. Its snow stays alive without wrapping the ring.
+- For recurring dust, use one burst with `aged: true`. Random starting ages keep the particles from fading together.
+
+## Bursts
+
+Queued bursts can start at most `capacity` particles per spawn. `burst` returns false when no capacity remains or the burst queue is full. The queue defaults to 64 bursts. Blockfall uses 144, one per block a piece can clear.
+
+| Field      | Default   |                                                             |
+| ---------- | --------- | ----------------------------------------------------------- |
+| `count`    |           | Trimmed to what is left of the capacity before a `spawn`.   |
+| `position` |           | Centre of the burst.                                        |
+| `area`     | `0, 0, 0` | Half-size of the box they start in.                         |
+| `velocity` | `0, 0, 0` |                                                             |
+| `scatter`  | `0`       | Adds a random direction up to this speed.                   |
+| `color`    | white     | Linear, so it can go above 1 for bloom.                     |
+| `size`     | `0.1`     | Width of the quad in world units.                           |
+| `life`     | `1`       | Seconds.                                                    |
+| `variance` | `0.25`    | Random spread of `life` and `size`, as a fraction.          |
+| `aged`     | `false`   | Starts each at a random age within its `life`.              |
+| `fields`   | zero      | Values of the particle's [own fields](#fields-of-your-own). |
+
+### A steady stream
+
+For smoke from a chimney or sparks from a torch, emit a number of particles per second. `stream(rate, burst)` counts particles in simulation time. Each `step` adds `rate` times the step length to the total, up to the pool capacity. Each `spawn` queues as many whole particles as fit, discards any excess and keeps the fraction. Below those limits, the stream keeps its rate at any frame rate.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, clock, particles } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const smoke = particles.create(root, view, { capacity: 1024, step: sim.step });
+// ---cut---
+const puff = { position: [2, 3, 0] as [number, number, number], area: [0.2, 0, 0.2] as const };
+const chimney = smoke.stream(45, puff); // 45 a second
+
+// Later, while it runs
+chimney.rate = 90;
+puff.position[0] = 2.5;
+```
+
+- Change the burst's `position` to make a stream follow a moving torch.
+- Particles counted during one frame's steps spawn at the next frame's `spawn`.
+- Set `rate` to 0 to pause the stream. The fraction already counted stays.
+
+## Update and shade
+
+A **particle** is 64 bytes in the pool:
+
+| Field      |                                                   |
+| ---------- | ------------------------------------------------- |
+| `position` | `vec3f`, in world units.                          |
+| `age`      | Seconds since it was born.                        |
+| `velocity` | `vec3f`, in world units a second.                 |
+| `life`     | Seconds it lives. It is alive while `age < life`. |
+| `color`    | `vec4f`, linear, with opacity in `w`.             |
+| `size`     | World units across its quad.                      |
+| `seed`     | Random in [0, 1), fixed at birth, for variety.    |
+
+`update(particle, dt, slot)` runs on each live particle at the start of a step, before gravity and drag. It is a `'use gpu'` function with `dt` in seconds. Use `slot` to find related data, such as the particle's [trail](/kit/trails/). Copy the argument, change the copy and return it to keep the particle. Set `life` to 0 to end it early. The fish tank's bubbles wobble, grow as they rise and pop at the surface:
+
+```ts twoslash
+import { d, std } from 'typegpu';
+import { Particle } from '@typegpu/kit';
+const SURFACE = 6;
+// ---cut---
+const rise = (bubble: Particle, dt: number) => {
+  'use gpu';
+  let next = Particle(bubble);
+  next.velocity.x = bubble.velocity.x + std.sin(bubble.age * 7 + bubble.seed * 40) * 2 * dt;
+  next.size = bubble.size * (1 + 0.05 * dt);
+  if (bubble.position.y > SURFACE - bubble.size) next.life = 0;
+
+  return next;
+};
+```
+
+`update` first runs on the first simulation step after birth. Use [`born`](#when-one-is-born-or-dies) for initialization at birth. All callbacks can read `cameras.current.$`. Fill other module dependencies on the callback, for example `update: tgpu.fn(rise).pipe(noise.inject())` for cached Perlin noise.
+
+`shade(particle, local)` returns premultiplied colour for the quad. `local` ranges from -1 to 1 in each direction. The default `particles.softDisc` draws a round blob that fades with age. `particles.glowingDisc` draws a bright core and a soft halo that fade with age. It returns colour with an alpha of 0, so `add` and `over` add its light without covering what's behind it. Use it for embers and sparks, as in the [ember mirror](/examples/ember-mirror/). The platformer uses separate systems for each blend mode:
+
+<Tabs>
+<TabItem label="Light with add blending">
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { particles, type Particle } from '@typegpu/kit';
+import { cameras, clock } from '@typegpu/kit';
+const root = await tgpu.init();
+const camera = cameras.flat(root, { size: { width: 320, height: 180 }, height: 18 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+/** A four-pointed twinkle, added onto the picture. */
+const twinkle = (spark: Particle, local: d.v2f) => {
+  'use gpu';
+  const across = std.abs(local);
+  const star = std.max(1 - across.x * 4 - across.y, 1 - across.y * 4 - across.x);
+  const light = std.saturate(star * 2) * (1 - spark.age / spark.life);
+
+  return d.vec4f(spark.color.xyz * light, 0);
+};
+
+const sparks = particles.create(root, camera, {
+  capacity: 256,
+  step: sim.step,
+  dimensions: 2,
+  blend: 'add',
+  shade: twinkle,
+  settings: { gravity: [0, -18, 0], drag: 1.5 },
+});
+```
+
+</TabItem>
+<TabItem label="Matter with over blending">
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { particles, type Particle } from '@typegpu/kit';
+import { cameras, clock } from '@typegpu/kit';
+const root = await tgpu.init();
+const camera = cameras.flat(root, { size: { width: 320, height: 180 }, height: 18 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+/** A hard-edged dot that shrinks away. */
+const dot = (mote: Particle, local: d.v2f) => {
+  'use gpu';
+  const left = 1 - mote.age / mote.life;
+  if (std.length(local) > left) return d.vec4f();
+
+  return d.vec4f(mote.color.xyz * mote.color.w, mote.color.w);
+};
+
+const dust = particles.create(root, camera, {
+  capacity: 512,
+  step: sim.step,
+  dimensions: 2,
+  blend: 'over',
+  shade: dot,
+  settings: { gravity: [0, 2, 0], drag: 6 },
+});
+```
+
+</TabItem>
+</Tabs>
+
+### Lit by the scene
+
+Debris, smoke and dust look like part of a scene when the same sun and lamps light them. Pipe a [lighting](/kit/lighting/) into `shade` and call `shading.shade` with a material and a point. A quad has no surface of its own, so give each particle a normal that faces the eye:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import {
+  cameras,
+  clock,
+  lighting,
+  materials,
+  particles,
+  shading,
+  table,
+  type Particle,
+} from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 4, height: 3 }, target: [0, 0, 0], distance: 5 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const lamps = table.create(root, lighting.PointLight, { capacity: 8 });
+const light = lighting.create(root, { points: { table: lamps } });
+// ---cut---
+const lit = (chip: Particle, local: d.v2f) => {
+  'use gpu';
+  const facing = cameras.towards(cameras.current.$, chip.position);
+  const surface = materials.matte(chip.color.xyz);
+  const color = shading.shade(surface, shading.pointAt(chip.position, facing));
+  const alpha = chip.color.w * std.saturate(1 - std.dot(local, local));
+
+  return d.vec4f(color * alpha, alpha);
+};
+
+const debris = particles.create(root, view, {
+  capacity: 2048,
+  step: sim.step,
+  blend: 'over',
+  shade: tgpu.fn(lit).pipe(light.inject()),
+});
+```
+
+- Each particle is lit at its centre, so a whole quad takes one colour of light. Shadows, fog and the lighting's hooks apply as they do to meshes.
+- A normal that faces the eye lights the side of a particle you see. Lamps behind a particle leave it dark; for smoke lit from behind, write a `reflect` hook for the particle alone.
+
+To fill a hook for the particles alone, call `.with` after `light.inject()` on the same `shade`. Your fill then replaces the lighting's. Soft dust lit at its centre flickers as a whole puff when a moving shadow crosses that point, so turn the sun's shadow off for it:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock, lighting, particles, shading, type Particle } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, { size: { width: 4, height: 3 }, target: [0, 0, 0], distance: 5 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const light = lighting.create(root, { shadow: { size: 2048 } });
+declare const lit: (dust: Particle, local: d.v2f) => d.v4f;
+// ---cut---
+const unshadowed: shading.SunShadowHook = () => {
+  'use gpu';
+  return d.f32(1);
+};
+
+const dust = particles.create(root, view, {
+  capacity: 4096,
+  step: sim.step,
+  blend: 'over',
+  shade: tgpu.fn(lit).pipe(light.inject()).with(shading.sunShadow, unshadowed),
+});
+```
+
+- The particle pipeline binds what the lighting binds, as a lit mesh does. See [bindings per stage](/kit/pipelines/#bindings-per-stage).
+
+## Solids to bounce off
+
+`particles.collide(solid, { bounce, friction })` makes an `update` that keeps particles out of a solid. A solid supplies a signed distance through `distance(p)`. The value is the distance to the solid's surface, negative inside and positive outside. A particle nearer than half its `size` moves out along the distance's gradient and bounces back the `bounce` share of its speed into the surface. Each step it touches, it loses the `friction` share of its speed along the surface. Pass the result as `update`, or call it from your own, here for pebbles that tumble onto a floor and a boulder:
+
+```ts twoslash
+import { d, std } from 'typegpu';
+import { Particle, particles } from '@typegpu/kit';
+const tumble = (pebble: Particle, _dt: number) => {
+  'use gpu';
+  return Particle(pebble);
+};
+// ---cut---
+const BOULDER = d.vec3f(0, 1, 0);
+
+const ground = particles.collide(
+  {
+    distance: (p) => {
+      'use gpu';
+      return std.min(p.y, std.length(p - BOULDER) - 1);
+    },
+  },
+  { bounce: 0.4, friction: 0.05 },
+);
+
+const update = (pebble: Particle, dt: number) => {
+  'use gpu';
+  return ground(tumble(pebble, dt));
+};
+```
+
+- `gradient(p)`, when given, returns the direction in which the distance grows, of any length. Without it, `collide` estimates one from 4 more calls of `distance` around the particle.
+- Distances from [`@typegpu/sdf`](https://www.npmjs.com/package/@typegpu/sdf), such as `sdSphere` and `sdBox3d`, make solids too. `std.min` of two distances is their union.
+- `collide` runs at the start of a step, before gravity and motion, so a particle can sink into a surface by its last step's travel before it bounces out.
+
+## Fields of your own
+
+Use `particles.schema(name, fields)` to add fields to the particle struct. Pass the struct as `particle`. Callbacks, `emit` and `particle(i)` then use the extended type. Supply initial values in a burst's `fields`; omitted fields start at zero. Firework shells store their kind and star-burst speed, which also determines flash size:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock } from '@typegpu/kit';
+import { Particle, particles } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 320, height: 180 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const sim = clock.fixedStep({ step: 1 / 60 });
+const flashes = particles.create(root, view, { capacity: 32, step: sim.step });
+// ---cut---
+const Shell = particles.schema('Shell', { kind: d.u32, reach: d.f32 });
+type Shell = d.InferGPU<typeof Shell>;
+
+const shells = particles.create(root, view, {
+  capacity: 32,
+  step: sim.step,
+  particle: Shell,
+  died: (shell: Shell) => {
+    'use gpu';
+    flashes.emit(
+      Particle({
+        position: shell.position,
+        age: 0,
+        velocity: d.vec3f(),
+        life: 1.6,
+        color: shell.color,
+        size: shell.reach * 1.4,
+        seed: shell.seed,
+      }),
+    );
+  },
+});
+
+shells.burst({ count: 1, position: [0, 0, 0], life: 2.5, fields: { kind: 2, reach: 18 } });
+```
+
+Custom fields use the final 8 bytes of the standard particle. Beyond that, size grows from 64 bytes in multiples of 16. Reusing a built-in name such as `age` throws.
+
+A system of custom fields needs its schema as `particle`. A parameter typed `particles.System` takes a system of any schema, for its slots, recording and drawing. `Particles` takes a system of plain particles, and `Particles<typeof Shell>` one of that schema, with its fields, `burst`, `emit` and `particle`.
+
+## Shapes
+
+`place(particle, corner)` returns a quad corner in world space. `corner` ranges from -1 to 1 in both directions. The particle position already includes velocity extrapolation for drawing. The default `particles.facing` produces a camera-facing square of width `size`. To stretch sparks along velocity, use the camera to orient their width:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, clock } from '@typegpu/kit';
+import { particles, type Particle } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 320, height: 180 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+/** Twenty milliseconds of travel long, `size` wide. */
+const streak = (spark: Particle, corner: d.v2f) => {
+  'use gpu';
+  const along = spark.velocity * 0.01;
+  const across = std.cross(spark.velocity, cameras.forwardOf(cameras.current.$));
+  const side = across * ((spark.size * 0.5) / std.max(std.length(across), 1e-4));
+
+  return spark.position + along * corner.y + side * corner.x;
+};
+
+const sparks = particles.create(root, view, { capacity: 4096, step: sim.step, place: streak });
+```
+
+## Outputs
+
+At each pixel, `particles.Seen` supplies world position and premultiplied colour. At each vertex, `particles.Corner` supplies clip `position`, `world` position, `local` quad coordinates and particle `slot`. A pass description can use outputs requiring only these values. Other outputs fail to type-check at `add`; remove them with `without`. See [Passes](/kit/passes/#what-each-target-gets) for target outputs.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock, passes, targets } from '@typegpu/kit';
+import { taa } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  motion: { format: 'rg16float', sampled: true },
+  id: { format: 'r32uint' },
+  depth: { format: 'depth24plus', sampled: true },
+});
+const id = passes.output(d.u32, {
+  write: (pixel: { id: number }) => {
+    'use gpu';
+    return pixel.id;
+  },
+});
+const aa = taa.create(root, {
+  source: () => screen.textures.hdr,
+  motion: () => screen.textures.motion,
+  depth: () => screen.textures.depth,
+});
+// ---cut---
+import { particles } from '@typegpu/kit';
+
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, motion: taa.motion, id, depth: passes.depth },
+    { jitter: aa.jitter },
+  )
+  .pipe(view.inject());
+const embers = particles.create(root, view, { capacity: 2048, step: sim.step });
+// A particle has no id
+const drawn = scene.without('id').add(embers.drawing);
+```
+
+- They blend and test the depth without writing it, so draw them after the opaque renderers. With `blend: 'translucent'` they draw into the [translucency targets](/kit/passes/#translucent-drawings) in any order, as bubbles among other glass do.
+- `taa.motion` reconstructs the previous corner with the previous camera and `ahead`, subtracting a step for every `step` since that frame. Motion is velocity times the time between frames.
+- For particles born this frame, motion assumes a previous position extrapolated backward along velocity.
+- A system added to several descriptions, such as a scene's and the canvas's, draws the same particles into each.
+
+## From a kernel
+
+The fish tank's food sheds crumbs with `sparks.emit` from the kernel that counts bites.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import type { Particles } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const sparks: Particles;
+// ---cut---
+import { Particle } from '@typegpu/kit';
+
+const fountain = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 64) return;
+
+  sparks.emit(
+    Particle({
+      position: d.vec3f(),
+      age: 0,
+      velocity: d.vec3f(0, 3, 0),
+      life: 2,
+      color: d.vec4f(1),
+      size: 0.1,
+      seed: d.f32(gid.x) / 64,
+    }),
+  );
+});
+
+const pipeline = root.createComputePipeline({ compute: fountain });
+```
+
+## When one is born or dies
+
+`born(particle, slot)` runs when a burst or `emit` creates a particle. It returns the particle to keep. Use `slot` to initialize associated data. Firework shells start a trail at their birth position:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, clock } from '@typegpu/kit';
+import { Particle, particles, trails } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 320, height: 180 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+const tails = trails.create(root, { capacity: 32, length: 28 });
+const shells = particles.create(root, view, {
+  capacity: 32,
+  step: sim.step,
+  born: (shell: Particle, slot: number) => {
+    'use gpu';
+    tails.reset(slot);
+    return Particle(shell);
+  },
+});
+```
+
+`died(particle, slot)` runs at the end of the step where age reaches `life` or `update` sets `life` to 0. It skips live particles overwritten by the ring, particles born at or beyond their lifetime, and particles ended by `clear`. Emit with another system there on death:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock } from '@typegpu/kit';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 320, height: 180 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+import { Particle, particles } from '@typegpu/kit';
+
+const embers = particles.create(root, view, { capacity: 1024, step: sim.step });
+const sparks = particles.create(root, view, {
+  capacity: 256,
+  step: sim.step,
+  died: (spark: Particle) => {
+    'use gpu';
+    let ember = Particle(spark);
+    ember.age = 0;
+    ember.life = 2;
+    ember.velocity = d.vec3f(0, 0.5, 0);
+    embers.emit(ember);
+  },
+});
+```
+
+## How many are alive
+
+The draw reads the live count on the GPU without making the CPU wait. To display it, use a [readback](/kit/readback/) of `args`, the indirect draw arguments written by `compact`. Word 1 holds the live count when `compact` ran:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, clock, frames } from '@typegpu/kit';
+import { particles } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const view = cameras.flat(root, { size: { width: 320, height: 180 }, height: 18 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const sparks = particles.create(root, view, { capacity: 4096, step: sim.step });
+declare const hud: HTMLElement;
+// ---cut---
+import { readback } from '@typegpu/kit';
+
+const census = readback.create(root, sparks.args, { hz: 4 });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    const compute = frame.encoder.beginComputePass();
+    sparks.spawn(compute);
+    for (let steps = sim.update(frame.dt); steps > 0; steps--) sparks.step(compute);
+    sparks.compact(compute, sim.ahead);
+    compute.end();
+    census.capture(frame); // after the pass that compacts
+
+    const live = census.take()?.[1];
+    if (live !== undefined) hud.textContent = `${live} sparks`;
+    // Record the draw pass here
+  }),
+);
+```
+
+## What it's made of
+
+| Part               |                                                                                                                      |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `pool`             | A storage buffer of `capacity` particles. Bursts and `emit` fill it; `clear(frame)` ends them.                       |
+| `capacity`, `span` | Both equal the configured capacity because any slot can hold a particle. Dispatch pool-wide kernels over `span`.     |
+| `settings`         | Gravity and drag, a uniform. `patch` changes some fields, `write` all of them.                                       |
+| `args`             | The indirect draw `compact` writes. Word 1 is the live count; read it with a readback.                               |
+| `emit`             | Starts a particle from any kernel.                                                                                   |
+| `alive(i)`         | Whether slot `i` holds a live particle, in any kernel that visits the pool.                                          |
+| `particle(i)`      | The particle in slot `i`, below `span`, in any shader. It may be dead; `alive(i)` tells you.                         |
+| `drawnAt(i)`       | Where the drawing places slot `i` this frame, its position moved along its velocity by the last `compact`'s `ahead`. |
+| `live()`           | The capacity and `alive`, to spread into a grid, a picker, state machines or live lists over the pool.               |
+| `drawing`          | How the live particles draw, for `scene.add`.                                                                        |
+
+Standard particles use 64 bytes each. A 4096-slot pool takes 256 KiB plus live-list buffers. For custom fields, each queued burst also stores a particle, adding 64 bytes.
+
+## Errors
+
+- `burst` throws a `RangeError` on a `NaN` count: `A burst needs a count, got NaN.`
+- `spawn` throws when one pass spawns bursts twice: ``particles: a second `spawn` in one submission would replace the first bursts. Submit between them.``
+- `schema` throws on a field a particle has: `'age' is a built-in particle field. Choose another name.`
+
+## Limits
+
+<Rules>
+
+- **Shape** Particles draw as quads. `place` can move their four corners, but cannot change the shape topology.
+- **Motion** Motion extrapolates backward using velocity at draw time. Gravity and drag between frames make this approximate.
+- **Outputs** Motion and other outputs cover the whole quad. Transparent corners overwrite motion for the objects behind them.
+- **Lit particles** A `shade` that calls `shading.shade` runs the light loop for every pixel of every quad, over all point lights in range. Keep lit particles small or few under many lights.
+- **Storage buffers** A stage binds at most 8 storage buffers. A system's own kernels and stages leave its callbacks this many:
+
+  | Runs in | Binds of its own                           | Left for               |
+  | ------- | ------------------------------------------ | ---------------------- |
+  | step    | the pool                                   | `update` and `died`: 7 |
+  | spawn   | the pool, its ring counter and burst queue | `born`: 5              |
+  | drawing | the pool and the live slots                | `place` and `shade`: 6 |
+
+  Each system `died` or `update` emits into takes 2, its pool and ring counter. `born` runs in every kernel that emits into the system, so what it reads counts there too. [Bindings per stage](/kit/pipelines/#bindings-per-stage) lists what each module binds.
+
+- **Forward only** A system steps forward only, so a replay can't jump back to an earlier moment. For effects you scrub, see [Effects you can scrub](/recipes/scrubbed-effects/).
+
+</Rules>

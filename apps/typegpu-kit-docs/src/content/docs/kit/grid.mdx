@@ -1,0 +1,203 @@
+---
+title: Neighbour grid
+description: Items sorted into cells each step, so that a kernel reads only the items near each one.
+modules: [kit/grid]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import GridWalk from '../../../components/viz/GridWalk.astro';
+
+Boids, crowds and collisions need each item's neighbours. Testing every pair costs the square of the item count. The fish tank's 3 340 fish would need 11 million distance checks per step. A **neighbour grid** sorts the items by cell once a step, and a kernel reads only the cells around each item.
+
+<Hidden card="fishtank">
+  <GridWalk mode="cells" />
+</Hidden>
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { frames, table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Boid = table.define('Boid', { device: { position: d.vec3f, velocity: d.vec3f } });
+const boids = table.create(root, Boid, { capacity: 4096 });
+// ---cut---
+import * as grid from '@typegpu/kit/grid';
+import { randf } from '@typegpu/noise';
+
+const SIGHT = 1.5;
+/** What a neighbour sees of a boid. */
+const Seen = d.struct({ position: d.vec3f, velocity: d.vec3f });
+
+const boid = boids.gpu; // the table's own rows
+const cells = grid.create(root, {
+  ...boids.live(), // the table's capacity, alive and span
+  low: d.vec3f(-20, 0, -20),
+  size: d.vec3f(40, 10, 40),
+  sight: SIGHT,
+  item: Seen,
+  position: boid.position,
+  itemOf: (i: number) => {
+    'use gpu';
+    return Seen({ position: boid.position(i), velocity: boid.velocity(i) });
+  },
+});
+
+const steer = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!boid.alive(i)) return;
+
+  const position = boid.position(i);
+  randf.seed4(d.vec4f(position, d.f32(i))); // the walk turns at random
+  let heading = d.vec3f();
+  let seen = d.f32(0);
+
+  const walk = cells.walk(position);
+  for (let r = d.u32(0); r < grid.RANGES; r++) {
+    const range = cells.range(walk, r);
+    for (let j = d.u32(0); j < range.count; j++) {
+      const other = cells.neighbour(range, j);
+      if (std.distance(other.position, position) < SIGHT) {
+        heading += other.velocity;
+        seen += 1;
+      }
+    }
+  }
+
+  const row = boid.device.$[i];
+  // The walk meets the boid itself, so `seen` is at least 1
+  row.velocity = std.mix(row.velocity, heading / seen, 0.02);
+});
+const steering = root.createComputePipeline({ compute: steer });
+
+frames.create(root, (frame) => {
+  boids.flush();
+
+  const compute = frame.encoder.beginComputePass();
+  cells.sort(compute); // before the kernels that walk
+  compute.setPipeline(steering);
+  compute.dispatchWorkgroups(Math.ceil(boids.span / 64));
+  compute.end();
+});
+```
+
+<Rules>
+
+- **Cells** A cell is `sight` wide, so the nine ranges of three cells along x that a walk visits hold every item within `sight`. Cells along x sort together in order, so each range is one run of sorted items.
+- **Walk order** A walk visits its own range first, then adjacent ranges. It uses `randf` to choose a direction along each axis, so seed it per item first. This avoids a directional bias when a walk stops early, such as after 16 neighbours.
+- **Sorted copies** `sort` copies each `itemOf` result into sorted order using the `item` schema. A kernel can then move items while reading their neighbours' pre-step values. Copy only the fields neighbours need. The fish tank copies position, velocity and species.
+- **No copies** Without `item` and `itemOf`, the grid keeps no copies, and a shader finds items by slot with `slot` or `slotAt`, as [point lights](/kit/lighting/#only-the-lights-that-reach) do.
+- **Slots** `cells.slot(range, j)` returns the original slot `i` for a neighbour's `itemOf(i)` value. Use it to act on that item or skip the walker itself. A walk can start anywhere, such as at a frog's mouth, and identify nearby items by slot.
+- **Bindings** `slot` binds a third storage buffer. A kernel short of bindings can copy the index in `itemOf` instead, at four bytes or more a neighbour.
+- **Fixed walks** `cells.around(point)` starts a fixed-order walk without random draws, reading each range in sorted order. Use it when a shader reads every item in the ranges, such as for a fluid's density or [point lights](/kit/lighting/#only-the-lights-that-reach). `cells.slotAt(index)` returns the original slot at a sorted index. A range spans `first` through `first + count - 1`. `cells.candidates()` returns both functions with fills, for lighting's `points.candidates`.
+- **What sorts** `sort` covers slots below `span()`, or below `capacity` without one, alive or not. Without `alive`, every slot holds an item, and the types refuse a `span`.
+- **Outside the box** An item outside the box belongs to the nearest cell. `sight` and box dimensions determine buffer sizes and shader constants. Changing either requires another grid.
+- **Two grids** Each grid reads its own buffers, so one kernel can walk two, say the fish and the pellets, with nothing piped.
+
+</Rules>
+
+Order matters when a walk stops early, such as after 16 neighbours. A walk that starts at the corner visits the −z, −y and −x cells before its own, so its first neighbours lie mostly on those sides, and a school steered by them drifts towards the corner. The grid's walk starts at its own range, then the ranges beside it along y, then along z, each from its middle cell and in a random direction, so no side comes first on average:
+
+<GridWalk mode="lean" />
+
+## Working in sorted order
+
+After `sort`, the live items sit at sorted indices `0` to `cells.count() - 1`, neighbours near each other. A kernel over sorted indices reads its own item with `cells.neighbourAt(k)`, and keeps values it computes, such as a fluid's pressure, at the same index. `cells.index(range, j)` gives a neighbour's sorted index, where a later kernel finds that value. `cells.dispatch` runs a kernel over the sorted items, in workgroups of `grid.WORKGROUP` threads, enough for the count:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import * as grid from '@typegpu/kit/grid';
+const root = await tgpu.init();
+const Seen = d.struct({ position: d.vec3f, velocity: d.vec3f });
+declare const cells: grid.Grid<typeof Seen>;
+declare const compute: import('typegpu').TgpuComputePass;
+const SIGHT = 1.5;
+// ---cut---
+const crowding = root.createBuffer(d.arrayOf(d.f32, 4096)).$usage('storage');
+const crowds = crowding.as('mutable');
+
+const crowd = tgpu.computeFn({
+  workgroupSize: [grid.WORKGROUP],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const k = gid.x;
+  if (k >= cells.count()) return;
+
+  const me = cells.neighbourAt(k);
+  let near = d.f32(0);
+  const walk = cells.around(me.position);
+  for (let r = d.u32(0); r < grid.RANGES; r++) {
+    const range = cells.range(walk, r);
+    for (let j = d.u32(0); j < range.count; j++) {
+      near += std.max(1 - std.distance(cells.neighbour(range, j).position, me.position) / SIGHT, 0);
+    }
+  }
+  crowds.$[k] = near; // read back as crowds.$[cells.index(range, j)]
+});
+const crowded = root.createComputePipeline({ compute: crowd });
+
+cells.sort(compute);
+compute.setPipeline(crowded);
+cells.dispatch(compute);
+```
+
+A sort places items in a new order, so values kept in sorted order last until the next `sort`. `dispatch` and `dispatchBlocks` throw until a `sort` has been recorded.
+
+## Blocks holding items
+
+A sort also lists the blocks of 4 × 4 × 4 cells that hold items. `cells.dispatchBlocks(pass)` runs one workgroup of the pass's pipeline per listed block, in any order, and workgroup `w` finds its block with `cells.block(w)`, counted in blocks. `cells.holds(block)` tests whether a block holds items; blocks outside the grid hold none. With `margin: n`, the sort also lists every block within `n` blocks of one holding items, once each, so a fluid's surface is rebuilt only in and around the water, as in [SPH sculpt](/examples/sph-sculpt/).
+
+## Choosing a binning
+
+`binning` sets how `sort` orders the items. Both give the same ranges and blocks.
+
+<Rules>
+
+- **Counting** `grid.counting`, the default, counts the items of each cell with atomics and reserves one range per line of cells along x holding items. Its cost follows the item count and the lines holding items. Lines, and the items of one cell, land in any order, so a step need not repeat exactly.
+- **Radix** `grid.radix` sorts every slot by key with a [sorter](/kit/sorter/), eight bits a pass. Its cost follows the capacity and the number of cells, and a sort repeats exactly. Use it when items fill most lines of the box, or when a step must repeat exactly.
+
+</Rules>
+
+A grid holds eight bytes per cell and `counting` adds eight more.
+
+## Following the camera
+
+The box's low corner is a uniform. `move(low)` writes it, so a grid that covers the ground around the player follows them across a larger world:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as grid from '@typegpu/kit/grid';
+const root = await tgpu.init();
+declare const cells: grid.Grid<d.Vec3f>;
+declare const player: d.v3f;
+// ---cut---
+const low = d.vec3f();
+
+frames.create(root, (frame) => {
+  low.x = player.x - 20; // a 40 × 40 box centred on the player
+  low.z = player.z - 20;
+  cells.move(low);
+
+  const compute = frame.encoder.beginComputePass();
+  cells.sort(compute); // into the moved box
+  compute.end();
+});
+```
+
+`move` uses a queue write. The sort and all walks in the next submit read the updated box. Sort again after a move before the next walk.
+
+## Setting up
+
+`@typegpu/kit/grid` uses the kit's required `@typegpu/noise` peer. [Getting started](/getting-started/#setting-up-a-project) shows the setup.
+
+## Limits
+
+- A walk costs three `randf` draws per item and step.
+- `position` and `itemOf` both read an item's position.
+- `create` throws when the capacity, 64 items a workgroup, needs more workgroups than the device's `maxComputeWorkgroupsPerDimension`, 65 535 at WebGPU's default.
+- A sort and `dispatchBlocks` run a workgroup a line or block holding items. With more of them than `maxComputeWorkgroupsPerDimension`, the device skips the dispatch.

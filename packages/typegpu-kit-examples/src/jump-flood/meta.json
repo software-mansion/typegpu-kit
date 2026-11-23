@@ -1,0 +1,8 @@
+{
+  "title": "Jump flood",
+  "category": "techniques",
+  "rarity": "common",
+  "description": "A territory map of 48 drifting towns, whose borders shift as they move. Jump flooding rebuilds the regions every frame in ten compute dispatches, each with its own step size, passed as immediates when the device supports them. The map is inked on paper with smooth borders, colour bands and town marks.",
+  "line": "A map of 48 drifting towns whose borders redraw every frame.",
+  "order": 33
+}

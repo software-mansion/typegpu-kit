@@ -1,0 +1,16 @@
+{
+  "title": "Quiver trees",
+  "category": "worlds",
+  "rarity": "common",
+  "description": "8 000 quiver trees and boulders on a gravel plain, all CC0 scans from Poly Haven, with 33 000 to 50 000 triangles per model. Up close they're full meshes. Past 40 m they become impostors, cards captured from the models, and the two blend over 8 m to hide the switch. Try the nearest, blended and parallax sampling modes to see how the cards hold up. Meshes and cards get the same lighting and shadows, and the gravel is ray-marched from a height map.",
+  "line": "8 000 scanned trees and boulders that turn into impostor cards past 40 m.",
+  "order": 9,
+  "card": {
+    "atlas": {
+      "views": 6,
+      "size": 64
+    }
+  },
+  "features": ["indirect-first-instance"],
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

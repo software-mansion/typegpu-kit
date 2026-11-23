@@ -1,0 +1,382 @@
+---
+import { categories } from 'typegpu-kit-examples';
+import { examples } from '../../examples/examples.ts';
+import { exampleHref } from './urls.ts';
+import { loadModules } from './load.ts';
+import { distinctOf, hrefOf } from './modules.ts';
+
+interface Props {
+  /** Example keys in display order. Defaults to every gallery example. */
+  keys?: readonly string[];
+  /** Card heading level. Set it one below the enclosing heading. Default 3. */
+  level?: 2 | 3;
+  /** Builds a card only when its Preview button is pressed, as on a phone. */
+  ask?: boolean;
+  /**
+   * Shows the first card large, beside the next four, each numbered with its category, as the
+   * galleries' highlights.
+   */
+  feature?: boolean;
+}
+
+const every = examples.map((example) => example.key);
+const { keys = every, level = 3, ask = false, feature = false } = Astro.props;
+const Title = level === 2 ? 'h2' : 'h3';
+const modules = await loadModules();
+
+const cards = keys.map((key, index) => {
+  const example = examples.find((candidate) => candidate.key === key);
+  if (!example) throw new Error(`No example ${key}.`);
+  const category = categories.find(({ name }) => name === example.category)?.title;
+  const number = String(index + 1).padStart(2, '0');
+  return { example, tags: distinctOf(modules, key, every), category, number };
+});
+---
+
+<div class="frame">
+<div
+  class="grid not-content"
+  data-live-grid
+  data-ask={ask ? '' : undefined}
+  data-feature={feature ? '' : undefined}
+>
+  {
+    cards.map(({ example, tags, category, number }) => (
+      <article
+        class="example"
+        data-live={example.key}
+        data-options={JSON.stringify(example.card ?? {})}
+      >
+        <div class="screen">
+          <canvas aria-hidden="true" />
+          <span class="wait" data-wait />
+          {/* The title's link serves the keyboard and screen readers; this one serves the pointer
+              where that link does not cover the picture, as on the featured card */}
+          <a class="open" href={exampleHref(example.key)} tabindex="-1" aria-hidden="true">
+            Open example<span class="arrow">→</span>
+          </a>
+        </div>
+        <div class="caption">
+          {feature && (
+            <span class="kicker" aria-hidden="true">
+              <span class="number">{number}</span>
+              {category}
+            </span>
+          )}
+          <Title class="title">
+            <a href={exampleHref(example.key)}>{example.title}</a>
+          </Title>
+          <p>{example.line}</p>
+          {tags.length > 0 && (
+            <ul aria-label="Modules used" data-pagefind-ignore>
+              {tags.map((module) => (
+                <li>
+                  <a class="pill" href={hrefOf(modules, module)}>
+                    {module.namespace}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </article>
+    ))
+  }
+</div>
+</div>
+
+<script>
+  import { mount } from './gallery.ts';
+
+  for (const grid of document.querySelectorAll<HTMLElement>('[data-live-grid]')) mount(grid);
+</script>
+
+<style>
+  .frame {
+    container-type: inline-size;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    gap: var(--s-6) var(--s-5);
+  }
+
+  /* The first card spans the row, then two columns and two rows beside four smaller ones */
+  .grid[data-feature] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid[data-feature] > .example:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .kicker {
+    display: flex;
+    gap: var(--s-2);
+    align-items: baseline;
+    color: var(--muted);
+    font: 400 var(--type-label) / 1.5 var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .number {
+    color: var(--link);
+  }
+
+  .grid[data-feature] > .example:first-child .title {
+    font: 500 22px/1.2 var(--font-sans);
+    letter-spacing: -0.01em;
+  }
+
+  .grid[data-feature] > .example:first-child .caption p {
+    max-width: 52ch;
+    font-size: 12px;
+  }
+
+  @container (min-width: 56rem) {
+    .grid[data-feature] {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .grid[data-feature] > .example:first-child {
+      grid-column: span 2;
+      grid-row: span 2;
+    }
+
+    .grid[data-feature] > .example:first-child .screen {
+      flex: 1;
+      aspect-ratio: auto;
+      min-height: 0;
+      border-bottom: 0;
+    }
+
+    /* The featured card's caption lies over its picture, on a fade of the ground */
+    .grid[data-feature] > .example:first-child .caption {
+      position: absolute;
+      inset: auto 0 0;
+      z-index: 1;
+      gap: var(--s-2);
+      padding: var(--s-7) var(--s-5) var(--s-5);
+      background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--ground) 94%, transparent) 30%,
+        transparent
+      );
+      pointer-events: none;
+    }
+
+    .grid[data-feature] > .example:first-child .caption :is(a, ul) {
+      pointer-events: auto;
+    }
+
+    .grid[data-feature] > .example:first-child .caption p {
+      color: var(--text-2);
+    }
+
+    .grid[data-feature] > .example:first-child .open {
+      top: var(--s-3);
+      right: var(--s-3);
+      bottom: auto;
+    }
+  }
+
+  /* On a phone, a row that snaps to each card, the next one peeking in */
+  @container (max-width: 34rem) {
+    .grid[data-feature] {
+      grid-template-columns: none;
+      grid-auto-flow: column;
+      grid-auto-columns: 86%;
+      gap: var(--s-3);
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scroll-snap-type: x mandatory;
+      scrollbar-width: none;
+    }
+
+    .grid[data-feature]::-webkit-scrollbar {
+      display: none;
+    }
+
+    .grid[data-feature] > .example {
+      scroll-snap-align: start;
+    }
+
+    .grid[data-feature] > .example:first-child {
+      grid-column: auto;
+    }
+  }
+
+  .example {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    overflow: hidden;
+    transition: border-color 0.15s ease;
+  }
+
+  .screen {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    overflow: hidden;
+    border-bottom: 1px solid var(--rule);
+    background: var(--ground);
+  }
+
+  .example:hover {
+    border-color: var(--accent);
+  }
+
+  .example:has(:focus-visible) {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Over the poster, on a ground of its own */
+  .wait {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    box-sizing: border-box;
+    max-width: calc(100% - 2 * var(--s-4));
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text);
+    font-size: 12px;
+    text-align: center;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    font-family: var(--font-mono);
+    translate: -50% -50%;
+  }
+
+  .wait:empty {
+    display: none;
+  }
+
+  .example:global(.live) .wait {
+    opacity: 0;
+  }
+
+  /* A playing preview points to its example: on hover, or always where there is none */
+  .open {
+    position: absolute;
+    right: var(--s-2);
+    bottom: var(--s-2);
+    z-index: 1;
+    display: flex;
+    gap: var(--s-1);
+    align-items: center;
+    padding: 3px var(--s-2);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--ground) 82%, transparent);
+    backdrop-filter: blur(6px);
+    color: var(--text);
+    font: 11px / 1.5 var(--font-mono);
+    text-decoration: none;
+    pointer-events: none;
+    opacity: 0;
+    translate: 0 4px;
+    transition:
+      opacity 0.25s ease,
+      translate 0.25s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .arrow {
+    transition: translate 0.15s ease;
+  }
+
+  .example:global(.live):is(:hover, :has(:focus-visible)) .open {
+    opacity: 1;
+    translate: 0 0;
+    border-color: var(--accent);
+    color: var(--link);
+    pointer-events: auto;
+  }
+
+  .example:global(.live):hover .arrow {
+    translate: 2px 0;
+  }
+
+  @media (hover: none) {
+    .example:global(.live) .open {
+      opacity: 1;
+      translate: 0 0;
+      transition-delay: 0.4s;
+      pointer-events: auto;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .open,
+    .arrow {
+      translate: none;
+      transition: none;
+    }
+  }
+
+  .caption {
+    padding: var(--s-3);
+    display: grid;
+    gap: var(--s-1);
+  }
+
+  .title {
+    margin: 0;
+    font: 500 12px/1.5 var(--font-mono);
+  }
+
+  .title a {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .example:hover .title a {
+    color: var(--link);
+  }
+
+  .title a:focus-visible {
+    outline: none;
+  }
+
+  /* The whole card opens the example. */
+  .title a::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+  }
+
+  .caption p {
+    margin: 0;
+    color: var(--muted);
+    font: 400 11px/1.6 var(--font-mono);
+  }
+
+  /* Over the link that covers the card, so each module opens its own page */
+  ul {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-1);
+    margin: var(--s-2) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+</style>

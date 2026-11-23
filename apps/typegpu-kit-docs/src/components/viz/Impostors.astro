@@ -1,0 +1,64 @@
+---
+import Choice from './Choice.astro';
+import { megabytesAt, SAMPLINGS, START, VIEWS } from './Impostors.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="impostors" data-megabytes={megabytesAt(1)}>
+  <p class="viz-title">Six tree meshes beside one impostor card</p>
+  <canvas aria-label="Tree drawn as meshes beside an impostor card on sunlit ground"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="sampling" label="reading" options={SAMPLINGS} value={START.sampling} />
+    <Slider name="views" min={VIEWS.min} max={VIEWS.max} value={START.views} />
+    <button data-action="atlas" aria-pressed="false">Show the atlas</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag to compare six tree meshes on the left with one impostor card on the right. Select <code>'nearest'</code> to see view changes, larger with fewer views; blended and parallax smooth transitions, and the atlas highlights sampled views.
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    cursor: grab;
+    touch-action: pan-y;
+  }
+</style>
+
+<script>
+  import type { impostors } from '@typegpu/kit';
+  import { action, choice, each, fail, live, slider, toggle } from './figure.ts';
+
+  each('impostors', (figure) => {
+    const megabytes = Number(figure.dataset.megabytes);
+    const failed = (error: unknown) => {
+      shown.destroy();
+      fail(figure, error);
+    };
+    const settle = (change: Promise<void> | undefined) => void change?.then(shown.redraw, failed);
+
+    const sampling = choice<impostors.Sampling>(figure, 'sampling', (value) => {
+      settle(shown.scene?.read(value));
+    });
+    const views = slider(
+      figure,
+      'views',
+      undefined,
+      (value) => `${value}, ${(value * value * megabytes).toPrecision(2)} MB`,
+    );
+    // Each capture compiles its pipelines, so it waits for the slider to settle
+    views.addEventListener('change', () => settle(shown.scene?.capture(views.valueAsNumber)));
+    const atlas = toggle(action(figure, 'atlas'), (on) => {
+      shown.update((scene) => scene.showAtlas(on));
+    });
+
+    const shown = live(figure, () => import('./Impostors.scene.ts'), undefined, {
+      grade: 1,
+      orbit: true,
+      ready(scene) {
+        settle(scene.read(sampling.value));
+        settle(scene.capture(views.valueAsNumber));
+        scene.showAtlas(atlas.on);
+      },
+    });
+  });
+</script>

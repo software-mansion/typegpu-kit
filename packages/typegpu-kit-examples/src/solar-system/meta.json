@@ -1,0 +1,9 @@
+{
+  "title": "Solar system",
+  "category": "data",
+  "rarity": "uncommon",
+  "description": "A low-poly sun, eight planets, an asteroid belt and two comets. Each planet's name arches over it and a band of facts circles it, written right into the 3D scene. A slow tour visits one planet at a time. Hover or tap one to pick it yourself, and its details type out. The belt is computed from time alone, so it stays exact at any orbit speed.",
+  "line": "Planets wrapped in their own facts. Tap one and its details type out.",
+  "order": 25,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

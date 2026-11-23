@@ -1,0 +1,9 @@
+{
+  "title": "Cloister",
+  "category": "worlds",
+  "rarity": "common",
+  "description": "A stone cloister at the blue hour, lit by the sky and eight flickering lanterns whose shadows fall through the arches. The model loads straight from Blender's glTF export with Draco compression and WebP textures, and texture transforms tile the paving and roofs and cut the carved panels from one atlas. Ambient occlusion baked on a second UV set darkens the sky light under the arches and along the walks. A setting turns it off or shows it alone. The model was made for the kit (CC0). Its stone, plaster, paving, lawn and props are CC0 scans from Poly Haven.",
+  "line": "A cloister at the blue hour, its lanterns casting shadows through the arches.",
+  "order": 5,
+  "hint": "drag to orbit · wheel to zoom"
+}

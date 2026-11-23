@@ -1,0 +1,9 @@
+{
+  "title": "Raymarch",
+  "category": "techniques",
+  "rarity": "common",
+  "description": "Five balls melt into a cube, ray-marched per pixel in a single pass. The shapes are a signed distance field built with @typegpu/sdf, and the colours come from Oklab through @typegpu/color. FXAA smooths the edges, and you can turn it off.",
+  "line": "Five balls melting into a cube, ray-marched in one pass.",
+  "order": 31,
+  "hint": "drag to orbit · wheel to zoom"
+}

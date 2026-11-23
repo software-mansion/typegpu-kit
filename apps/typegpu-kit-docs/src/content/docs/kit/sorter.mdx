@@ -1,0 +1,59 @@
+---
+title: Sorter
+description: Sort a buffer of keys on the GPU, carrying a payload such as indices along with them.
+modules: [kit/sorter]
+---
+
+import RadixPasses from '../../../components/viz/RadixPasses.astro';
+
+Blended splats and particles draw back to front, so their order changes whenever the camera moves. A list drawn by depth, or rows grouped by a cell or a material, needs the same thing: keys a kernel wrote, sorted, with the index of each key's row beside it. `sorter.create` sorts a buffer of keys in a compute pass of your frame, and moves a payload buffer with them. Keys that compare equal keep their order.
+
+<RadixPasses />
+
+```ts twoslash
+import { d, tgpu, type TgpuComputePipeline } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const depthPipeline: TgpuComputePipeline;
+// ---cut---
+import { sorter } from '@typegpu/kit';
+
+const COUNT = 65_536;
+const depths = root.createBuffer(d.arrayOf(d.f32, COUNT)).$usage('storage');
+const order = root.createBuffer(d.arrayOf(d.u32, COUNT)).$usage('storage');
+
+const backToFront = sorter.create(root, depths, {
+  values: order,
+  range: [0, 1],
+  keyBits: 16, // two passes
+  direction: 'descending',
+});
+
+frames.create(root, (frame) => {
+  const compute = frame.encoder.beginComputePass();
+  compute.setPipeline(depthPipeline); // writes each splat's depth and its index
+  compute.dispatchWorkgroups(COUNT / 64);
+  backToFront.sort(compute);
+  compute.end();
+  // ... draw splat `order[i]` as instance i
+});
+```
+
+## Keys
+
+Keys are `u32`, `i32` or `f32`. The sort takes eight bits of the key a pass, lowest first, so `keyBits` sets its cost:
+
+- Integer keys within a known `range` sort in the bits `max - min` needs. Ids below 1 000 take 10 bits, two passes.
+- `f32` keys with a `range` sort in `2^keyBits` even steps. Keys within one step keep their order, so 16 bits suffice for depths on a screen.
+- Without `range`, a key sorts in all 32 bits, four passes. Negative `i32` and `f32` keys sort below positive ones.
+
+## Payload and outputs
+
+`values` moves with the keys, element for element. It is usually each key's index, which a later kernel or draw reads its row through. The sort runs in place by default. With `out`, it writes the sorted keys and payload to other buffers and leaves `keys` and `values` as they were; this also saves the copy back that an odd number of passes ends with in place.
+
+`sort(pass)` records a count, a scan and a scatter per eight bits, and sets its own pipelines and bind groups. Record it in a compute pass after the kernel that writes the keys.
+
+## Limits
+
+- Every sort covers the whole buffer. Give unused slots a key that sorts last, as [`grid.radix`](/kit/grid/#choosing-a-binning) does for empty slots.
+- A sorter holds a second copy of the keys and payload to sort through, and 1 KB of counts per 2 048 keys.

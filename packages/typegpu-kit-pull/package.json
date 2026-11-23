@@ -1,0 +1,27 @@
+{
+  "name": "typegpu-kit-pull",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The pull's box, card, springs and rarities, shared by the docs site and the native app.",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "lines": "node scripts/lines.ts",
+    "test:types": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@typegpu/noise": "catalog:",
+    "typegpu": "catalog:"
+  },
+  "devDependencies": {
+    "@typegpu/kit": "workspace:*",
+    "@types/node": "catalog:types",
+    "@webgpu/types": "catalog:types",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:",
+    "vitest": "catalog:test",
+    "webgpu": "catalog:test"
+  }
+}

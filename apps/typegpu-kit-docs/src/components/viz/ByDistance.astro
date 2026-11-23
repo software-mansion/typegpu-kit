@@ -1,0 +1,35 @@
+---
+import { FADES, REACH } from './ByDistance.scene.ts';
+import Choice from './Choice.astro';
+
+const fades = FADES.map((fade) => ({ value: fade, label: `${fade} m` }));
+---
+
+<figure class="viz" data-viz="by-distance">
+  <p class="viz-title">Nearby trees draw as spheres, distant ones as boxes</p>
+  <canvas aria-label="Trees seen from above, drawn as nearby spheres and distant boxes around a moving eye"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="fade" label="fade" options={fades} value={2} />
+    <button data-action="play">Pause</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Change the fade around {REACH} m from the bright eye marker. One renderer draws nearby spheres and another draws distant boxes, splitting pixels across the fade and culling from the view above.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, choice, each, live } from './figure.ts';
+  import type { Fade } from './ByDistance.scene.ts';
+
+  each('by-distance', (figure) => {
+    const fade = choice(figure, 'fade', (value) => {
+      shown.update((scene) => scene.fade(Number(value) as Fade));
+    });
+    const shown = live(
+      figure,
+      () => import('./ByDistance.scene.ts'),
+      () => ({ fade: Number(fade.value) as Fade }),
+      { animate: true, grade: 1, play: action(figure, 'play') },
+    );
+  });
+</script>

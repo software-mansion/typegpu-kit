@@ -1,0 +1,129 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+import { LONGEST, SCREENS, START } from './Trails.scene.ts';
+
+const screens = SCREENS.map((hz) => ({ value: hz, label: `${hz} Hz` }));
+---
+
+<figure class="viz" data-viz="trails">
+  <p class="viz-title">Four kernel-pushed trails and one you draw</p>
+  <canvas class="viz-bleed" aria-label="Four orbiting trails and a pointer-drawn line"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <Choice
+      name="push"
+      label="push once a"
+      options={[
+        { value: 'step', label: 'fixed step' },
+        { value: 'frame', label: 'frame' },
+      ]}
+      value={START.push}
+    />
+    <Choice name="screen" label="on a screen of" options={screens} value={START.screen} />
+    <Slider name="length" min={8} max={LONGEST} step={8} value={START.length} />
+    <dl class="viz-readout">
+      <div><dt>a full trail</dt><dd data-read="seconds">0.80 s</dd></div>
+    </dl>
+    <div class="viz-settings">
+      <span>stroke</span>
+      <Slider name="width" min={0.05} max={1} step={0.05} value={START.width} />
+      <Choice name="join" label="join" options={['round', 'miter']} value={START.join} />
+      <Choice name="cap" label="caps" options={['round', 'arrow', 'butt']} value={START.cap} />
+      <Choice name="blend" label="blend" options={['add', 'over']} value={START.blend} />
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag to write a whole trail, or compare the four kernel-pushed orbits. Fixed-step pushes keep a trail's duration on every display; per-frame pushes shorten it at higher rates.
+  </figcaption>
+</figure>
+
+<script>
+  import type { connect as Connect } from '../../examples/host.ts';
+  import { action, choice, each, live, slider } from './figure.ts';
+  import type { Blend, Cap, Join, Push, TrailsFigure } from './Trails.scene.ts';
+
+  each('trails', (figure) => {
+    const canvas = figure.querySelector('canvas')!;
+    const seconds = figure.querySelector<HTMLElement>('[data-read=seconds]')!;
+    let connect: typeof Connect;
+
+    const read = (scene: TrailsFigure) => (seconds.textContent = `${scene.seconds.toFixed(2)} s`);
+    // A new look compiles new pipelines, so a scene takes one only once the reader picks it
+    let picked = false;
+    const remake = (scene: TrailsFigure) => {
+      scene.remake({
+        length: length.valueAsNumber,
+        join: join.value,
+        cap: cap.value,
+        blend: blend.value,
+      });
+      read(scene);
+    };
+    const pick = () => {
+      picked = true;
+      shown.update(remake);
+    };
+    // A new length compiles new pipelines, so it waits for the slider to be let go
+    const length = slider(figure, 'length');
+    length.addEventListener('change', pick);
+    const join = choice<Join>(figure, 'join', pick);
+    const cap = choice<Cap>(figure, 'cap', pick);
+    const blend = choice<Blend>(figure, 'blend', pick);
+
+    const width = slider(
+      figure,
+      'width',
+      (value) => {
+        shown.update((scene) => scene.widen(value));
+      },
+      (value) => value.toFixed(2),
+    );
+    const pushEvery = (scene: TrailsFigure) => {
+      scene.pushEvery(push.value, Number(screen.value));
+      read(scene);
+    };
+    const push = choice<Push>(figure, 'push', () => shown.update(pushEvery));
+    const screen = choice(figure, 'screen', () => shown.update(pushEvery));
+
+    const shown = live(
+      figure,
+      async () => {
+        const [scene, host] = await Promise.all([
+          import('./Trails.scene.ts'),
+          import('../../examples/host.ts'),
+        ]);
+        connect = host.connect;
+        return scene;
+      },
+      undefined,
+      {
+        animate: true,
+        grade: 1,
+        play: action(figure, 'play'),
+        ready(scene) {
+          if (picked) remake(scene);
+          scene.widen(width.valueAsNumber);
+          pushEvery(scene);
+          return connect(canvas, scene, { page: true, redraw: () => shown.redraw() });
+        },
+      },
+    );
+  });
+</script>
+
+<style>
+  canvas.viz-bleed {
+    height: clamp(240px, 32vw, 360px);
+    cursor: crosshair;
+  }
+
+  figure .viz-controls > .viz-readout {
+    margin-left: auto;
+  }
+
+  .viz-settings > span {
+    flex-basis: 100%;
+    color: var(--text-2);
+  }
+</style>

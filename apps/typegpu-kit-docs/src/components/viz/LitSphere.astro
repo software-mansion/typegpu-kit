@@ -1,0 +1,159 @@
+---
+import Choice from './Choice.astro';
+import { PRESETS, REFLECTS } from './LitSphere.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="lit-sphere">
+  <p class="viz-title">Four material presets under one sun</p>
+  <div class="viz-screen">
+    <canvas aria-label={`A sphere of each preset: ${PRESETS.join(', ')}`}></canvas>
+    <ul class="spheres" style={`--presets: ${PRESETS.length}`}>
+      {
+        PRESETS.map((preset) => (
+          <li>
+            <span class="sphere" />
+            <span class="preset">{preset}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="reflect" options={REFLECTS} value={REFLECTS[0]} />
+    <Slider inline name="roughness" min={0.05} max={1} step={0.05} value={0.35} />
+    <Slider inline name="sun" min={-150} max={150} step={5} value={-40} unit="°" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Lower roughness to shrink and brighten highlights. Select <code>lambert</code> to remove highlights and give even metals diffuse lighting.
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    border-radius: 0;
+    pointer-events: none;
+  }
+
+  .spheres {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(var(--presets), 1fr);
+    gap: var(--s-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .spheres li {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    align-items: center;
+    margin: 0;
+  }
+
+  .sphere {
+    width: min(100%, 9rem);
+    aspect-ratio: 1;
+  }
+
+  .preset {
+    position: relative;
+    padding: 1px var(--s-1);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--text-2);
+    font: var(--type-label) / 1.5 var(--font-mono);
+  }
+
+  .preset::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    height: var(--s-2);
+    border-left: 1px solid var(--rule-strong);
+  }
+
+  .preset::after {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + var(--s-2) - 1px);
+    left: calc(50% - 1px);
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--rule-strong);
+  }
+
+  /* Without a scene, the controls have nothing to change. */
+  .viz-controls:has(input:disabled) {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  @media (max-width: 30rem) {
+    .spheres {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+</style>
+
+<script>
+  import { choice, each, live, slider } from './figure.ts';
+  import type { Reflect } from './LitSphere.scene.ts';
+
+  each('lit-sphere', (figure) => {
+    const canvas = figure.querySelector('canvas')!;
+    const squares = [...figure.querySelectorAll<HTMLElement>('.sphere')];
+
+    const layout = () => {
+      const area = canvas.getBoundingClientRect();
+      if (area.width === 0 || area.height === 0) return;
+
+      shown.update((scene) =>
+        scene.layout(
+          squares.map((square) => {
+            const { left, top, width, height } = square.getBoundingClientRect();
+            return [
+              (left - area.left) / area.width,
+              (top - area.top) / area.height,
+              width / area.width,
+              height / area.height,
+            ] as const;
+          }),
+        ),
+      );
+    };
+
+    const update = () => {
+      shown.update((scene) =>
+        scene.set(roughness.valueAsNumber, (sun.valueAsNumber * Math.PI) / 180),
+      );
+    };
+    const reflect = choice<Reflect>(figure, 'reflect', (chosen) => {
+      shown.update((scene) => scene.reflect(chosen));
+    });
+    const roughness = slider(figure, 'roughness', update);
+    const sun = slider(figure, 'sun', update);
+
+    const shown = live(figure, () => import('./LitSphere.scene.ts'), undefined, {
+      grade: 1,
+      ready(scene) {
+        scene.reflect(reflect.value);
+        update();
+        layout();
+      },
+    });
+    new ResizeObserver(layout).observe(canvas);
+    // `live` hides the canvas while the figure cannot draw, which hides the labelled squares too
+    new MutationObserver(() => {
+      for (const input of figure.querySelectorAll<HTMLInputElement>('.viz-controls input'))
+        input.disabled = canvas.hasAttribute('hidden');
+    }).observe(canvas, { attributeFilter: ['hidden'] });
+  });
+</script>

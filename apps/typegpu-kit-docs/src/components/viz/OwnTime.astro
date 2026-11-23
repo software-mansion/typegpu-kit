@@ -1,0 +1,86 @@
+---
+import Choice from './Choice.astro';
+
+const MODES = [
+  { value: 'own', label: 'Own time' },
+  { value: 'span', label: 'Whole spans' },
+];
+---
+
+<figure class="viz" data-viz="own-time">
+  <p class="viz-title">GPU pass spans and the time charged to each pass</p>
+  <svg viewBox="0 0 640 300" role="img" aria-label="GPU pass intervals and time charged to each pass"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="mode" options={MODES} value="own" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Switch between own time and full timestamp spans to see overlapping passes. The panel charges only time not covered by earlier passes; bloom spans can begin with the scene while waiting for its output.
+  </figcaption>
+</figure>
+
+<script>
+  import { choice, each } from './figure.ts';
+  import { createProgram } from './OwnTime.program.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  const { passes, own } = createProgram();
+  const ROW = 17;
+  const TOP = 22;
+  const AXIS = 2.1;
+  const colorOf = (name: string) => name.startsWith('down') ? 'var(--viz-c)' : name.startsWith('up') ? 'var(--viz-d)' : name === 'scene' ? 'var(--viz-b)' : name === 'shadow' ? 'var(--viz-e)' : 'var(--viz-f)';
+
+  each('own-time', (root) => {
+    const figure = root.querySelector('svg')!;
+    const modes = choice<'own' | 'span'>(root, 'mode', () => draw());
+
+    const draw = fitWidth(figure, (width) => {
+      const mode = modes.value;
+      const label = 56;
+      const number = 52;
+      const left = label;
+      const right = width - number;
+      const x = (ms: number) => left + (ms / AXIS) * (right - left);
+      const bottom = TOP + passes.length * ROW;
+
+      for (const ms of [0, 0.5, 1, 1.5, 2]) {
+        svg('line', { x1: x(ms), x2: x(ms), y1: TOP - 4, y2: bottom, stroke: 'var(--viz-line)', 'stroke-opacity': 0.35 }, figure);
+        text(figure, x(ms), TOP - 8, ms === 0 ? '0 ms' : String(ms), { 'text-anchor': 'middle' });
+      }
+
+      passes.forEach(({ name, start, end }, i) => {
+        const y = TOP + i * ROW + 3;
+        const height = ROW - 6;
+        const spans = mode === 'span';
+
+        text(figure, 0, y + height - 1, name, { fill: colorOf(name) });
+        svg('rect', {
+          x: x(start),
+          y,
+          width: x(end) - x(start),
+          height,
+          rx: 2,
+          fill: spans ? stipple(figure, colorOf(name), 0.5) : 'none',
+          'fill-opacity': 0.35,
+          stroke: 'var(--viz-line)',
+          'stroke-opacity': spans ? 0 : 0.8,
+        }, figure);
+
+        if (!spans) {
+          svg('rect', { x: x(end - own[i]), y, width: Math.max(1, x(end) - x(end - own[i])), height, rx: 2, fill: stipple(figure, colorOf(name), 0.5) }, figure);
+        }
+
+        const ms = spans ? end - start : own[i];
+        text(figure, width, y + height - 1, ms.toFixed(2), { 'text-anchor': 'end' });
+      });
+
+      const total = mode === 'span' ? passes.reduce((sum, { start, end }) => sum + end - start, 0) : own.reduce((sum, ms) => sum + ms, 0);
+      svg('line', { x1: right + 8, x2: width, y1: bottom + 6, y2: bottom + 6, stroke: 'var(--viz-line)' }, figure);
+      text(figure, width, bottom + 22, `${total.toFixed(2)} ms`, { 'text-anchor': 'end', class: 'strong' });
+      text(figure, 0, bottom + 22, mode === 'span' ? 'sum of pass spans' : 'total GPU busy time', { class: 'strong' });
+
+      return bottom + 28;
+    }, 320);
+
+    draw();
+  });
+</script>

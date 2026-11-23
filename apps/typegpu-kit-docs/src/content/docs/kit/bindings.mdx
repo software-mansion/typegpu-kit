@@ -1,0 +1,182 @@
+---
+title: Shared bindings
+description: Put the buffers and textures that several modules bind into one bind group layout you own, and swap any of them without rebuilding a pipeline.
+modules: [kit/bindings]
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+import BindGroups from '../../../components/viz/BindGroups.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A fixed resource such as `root.createUniform(…)` goes in the pipeline's automatic bind group. Replacing that resource requires another pipeline, even for a shadow map resized by a quality setting. A `tgpu.bindGroupLayout` lets you swap resources, but uses one of each pipeline's 4 bind groups.
+
+<Hidden card="cloister">
+  <BindGroups />
+</Hidden>
+
+With `bindings`, a module declares what its shaders read without owning a group. Your app combines module bindings and its own bindings in one layout, then sets one group per pass. Resources in that layout can change without rebuilding pipelines.
+
+```ts twoslash
+import { d, std, tgpu, type TgpuComputeFn } from 'typegpu';
+import { frames } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const kernel: TgpuComputeFn;
+const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+const grid = (size: number) =>
+  root
+    .createTexture({ size: [size, size, size], dimension: '3d', format: 'r8unorm' })
+    .$usage('sampled');
+// ---cut---
+import { bindings } from '@typegpu/kit';
+
+// A fog module declares what its shaders read, beside them
+const volume = bindings.layout({
+  density: { texture: d.texture3d(d.f32) },
+  smooth: { sampler: 'filtering' },
+});
+const fogAt = (p: d.v3f) => {
+  'use gpu';
+  return std.textureSampleLevel(volume.$.density, volume.$.smooth, p, 0).x;
+};
+const density = grid(32);
+const fog = volume.bind({ density, smooth });
+
+// The app takes the fog's part, and any others, into one layout it owns
+const shared = bindings.share(root, { fog });
+const pipeline = root.pipe(fog.inject()).createComputePipeline({ compute: kernel });
+
+frames.create(root, ({ encoder }) => {
+  const pass = encoder.beginComputePass();
+  pass.setBindGroup(shared.layout, shared.group());
+  pass.setPipeline(pipeline);
+  pass.dispatchWorkgroups(64);
+  pass.end();
+});
+
+fog.replace({ density: grid(64) }); // the next group binds it, with no new pipelines
+density.destroy();
+```
+
+## Declaring bindings
+
+<Rules>
+
+- **The layout** `bindings.layout(entries)` takes `tgpu.bindGroupLayout`'s entries, and shaders read its `$`. Define it at module level, beside the shaders.
+- **The part** `layout.bind(resources)` gives a **part**. A module makes its part in `create`, hands it out as `part`, and pipes `part.inject()` into its own `inject()`.
+- **Per layout** A pipeline reads one part per layout, so two fog volumes in one shader need two layouts.
+- **Drawings** A drawing added to a description reads a part through its own `inject()`, as in [buffers and textures of your own](/kit/passes/#buffers-and-textures-of-your-own).
+- **Unshared parts** Until an app shares it, a part uses fixed bindings without a separate group. These require TypeGPU resources. A raw `GPUBuffer` throws when the pipeline resolves. `replace` throws once a pipeline holds fixed resources, so a part whose resources change [asks for its share](#resources-that-change).
+
+</Rules>
+
+## Sharing
+
+`bindings.share(root, parts)` combines parts in one app-owned layout. Each entry uses its part's key as a prefix, as in `fog_density`, `fog_smooth` and `shadow_map`. A [description of passes](/kit/passes/#buffers-and-textures-of-your-own) given parts, as `{ shared: { fog } }`, shares them itself and sets the group in every pass it begins.
+
+<Rules>
+
+- **Before pipelines** Call it before the pipelines that read the parts build. It checks every part before taking any, and throws for one that already has an owner or that a pipeline holds as fixed bindings.
+- **Fills** A shared part's own `inject()` reads from the shared layout. `shared.inject()` fills every part, for one with no fill of its own like [the noise cache](#parts-from-other-packages).
+- **In a pass** `pass.setBindGroup(shared.layout, shared.group())` covers every pipeline in the pass.
+- **In a description** Give each description that reads the parts `{ shared }`. A dispatch or draw without the group throws `Missing bind groups for layouts`.
+- **Replacing** `part.replace({ density: bigger })` swaps resources for the next `shared.group()`, with no new pipelines.
+- **New groups** `shared.group()` creates a group only when a part binds a new resource: after a `replace` that changes one, or a change in the record a part reads. A steady frame allocates nothing. Call it after a swap to allocate the group before the next frame.
+- **Old resources** Call `replace` between frames, then destroy the old resource. Already submitted work finishes with it. A later pass using the destroyed resource fails at submit.
+
+</Rules>
+
+## Resources that change
+
+A pipeline that holds a part as fixed bindings keeps the resources it was built with. A part whose resources change while the program runs, such as a texture that follows the canvas, needs its share before that pipeline builds. Give it `unshared`, a message naming the share to add, and a pipeline that reads the part without one throws it as it builds, at the first frame or warm-up rather than at the first change:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { bindings } from '@typegpu/kit';
+const root = await tgpu.init();
+const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+const grid = (size: number) =>
+  root
+    .createTexture({ size: [size, size, size], dimension: '3d', format: 'r8unorm' })
+    .$usage('sampled');
+const volume = bindings.layout({
+  density: { texture: d.texture3d(d.f32) },
+  smooth: { sampler: 'filtering' },
+});
+// ---cut---
+const fog = volume.bind(
+  { density: grid(32), smooth },
+  { unshared: 'The fog grows: `bindings.share(root, { fog })` before the pipelines that read it.' },
+);
+```
+
+- [Ambient occlusion](/kit/ao/#resizing) makes its part this way, since a new depth size replaces its texture.
+- A shadow replaces its map only when you call its `resize`. An unshared [shadow](/kit/lighting/#resizing-a-shadow-map) works until then, and `resize` throws at that call before it changes anything.
+
+## Parts from other packages
+
+Any object with these members can be a part, including an object from a package that doesn't depend on TypeGPU Kit:
+
+| Member             |                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `entries`          | The layout entries, as `tgpu.bindGroupLayout` takes them.                        |
+| `resources`        | What to bind now, read at each `shared.group()` and compared entry by entry.     |
+| `inject(values?)`  | Fills the part's shaders from `values`, the `$` of a layout holding its entries. |
+| `check?()`         | Throws if `share` can't take the part now, such as one with an owner.            |
+| `ownedBy?(values)` | Called by `share`, so the part's own fill can follow its owner.                  |
+
+`@typegpu/noise`'s dynamic Perlin cache can join through an adapter:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { bindings } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+import { perlin3d } from '@typegpu/noise';
+
+const config = perlin3d.dynamicCacheConfig();
+const cache = config.instance(root, d.vec3u(16, 16, 16));
+
+const noise: bindings.Part<typeof config.layout> = {
+  entries: config.layout,
+  get resources() {
+    return cache.bindings;
+  },
+  inject(values) {
+    if (!values) throw new Error('The noise cache has no group of its own; share it.');
+    return config.inject(values);
+  },
+};
+
+const shared = bindings.share(root, { noise });
+```
+
+Resize with `cache.size = next`. The next `shared.group()` binds the resized cache.
+
+## Counting groups
+
+A pipeline with more groups than the device's `maxBindGroups`, 4 on every device, fails with an error such as `bindGroupLayoutCount (5) is larger than the maximum allowed (4)`. A [census](/kit/pipelines/#census) counts each pipeline's groups, including the automatic group.
+
+A description of passes uses up to 3 of them: the automatic group, the shared group and, drawn into layers, the layer's group. That leaves one for a layout a drawing binds per draw.
+
+## What it leaves alone
+
+<Rules>
+
+- **Binding counts** A shared layout shows each entry to every stage that can use it, so a pipeline that reads one part counts every part. The automatic group shows a resource only to the stages that read it, so moving one into a shared layout can raise a stage's count. [`pipelines.compile` names the bindings](/kit/pipelines/#bindings-per-stage) of a pipeline that goes over.
+- **Per-draw bindings** Per-draw bindings, such as a mesh's textures, keep their own layout.
+- **Module groups** Groups owned by one module stay separate. The [neighbour grid](/kit/grid/)'s sort uses 4 groups of its own.
+
+</Rules>
+
+## Limits
+
+- A pipeline that reads a shared part and runs outside the app's passes gets no group, and throws `Missing bind groups for layouts`.
+- `shared.layout` is typed loosely, without its entries' names.
+- `shared.group()` checks a part that `replace` changed with one number. It checks every other part by the identity of every entry, per call, including one that still reads the record `bind` took.
+
+<LinkCard
+  title="Resizing the shadow"
+  description="Share the shadow map's bindings to resize it without rebuilding pipelines."
+  href="/kit/lighting/#resizing-a-shadow-map"
+/>

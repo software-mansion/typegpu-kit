@@ -1,0 +1,101 @@
+---
+---
+
+<figure class="viz" data-viz="domino-rewind">
+  <p class="viz-title">Dominoes rise from last to first, slowing toward the first</p>
+  <svg viewBox="0 0 640 300" role="img" aria-label="Dominoes rising from last to first, slowing toward the first"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Play the rewind, with domino order across the plot and seconds since <code>rise()</code> downward. Each bar spans <code>LIFT</code> seconds, starting at <code>rewound</code>; the wave travels from last to first and slows nearly fivefold, compared with the dashed constant-speed line.
+  </figcaption>
+</figure>
+
+<script>
+  import { HEIGHT, THICKNESS } from 'typegpu-kit-examples/dominoes/layout.ts';
+  import { LIFT, RISE, rewound } from 'typegpu-kit-examples/dominoes/topple.ts';
+  import { smooth } from '../home/geometry.ts';
+  import { action, animation, each } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  /** Dominoes drawn along the run, and the angle a fallen one lies at. */
+  const COUNT = 40;
+  const LYING = (76 * Math.PI) / 180;
+  const END = RISE + LIFT;
+
+  /** When the domino `order` of the way along the run starts to rise. */
+  const begins = (order: number) => rewound(1 - order) * RISE;
+
+  each('domino-rewind', (root) => {
+    const figure = root.querySelector('svg')!;
+    let time = 1.5;
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const left = 52;
+        const right = width - 16;
+        const along = (order: number) => left + order * (right - left);
+
+        const gap = (right - left) / (COUNT - 1);
+        const scale = Math.min(gap / 2.2, 7);
+        const ground = HEIGHT * scale + 14;
+        svg('line', { x1: left - 10, x2: right + 10, y1: ground, y2: ground, stroke: 'var(--viz-line)' }, figure);
+        for (let i = 0; i < COUNT; i++) {
+          const order = i / (COUNT - 1);
+          const t = (time - begins(order)) / LIFT;
+          const angle = LYING * (1 - smooth(t));
+          const px = along(order) + (THICKNESS / 2) * scale;
+          const corner = (x: number, y: number) =>
+            `${px + (x * Math.cos(angle) + y * Math.sin(angle)) * scale},${ground - (-x * Math.sin(angle) + y * Math.cos(angle)) * scale}`;
+          const moving = t > 0 && t < 1;
+          svg('polygon', {
+            points: [corner(-THICKNESS, 0), corner(0, 0), corner(0, HEIGHT), corner(-THICKNESS, HEIGHT)].join(' '),
+            fill: moving ? stipple(figure, 'var(--viz-accent)', 0.5) : t >= 1 ? stipple(figure, 'var(--viz-d)', 0.25) : stipple(figure), 'fill-opacity': moving ? 0.35 : 1,
+            stroke: moving ? 'var(--viz-accent)' : t >= 1 ? 'var(--viz-d)' : 'var(--viz-muted)',
+          }, figure);
+        }
+
+        const top = ground + 34;
+        const tall = 190;
+        const y = (seconds: number) => top + (seconds / END) * tall;
+        svg('path', { d: `M${left},${top}V${top + tall}`, stroke: 'var(--viz-line)' }, figure);
+        for (const seconds of [0, 1, 2, 3, 4, 5]) {
+          text(figure, left - 8, y(seconds) + 4, `${seconds} s`, { 'text-anchor': 'end' });
+        }
+        text(figure, along(0), ground + 15, 'first', { 'text-anchor': 'start', class: 'strong' });
+        text(figure, along(1), ground + 15, 'last', { 'text-anchor': 'end', class: 'strong' });
+
+        const steady: string[] = [];
+        for (let i = 0; i <= 64; i++) {
+          const order = i / 64;
+          steady.push(`${along(order)},${y((1 - order) * RISE)}`);
+        }
+        svg('polyline', { points: steady.join(' '), fill: 'none', stroke: 'var(--viz-b)', 'stroke-dasharray': '3 3' }, figure);
+        for (let i = 0; i < COUNT; i++) {
+          const order = i / (COUNT - 1);
+          const begin = begins(order);
+          const x = along(order);
+          svg('rect', {
+            x: x - 1.5, y: y(begin), width: 3, height: y(begin + LIFT) - y(begin), rx: 1.5,
+            fill: time >= begin + LIFT ? stipple(figure, 'var(--viz-d)', 0.5) : time >= begin ? stipple(figure, 'var(--viz-accent)', 0.5) : 'var(--viz-line)',
+          }, figure);
+        }
+        svg('line', { x1: left, x2: right, y1: y(time), y2: y(time), stroke: 'var(--text)', 'stroke-opacity': 0.5 }, figure);
+        return top + tall + 12;
+      },
+      320,
+    );
+
+    const shown = animation(root, {
+      step(dt) {
+        time += dt;
+        if (time > END + 0.8) time = -0.4;
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+    shown.redraw();
+  });
+</script>

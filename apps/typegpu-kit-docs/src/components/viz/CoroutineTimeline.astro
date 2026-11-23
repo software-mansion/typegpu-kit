@@ -1,0 +1,170 @@
+---
+---
+
+<figure class="viz" data-viz="coroutine-timeline">
+  <p class="viz-title">Four coroutines run and wait across 36 frames</p>
+  <div class="viz-wide"><svg viewBox="0 0 640 236" role="img" aria-label="Four coroutines running or waiting across 36 frames"></svg></div>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="cancel">game.cancel()</button>
+    <button data-action="destroy">scheduler.destroy()</button>
+    <button data-action="restart">Restart</button>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Cancel <code>game</code> while it waits on <code>pick</code> to see which <code>finally</code> blocks run and whether the read completes. Each block marks a running coroutine; lines show waits.
+    <span class="more">{' '}Scroll the timeline sideways to see the later frames.</span>
+  </figcaption>
+</figure>
+
+<style>
+  figure {
+    container-type: inline-size;
+  }
+
+  .viz-wide > svg {
+    min-width: 40rem;
+  }
+
+  .more {
+    display: none;
+  }
+
+  /* Narrower than the drawing, the timeline scrolls. */
+  @container (width < 40rem) {
+    .more {
+      display: inline;
+    }
+  }
+</style>
+
+<script>
+  import { createProgram, FRAMES, LANES, type Stop } from './CoroutineTimeline.program.ts';
+  import { action, animation, each, reducedMotion } from './figure.ts';
+  import { stipple, svg, text } from './svg.ts';
+
+  const LEFT = 78;
+  const COLUMN = (640 - LEFT) / FRAMES;
+  const TOP = 30;
+  const LANE = 46;
+
+  const x = (frame: number) => LEFT + frame * COLUMN;
+
+  each('coroutine-timeline', (root) => {
+    const figure = root.querySelector('svg')!;
+    const reduced = reducedMotion();
+
+    let record = createProgram();
+    let shown = reduced ? FRAMES : 1;
+    let stopped: number | undefined;
+    let stopKind: Stop = 'cancel';
+
+    const draw = () => {
+      figure.replaceChildren();
+
+      text(figure, 0, 12, 'frame', { class: 'strong' });
+      for (let f = 0; f < FRAMES; f += 4) text(figure, x(f) + COLUMN / 2, 12, String(f), { 'text-anchor': 'middle' });
+
+      const bottom = TOP + LANES.length * LANE;
+
+      if (stopped !== undefined && stopped < shown) {
+        svg('line', {
+          x1: x(stopped), x2: x(stopped), y1: 18, y2: bottom - 8,
+          stroke: 'var(--viz-e)', 'stroke-dasharray': '3 3',
+        }, figure);
+
+        const label = stopKind === 'cancel' ? 'game.cancel()' : 'scheduler.destroy()';
+        text(figure, x(stopped) + 4, bottom + 4, label, { style: 'fill: var(--viz-e)' });
+      }
+
+      LANES.forEach((name, l) => {
+        const middle = TOP + l * LANE + 9;
+        const color = ['var(--viz-b)', 'var(--viz-c)', 'var(--viz-d)', 'var(--viz-e)'][l];
+        text(figure, 0, middle + 4, name, { fill: color });
+
+        const runs = record.runs[l];
+        const first = runs.findIndex((count) => count > 0);
+        const last = Math.min(record.ends[l], shown - 1);
+
+        if (first >= 0 && first <= last) {
+          svg('line', {
+            x1: x(first), x2: x(last + 1), y1: middle, y2: middle,
+            stroke: 'var(--viz-line)', 'stroke-width': 1.5,
+          }, figure);
+        }
+
+        for (let f = 0; f < shown; f++) {
+          const count = runs[f];
+          if (count === 0) continue;
+
+          const width = (COLUMN - 2) / count;
+          for (let c = 0; c < count; c++) {
+            svg('rect', {
+              x: x(f) + 1 + c * width, y: middle - 7, width: Math.max(width - 1, 1), height: 14, rx: 2,
+              fill: stipple(figure, color, 0.5),
+            }, figure);
+          }
+        }
+
+        let previous = '';
+        for (const wait of record.waits) {
+          if (wait.lane !== l || wait.frame >= shown || wait.label === previous) continue;
+          previous = wait.label;
+          text(figure, x(wait.frame) + COLUMN, middle - 10, wait.label);
+        }
+
+        // Notes within a few frames share a line, in order
+        const notes = record.notes.filter((note) => note.lane === l && note.frame < shown);
+        const lines: (typeof notes)[] = [];
+        for (const note of notes) {
+          const line = lines.at(-1);
+          if (line && note.frame - line[0].frame < 4) line.push(note);
+          else lines.push([note]);
+        }
+
+        for (const here of lines) {
+          text(figure, x(here[0].frame), middle + 21, here.map((note) => note.label).join(' · '), {
+            style: here.some((note) => note.bad) ? 'fill: var(--viz-bad)' : 'fill: var(--text)',
+          });
+        }
+      });
+    };
+
+    const timeline = animation(root, {
+      every: 0.22,
+      step() {
+        shown += 1;
+        if (shown === FRAMES) timeline.play(false);
+      },
+      draw,
+      play: action(root, 'play'),
+      playing: !reduced,
+      onPlay() {
+        if (shown < FRAMES) return;
+        shown = 1;
+        timeline.redraw();
+      },
+    });
+
+    const stopAt = (kind: Stop) => () => {
+      stopKind = kind;
+      stopped = shown < FRAMES ? shown - 1 : 7;
+      record = createProgram({ stopAt: stopped, stop: kind });
+      if (shown === FRAMES && !reduced) {
+        shown = stopped + 1;
+        timeline.play(true);
+      }
+      timeline.redraw();
+    };
+
+    action(root, 'cancel', stopAt('cancel'));
+    action(root, 'destroy', stopAt('destroy'));
+
+    action(root, 'restart', () => {
+      stopped = undefined;
+      record = createProgram();
+      shown = reduced ? FRAMES : 1;
+      timeline.play(!reduced);
+      timeline.redraw();
+    });
+  });
+</script>

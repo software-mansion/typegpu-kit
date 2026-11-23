@@ -1,0 +1,14 @@
+{
+  "printWidth": 100,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "ignorePatterns": [
+    ".claude/**",
+    "**/README.md",
+    "apps/typegpu-kit-native/vendor/**",
+    "packages/typegpu-kit/api/**",
+    "packages/typegpu-kit/fonts/**",
+    "packages/typegpu-kit/src/geometry/**",
+    "packages/typegpu-kit/src/sort/**"
+  ]
+}

@@ -1,0 +1,212 @@
+---
+title: Light from textures
+description: Keep light in a texture, computed once or every frame, and have the lighting read it at each shaded point.
+---
+
+import Radiance from '../../../components/viz/Radiance.astro';
+import Install from '../../../components/site/Install.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+
+<Radiance />
+
+Every shaded pixel loops over point-light slots. Dozens of lamps or short-lived shots and blasts can make that expensive. Compute light into a texture at load time or each frame, then sample it at the shaded point through [`ambient`](/kit/lighting/#your-own-shading). TypeGPU binds the texture in each pipeline using that lighting.
+
+## Baked light
+
+For stationary lamps, compute light once at load time into a 3D texture covering the scene:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { lighting, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+// Fill once at load time over a yard 64 units wide and 4 units high
+const baked = root
+  .createTexture({ size: [64, 16, 64], dimension: '3d', format: 'rgba16float' })
+  .$usage('storage', 'sampled');
+const irradiance = baked.createView(d.texture3d(d.f32));
+const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+const yard = lighting.create(root, {
+  shading: {
+    ambient: (material, point) => {
+      'use gpu';
+      const uvw = (point.position + d.vec3f(32, 0, 32)) / d.vec3f(64, 4, 64);
+      const lamps = std.textureSampleLevel(irradiance.$, smooth.$, uvw, 0).rgb;
+      return shading.hemisphere(material, point) + material.color * lamps;
+    },
+  },
+});
+```
+
+- The volume uses 8 bytes per texel, 0.5 MB in this example, and one sample per shaded pixel.
+- Fill it with a kernel that sums lamp light at each texel or a [radiance field](#a-radiance-field) computed over a yard map.
+
+## Lightmaps
+
+A lightmap stores light baked onto a mesh's second uv set, which shading reads as `point.uv1`. Shade by it in the ambient hook with `shading.surrounded`:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { images, lighting, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const picture: images.Picture;
+// ---cut---
+const baked = images.create(root, picture, { packed: images.rgbm(8), mips: false });
+const view = baked.createView(d.texture2d(d.f32));
+const smooth = images.sampler(root, { wrap: 'clamp-to-edge' });
+
+const room = lighting.create(root, {
+  shading: {
+    ambient: (material, point) => {
+      'use gpu';
+      const light = std.textureSampleLevel(view.$, smooth.$, point.uv1, 0).rgb;
+      return shading.surrounded(material, point, light, light);
+    },
+  },
+});
+```
+
+- If the bake already includes occlusion, pass its light as is. Otherwise multiply the diffuse light by `material.occlusion`.
+- To reflect an environment instead, sample it along `shading.reflectionOf(point, material.roughness)`.
+- [`gltf.read`](/kit/gltf/) keeps the second set with `uvs1: true`. Load 8-bit packed maps with [`packed`](/kit/images/#packed-hdr). On React Native, use an encoding that leaves alpha at 255, as [its decoder](/kit/images/#on-react-native) needs.
+
+<ExampleFigure
+  example="classroom"
+  controls={['gi', 'ao', 'lamps']}
+  values={{ sunbeams: false }}
+  caption="Two lightmaps hold the light from the sky and from the lamps. The sun's light and shadow are computed live. Turn each off to compare."
+/>
+
+## A radiance field
+
+<ExampleFigure
+  example="falling-sand"
+  controls={['paint', 'brush', 'bounce', 'reset']}
+  aspect="16 / 9"
+  caption="Drag to paint, or tap the cave first on a touch screen; turn bounce off to remove reflected light. Lava and crystal emit light, rock and sand block it, and walls and steam reflect it."
+/>
+
+Shots, muzzle flashes and blasts can create dozens of lights lasting a fraction of a second. Draw their emission into a texture over the ground. `@typegpu/radiance-cascades` computes how much reaches each texel around obstacles such as towers and trees. The kit doesn't depend on it, so add it yourself, in a version whose `typegpu` peer range covers your project's TypeGPU, such as:
+
+<Install add="@typegpu/radiance-cascades@0.12.3" />
+
+Create a **medium**, a texture holding emission and extinction per texel. This kernel fills it from a table of glows:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { table } from '@typegpu/kit';
+import * as hrc from '@typegpu/radiance-cascades/holographic';
+
+const Glow = table.define('Glow', {
+  host: { position: d.vec2f, radius: d.f32, color: d.vec3f }, // on the ground, x and z
+});
+const glows = table.create(root, Glow, { capacity: 256 });
+const glow = glows.gpu;
+
+const SIDE = 32; // world units across the square of ground the field covers
+const TEXELS = 256;
+const OPAQUE = 4; // extinction per texel
+
+const medium = root
+  .createTexture({ size: [TEXELS, TEXELS], format: 'rgba16float' })
+  .$usage('storage', 'sampled');
+const writing = medium.createView(d.textureStorage2d('rgba16float', 'write-only'));
+const reading = medium.createView(d.texture2d(d.f32));
+
+const draw = tgpu.computeFn({
+  workgroupSize: [8, 8],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= TEXELS || gid.y >= TEXELS) return;
+
+  const ground = ((d.vec2f(gid.xy) + 0.5) / TEXELS - 0.5) * SIDE;
+  let emission = d.vec3f();
+  let extinction = d.f32(0); // a wall writes OPAQUE and no emission
+
+  for (let i = d.u32(0); i < glow.span(); i++) {
+    if (glow.alive(i) && std.distance(ground, glow.position(i)) < glow.radius(i)) {
+      emission = glow.color(i) * OPAQUE; // an opaque disc shines with its colour
+      extinction = OPAQUE;
+    }
+  }
+
+  std.textureStore(writing.$, gid.xy, d.vec4f(emission, extinction));
+});
+const drawing = root.createComputePipeline({ compute: draw });
+
+const field = hrc.create({
+  root,
+  size: { width: TEXELS, height: TEXELS },
+  medium: (pixel) => {
+    'use gpu';
+    const texel = std.textureLoad(reading.$, pixel, 0);
+    return { emission: texel.rgb, extinction: texel.a };
+  },
+});
+```
+
+Sample the field at the shaded point in `ambient`. Each frame, fill the medium and run the field in one compute pass:
+
+```ts twoslash
+import { d, std, tgpu, type TgpuComputePipeline } from 'typegpu';
+import type * as hrc from '@typegpu/radiance-cascades/holographic';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const SIDE = 32;
+const TEXELS = 256;
+declare const glows: { flush(): void };
+declare const drawing: TgpuComputePipeline;
+declare const field: hrc.Executor;
+// ---cut---
+import { frames } from '@typegpu/kit';
+import { lighting, shading } from '@typegpu/kit';
+
+const radiance = field.output.createView(d.texture2d(d.f32));
+const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+const light = lighting.create(root, {
+  shading: {
+    ambient: (material, point) => {
+      'use gpu';
+      // Offset two texels along the normal to leave opaque wall cells
+      const ground = point.position.xz + point.normal.xz * ((2 * SIDE) / TEXELS);
+      const glow = std.textureSampleLevel(radiance.$, smooth.$, ground / SIDE + 0.5, 0).rgb;
+      return shading.hemisphere(material, point) + material.color * glow;
+    },
+  },
+});
+
+frames.animate(
+  frames.create(root, (frame) => {
+    glows.flush();
+
+    const compute = frame.encoder.beginComputePass();
+    compute.setPipeline(drawing);
+    compute.dispatchWorkgroups(TEXELS / 8, TEXELS / 8);
+    field.run({ pass: compute });
+    compute.end();
+    // Record passes using light after this compute pass
+  }),
+);
+```
+
+- `run` submits no commands. `field.output` retains the light until the next run. Use a [cadence](/kit/clock/#cadences), such as 30 Hz, and rerun whenever the board changes.
+- An opaque disc emits its colour. In clear air, a glow of radius `r` contributes about `asin(r / d) / π` of that colour at distance `d`: about one tenth at three radii and one fortieth at twelve. Light in a plane falls as one over distance rather than distance squared.
+- Walls use opaque texels without emission and cast soft shadows. A point on a wall face lies in those dark texels. Offset its sample two texels along the normal.
+- Extinction is per texel, so finer fields make haze dim light faster. Multiply by `SIDE / TEXELS` to express it per world unit.
+- The field is flat. Elevated points receive the light at ground level, and points outside the square sample its nearest edge. Use `ambient` to fade light with height and reject samples outside the square.
+- A medium can read any simulation buffer, including towers and shots, to find emitters.
+- The kernel above tests every glow at every texel, which suits a few dozen glows. For thousands, run one thread per glow to `atomicAdd` fixed-point light into a `u32` grid. Then run one thread per texel to convert the sums into the medium.
+- `field.byteSize` gives the field's memory. The medium adds 8 bytes a texel.
+
+## Bounced light
+
+`field.sectors` stores light from four directions. Use it to shade by normal and compute reflections from walls:
+
+- Read the previous run's sectors just outside each wall face. Each sector contains one quarter of the surrounding light. Multiply by four, weight by the normal and multiply by wall albedo.
+- Add the reflected light to the medium before the next run. Each run adds one bounce.
+- [Falling sand](/examples/falling-sand/) computes one bounce from walls and steam at each 30 Hz update.

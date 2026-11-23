@@ -1,0 +1,62 @@
+---
+// Every term the docs mark where a page first uses it, in alphabetical order: the word, its
+// sentence, and the section that teaches it when a page does
+import { getCollection } from 'astro:content';
+import { homeOf } from '../../build/terms.ts';
+import { inWords, terms, wordId } from './terms.ts';
+import { rooted } from './urls.ts';
+
+const pages = new Map((await getCollection('docs')).map((entry) => [entry.id, entry]));
+const read = (page: string) => {
+  const entry = pages.get(page || 'index');
+  return entry && { title: entry.data.title, body: entry.body ?? '' };
+};
+const rows = terms.map((term) => ({
+  term,
+  home: inWords(term) ? undefined : homeOf(term, read),
+}));
+---
+
+<dl class="key-list not-content">
+  {
+    rows.map(({ term, home }) => (
+      <div id={wordId(term)}>
+        <dt>{term.term}</dt>
+        <dd>
+          {term.means}
+          {home && <a href={rooted(home.href)}>{home.label} →</a>}
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  dl {
+    --names: 10rem;
+    margin: var(--s-5) 0;
+  }
+
+  dt {
+    color: var(--text);
+    font: 500 15px/24px var(--font-sans);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--text-2);
+    font: 400 15px/24px var(--font-sans);
+  }
+
+  a {
+    display: block;
+    inline-size: fit-content;
+    color: var(--link);
+    font-size: var(--type-body);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--accent-high);
+  }
+</style>

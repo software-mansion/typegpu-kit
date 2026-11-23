@@ -1,0 +1,15 @@
+---
+title: Map
+description: Every module, grouped by area, with lines between modules that depend on each other.
+tableOfContents: false
+wide: true
+---
+
+import ModuleMap from '../../components/site/ModuleMap.astro';
+import ModuleTable from '../../components/site/ModuleTable.astro';
+
+<ModuleMap />
+
+A module's card lists only what differs from a plain module. A plain module submits nothing, injects nothing and binds nothing in your shaders. It needs no other module or device feature, allocates nothing in a steady frame and runs on web and native.
+
+<ModuleTable />

@@ -1,0 +1,649 @@
+---
+title: Instances
+description: Draw lit copies of mesh-pool meshes with one row per instance and one draw per mesh.
+modules: [kit/instances]
+---
+
+import ByDistance from '../../../components/viz/ByDistance.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Instances from '../../../components/viz/Instances.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+Drawing each object separately spends CPU time on JavaScript calls, especially on phones. Store a transform and material per object in a set of **instances**. The set is a [table](/kit/table/) whose rows are meshes from a [mesh pool](/kit/mesh-pool/). Its renderer lights and draws the live rows with one draw per mesh. Adding instances increases data without increasing draws.
+
+<Hidden card="forest">
+  <Instances />
+</Hidden>
+
+```ts twoslash
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+import { meshPool } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import { d, tgpu } from 'typegpu';
+// ---cut---
+import { instances, lighting, materials } from '@typegpu/kit';
+
+const root = await tgpu.init();
+// ---cut-start---
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float' },
+  depth: { format: 'depth24plus' },
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const box = pool.add(meshes.roundedBox());
+const ball = pool.add(meshes.sphere());
+// ---cut-end---
+const light = lighting.create(root, { settings: { sunDirection: [0.4, 1, 0.3] } });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const things = instances.create(root, pool, { capacity: 256 });
+const drawn = scene.add(things.renderer());
+
+things.add(box, { position: [0, 0.5, 0], ...materials.glossy(d.vec3f(0.62, 0.24, 0.16), 0.4) });
+const moon = things.add(ball, { scale: 0.5, ...materials.glow(d.vec3f(1, 0.85, 0.6), 2) });
+
+const orbit = things.fields.position;
+
+const loop = frames.create(root, (frame) => {
+  orbit.set(moon, 2 * Math.cos(frame.time), 1.5, 2 * Math.sin(frame.time));
+  things.flush();
+
+  scene.record(frame, drawn);
+});
+frames.animate(loop);
+```
+
+`things.renderer()` returns a [drawing](/kit/passes/#drawings), lit by the lighting its pass description gives through [`beneath`](/kit/passes/#fills). `things.renderer().pipe(other.inject())` lights one renderer with another lighting. `scene.add` builds pipelines for its pass description and returns the draw commands. Each mesh uses a direct draw. Meshes with matching side, mask and texture settings share a pipeline. Direct draws need no optional device feature. [A finished look for model scenes](/recipes/lit-models/) draws one set of glTF models with shadows, ambient occlusion, TAA and bloom.
+
+## Rows
+
+`things.add(mesh, values)` returns an id. Every value is optional:
+
+| Field                   | Default          |                                     |
+| ----------------------- | ---------------- | ----------------------------------- |
+| `position`              | the origin       | world space                         |
+| `rotation`              | none             | a unit quaternion, `[x, y, z, w]`   |
+| `scale`                 | `1`              | one factor, or one per axis         |
+| `color`                 | the mesh's       | linear                              |
+| `roughness`, `metallic` | the mesh's       |                                     |
+| `emission`              | the mesh's       | linear                              |
+| `opacity`               | the mesh's alpha | under a `blend` or `clear` renderer |
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { meshes } from '@typegpu/kit/geometry';
+import { instances, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const box = pool.add(meshes.box());
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+import { quat } from 'wgpu-matrix';
+
+const crate = things.add(box, { position: [3, 0.5, 0], color: [0.4, 0.3, 0.2] });
+
+things.write(crate, { rotation: quat.fromAxisAngle([0, 1, 0], Math.PI / 4) });
+things.write(crate, { emission: [2, 0.4, 0] });
+things.remove(crate);
+```
+
+- A row starts with its mesh's [material](/kit/mesh-pool/#models). Shapes default to white chalk. Models use the file's factors, multiplied by textures. Supplied values and the set's `defaults` replace factors. To tint relative to the file, start with `mesh.material`.
+- Spread a [`materials`](/kit/lighting/#what-a-surface-is-made-of) preset into the values, for example `{ position, ...materials.glossy(color, 0.3), opacity: 0.2 }`.
+- `write` changes only supplied fields. `undefined` leaves a field unchanged. `write` and `remove` take effect at the next `flush`. Removal invalidates the id, and `has(id)` checks whether it is live.
+- In shaders, `instances.rotate(q, v)` rotates `v` by a unit quaternion. `instances.toward(direction)` turns +z toward `direction` with +y up. `toward` also runs on the CPU.
+
+### A table of meshes
+
+The set is a [table](/kit/table/) of its [kind](#kinds), and everything a table offers works on it. Field handles write without allocating, `live()` spreads into a [picker](/kit/picker/), [neighbour grid](/kit/grid/) or [live lists](/kit/live-lists/), and `idAt` names the instance at a slot the GPU found:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { meshes } from '@typegpu/kit/geometry';
+import { cameras, instances, meshPool, picker } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 1, height: 1 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 12 });
+const pool = meshPool.create(root, { capacity: 64 });
+const box = pool.add(meshes.box());
+// ---cut---
+const crates = instances.create(root, pool, { capacity: 1024, defaults: { roughness: 0.8 } });
+const crate = crates.add(box);
+
+const spin = crates.fields.rotation; // keep the handle outside the loop
+spin.set(crate, 0, Math.SQRT1_2, 0, Math.SQRT1_2);
+
+const hits = picker.create(root, view, {
+  ...crates.live(), // the capacity and the live test
+  size,
+  position: crates.gpu.position,
+});
+
+// Once a pick is read back
+const slot = hits.result.take();
+if (typeof slot === 'number') crates.write(crates.idAt(slot), { emission: [1, 0.6, 0] });
+```
+
+<Rules>
+
+- **No kind** A set without a kind stores `instances.Instance` rows, whose getters its shaders read.
+- **Table members** `buffers`, `slotOf(id)` and `clear()` also work as on a table. `count` counts instances, while `capacity` and `span` count rows.
+- **Models** `things.add(model)` adds one row per mesh under one id. `write`, field handles and `remove` act on every row of the model. `idAt` gives the model's id for any of its slots, and `count` counts it once. A field handle's `get` reads the model's first mesh.
+- **Groups** Use `things.add({ meshes })` to group any pool meshes, including a character and [held items](/kit/poses/#things-held).
+- **Per-mesh values** Pass a function of each mesh to give a model's meshes values of their own, such as a coat colour per part: `things.add(horse, (mesh, i) => ({ color: coats[i] }))`. If it throws, `add` adds no row.
+- **Defaults** `defaults` sets values for fields `add` omits, including a kind's own fields.
+
+</Rules>
+
+## Every frame
+
+<Rules>
+
+1. **Flush** Call `things.flush()` to upload changed rows. When instances are added or removed, it also uploads per-mesh live lists. A set with [`history`](#motion) is typed `HistoryInstances`, whose `flush` takes the frame.
+2. **Move** Run any kernels that [move the set](#moved-by-your-kernels).
+3. **Cull** Call `renderer.cull(pass)` in a compute pass for a [culling](#culling) renderer.
+4. **Shadow** For a [shadow](/kit/lighting/#shadows), call `light.shadow.record(frame, [cast])`. Create `cast = light.shadow.add(renderer)` while loading.
+5. **Draw** Call `drawn.draw(pass)` in the scene pass or use `scene.record(frame, drawn)`. Direct rendering uses one `drawIndexed` per mesh with instances. Culling uses one `drawIndexedIndirect` per mesh the set has used. Meshes sharing a pipeline and textures draw consecutively with the pipeline and groups set once.
+
+</Rules>
+
+Compile renderer pipelines while loading with [`pipelines.compile([scene, light])`](/kit/pipelines/). List the description and the lighting, whose `initAsync` compiles its shadows. Otherwise each pipeline compiles on its first draw. The [GPU debug panel](/kit/gpu-debug/) names pipelines by kind, with qualifiers such as `cast`, `cover` for a prepass, `two-sided` or `masked`.
+
+## Motion
+
+Some outputs, such as the motion that [antialiasing over time](/kit/taa/) reads, run the renderer's vertex code a second time with last frame's rows. Create the set with `history: true` to keep them, as a [table](/kit/table/#last-frames-rows) does. Each instance then moves in the motion output, whether `write` or a kernel moved it:
+
+```ts twoslash
+import { meshes } from '@typegpu/kit/geometry';
+import { frames, instances, meshPool } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const Fish = instances.define('Fish', { device: { velocity: d.vec3f }, transform: 'device' });
+// ---cut---
+const school = instances.create(root, pool, { kind: Fish, capacity: 1024, history: true });
+
+frames.create(root, (frame) => {
+  school.flush(frame); // keeps last frame's rows, then uploads
+  // ... kernels that move the school, then the passes
+});
+```
+
+Without `history`, the motion output sees only the camera move.
+
+## Renderers
+
+`things.renderer(options)` draws the set. Add it to multiple pass descriptions to build pipelines for each. Multiple renderers can draw the same set. `drawn.destroy()` removes a drawing from its description and frees its resources.
+
+| Option                 | Default         |                                                                                                                                      |
+| ---------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `blend`                | `'opaque'`      | `'translucent'` covers what is drawn by each instance's opacity and writes no depth; `'clear'` is [glass](#glass)                    |
+| `transmit`             | none            | Under `'clear'`, the share of each colour behind that shows through: a [tint](#glass)                                                |
+| `textured`             | `true`          | `false` ignores mesh textures and masks, drawing textured meshes with their factors alone                                            |
+| `specularAntialiasing` | `true`          | `false` keeps sharp highlights on flat-shaded faces                                                                                  |
+| `cull`                 | `false`         | `true` draws into each description only what its camera may see                                                                      |
+| `from`                 | 0               | Draws only the instances at least this far from `eye`; a number or a `'use gpu'` function of the row's slot                          |
+| `to`                   | every distance  | Draws only the instances nearer than this to `eye`, as `from`                                                                        |
+| `fade`                 | 0               | Metres around `from` and `to` across which it hands its samples over                                                                 |
+| `eye`                  | none            | The camera `from` and `to` measure from; a renderer with either needs it                                                             |
+| `shade`                | `shading.shade` | Computes outgoing light from the material. Supply unlit, toon or debug shading. A `blend: 'clear'` renderer always uses `shadeClear` |
+| `prepass`              | `false`         | `true` draws an opaque renderer's depth first, with `coverage` and masks alone, then shades where the depth is equal                 |
+
+### Culling
+
+With `cull: true`, each pass draws only instances its camera may see. The scene uses `view`, and the shadow uses the sun. Record `renderer.cull(pass)` after `things.flush()` and movement kernels, before shadow and scene passes:
+
+```ts twoslash
+import { cameras, passes, targets, type Frame } from '@typegpu/kit';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  { hdr: { format: 'rgba16float' }, depth: { format: 'depth24plus' } },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+declare const frame: Frame;
+// ---cut---
+const renderer = things.renderer({ cull: true });
+const drawn = scene.add(renderer);
+const cast = light.shadow.add(renderer); // each keeps a list of its own
+
+// After things.flush() each frame
+const culling = frame.encoder.beginComputePass();
+renderer.cull(culling);
+culling.end();
+
+light.shadow.record(frame, [cast]);
+scene.record(frame, drawn);
+```
+
+Culling reads draw counts written by GPU kernels and uses indirect draws. Request `indirect-first-instance` with `tgpu.init({ device: { optionalFeatures: ['indirect-first-instance'] } })` to share pipelines across meshes without a group per mesh. Without the feature, each indirect draw binds a group that holds its mesh, and its pipeline reads the mesh from there. Where a pipeline has no bind group to spare, each mesh gets a pipeline with its mesh compiled in.
+
+<Rules>
+
+- **The test** Test each row with the sphere around its mesh box, scaled and transformed by the row. Model meshes and held items each use their own boxes.
+- **Order** Visible rows retain set order across frames so blended objects do not flicker.
+- **Kernels** `cull` dispatches two kernels over live rows per active pass description. It skips shadow work while shadows are off. Multiple renderers can share a compute pass.
+- **Layers** In a description with [layers](/kit/passes/#layers), each layer keeps a list of its own, seen through its view. Each of the two kernels dispatches once for all active layers. The work grows with rows times layers, and the dispatch count stays the same. Each layer's pass draws its own list. A shadow's [`prepare`](/kit/lighting/#culling-only-the-layers-that-draw) leaves out the layers it won't draw.
+- **Deformed meshes** If `deform` moves vertices beyond the mesh box, supply a [`bounds`](#kinds) sphere.
+- **In your shaders** Use `cameras.sees(cameras.current.$, center, radius)` for the same visibility test in your shaders, such as a [live lists](/kit/live-lists/) `alive` callback.
+
+</Rules>
+
+### By distance
+
+<ByDistance />
+
+Use less detail for distant objects. A culling renderer with `from` and `to` draws instances at least `from` and less than `to` metres from `eye`. Split a set between renderers, or use separate sets for near meshes and distant [impostors](/kit/impostors/):
+
+```ts twoslash
+import { cameras, passes, targets } from '@typegpu/kit';
+import { impostors, instances, lighting, meshPool } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 30,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  { hdr: { format: 'rgba16float' }, depth: { format: 'depth24plus' } },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const pool = meshPool.create(root, { capacity: 64 });
+const tree = pool.add(meshes.icosphere());
+const card = pool.add(impostors.CARD).meshes[0];
+const atlas = impostors.create(root, pool, tree, { card });
+const trees = instances.create(root, pool, { capacity: 1024 });
+const cards = instances.create(root, pool, { kind: impostors.Impostor, capacity: 1024 });
+// ---cut---
+const near = { to: 40, fade: 8, eye: view };
+const far = { from: 40, fade: 8, eye: view };
+
+const renderers = [
+  trees.renderer({ cull: true, ...near }),
+  cards.renderer({ cull: true, ...far }).pipe(atlas.inject()),
+];
+const drawn = renderers.map((renderer) => scene.add(renderer));
+const casts = renderers.map((renderer) => light.shadow.add(renderer));
+```
+
+<Rules>
+
+- **Distance** Measure distance from `eye` to each row's `position`. The same distance applies in every pass description, including shadows.
+- **Thresholds** `from` and `to` can be shader callbacks taking the row slot, with their dependencies filled. Read uniforms to change thresholds without recompiling. Keep `from` below `to` for every row.
+- **Fading** Across `fade` metres around a threshold, the renderer draws a share of each instance that falls with its distance. Give the adjoining renderer the same `fade` to draw the rest. With multisampling, an instance keeps whole samples, the same ones in every pixel. The two renderers then blend evenly across it in steps of one sample. Without multisampling, they split pixels in a 4 × 4 pattern, which shows as a screen door where the two look different. Shadows switch without fading.
+- **Cost** Fading discards pixels or masks samples in the shader. That can make early depth rejection less effective and increase shading work.
+
+</Rules>
+
+### Transparency
+
+With `blend: 'translucent'`, instances draw [translucent](/kit/passes/#translucent-drawings) from premultiplied colour and their opacity. In a description with translucency targets they need no order; elsewhere they blend over in draw order. They write no depth and cast no shadows. The renderer accepts only pass descriptions with colour. Put blended objects in a separate set and draw them after opaque objects:
+
+```ts twoslash
+import { cameras, passes, targets } from '@typegpu/kit';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  { hdr: { format: 'rgba16float' }, depth: { format: 'depth24plus' } },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const pool = meshPool.create(root, { capacity: 64 });
+// ---cut---
+const solid = instances.create(root, pool, { capacity: 512 });
+const ghosts = instances.create(root, pool, { capacity: 4 });
+const blocks = solid.renderer();
+
+// Drawn in this order, the ghosts over the blocks
+const drawn = [scene.add(blocks), scene.add(ghosts.renderer({ blend: 'translucent' }))];
+const casters = [light.shadow.add(blocks)];
+```
+
+#### Glass
+
+`blend: 'clear'` draws as `'translucent'` does, with [`shading.shadeClear`](/kit/lighting/#clear-surfaces). Highlights and sky reflections stay bright at any opacity. Opacity scales diffuse light and emission. On metals, it fades only fog.
+
+Use `transmit` to tint the background through glass. `{ blend: 'clear', transmit: [0.88, 0.92, 0.94] }` transmits those fractions of each channel at any opacity. Opacity controls the milky appearance. The tint belongs to the renderer, which sets it as the pass's blend constant at each draw. A `transmit` renderer therefore blends over in draw order.
+
+### Other outputs
+
+The renderer supplies an `instances.Corner` at each vertex and an `instances.Lit` at each pixel. Outputs use these values, including motion for [antialiasing over time](/kit/taa/). See [Passes](/kit/passes/#what-each-target-gets) for target outputs.
+
+## Kinds
+
+A **kind** adds row fields and replaces shader functions with your own `'use gpu'` functions. The fish tank's fish keep velocity, beat their tails and have pale bellies:
+
+```ts twoslash
+import { meshes } from '@typegpu/kit/geometry';
+import { instances, materials, meshPool } from '@typegpu/kit';
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const time = root.createUniform(d.f32);
+const pool = meshPool.create(root, { capacity: 64 });
+const body = pool.add(meshes.sphere());
+const TAU = Math.PI * 2;
+// ---cut---
+const Fish = instances.define('Fish', {
+  host: { belly: d.vec3f, phase: d.f32 },
+  device: { velocity: d.vec3f },
+  transform: 'device',
+
+  // uv.x runs from the nose to the tail
+  deform: (vertex, fish) => {
+    'use gpu';
+    const t = vertex.uv.x;
+    const beat = std.sin(time.$ * 10 + fish.phase - t * 5) * 0.14 * t * t;
+    return vertex.position + d.vec3f(beat, 0, 0);
+  },
+
+  material: (pixel) => {
+    'use gpu';
+    const fish = pixel.instance;
+    const up = std.cos(pixel.point.uv.y * TAU);
+    return materials.glossy(std.mix(fish.belly, fish.color, std.smoothstep(-0.4, 0.5, up)), 0.35);
+  },
+});
+
+const school = instances.create(root, pool, { kind: Fish, capacity: 4096 });
+school.add(body, {
+  position: [0, 2, 0],
+  color: [0.1, 0.45, 0.95],
+  belly: [0.95, 0.25, 0.22],
+  phase: 1.3,
+  velocity: [1, 0, 0],
+});
+```
+
+- Call `instances.define` without a root. Pass the result to `create` as `kind`.
+- The kind brands set ids, such as `instances.Id<typeof Fish>`, and the name labels the WGSL.
+- Supply custom fields alongside built-in fields in `add` and `write`. Reusing a built-in name such as `color` or a reserved table name such as `host`, `device`, `row`, `alive`, `span` or `slotOf` is a type error. `define` also throws.
+
+All functions are optional. The `instance` parameter is the whole row. `material`, `surface` and `coverage` take a `pixel` instead, which holds `pixel.point` on the mesh, `pixel.instance` and `pixel.carried`. Functions can read uniforms and buffers, such as `time.$` above:
+
+| Function   | Takes and returns                                                      | What it replaces                                                                                                                                                                                                    |
+| ---------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `place`    | `(instance) => instances.Placement`                                    | Where the instance is, from data of your own, in every pass, in culling and for `from` and `to`. The row's own transform goes unread.                                                                               |
+| `visible`  | `(instance) => bool`                                                   | Whether it draws, in every renderer and pass. A culling renderer leaves it out of its lists; one that doesn't cull collapses its triangles.                                                                         |
+| `pose`     | `(instance) => u32`, a pose's id                                       | The mesh's bind pose. Vertex positions follow the pose's joints in every pass. Full-vertex draws skin normals too. Skinning runs before `deform`. Poses come from the [poses](/kit/poses/) piped into the renderer. |
+| `deform`   | `(vertex: instances.Vertex, instance) => vec3f`                        | Where the vertex is, in object space, in every pass. The normal stays the mesh's, or the pose's.                                                                                                                    |
+| `bounds`   | `(instance, base: instances.Sphere) => instances.Sphere`               | The sphere a culling renderer tests, in world space; `base` is the one around the mesh's box.                                                                                                                       |
+| `carry`    | `(vertexIndex: u32, instance) => vec4f`                                | Sends interpolated per-vertex data to the pixel as `pixel.carried`. See [Carried from each vertex](#carried-from-each-vertex).                                                                                      |
+| `material` | `(pixel: instances.Pixel, base: shading.Material) => shading.Material` | What the point is made of; `base` is the row's material times the mesh's textures. Call [`materials`](/kit/lighting/#what-a-surface-is-made-of) presets here.                                                       |
+| `surface`  | `(pixel: instances.Pixel, base: shading.Material) => instances.Shaded` | Replaces the mesh surface with a shading point and material, as [impostors](/kit/impostors/) do.                                                                                                                    |
+| `coverage` | `(pixel: instances.Pixel) => f32`                                      | How much of the pixel the instance covers, from 0 to 1, in every pass, shadows included: holes such as lace, or the leaves on a card.                                                                               |
+
+<Rules>
+
+- **Shadow vertices** With `deform`, the shadow pass reads 20 bytes per vertex rather than 12, or 28 rather than 20 with a pose. Set `deformShadow: false` for deformations too small to see in shadows, such as tail motion.
+- **Culling** A culling renderer of a kind with a `deform` needs `bounds`.
+- **Material or surface** Supply either `material` or `surface`. A custom surface shades at mesh depth and writes its supplied point depth to shadows.
+- **Coverage** `coverage` runs before `material` or `surface` and reads no material, so it samples only what it reads itself. With multisampling, it selects the share of samples covered. Without multisampling, pixels below half coverage are left out. Blended renderers scale opacity by it. A kind without `coverage` keeps early depth testing, so each mesh draws once and hidden pixels go unshaded.
+- **Prepass** Give `prepass: true` to an opaque renderer whose meshes overlap and run a heavy `material` or `surface`, such as a forest of impostor cards. The renderer first draws depth using `coverage`, any mesh masks and any fade. The colour draw then shades where depth matches. It costs a second pass over the vertices and needs a description with depth.
+- **Pipelines** Each kind compiles a colour pipeline per pass description and a depth pipeline for shadows. Put per-instance differences in row fields to avoid extra pipelines.
+- **Parameter types** A parameter typed `Instances` takes a set of any kind. `Instances<typeof Fish>` takes a set of that kind, with its fields. Only `create` given `kind: Fish` returns one. Only `define` given `transform: 'device'` returns a kind whose transform kernels write, even with explicit type arguments.
+
+</Rules>
+
+### Moved by your kernels
+
+With `transform: 'device'`, the transform joins the kind's `device` fields. A kernel reads through the set's `gpu` getters and writes `school.gpu.device.$[i]`. Dispatch it over `school.span` after `school.flush()`, skipping free slots:
+
+```ts twoslash
+import { meshes } from '@typegpu/kit/geometry';
+import { instances, meshPool } from '@typegpu/kit';
+import { d, tgpu, type TgpuComputePass } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const Fish = instances.define('Fish', { device: { velocity: d.vec3f }, transform: 'device' });
+const school = instances.create(root, pool, { kind: Fish, capacity: 1024 });
+const step = 1 / 60;
+declare const pass: TgpuComputePass;
+// ---cut---
+const fish = school.gpu;
+const swim = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!fish.alive(i)) return;
+
+  const row = fish.device.$[i];
+  row.position = fish.position(i) + fish.velocity(i) * step;
+  row.rotation = instances.toward(fish.velocity(i));
+});
+
+const swimming = root.createComputePipeline({ compute: swim });
+pass.setPipeline(swimming);
+pass.dispatchWorkgroups(Math.ceil(school.span / 64));
+```
+
+`add` uploads the whole initial row. Kernels then own device fields. Writing those fields from the CPU overwrites kernel values at the next `flush`.
+
+For motion that follows each fish, create the set with [`history`](#motion).
+
+### Placed from your own data
+
+If a simulation has its own position buffer, read it in `place` instead of copying positions to rows every frame. Fill the dependency through the renderer's `pipe`:
+
+```ts twoslash
+import { instances, lighting, meshPool } from '@typegpu/kit';
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const herd = root.createBuffer(d.arrayOf(d.vec4f, 256)).$usage('storage');
+// ---cut---
+const bodies = tgpu.accessor(d.arrayOf(d.vec4f, 256)); // xyz is world position; w is heading
+
+const Horse = instances.define('Horse', {
+  host: { body: d.u32, fallen: d.u32 },
+  place: (horse) => {
+    'use gpu';
+    const body = bodies.$[horse.body];
+    return instances.Placement({
+      rotation: d.vec4f(0, std.sin(body.w / 2), 0, std.cos(body.w / 2)),
+      position: body.xyz,
+      scale: d.vec3f(1),
+    });
+  },
+  visible: (horse) => {
+    'use gpu';
+    return horse.fallen === 0;
+  },
+});
+
+const horses = instances.create(root, pool, { kind: Horse, capacity: 256 });
+const renderer = horses.renderer().pipe((cfg) => cfg.with(bodies, herd.as('readonly')));
+```
+
+`add` and `write` still accept row `position`, `rotation` and `scale`, but `place` ignores them. `place` runs for each vertex in every pass. When it does heavy work, a kernel that writes the rows once a frame costs less.
+
+### Fills
+
+Fill dependencies read by kind functions through the renderer's `pipe`. For example, the fish tank reads a noise cache. See [shader dependencies](/concepts/connecting-modules/):
+
+```ts twoslash
+import { cameras, passes, targets } from '@typegpu/kit';
+import { instances, lighting, meshPool } from '@typegpu/kit';
+import { perlin3d } from '@typegpu/noise';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  { hdr: { format: 'rgba16float' }, depth: { format: 'depth24plus' } },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const sand = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+const noise = perlin3d.staticCache({ root, size: d.vec3u(16, 16, 32) });
+
+const renderer = sand.renderer().pipe(noise.inject());
+// No surface lies below the sand, so omit its shadow caster
+const drawn = scene.add(renderer);
+```
+
+A custom fill takes a configuration, for example `.pipe((cfg) => cfg.with(clock, time))`.
+
+### Textures in a kind
+
+`base` includes mesh textures. Modify only the fields you need. The [hex isle](/examples/hex-isle/) adds light where its house atlas has window panes:
+
+```ts twoslash
+import { instances, shading } from '@typegpu/kit';
+import { d, std, tgpu } from 'typegpu';
+const night = tgpu.accessor(d.f32);
+const WARM = d.vec3f(1, 0.3, 0.06);
+// ---cut---
+const House = instances.define('House', {
+  host: { glow: d.f32 },
+
+  material: (pixel, base) => {
+    'use gpu';
+    // Window panes occupy column 6, row 1 of the 8 by 4 atlas
+    const pane = std.all(std.eq(std.floor(pixel.point.uv * d.vec2f(8, 4)), d.vec2f(6, 1)));
+    const lit = std.select(d.f32(0), pixel.instance.glow * night.$, pane);
+
+    const glowing = shading.Material(base);
+    glowing.emission = base.emission + WARM * lit;
+    return glowing;
+  },
+});
+```
+
+`materials.textured(material, point)` textures a material made another way, such as a preset, in a fragment shader.
+
+### Carried from each vertex
+
+Use `carry` to read per-vertex data, such as a [mesh-pool extra attribute](/kit/mesh-pool/#extra-vertex-attributes). `material`, `surface` and `coverage` read the interpolated value as `pixel.carried`. Here the kind reads vertex colours:
+
+```ts twoslash
+import { instances, meshPool, shading } from '@typegpu/kit';
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+const pool = meshPool.create(root, { capacity: 16, extra: { color: d.vec4f } });
+
+const Painted = instances.define('Painted', {
+  carry: (vertexIndex) => {
+    'use gpu';
+    return pool.extra.color(vertexIndex);
+  },
+  material: (pixel, base) => {
+    'use gpu';
+    const painted = shading.Material(base);
+    painted.color = base.color * pixel.carried.rgb;
+    return painted;
+  },
+});
+```
+
+- `vertexIndex` uses pool indices, as `meshPool.vertexAt` does. Without `carry`, `carried` is zero and vertices pass four fewer floats.
+- `pool.extra` belongs to one pool. Define kinds that read it after creating that pool, and use them only with its meshes.
+
+## Members
+
+| Member                                                     |                                                                                                                                                       |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `things.count`                                             | Live instances. A model counts once.                                                                                                                  |
+| `things.span`, `things.capacity`                           | `span` is the slot range kernels must visit, and `capacity` the most rows the set holds.                                                              |
+| `fields`, `live()`, `idAt`, `slotOf`, `buffers`, `clear()` | As on a [table](#a-table-of-meshes), with a model's rows under one id.                                                                                |
+| `school.gpu`                                               | The set's members: a getter per field, `alive(i)`, and `device`, the device fields for your kernels to write. A `write` overwrites them from the CPU. |
+| `Fish.position(i)`, `Fish.alive(i)`                        | The kind's placeholders, for its hooks and code over any set of the kind, filled by `school.inject()`.                                                |
+
+## Memory
+
+| What    |                                                                                                                            |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| a row   | 80 bytes plus custom kind fields, or 48 bytes in each part with `transform: 'device'`. The live list adds 4 bytes per row. |
+| a set   | 4 bytes per mesh of pool capacity for its list. Drawing through a render bundle adds 20 bytes per mesh for draw arguments. |
+| culling | Per pass description and per layer, 8 bytes per row of set capacity and 28 bytes per mesh of pool capacity.                |
+| history | Twice the row bytes again, for last frame's rows and the frame's uploads.                                                  |
+
+`destroy()` on a set frees its buffers once nothing draws with them.
+
+## Errors
+
+| Message                                                                                                | Thrown by                                                                |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `The kind 'Fish' must supply either material or surface, not both.`                                    | `define`                                                                 |
+| `'color' is a built-in instance field. Choose another name.`, or `'span' is reserved by table.define.` | `define`                                                                 |
+| `The instance set cannot fit this model within its 1024-row capacity. A model takes one row per mesh.` | `add`                                                                    |
+| `Row id … is stale: its row was removed, or it is from another table.`                                 | `write` or `remove` after `remove`, or an id from another table          |
+| `The mesh belongs to another pool.`                                                                    | `add`                                                                    |
+| ``The table 'Fish' keeps history and needs the frame when you flush it. Call `flush(frame)`.``         | `flush` without a frame, on a set with `history`                         |
+| `Slot 3 holds no row.`                                                                                 | `idAt`, for a free slot                                                  |
+| `The model has no meshes.`                                                                             | `add`                                                                    |
+| `The kind 'Fish' uses pose and requires a mesh with joints.`                                           | `add`, for a mesh that isn't skinned                                     |
+| `The kind 'Fish' uses deform. Supply bounds before enabling culling.`                                  | `renderer`, with `cull: true`                                            |
+| `A renderer with from or to requires cull: true.`                                                      | `renderer`                                                               |
+| `A renderer with from or to requires eye.`                                                             | `renderer`                                                               |
+| `Renderer distances require from >= 0, to > from and fade >= 0. …`, a `RangeError`                     | `renderer`, for a negative `from` or `fade`, or a `to` not beyond `from` |
+| `A renderer with transmit requires blend: 'clear'.`                                                    | `renderer`                                                               |
+| `Each transmit channel must be from 0 to 1. Received [1, 1.5, 1].`, a `RangeError`                     | `renderer`                                                               |
+| `A renderer with blend: 'translucent' leaves depth alone; …`, or `'clear'`                             | `light.shadow.add`, or `add` on any description of depth alone           |
+| `A renderer with prepass: true draws into passes with depth.`                                          | `add` on a description without depth                                     |
+| ``This renderer was created without `cull: true`.``                                                    | `cull`                                                                   |
+
+## Limits
+
+<Rules>
+
+- **Pipelines per set** Two sets of one kind with the same renderer options compile a pipeline pair each.
+- **Mesh combinations** Renderers compile a pipeline for each combination of `doubleSided`, `masked` and `textured` present in the pool, including unused meshes. `initAsync` compiles combinations present at that time. Adding a mesh with a new combination, such as an impostor card, compiles new pipelines on its first draw.
+- **Blend materials** A renderer draws an `alpha: 'blend'` material as opaque; blending is the renderer's `blend` option.
+- **Blend constant** Render bundles cannot set a blend constant. For a `transmit` renderer in a bundle, set it on the enclosing pass with `pass.setBlendConstant([...transmit, 1])`.
+- **Bundles** A bundle draws the meshes that had instances when it was recorded. Record it again after a mesh without instances gains one, and once a model's `ready` resolves.
+- **Back faces** Back-face lighting uses the interpolated normal relative to the eye. A front face can therefore receive back lighting near an edge where that normal turns away.
+- **Masks** A kind with a `surface` ignores the mesh masks, except in a depth prepass. Its `surface` decides what it covers.
+- **Deform** `deform` can't bend the normal or move the uv.
+- **Facing** Straight-up and straight-down directions leave the yaw of `instances.toward` dependent on the GPU's `atan2(0, 0)` result. Rotate models that do not face +z when reading them with [`rotation`](/kit/gltf/#a-model-that-faces-another-way).
+
+</Rules>

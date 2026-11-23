@@ -1,0 +1,267 @@
+---
+title: Render targets
+description: Textures that share a size, replaced together when the size changes.
+modules: [kit/targets, kit/memo]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import TargetsResize from '../../../components/viz/TargetsResize.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Module id="kit/targets" />
+
+A renderer may need multisampled colour, depth, HDR colour and bloom textures that follow the canvas size. A WebGPU texture can't be resized, so a new size means new textures, views and bind groups. `targets.create` makes a set of textures that share a size, and `fit()` replaces the whole set when the size changes.
+
+<Hidden card="censer">
+  <TargetsResize />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu, type TgpuRenderPipeline } from 'typegpu';
+import { frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const layout = tgpu.bindGroupLayout({ hdr: { texture: d.texture2d() } });
+declare const tone: TgpuRenderPipeline;
+// ---cut---
+import { memo } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  scene: { format: 'rgba16float', samples: 4 }, // transient
+  depth: { format: 'depth24plus', samples: 4 }, // transient
+  hdr: { format: 'rgba16float', sampled: true },
+  bloom: { format: 'rgba16float', scale: 1 / 2, mips: 5, sampled: true },
+  blur: { format: 'rgba16float', scale: 1 / 4, sampled: true },
+});
+
+// Runs again only when `hdr` is a new texture
+const hdrGroup = memo((hdr: typeof screen.textures.hdr) => root.createBindGroup(layout, { hdr }));
+
+frames.create(root, (frame) => {
+  screen.fit(); // new textures if the canvas changed size
+
+  const scene = frame.encoder.beginRenderPass({
+    colorAttachments: {
+      view: screen.views.scene,
+      resolveTarget: screen.views.hdr,
+      storeOp: 'discard',
+    },
+    depthStencilAttachment: { view: screen.views.depth, depthStoreOp: 'discard' },
+  });
+  // draw the scene
+  scene.end();
+
+  const final = frame.encoder.beginRenderPass({ colorAttachments: { view: surface.view(frame) } });
+  final.setPipeline(tone);
+  final.setBindGroup(hdrGroup(screen.textures.hdr));
+  final.draw(3);
+  final.end();
+});
+```
+
+## Specs
+
+Each key names a target in `textures`, `views`, `levels` and `layers`.
+
+| Field       | Default                                  | Meaning                                                                                                                                           |
+| ----------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format`    |                                          | Texture format.                                                                                                                                   |
+| `scale`     | `1`                                      | Fraction of the set's size; each side is rounded up and at least 1.                                                                               |
+| `samples`   | `1`                                      | MSAA sample count. A multisampled target can't be mipped or stored.                                                                               |
+| `mips`      | `1`                                      | Mip levels, at most as many as the size has. `levels.name[i]` views level `i`.                                                                    |
+| `sampled`   | `false`                                  | Also bindable as a sampled texture.                                                                                                               |
+| `storage`   | `false`                                  | Also bindable as a storage texture, in a format TypeGPU binds as one, such as `rgba16float`.                                                      |
+| `transient` | `true` when multisampled and not sampled | Cleared and discarded in each pass. Memoryless where the browser has `GPUTextureUsage.TRANSIENT_ATTACHMENT`, and a plain attachment elsewhere.    |
+| `layers`    | none                                     | Layers of a 2D array texture, one sample and one mip each. `layers.name[k]` views layer `k`. [Passes](/kit/passes/#layers) draw a pass into each. |
+
+<Rules>
+
+- **Mip levels** A 16 × 9 target has five mip levels, so `levels.bloom` can be shorter than the `mips` asked for. Loop over `levels`.
+- **Errors** `create` checks every spec and throws before making any texture. A transient target can't take `sampled: true`, `storage: true` or more than one mip level. A multisampled target can't take `storage: true` or more than one mip level. A target with `layers` needs one sample and one mip level, and its layer count must be an integer from 1 to the device's `maxTextureArrayLayers`. The check reads the requested `mips` before clamping to the size. Type checking flags `storage` on a format with no storage binding, such as `depth24plus`. It also flags an unknown field such as `smapled`. Both errors point at the field.
+- **Optional targets** A target only sometimes needed, like a depth-of-field buffer, goes in a set of its own, created when the feature turns on. There is no enabled flag.
+- **Depth type** `targets.Depth` types the depth that TAA, depth of field and ambient occlusion read. It is single-sampled and sampled, in `depth16unorm`, `depth24plus` or `depth32float`.
+- **Formats** Take a pipeline's format from `screen.textures.name.props.format`, and its `sampleCount` from the same props. Hard-coded formats and sample counts can go stale when the spec changes. The mismatch surfaces when you draw with that pipeline.
+- **Set types** A parameter typed `Targets` takes any set. `Targets<{ hdr: { format: 'rgba16float'; sampled: true } }>` takes a set with that target.
+
+</Rules>
+
+## Transient targets
+
+A **transient** target is cleared, discarded and never read after its pass, such as MSAA colour or depth. On a tile-based GPU with memoryless attachments, it can live in tile memory during the pass without a backing store in video memory. Elsewhere, discarding the target still avoids storing its samples. Transience is a texture usage and needs no device feature request. `screen.memoryless` reports support.
+
+- Multisampled targets are transient by default unless sampled or stored. Other targets require `transient: true`. `screen.transient.scene` reports whether `scene` is transient.
+- A pass into a transient target clears it and uses `storeOp: 'discard'`, so only what it resolves outlives the pass.
+- [`begin`](/kit/passes/#every-frame) throws when a pass would keep one, such as when a second pass draws over the first. Give that target `transient: false`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+const screen = targets.create(root, surface, {
+  scene: { format: 'rgba16float', samples: 4, transient: false }, // kept for the glows' pass
+  depth: { format: 'depth24plus', samples: 4, transient: false },
+  hdr: { format: 'rgba16float', sampled: true },
+});
+```
+
+## Resizing
+
+`fit()` compares the source's size with the set's. When it changed, it destroys every texture, creates new ones and returns `true`. The old set goes first, so a resize never holds two. If creating a texture throws, `fit()` destroys what it made, leaves the set unfitted and rethrows, so the next call rebuilds it.
+
+<Rules>
+
+- **Each frame** Call it once a frame, before recording passes that use the targets. A [pass description](/kit/passes/) throws when it begins a pass into a set whose source size or resolution changed since the last `fit()`. `screen.fitted` reports the same check. A pass recorded with a destroyed texture fails at submit.
+- **Rounding** Sizes round up to whole pixels, at least 1 and at most the device's `maxTextureDimension2D`.
+- **At creation** `create` fits once, so the textures exist before the first frame.
+- **The source** The source can be any `SizeSource`, such as a [canvas surface](/kit/web/), plain object or fixed-height getter. `fit()` reads it each time. A plain object of fixed size makes a texture of your own to [draw into](/kit/passes/#drawing-into-your-own-texture).
+- **Destroying** `destroy()`, or `[Symbol.dispose]` with `using`, destroys the textures.
+
+</Rules>
+
+## Following new textures
+
+<Module id="kit/memo" />
+
+A cached bind group still refers to the texture it was created with after that texture is destroyed. `memo(fn)` reruns `fn` when an argument's identity changes. Call it each frame with the current texture to create a group only when the texture changes. It also works with textures replaced by other modules.
+
+- Up to four arguments, so a call allocates nothing.
+- It keeps its last two results, so arguments that alternate between two textures run `fn` only twice per rebuild.
+- It destroys nothing; keep it for bind groups and the like.
+- `levels.name` is a new array per rebuild, so it works as an argument. `bloom` keys its per-level groups and passes on `chain.levels.glow` this way.
+
+<Aside type="caution" title="New objects every call">
+  `memo` compares by identity. An array or object literal made in the call is new every time, so
+  `fn` runs every frame and nothing warns you. Pass the textures themselves.
+</Aside>
+
+A temporal effect, such as a cloud history, writes one target of a pair while it reads the other, and swaps each frame. One `memo` holds both groups:
+
+```ts twoslash
+import { d, tgpu, type TgpuRenderPipeline } from 'typegpu';
+import { frames, memo, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const History = tgpu.bindGroupLayout({ history: { texture: d.texture2d() } });
+declare const resolve: TgpuRenderPipeline;
+// ---cut---
+const screen = targets.create(root, surface, {
+  a: { format: 'rgba16float', sampled: true },
+  b: { format: 'rgba16float', sampled: true },
+});
+
+const historyOf = memo((history: typeof screen.textures.a) =>
+  root.createBindGroup(History, { history }),
+);
+
+frames.create(root, (frame) => {
+  screen.fit();
+
+  // Even frames write a and read b, odd frames the other way
+  const even = frame.index % 2 === 0;
+  const pass = frame.encoder.beginRenderPass({
+    colorAttachments: { view: even ? screen.views.a : screen.views.b },
+  });
+  pass.setPipeline(resolve);
+  pass.setBindGroup(historyOf(even ? screen.textures.b : screen.textures.a));
+  pass.draw(3);
+  pass.end();
+});
+```
+
+After a rebuild both sides are new and zeroed, so the effect starts over from an empty history.
+
+## Resolution scale
+
+The `resolution` option sets the fraction of each side to draw, and `fit()` reads it each time. Textures keep their full source size, so changing resolution during play allocates nothing. Passes use a viewport to draw within each target's region. [Bloom and finish](/kit/finish/) read only that region:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const settings = { resolution: 0.75 };
+// ---cut---
+import { bloom, finish } from '@typegpu/kit';
+
+const screen = targets.create(
+  root,
+  surface,
+  {
+    hdr: { format: 'rgba16float', sampled: true },
+    depth: { format: 'depth24plus' },
+  },
+  { resolution: () => settings.resolution },
+);
+
+const source = () => screen.textures.hdr;
+const region = screen.regions.hdr;
+const glow = bloom.create(root, { source, region });
+const final = finish.create(root, { format: surface.format, source, region, glow });
+
+frames.create(root, (frame) => {
+  screen.fit(); // takes the resolution into the regions
+
+  const scene = frame.encoder.beginRenderPass({
+    colorAttachments: { view: screen.views.hdr },
+    depthStencilAttachment: { view: screen.views.depth },
+  });
+  scene.setViewport(0, 0, region.width, region.height, 0, 1);
+  // draw the scene
+  scene.end();
+
+  glow.record(frame);
+  final.record(frame, surface.view(frame));
+});
+```
+
+- `regions.name` describes the drawn region from the target's top-left corner. Its dimensions are the target size multiplied by resolution, rounded up. The objects stay the same for the life of the set, and `fit()` updates them.
+- A clear clears the whole texture; the viewport limits only the drawing.
+- A shader of your own that samples a target reads `uv * region / size`, kept half a texel inside the region, as bloom and finish do.
+- The resolution is at most 1.
+- [`dynamicResolution`](/kit/profiler/#following-gpu-time) picks the resolution that keeps the frame under a GPU budget.
+
+For a resolution that stays put, `targets.scaled(source, scale)` is a smaller `SizeSource` that target sets and [cameras](/kit/cameras/) can share. Sets that follow it make smaller textures, and a new scale makes new ones at the next `fit()`. `resolution` and `scaled` scale the whole set, while a spec's `scale` is fixed per target.
+
+## Views
+
+Each rebuild fills `levels.name` with one attachment view per mip level. `views.name` is the view of mip 0, the same as `levels.name[0]`. Use these for attachments. TypeGPU's default texture view covers every mip level, which an attachment can't accept. `textures.name` is the TypeGPU texture, for bind groups and other views.
+
+`layers.name` holds an attachment view of each layer. For a target without `layers`, it holds one view of its 2D texture. `views.name` is layer 0. To sample every layer, view the whole array:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { d } from 'typegpu';
+import { targets } from '@typegpu/kit';
+
+const size = { width: 1024, height: 1024, pixelRatio: 1 };
+const maps = targets.create(root, size, {
+  depth: { format: 'depth16unorm', layers: 3, sampled: true },
+});
+const all = maps.textures.depth.createView(d.textureDepth2dArray());
+```
+
+## Limits
+
+<Rules>
+
+- **Drag-resizing** Nothing waits for the size to settle, so a drag-resize rebuilds the set in every frame the size changes. A rotation is one rebuild.
+- **Shared sources** Two sets that follow the same source fit and rebuild separately.
+- **Fixed specs** A spec, such as `samples`, is fixed when the set is made; `fit()` replaces textures and keeps the specs. Another sample count is another set, and a new [description of passes](/kit/passes/#drawings) with new pipelines.
+- **Late sets** A set created when a feature turns on allocates its textures in that frame, mid-game.
+- **React Native** On React Native, transient targets are plain attachments, and `memoryless` reports it. Budget memory for their multisampled colour and depth.
+- **Store operations** Set `storeOp: 'discard'` yourself when opening a pass into a transient target outside `begin`. Memoryless targets reject other store operations. Reading a discarded plain attachment in a later pass or copy produces no validation error.
+- **Mip views** Only single-mip attachment views are made. A sampled view of a range of mips is yours to make and keep, with `memo` if it follows the set.
+- **Resolution memory** With `resolution`, the textures take the full size's memory at any resolution.
+- **Regions** WebGPU has no view of a rectangle, so whatever samples a target crops in the shader. A shader of your own that samples with a full-texture `uv` reads past the region, where the texture holds an older frame or the clear colour.
+
+</Rules>

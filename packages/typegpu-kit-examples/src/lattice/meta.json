@@ -1,0 +1,9 @@
+{
+  "title": "Lattice",
+  "category": "techniques",
+  "rarity": "common",
+  "description": "Thin beams turn over a sky as embers rise through them. The beams and embers write colour, depth and motion, and TAA blends each frame with the last to smooth the edges, even when the scene renders at a lower scale and gets upscaled. Switch the view to see the motion vectors or the depth.",
+  "line": "Thin beams and rising embers, smoothed over time with TAA.",
+  "order": 30,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

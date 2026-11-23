@@ -1,0 +1,13 @@
+{
+  "title": "Stampede",
+  "category": "animation",
+  "rarity": "rare",
+  "description": "4 096 horses gallop around a valley at golden hour. Point at them to spook them, and the panic spreads through the herd. Hover a horse to see its name, click one to ride along, or click the ground for a thunderclap. Nearby horses are skinned meshes and distant ones are impostor cards, and three shadow cascades keep shadows sharp up close while still reaching the trees 320 m out. The horse is by Quaternius (CC0), and the trees and rocks are from Kay Lousberg's KayKit Forest Nature Pack (CC0).",
+  "line": "4 096 horses in a golden valley. Spook them and the panic spreads.",
+  "order": 20,
+  "card": {
+    "count": 2048
+  },
+  "features": ["indirect-first-instance"],
+  "hint": "point at the herd to spook it \u00b7 click a horse to ride along \u00b7 click the ground for thunder \u00b7 drag to orbit"
+}

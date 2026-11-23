@@ -1,0 +1,215 @@
+---
+import Search from 'virtual:starlight/components/Search';
+import AlbumButton from '../album/AlbumButton.astro';
+import logo from '../../assets/logo.svg?raw';
+import { pageHref, slugOf } from './urls.ts';
+
+const page = slugOf(Astro.url.pathname);
+const { entry } = Astro.locals.starlightRoute;
+
+const landing = page === '';
+const map = page === 'map';
+const gallery = page === 'examples' || page.startsWith('examples/');
+
+const sections = [
+  {
+    text: 'Docs',
+    href: pageHref('getting-started'),
+    current: !landing && !map && !gallery && entry.id !== '404',
+  },
+  { text: 'Map', href: pageHref('map'), current: map },
+  { text: 'Examples', href: pageHref('examples'), current: gallery },
+];
+---
+
+<div class="bar">
+  <a class="mark" href={pageHref('')} aria-current={landing ? 'page' : undefined} aria-label="TypeGPU Kit"
+    ><Fragment set:html={logo} /><canvas class="plate" aria-hidden="true"></canvas></a
+  >
+  <nav class="sections" aria-label="Sections">
+    {
+      sections.map((section) => (
+        <a href={section.href} aria-current={section.current ? 'true' : undefined}>
+          {section.text}
+        </a>
+      ))
+    }
+  </nav>
+  <div class="search">
+    <AlbumButton />
+    <Search />
+  </div>
+</div>
+<canvas class="rail" aria-hidden="true"></canvas>
+
+<script>
+  import { paint, rampOf } from './dither.ts';
+  import { plate } from './lockup.ts';
+
+  const mark = document.querySelector<HTMLElement>('.bar .mark');
+  const printed = mark?.querySelector<HTMLCanvasElement>('canvas.plate');
+  const vector = mark?.querySelector<SVGSVGElement>('svg');
+  if (printed && vector) void plate(printed, vector);
+
+  const rail = document.querySelector<HTMLCanvasElement>('canvas.rail');
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('.bar .sections a')];
+  if (rail && links.length > 0) {
+    const ramp = rampOf(rail, [
+      'var(--rule-strong)',
+      'color-mix(in oklab, var(--accent) 45%, var(--rule-strong))',
+      'var(--accent)',
+      'var(--accent-high)',
+    ]);
+    const still = matchMedia('(prefers-reduced-motion: reduce)');
+    const current = links.find((link) => link.hasAttribute('aria-current'));
+
+    // The light's middle and half-width, in CSS pixels across the rail, and how lit it is
+    const placeOf = (link: HTMLAnchorElement | undefined) => {
+      if (!link) return { middle: 0, half: 0, strength: 0 };
+      const box = link.getBoundingClientRect();
+      if (!box.width || !box.height) return { middle: 0, half: 0, strength: 0 };
+      const left = rail.getBoundingClientRect().left;
+      return { middle: box.left + box.width / 2 - left, half: box.width / 2, strength: 1 };
+    };
+    let shown = placeOf(current);
+    let target = shown;
+    let frame = 0;
+
+    const draw = () => {
+      const width = rail.getBoundingClientRect().width;
+      const { middle, half, strength } = shown;
+      paint(
+        rail,
+        (x, y) => {
+          const across = (x * width - middle) / (half + 14);
+          return 0.95 * strength * Math.exp(-across * across * across * across) * (1 - y) ** 1.6;
+        },
+        { ramp },
+      );
+    };
+    const step = () => {
+      frame = 0;
+      const k = still.matches ? 1 : 0.2;
+      shown = {
+        middle: shown.middle + (target.middle - shown.middle) * k,
+        half: shown.half + (target.half - shown.half) * k,
+        strength: shown.strength + (target.strength - shown.strength) * k,
+      };
+      draw();
+      const settled =
+        Math.abs(target.middle - shown.middle) < 0.5 &&
+        Math.abs(target.strength - shown.strength) < 0.01;
+      if (!settled) frame = requestAnimationFrame(step);
+    };
+    const go = (link: HTMLAnchorElement | undefined) => {
+      const place = placeOf(link);
+      // From nothing, the light comes up where it is going rather than sliding in
+      if (shown.strength < 0.01) shown = { ...place, strength: 0 };
+      target = place;
+      if (!frame) frame = requestAnimationFrame(step);
+    };
+
+    for (const link of links) link.addEventListener('pointerenter', () => go(link));
+    links[0]?.parentElement?.addEventListener('pointerleave', () => go(current));
+    new ResizeObserver(() => {
+      shown = target = placeOf(current);
+      draw();
+    }).observe(rail);
+  }
+</script>
+
+<style>
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-5);
+    height: 100%;
+  }
+
+  .mark {
+    position: relative;
+    display: block;
+    flex: none;
+    /* KIT sits low in the lockup's box; this centres it, not the box, on the sections' text. */
+    translate: 0 -3px;
+  }
+
+  .mark :global(svg) {
+    display: block;
+    width: auto;
+    /* The lockup's 31 rows of pixels, one a CSS pixel. */
+    height: 31px;
+  }
+
+  .plate {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+  }
+
+  .sections {
+    display: flex;
+    gap: var(--s-1);
+  }
+
+  .sections a {
+    padding: 6px 10px;
+    border-radius: 0;
+    color: var(--text-2);
+    font: 400 12px/20px var(--font-mono);
+    text-decoration: none;
+  }
+
+  .sections a:hover {
+    color: var(--accent-high);
+  }
+
+  .sections a[aria-current] {
+    color: var(--accent-high);
+  }
+
+  .rail {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    height: 8px;
+    pointer-events: none;
+    image-rendering: pixelated;
+  }
+
+  .search {
+    display: flex;
+    gap: var(--s-3);
+    align-items: center;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  /* On phones the menu holds the sections, except where a page has no menu. */
+  @media (max-width: 49.99em) {
+    :global(:root[data-has-sidebar]) .sections {
+      display: none;
+    }
+
+    .bar {
+      gap: var(--s-3);
+    }
+
+    .sections a {
+      padding: 6px 8px;
+    }
+  }
+  @media (max-width: 25em) {
+    :global(:root:not([data-has-sidebar])) .sections {
+      gap: 0;
+    }
+
+    :global(:root:not([data-has-sidebar])) .sections a {
+      padding-inline: 3px;
+      font-size: 11px;
+    }
+  }
+</style>

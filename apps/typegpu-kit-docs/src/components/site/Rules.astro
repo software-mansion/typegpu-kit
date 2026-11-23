@@ -1,0 +1,58 @@
+---
+// A list of rules as rows: each item's leading bold words name it in a column of their own, so a
+// reader finds the rule they came for. The list stays a list in the page's Markdown, and a
+// numbered one keeps its numbers before the names.
+---
+
+<div class="rules"><slot /></div>
+
+<style>
+  .rules :global(:is(ul, ol)) {
+    margin: var(--s-5) 0;
+    padding: 0;
+    border-top: 1px solid var(--rule);
+    list-style: none;
+    counter-reset: rule;
+  }
+
+  .rules :global(ol > li) {
+    counter-increment: rule;
+  }
+
+  .rules :global(ol > :is(li, li > p:first-child) > strong:first-child::before) {
+    content: counter(rule);
+    display: inline-block;
+    width: 1.5rem;
+    color: var(--muted);
+    font: 400 13px/1 var(--font-mono);
+  }
+
+  .rules :global(li) {
+    position: relative;
+    margin: 0;
+    padding: var(--s-3) 0 var(--s-3) 9.5rem;
+    border-bottom: 1px solid var(--rule);
+    color: var(--text-2);
+  }
+
+  .rules :global(:is(li, li > p:first-child) > strong:first-child) {
+    position: absolute;
+    top: var(--s-3);
+    left: 0;
+    width: 8.5rem;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  @media (max-width: 40rem) {
+    .rules :global(li) {
+      padding-left: 0;
+    }
+
+    .rules :global(:is(li, li > p:first-child) > strong:first-child) {
+      position: static;
+      display: block;
+      width: auto;
+    }
+  }
+</style>

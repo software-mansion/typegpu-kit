@@ -1,0 +1,119 @@
+<figure class="viz" data-viz="draw-ahead">
+  <p class="viz-title">A particle drawn at its last step and ahead of it</p>
+  <svg viewBox="0 0 640 136" role="img" aria-label="A particle drawn on each display frame, at its last fixed step and ahead of it by the time since that step"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <label>display <select data-control="fps" autocomplete="off"><option>30</option><option>60</option><option selected>144</option></select> fps</label>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Change the display rate. Ticks mark 60 Hz steps and rings mark frames. Drawn at its last step, the particle holds still for several frames; drawn <code>sim.ahead</code> seconds along, it moves on every one.
+  </figcaption>
+</figure>
+
+<script>
+  import { clock, type FixedStep } from '@typegpu/kit';
+  import { action, animation, control, each } from './figure.ts';
+  import { fitWidth, seeded, svg, text } from './svg.ts';
+
+  const HEIGHT = 136;
+  const STEP = 1 / 60;
+  /** Figure units per simulated second, so a step is 24 units long. */
+  const SPEED = 1440;
+  const SLOWDOWN = 6;
+  /** Display frames whose rings stay on the tracks. */
+  const KEPT = 14;
+  const TRACKS = [48, 124] as const;
+
+  /** Where a frame drew the particle, along each track. */
+  interface Drawn {
+    stepped: number;
+    ahead: number;
+  }
+
+  each('draw-ahead', (root) => {
+    const figure = root.querySelector('svg')!;
+    const fps = control<HTMLSelectElement>(root, 'fps');
+    const random = seeded(5);
+
+    let sim: FixedStep;
+    let drawn: Drawn[] = [];
+    let ahead = 0;
+    let width = 640;
+
+    const reset = () => {
+      sim = clock.fixedStep({ step: STEP });
+      drawn = [];
+      ahead = 0;
+    };
+
+    // A display frame: a few steps, then a draw at the last step and one `ahead` past it
+    const frame = () => {
+      const dt = (1 / Number(fps.value)) * (0.9 + random() * 0.2);
+      sim.update(dt);
+      ahead = sim.ahead;
+      const stepped = 12 + sim.time * SPEED;
+      if (stepped + ahead * SPEED > width - 12) {
+        reset();
+        return;
+      }
+      drawn.push({ stepped, ahead: stepped + ahead * SPEED });
+      if (drawn.length > KEPT) drawn.shift();
+    };
+
+    const track = (y: number, at: (one: Drawn) => number) => {
+      svg('line', { x1: 0, x2: width, y1: y, y2: y, stroke: 'var(--viz-line)' }, figure);
+      for (let x = 12; x <= 12 + sim.time * SPEED + 0.5; x += STEP * SPEED) {
+        svg('line', { x1: x, x2: x, y1: y - 4, y2: y + 4, stroke: 'var(--viz-line)' }, figure);
+      }
+
+      // A frame that drew where the one before it did stacks above it
+      let last = Number.NaN;
+      let stack = 0;
+      drawn.forEach((one, i) => {
+        const x = at(one);
+        stack = Math.abs(x - last) < 0.5 ? stack + 1 : 0;
+        last = x;
+        const current = i === drawn.length - 1;
+        svg('circle', {
+          cx: x, cy: y - stack * 8, r: current ? 4 : 3,
+          fill: current ? 'var(--viz-accent)' : 'none',
+          stroke: current ? 'var(--viz-accent)' : 'var(--viz-b)',
+        }, figure);
+      });
+    };
+
+    const draw = fitWidth(figure, (laid) => {
+      width = laid;
+      text(figure, 0, 12, 'drawn at the last step', { class: 'strong' });
+      track(TRACKS[0], (one) => one.stepped);
+      text(figure, 0, 96, 'drawn sim.ahead further along', { class: 'strong' });
+      text(figure, width, 96, `ahead ${Math.round(ahead * 1000)} ms`, { 'text-anchor': 'end' });
+      track(TRACKS[1], (one) => one.ahead);
+      return HEIGHT;
+    }, 320);
+
+    let pending = 0;
+    const shown = animation(root, {
+      step(dt) {
+        pending += dt / SLOWDOWN;
+        const period = 1 / Number(fps.value);
+        while (pending > period) {
+          pending -= period;
+          frame();
+        }
+      },
+      draw,
+      play: action(root, 'play'),
+    });
+
+    fps.addEventListener('input', () => {
+      reset();
+      for (let i = 0; i < KEPT; i++) frame();
+      shown.redraw();
+    });
+
+    reset();
+    for (let i = 0; i < KEPT; i++) frame();
+    draw();
+  });
+</script>

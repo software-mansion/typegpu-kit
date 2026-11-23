@@ -1,0 +1,120 @@
+---
+title: Textures from images
+description: Load image files as GPU textures, as colour or as data, with the smaller copies a distant surface reads and a sampler for them.
+modules: [kit/images]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Images from '../../../components/viz/Images.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A WebGPU texture holds texels in a format, and an image file holds encoded bytes. Between them sit a decode, a choice of format that says whether the bytes are colour or data, an upload and the smaller copies sampling reads at a distance. `images` does each step, so a texture is two calls: `decode` while loading, then `create`.
+
+<Hidden card="kinetic">
+  <Images />
+</Hidden>
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { images } from '@typegpu/kit';
+
+const file = await fetch('/textures/bark.webp');
+const bytes = new Uint8Array(await file.arrayBuffer());
+const picture = await images.decode({ bytes, mimeType: 'image/webp' });
+
+const bark = images.create(root, picture); // sRGB colour, every mip level
+const view = bark.createView(d.texture2d(d.f32));
+const smooth = images.sampler(root, { anisotropy: 8 });
+
+const barkAt = (uv: d.v2f) => {
+  'use gpu';
+  return std.textureSample(view.$, smooth.$, uv).rgb; // linear light
+};
+```
+
+- `create` makes the texture at the image's size, writes it and generates its mips.
+- `bark.destroy()` frees it. A sampler needs no destroy.
+
+## Colour or data
+
+An 8-bit image holds either colour, which a screen showed in sRGB, or data, such as normals, roughness or height. Colour goes into an `rgba8unorm-srgb` texture, which sampling turns into linear light. Data goes into `rgba8unorm` with `color: 'linear'`, which samples the bytes as they are:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { images } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const picture: images.Picture;
+declare const icon: images.Picture;
+// ---cut---
+const normals = images.create(root, picture, { color: 'linear' });
+const sharp = images.create(root, icon, { mips: false });
+```
+
+Pixels you made yourself are a `{ width, height, pixels }` with 4 bytes per pixel, unpremultiplied, in rows from the top. `create` takes them like a decoded file and throws if the count doesn't match the size.
+
+## HDR images
+
+A Radiance `.hdr` file holds light brighter than white, such as a panorama of the sky with the sun in it. `images.decodeHdr(bytes)` decodes it into half floats, and `create` stores them in `rgba16float`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { images } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const file = await fetch('/skies/meadow.hdr');
+const meadow = images.decodeHdr(new Uint8Array(await file.arrayBuffer()));
+const sky = images.create(root, meadow); // rgba16float, linear
+```
+
+- `decode` reads a file whose MIME type is `images.HDR`, `image/vnd.radiance`, the same way.
+- An [environment](/kit/environment/) bakes such a panorama into the light around a scene.
+- Values above 65 504, the largest half float, clamp to it. The sun in a photographed sky can be brighter.
+- The decoder reads flat and run-length encoded RGBE rows from the top, as Poly Haven and most tools write them. It throws for other orientations and for XYZE files.
+
+## Packed HDR
+
+Some HDR files store light in 8-bit channels. RGBM, for example, stores `rgb × a × range`. Sampling such a texture interpolates the stored values, which gives the wrong light between texels whose `a` differs. `packed` converts each texel to linear light once, when the texture is created:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { images } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const picture: images.Picture;
+// ---cut---
+const light = images.create(root, picture, { packed: images.rgbm(8) }); // rgba16float
+const smaller = images.create(root, picture, { packed: images.rgbm(8), format: 'rg11b10ufloat' });
+```
+
+- `packed` is any `'use gpu'` function from a stored texel to linear RGBA, and `images.rgbm(range)` is one. It reads the raw values, so it takes no `color`.
+- `'rg11b10ufloat'` takes half the memory and drops alpha. It needs the device feature `'rg11b10ufloat-renderable'`.
+- Mips, arrays and cube maps work as for any image.
+
+## Arrays and cube maps
+
+`images.array(root, pictures)` makes a 2D array with one image per layer, such as terrain materials or an animation's frames. All layers share a size and a kind. Sample a view of `d.texture2dArray(d.f32)` with the layer index.
+
+`images.cube(root, faces)` makes a cube map from six square faces in WebGPU's order: +x, −x, +y, −y, +z, −z. Sample a view of `d.textureCube(d.f32)` with a direction.
+
+## Samplers
+
+`images.sampler(root, options)` filters linearly within and between mip levels and repeats past the edge. `wrap` takes WebGPU's address modes, such as `'clamp-to-edge'`. `anisotropy` sharpens surfaces seen at grazing angles, up to 16 samples. WebGPU allows it only with linear filtering, so `filter: 'nearest'` uses one sample.
+
+## On React Native
+
+React Native's `createImageBitmap` runs on the JS thread only, and a scene on a worker has none. Decode PNG, JPEG and WebP files on the JS thread with `images.decodeBitmap`, then pass the bitmaps to the scene, where `create` takes them. A `Decode` of your own, such as one built on Skia, can return `{ width, height, pixels }` instead: pass it to `decode` as its second argument.
+
+React Native's decoder premultiplies alpha and then divides it back, so colour where alpha is near 0 is lost. It also ignores `colorSpaceConversion: 'none'`, so a colour profile in the file can change the bytes. Keep data out of alpha here, or decode to pixels with your own `Decode`. For packed HDR, use an encoding that leaves alpha at 255 rather than RGBM, or a `.hdr` file.
+
+`decodeHdr` is plain JavaScript and runs on any thread, the worker included.
+
+## Limits
+
+<Rules>
+
+- **One size** Every image of an array or a cube has one size and one kind: 8-bit or half float.
+- **Submits** `create`, `array` and `cube` submit to generate mips, and with `packed` to unpack. Call them while loading, not in a frame.
+- **Memory** 8-bit images keep 4 channels and half-float images keep 4 half floats per texel. A 2048 × 1024 HDR panorama takes 22 MB with its mips, and the same image in 8 bits takes 11 MB. A `packed` image takes the HDR size, or the 8-bit size in `rg11b10ufloat`.
+
+</Rules>

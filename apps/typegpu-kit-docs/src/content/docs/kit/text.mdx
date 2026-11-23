@@ -1,0 +1,364 @@
+---
+title: Text
+description: Labels and on-screen text that stay sharp at any size, from a font you bake at build time, with no WebAssembly on the device.
+modules: [kit/text, kit/font, kit/typeset, kit/fontBaker]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Module from '../../../components/site/Module.astro';
+import Rules from '../../../components/site/Rules.astro';
+import Text from '../../../components/viz/Text.astro';
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+<Module id="kit/text" />
+
+HTML labels over a canvas cannot move from kernels, hide behind the scene or run on React Native. GPU text needs glyph layout and an atlas. `@pmndrs/glyph` shapes strings at runtime with 1.4 MB of WebAssembly, which Hermes cannot run.
+
+Bake fonts with Glyph at build time. It produces a **multi-channel signed distance field**, or MSDF, atlas and JSON with advances and kerning. On the device, JavaScript lays out text and the GPU draws one instanced quad per glyph.
+
+<Hidden card="solar-system">
+  <Text />
+</Hidden>
+
+```ts twoslash
+// @filename: vite-env.d.ts
+declare module '*?url' {
+  const url: string;
+  export default url;
+}
+// @filename: index.ts
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+// ---cut---
+import { font, text } from '@typegpu/kit';
+import interData from '@typegpu/kit/fonts/inter.json?url';
+import interAtlas from '@typegpu/kit/fonts/inter.rgba?url';
+
+// Vite serves the shipped font as two files
+const [data, atlas] = await Promise.all([
+  fetch(interData).then((response) => response.json()),
+  fetch(interAtlas).then((response) => response.arrayBuffer()),
+]);
+const sans = font.create(root, font.read(data, atlas));
+
+const tags = text.create(root, sans, {
+  camera: view,
+  capacity: 16,
+  length: 24,
+  place: text.pinned,
+});
+const canvas = passes.create(root, surface).pipe(view.inject());
+const drawn = canvas.add(tags.drawing);
+
+tags.write(0, 'Lantern', { em: 18, baseline: 'bottom' });
+tags.labels.patch({ 0: { position: [2, 1.5, 0], color: [1, 0.8, 0.4, 1] } });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    canvas.record(frame, drawn);
+  }),
+);
+```
+
+<Rules>
+
+- **Capacity** A set holds `capacity` labels with at most `length` glyphs each. `write(label, text, options)` lays out one label and uploads its glyphs. Spaces use no glyph slots. Glyphs beyond `length` are omitted.
+- **Moving and fading** `labels` stores anchors and linear colours, initially white at the origin. Move or fade labels with TypeGPU's `patch`, which uploads only supplied fields. Kernels can use `tags.move(label, position)` and `tags.setLabel(label, value)`. These updates do not repeat layout.
+- **Size and anchor** This label uses 18 points per em. Their pixel size is `em` times the pass's pixels per point, the surface's `pixelRatio`, giving a consistent size across screens. Labels centre on their anchor. Use `baseline: 'bottom'` to place their bottom at the anchor.
+- **Drawing** `canvas.add(tags.drawing)` builds the pipeline into a [pass description](/kit/passes/). One draw renders `capacity * length` instances. Empty slots still run four vertices each.
+- **Font bytes** Load font bytes in your code. See [Loading a font](#loading-a-font) for each platform.
+
+</Rules>
+
+The [solar system](/examples/solar-system/) example bends its labels around each planet with a custom `place`, and types them on glyph by glyph.
+
+Any kernel can write glyphs. `quads` stores `length` entries per label in label order. Each entry is a `text.Quad`:
+
+<Rules>
+
+- **Writing a glyph** `tags.setQuad(label, k, quad)` sets glyph `k`. Its `pen` and `em` use the units expected by `place`. `glyph` is the font index plus 1, or 0 to hide it. Read indices and advances from `font.glyphOf` and `font.advance`.
+- **Erasing** `tags.erase(label)` hides all of a label's glyphs. Erase a label before a kernel writes fewer glyphs than `write` did.
+- **Reading a glyph** `tags.quadAt(label, k)` reads glyph `k`. To show text a kernel picks, `write` each choice once into a set you never draw, and copy the chosen label's quads with `setQuad(0, k, bank.quadAt(choice, k))` from a kernel that reads both sets. The [stampede](/examples/stampede/) names the horse under the pointer this way.
+
+</Rules>
+
+## Loading a font
+
+<Module id="kit/font" />
+
+The package includes baked Inter SemiBold in `@typegpu/kit/fonts/inter.json` and `inter.rgba`. Baking a font produces the same two files. Pass the JSON as text or parsed data, plus atlas bytes, to `font.read(json, atlas)`. It returns a `Baked` with `data`, a `FontData`, and `atlas` for `font.create`. It throws for versions other than 1, missing or mistyped fields, or an atlas size other than 4 bytes per texel at the JSON dimensions. Field errors name the field.
+
+<Tabs syncKey="platform">
+
+<TabItem label="Web">
+
+Vite serves package files at their own URLs with `?url` in development and builds, as in the opening example. Use types from `vite/client`. Fetch your own baked font from `public/` by its path.
+
+</TabItem>
+
+<TabItem label="React Native">
+
+Metro bundles the JSON as a module, and the atlas as an asset once `rgba` is in its `assetExts`:
+
+```js title="metro.config.js"
+const { getDefaultConfig } = require('expo/metro-config');
+const { getBundleModeMetroConfig } = require('react-native-worklets/bundleMode');
+
+const config = getBundleModeMetroConfig(getDefaultConfig(__dirname));
+config.resolver.assetExts.push('rgba');
+module.exports = config;
+```
+
+```ts twoslash
+// @resolveJsonModule
+// @filename: expo.d.ts
+declare module 'expo-asset' {
+  export class Asset {
+    static loadAsync(module: number): Promise<Asset[]>;
+    readonly localUri: string | null;
+  }
+}
+declare module 'expo-file-system' {
+  export class File {
+    constructor(uri: string);
+    arrayBuffer(): Promise<ArrayBuffer>;
+  }
+}
+declare function require(path: string): number;
+// @filename: index.ts
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { font } from '@typegpu/kit';
+import data from '@typegpu/kit/fonts/inter.json';
+import { Asset } from 'expo-asset';
+import { File } from 'expo-file-system';
+
+const [atlas] = await Asset.loadAsync(require('@typegpu/kit/fonts/inter.rgba'));
+const bytes = await new File(atlas!.localUri!).arrayBuffer();
+const sans = font.create(root, font.read(data, bytes));
+```
+
+Use Expo 58's `expo-asset` and `expo-file-system` to load the font files.
+
+</TabItem>
+
+<TabItem label="Node">
+
+Use `readFileSync` in tests or scripts to load both files. Resolve a package file with `new URL(import.meta.resolve('@typegpu/kit/fonts/inter.rgba'))`. `font.read` accepts JSON from `readFileSync(url, 'utf8')` and atlas bytes as a `Buffer`.
+
+</TabItem>
+
+</Tabs>
+
+## Baking a font
+
+<Module id="kit/fontBaker" was="bake" />
+
+`typegpu-kit-bake-font` runs on Node and requires `@pmndrs/glyph` 0.1 installed alongside it.
+
+```sh
+typegpu-kit-bake-font --input Inter-SemiBold.ttf --output public/fonts/inter --characters "…↓"
+```
+
+- The command writes `inter.json` and `inter.rgba`. They include printable ASCII, the supplied `--characters` and a fallback glyph that advances without drawing.
+- It warns of characters given that the font has no glyph for.
+- Glyph bakes only static fonts. Pin variable-font axes first, for example with `fonttools varLib.instancer Font.ttf wght=600`.
+- The shipped Inter is baked with `…` at the defaults below, under the SIL Open Font License.
+
+| Flag                | `bake`          | Default |                                                                                                                          |
+| ------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `--characters`      | `characters`    |         | Additional characters beyond printable ASCII. Only Latin text is supported because runtime layout does not shape glyphs. |
+| `--em-size`         | `emSize`        | `40`    | Atlas texels per em. Larger values keep corners sharper on large text and make a larger atlas.                           |
+| `--pixel-range`     | `pixelRange`    | `8`     | Distance range in atlas texels. It limits how far outlines and glows can extend.                                         |
+| `--font-face-index` | `fontFaceIndex` | `0`     | The face of a collection.                                                                                                |
+
+In a build script, import `bake(options)` from `@typegpu/kit/fontBaker`. Pass the font file as `input` with the options above. The result contains `Baked` for `font.create` and `absent`, the requested characters missing from the font. `format(data)` produces the command's JSON format, with one line per glyph and kerning pair.
+
+```ts twoslash
+// @types: node, @webgpu/types
+// ---cut---
+import { writeFile } from 'node:fs/promises';
+import { bake, format } from '@typegpu/kit/fontBaker';
+
+const { data, atlas, absent } = await bake({ input: 'Inter-SemiBold.ttf', characters: '…' });
+if (absent) throw new Error(`Inter has no glyph for ${absent}.`);
+await writeFile('public/fonts/inter.json', format(data));
+await writeFile('public/fonts/inter.rgba', atlas);
+```
+
+The atlas must fit on one page of Glyph's packer. The bake reports an error if it does not.
+
+## Layout
+
+<Module id="kit/typeset" />
+
+`write` lays text out with these options.
+
+| Option     | Default    |                                                                                                                                                                         |
+| ---------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `em`       |            | Units per em. Use world units for world text and points for `screen` or `pinned` text.                                                                                  |
+| `align`    | `'center'` | Horizontal anchor position within each line, `'left'`, `'center'` or `'right'`.                                                                                         |
+| `baseline` | `'middle'` | Vertical anchor position within the block, `'top'`, `'cap'` for the top of the first line's capitals, `'middle'`, `'alphabetic'` for the first baseline, or `'bottom'`. |
+| `tracking` | `0`        | Space added after each character but the last of a line, in em.                                                                                                         |
+
+`\n`, `\r\n` and `\r` start lines. Text does not wrap to a width.
+
+`write` returns the label's layout, with its `width`, `height` and `lines`, valid until the set's next `write`. Size a panel behind a label from it.
+
+Use the same layout without drawing to measure text before writing it. `typeset.create(capacity).set(font, text, options)` returns the same layout. Once its arrays fit the longest text, it allocates no more. `typeset` reads only advances and kerning. Pass `font.metrics(data)` without a root to measure text in Node, a worker or before `tgpu.init`.
+
+```ts twoslash
+import { font, typeset } from '@typegpu/kit';
+declare const json: string;
+declare const atlas: ArrayBuffer;
+// ---cut---
+const { data } = font.read(json, atlas);
+const panel = typeset.create(32).set(font.metrics(data), 'Game over', { em: 24 });
+const [width, height] = [panel.width, panel.height]; // in points, as em is
+```
+
+## Placing text
+
+`place` converts a glyph corner to clip space using the label's `position` and the corner offset. Choose one of four functions:
+
+| `place`       | `position`                                                        | `em` is in  |
+| ------------- | ----------------------------------------------------------------- | ----------- |
+| `text.facing` | A point in the world; the text faces the camera.                  | World units |
+| `text.ground` | A point in the world; the text lies on the ground, read along +x. | World units |
+| `text.pinned` | A point in the world; the text stays as large wherever it is.     | Points      |
+| `text.screen` | Pixels from the drawn region's top-left in x and y, depth in z.   | Points      |
+
+- A point equals the [`passes.viewport`](/kit/passes/#pixels-and-points)'s `pixelRatio` pixels of the target the pass draws, giving consistent label sizes across screens and in low-resolution targets.
+- Screen positions use pixels. Multiply pointer-event offsets by the surface's `pixelRatio`. [Picker](/kit/picker/) takes points and performs that multiplication itself.
+- `facing`, `ground` and `pinned` use the set's `camera` or the camera injected by its pass description. `screen` needs no camera.
+
+Write a custom `place` as a `'use gpu'` function taking `position`, `offset` and a `text.Placed`. The latter contains `label`, the glyph index within the label as `glyph`, its `pen` and its `em`. To size in points, read the pixel dimensions and pixel ratio from `passes.viewport.$`. Both `place` and `shade` can read `cameras.current.$`. If a callback reads another module, [fill that dependency](/concepts/connecting-modules/), for example with `place: tgpu.fn(wobble).pipe(noise.inject())`.
+
+To make a rising "+1" swell, read its scale from a buffer indexed by `label`. Multiply the offset to scale around the anchor:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import { font, text } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 4, height: 3 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 8 });
+declare const sans: font.Font;
+// ---cut---
+const scales = root.createReadonly(d.arrayOf(d.f32, 16), Array(16).fill(1));
+
+const swelling = (position: d.v3f, offset: d.v2f, glyph: text.Placed) => {
+  'use gpu';
+  return text.pinned(position, offset * scales.$[glyph.label]);
+};
+
+const pops = text.create(root, sans, {
+  camera: view,
+  capacity: 16,
+  length: 4,
+  place: swelling,
+});
+pops.write(3, '+1', { em: 14 });
+scales.patch({ 3: 1.6 });
+```
+
+A kernel that moves the "+1" can write its scale too, through `scales.buffer.as('mutable')`.
+
+## Shading
+
+`shade(fragment)` returns premultiplied colour from a `text.Fragment`:
+
+- `color` and `label` give the label colour and index. `glyph` is the glyph index within the label, starting at 0.
+- `local` is the pixel position relative to the anchor, in em with y pointing up.
+- `distance` is the distance to the sharp glyph edge in screen pixels, positive inside. `round` measures distance to a rounded edge from the atlas's fourth channel. The figure shows both.
+- `reach` limits both distances to half the pixel range scaled to the drawn glyph. With the shipped bake, it is pixels per em divided by 10.
+
+An outline two pixels wide, narrower where the atlas doesn't reach that far:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { font, text } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const sans: font.Font;
+// ---cut---
+const outlined = (fragment: text.Fragment) => {
+  'use gpu';
+  const width = std.min(2, fragment.reach - 0.5);
+  const fill = std.saturate(fragment.distance + 0.5);
+  const outline = std.saturate(fragment.round + width + 0.5) * fragment.color.w;
+  return d.vec4f(fragment.color.xyz * fill * outline, outline);
+};
+
+const score = text.create(root, sans, {
+  capacity: 1,
+  length: 12,
+  place: text.screen,
+  shade: outlined,
+});
+```
+
+A full two-pixel outline needs 25 pixels per em with the shipped bake, or 12.5 points at 2×. Outlines or glows wider than `reach` fill the glyph quad. For example, `round + 2.5` produces boxes below 25 pixels per em. Bake with a wider `--pixel-range` for wide effects on small text.
+
+Use `glyph` and `local` to animate labels without rewriting quads. This typewriter effect fades glyphs below a rising count and applies a vertical gradient from the baseline:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras } from '@typegpu/kit';
+import { font, text } from '@typegpu/kit';
+const root = await tgpu.init();
+const size = { width: 4, height: 3 };
+const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 8 });
+declare const sans: font.Font;
+declare const seconds: number;
+// ---cut---
+const typed = root.createUniform(d.f32);
+const TOP = d.vec3f(1, 0.85, 0.4);
+
+const typewriter = (fragment: text.Fragment) => {
+  'use gpu';
+  const shown = std.saturate(typed.$ - d.f32(fragment.glyph));
+  const ink = std.mix(fragment.color.xyz, TOP, std.saturate(fragment.local.y / 0.7));
+  const alpha = fragment.color.w * shown * std.saturate(fragment.distance + 0.5);
+  return d.vec4f(ink * alpha, alpha);
+};
+
+const line = text.create(root, sans, {
+  camera: view,
+  capacity: 1,
+  length: 48,
+  place: text.screen,
+  shade: typewriter,
+});
+line.write(0, 'The tide is coming in.', { em: 20, align: 'left', baseline: 'alphabetic' });
+typed.write(seconds * 10); // ten glyphs a second
+```
+
+Text blends over the scene. Use `blend: 'add'` for glowing text, or `blend: 'translucent'` to draw into a description's [translucency targets](/kit/passes/#translucent-drawings) in any order with other translucent drawings. It tests depth without writing it, so draw it after the scene. See [Passes](/kit/passes/#what-each-target-gets) for target outputs.
+
+## What it's made of
+
+| Part          |                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| `font.atlas`  | An `rgba8unorm` texture with three sharp-distance channels and one rounded-distance channel. |
+| `font.glyphs` | A storage buffer of each glyph's quad in em and its cell of the atlas, 32 bytes a glyph.     |
+| `quads`       | `capacity * length` entries of 16 bytes each, storing pen, glyph and em in a storage buffer. |
+| `labels`      | A storage buffer of each label's `text.Label`, 32 bytes.                                     |
+
+Multiple text sets can share a font. Destroy the sets before the font.
+
+## Limits
+
+<Rules>
+
+- **Layout** `typeset` supports Latin text from left to right, with one glyph per character, advances and pair kerning. It does not support ligatures or contextual forms, which the bake disables. It also omits right-to-left and bidirectional text, scripts requiring shaping such as Arabic and Indic scripts, Chinese and Japanese character sets, width-based wrapping, ellipses, line spacing, hyphenation, tabs and fallback fonts.
+- **On the web** For these capabilities on the web, use Glyph's layout engine alongside this package.
+- **Atlas bytes** The atlas uses raw RGBA bytes. In react-native-webgpu 0.17.0, `createImageBitmap` premultiplies alpha while decoding, corrupting distances where the fourth channel is below 1.
+- **Compression** Serve the atlas compressed. Inter's atlas is 617 KB, or 191 KB with gzip.
+- **Label size** Label size belongs to layout; label rows have no scale field. Read a separate scale in a custom `place`, as in the swelling "+1" example.
+
+</Rules>

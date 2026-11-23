@@ -1,0 +1,12 @@
+{
+  "title": "Hex isle",
+  "category": "worlds",
+  "rarity": "uncommon",
+  "description": "A little island of hex tiles goes through a whole day. The sun moves and casts shadows, the sky runs through sunset and blue hour into night, a windmill turns, clouds drift, and windows light up at dusk. Depth of field blurs above and below a band so it looks like a tilt-shift miniature, or it can focus on whatever is under the pointer. The tiles are from Kay Lousberg's KayKit Medieval Hexagon Pack (CC0).",
+  "line": "A hex-tile island through a whole day, shot like a tilt-shift miniature.",
+  "order": 7,
+  "hint": "drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 1
+  }
+}

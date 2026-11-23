@@ -1,0 +1,121 @@
+---
+title: Readback
+description: Copy a buffer into your frame's encoder and read it on the CPU after submit without stalling.
+modules: [kit/readback]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import ReadbackTimeline from '../../../components/viz/ReadbackTimeline.astro';
+
+The GPU executes commands after the CPU records them. A result such as the object under a cursor therefore reaches the CPU in a later frame. TypeGPU's `buffer.read()` creates a staging buffer, submit and promise per call. A **readback** reuses a ring of staging buffers, records copies in your frame's encoder and maps them after submit.
+
+<Hidden card="sph-sculpt">
+  <ReadbackTimeline />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { frames, coroutines } from '@typegpu/kit';
+const root = await tgpu.init();
+const scheduler = coroutines.create();
+declare function onHits(count: number): void;
+// ---cut---
+import { readback } from '@typegpu/kit';
+
+const hits = root.createBuffer(d.arrayOf(d.u32, 4)).$usage('storage');
+const probe = readback.create(root, hits, { hz: 30 });
+
+frames.create(root, (frame) => {
+  // ... the pass that writes `hits`
+  probe.capture(frame); // after it
+  scheduler.run(frame);
+
+  const polled = probe.take(); // polled: each new value once, or undefined
+  if (polled) onHits(polled[0]);
+});
+
+function* react() {
+  const counts = yield* coroutines.until(probe.next()); // or waited on: the next capture
+  onHits(counts[0]);
+}
+```
+
+## Placing the capture
+
+`capture(frame)` copies the buffer, or its [range](#reading-a-range), at that point in the command order. Place it after the pass that fills a counter, or before the passes when a picker must read the frame already on screen.
+
+<Rules>
+
+- **Busy buffers** While every staging buffer is mapping, it is skipped and tried again next frame.
+- **Cadence** Record the pass that fills the buffer every frame and let `hz` pick the frames that copy; a pass that counts costs microseconds. Gating that pass with a clock of your own makes two cadences that disagree, so a copy can land in a frame the pass skipped.
+- **Once a frame** A frame captures once; a second call does nothing.
+- **Unsubmitted frames** A frame that is never submitted hands its reads to the next capture.
+
+</Rules>
+
+## Reading
+
+- Reads return the buffer's value transformed by `decode`, if supplied. If `decode` throws, reads waiting on that copy fail with its error.
+- Two callers of `take()` split the values. If both need every value, have each read `latest` and track `latestFrame`.
+- In a [coroutine](/kit/coroutines/), wait for `next()` with `yield* coroutines.until(probe.next())`.
+- A [picker](/kit/picker/)'s `pick` calls `request()` for its own copy.
+- For counters that only increase, compare each read with the last value to handle late or repeated reads. [Counters](/kit/counters/) does that for named counters.
+
+## Reading bytes
+
+Reads decode the whole schema into JavaScript values, one object per struct, so a large array of structs allocates thousands of objects per read. Pass `bytes: true` to skip decoding. `decode` then receives the copied bytes, which follow the schema's WGSL layout with its padding. They are valid only during the call, so read them into arrays of your own. Without `decode`, reads return a copy as an `ArrayBuffer`, so a result of any other type needs a `decode` that makes it.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { readback } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const Cell = d.struct({ level: d.f32, source: d.u32 }); // 8 bytes a cell
+const cells = root.createBuffer(d.arrayOf(Cell, 12288)).$usage('storage');
+
+const levels = new Float32Array(12288);
+const field = readback.create(root, cells, {
+  bytes: true,
+  decode: (bytes) => {
+    const words = new Float32Array(bytes);
+    for (let i = 0; i < levels.length; i++) levels[i] = words[i * 2];
+    return levels;
+  },
+});
+```
+
+### Reading a range
+
+With `bytes: true`, `offset` and `size` copy only that range of the buffer, such as one level of a packed map or a run of rows. Both count bytes and are multiples of 4; `size` defaults to the rest of the buffer. Each staging buffer holds only the range, and `decode` receives only its bytes. A range needs `bytes: true`, since part of a buffer is not a value of its schema.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { readback } from '@typegpu/kit';
+const root = await tgpu.init();
+// ---cut---
+const heights = root.createBuffer(d.arrayOf(d.f32, 256 * 256 + 128 * 128)).$usage('storage');
+
+// The second level, after the first level's 256 × 256 floats
+const coarse = readback.create(root, heights, { bytes: true, offset: 256 * 256 * 4 });
+const level = new Float32Array(await coarse.next());
+```
+
+## Rate
+
+`hz` schedules captures at that rate and updates `latest` without a waiting read. It uses a [cadence](/kit/clock/#cadences), so the first capture is immediate.
+
+## Staleness
+
+- Call `reset()` after clearing a buffer or reloading a scene to discard earlier copies.
+- To restart counters, clear the buffer in the frame, before the passes that count, and `reset()`. Otherwise a copy made before the clear can land after it, and counters that take differences run backwards.
+- A late map never replaces a newer `latest`.
+- A promise that already resolved keeps its value, even if its coroutine resumes after a reset. Compare a held result with `latest`.
+- A table's changes reach the GPU at the first submit after its `flush`. Compare `latestFrame` with that frame's index when a value must be newer than a change.
+
+Device loss rejects every map. Promises waiting on a copy reject with the map's error, later captures also fail, and `latest` keeps its last value. Create the modules again on another root to recover.
+
+## Limits
+
+- A capture placed before the pass that fills the buffer reads the previous frame's value, and nothing catches that.
+- A readback reads a fixed buffer. A varying list read once, on demand, needs code of its own.

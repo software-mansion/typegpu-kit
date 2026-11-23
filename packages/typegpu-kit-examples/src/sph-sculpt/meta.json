@@ -1,0 +1,13 @@
+{
+  "title": "SPH sculpt",
+  "category": "simulations",
+  "rarity": "epic",
+  "description": "An island of plasticine you can dig into and build up, with a spring whose SPH water runs downhill through whatever you carve. The clay is ray traced from a distance field, with soft shadows and occlusion under a golden-hour sky. Only the blocks around the water rebuild its surface as it moves.",
+  "line": "Dig channels in clay and the spring water finds its way downhill.",
+  "order": 16,
+  "features": ["texture-formats-tier1"],
+  "hint": "drag to dig \u00b7 hold Shift to build \u00b7 right-drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 16
+  }
+}

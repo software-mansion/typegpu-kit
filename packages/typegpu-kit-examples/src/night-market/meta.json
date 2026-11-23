@@ -1,0 +1,12 @@
+{
+  "title": "Night market",
+  "category": "worlds",
+  "rarity": "rare",
+  "description": "A potion stall in a toy market on a rainy night. Among the lights along the street, a lantern, a fire and two lamps cast shadows. The seller raises her lantern while a customer hurries up the street out of the rain and slows to a stop at her table. Tap someone and they wave, on top of whatever they're doing, and every tap pulls focus to where you tapped. The buildings, props, potions, people and clips are from Kay Lousberg's KayKit packs, and the table, lamps, string lights and logs from Kenney's kits (CC0).",
+  "line": "A potion stall on a rainy night, lit by a lantern, a fire and two lamps.",
+  "order": 3,
+  "hint": "tap someone to make them wave \u00b7 every tap pulls focus \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 19
+  }
+}

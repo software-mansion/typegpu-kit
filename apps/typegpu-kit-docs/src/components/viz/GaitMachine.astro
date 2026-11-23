@@ -1,0 +1,234 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="gait-machine">
+  <p class="viz-title">Forty horses move between four gait states</p>
+  <svg viewBox="0 0 640 264" role="img" aria-label="Horse gait states, transitions and pace for forty horses"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="startle">startle</button>
+    <Slider inline name="urgency" min={0} max={1} step={0.05} value={0.45} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Raise urgency until a horse's pace crosses 5.2 m/s and it gallops, then lower it. The horse keeps galloping until its pace falls below 4.2 m/s. Startle bolts every horse that is not bolting already.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, animation, each, slider } from './figure.ts';
+  import {
+    CALM_BELOW,
+    createProgram,
+    FASTEST,
+    GALLOP_FROM,
+    HORSES,
+    STEP,
+    WALK_FROM,
+  } from './GaitMachine.program.ts';
+  import { badge, stipple, CHAR, fitWidth, svg, text } from './svg.ts';
+
+  type Name = 'walking' | 'galloping' | 'grazing' | 'bolting';
+
+  const COLOUR: Record<Name, string> = {
+    walking: 'var(--viz-b)',
+    galloping: 'var(--viz-c)',
+    grazing: 'var(--viz-d)',
+    bolting: 'var(--viz-e)',
+  };
+
+  /** The definition's transitions, labelled; dashed ones take an event. */
+  const EDGES: readonly { from: Name; to: Name; label?: string; event?: boolean }[] = [
+    { from: 'walking', to: 'galloping', label: `> ${GALLOP_FROM} m/s` },
+    { from: 'galloping', to: 'walking', label: `< ${WALK_FROM} m/s` },
+    { from: 'walking', to: 'grazing', label: 'calm 3%/s' },
+    { from: 'grazing', to: 'walking', label: '≥ 4 s' },
+    { from: 'grazing', to: 'bolting', event: true },
+    { from: 'walking', to: 'bolting', label: 'startle', event: true },
+    { from: 'galloping', to: 'bolting', event: true },
+    { from: 'bolting', to: 'galloping', label: '2 s' },
+  ];
+
+  const NODE = { width: 92, height: 42 };
+  const TOP = 26;
+  const BOTTOM = 118;
+  const LANES = 154;
+  const LANE = 18;
+  const LEFT = 72;
+  const HEIGHT = LANES + LANE * 4 + 30;
+
+  /** How far from a box's middle its edge is along (x, y), and a gap. */
+  const edge = (x: number, y: number) =>
+    Math.min(
+      NODE.width / 2 / Math.max(Math.abs(x), 1e-6),
+      NODE.height / 2 / Math.max(Math.abs(y), 1e-6),
+    ) + 4;
+
+  each('gait-machine', (root) => {
+    const figure = root.querySelector('svg')!;
+    const program = createProgram();
+    const { Gait, horses, pace, lit } = program;
+    const names = Gait.names as readonly Name[];
+    const states = names.length;
+
+    slider(
+      root,
+      'urgency',
+      (value) => {
+        program.urgency = value;
+        timeline.redraw();
+      },
+      (value) => (value < CALM_BELOW ? `${value.toFixed(2)} calm` : value.toFixed(2)),
+    );
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const counts = program.counts();
+        const at: Record<Name, { x: number; y: number }> = {
+          walking: { x: width / 4, y: TOP },
+          galloping: { x: (width * 3) / 4, y: TOP },
+          grazing: { x: width / 4, y: BOTTOM },
+          bolting: { x: (width * 3) / 4, y: BOTTOM },
+        };
+
+        // An arrow from one box to another, `side` px to its left as it runs, so a pair keeps apart
+        const arrow = (from: Name, to: Name, side: number, dashed: boolean, on: boolean) => {
+          const a = at[from];
+          const b = at[to];
+          const length = Math.hypot(b.x - a.x, b.y - a.y);
+          const dx = (b.x - a.x) / length;
+          const dy = (b.y - a.y) / length;
+          const nx = dy;
+          const ny = -dx;
+          const from0 = edge(dx, dy);
+          const x1 = a.x + dx * from0 + nx * side;
+          const y1 = a.y + dy * from0 + ny * side;
+          const x2 = b.x - dx * from0 + nx * side;
+          const y2 = b.y - dy * from0 + ny * side;
+          const stroke = on ? 'var(--viz-accent)' : 'var(--viz-line)';
+          svg(
+            'line',
+            {
+              x1,
+              y1,
+              x2,
+              y2,
+              stroke,
+              'stroke-width': 1,
+              ...(dashed ? { 'stroke-dasharray': '4 3' } : {}),
+            },
+            figure,
+          );
+          const head = 6;
+          svg(
+            'path',
+            {
+              d: `M${x2},${y2} L${x2 - dx * head + nx * head * 0.5},${y2 - dy * head + ny * head * 0.5} L${x2 - dx * head - nx * head * 0.5},${y2 - dy * head - ny * head * 0.5} Z`,
+              fill: stroke,
+            },
+            figure,
+          );
+          // Where its label goes: beside it, on the side it keeps to
+          const x = (x1 + x2) / 2;
+          const y = (y1 + y2) / 2;
+          if (Math.abs(nx) > Math.abs(ny)) {
+            return { x: x + nx * 10, y: y + 4, anchor: nx > 0 ? 'start' : 'end' };
+          }
+          return { x, y: y + ny * 10 + 4, anchor: 'middle' };
+        };
+
+        for (const { from, to, label, event = false } of EDGES) {
+          const paired = EDGES.some((other) => other.from === to && other.to === from);
+          const on = lit[names.indexOf(from) * states + names.indexOf(to)] > 0;
+          const middle = arrow(from, to, paired ? 6 : 0, event, on);
+          if (label) {
+            text(figure, middle.x, middle.y, label, {
+              'text-anchor': middle.anchor,
+              ...(on ? { class: 'strong' } : {}),
+            });
+          }
+        }
+
+        names.forEach((name, state) => {
+          const { x, y } = at[name];
+          svg(
+            'rect',
+            {
+              x: x - NODE.width / 2,
+              y: y - NODE.height / 2,
+              width: NODE.width,
+              height: NODE.height,
+              rx: 2,
+              fill: stipple(figure),
+              stroke: COLOUR[name],
+            },
+            figure,
+          );
+          text(figure, x, y - 2, name, { 'text-anchor': 'middle', fill: COLOUR[name] });
+          const active = lit.some((left, i) => left > 0 && (Math.floor(i / states) === state || i % states === state));
+          badge(figure, x, y + 2, counts[state], active);
+        });
+
+        // Each horse at its pace, in its state's lane; the shaded band is where a horse keeps its gait
+        const right = width - 8;
+        const xOf = (speed: number) => LEFT + (Math.min(speed, FASTEST) / FASTEST) * (right - LEFT);
+        const bottom = LANES + LANE * states;
+        svg(
+          'rect',
+          {
+            x: xOf(WALK_FROM),
+            y: LANES - 4,
+            width: xOf(GALLOP_FROM) - xOf(WALK_FROM),
+            height: bottom - LANES + 8,
+            fill: stipple(figure),
+          },
+          figure,
+        );
+        names.forEach((name, state) => {
+          const y = LANES + LANE * state + LANE / 2;
+          text(figure, LEFT - 8, y + 4, name, { 'text-anchor': 'end', fill: COLOUR[name] });
+          svg('line', { x1: LEFT, x2: right, y1: y, y2: y, stroke: 'var(--viz-line)' }, figure);
+        });
+        for (let i = 0; i < HORSES; i++) {
+          const state = horses.state(i);
+          const jitter = ((i % 5) - 2) * 2;
+          svg(
+            'circle',
+            {
+              cx: xOf(pace[i]),
+              cy: LANES + LANE * state + LANE / 2 + jitter,
+              r: 3.5,
+              fill: COLOUR[names[state]],
+            },
+            figure,
+          );
+        }
+        for (const speed of [0, WALK_FROM, GALLOP_FROM, FASTEST]) {
+          const label = speed === FASTEST ? `${speed} m/s` : String(speed);
+          const x = xOf(speed);
+          const anchor = speed === 0 ? 'start' : speed === FASTEST ? 'end' : 'middle';
+          const lean = speed === WALK_FROM ? -CHAR : speed === GALLOP_FROM ? CHAR : 0;
+          text(figure, x + lean, bottom + 18, label, { 'text-anchor': anchor });
+        }
+        return HEIGHT;
+      },
+      320,
+    );
+
+    const timeline = animation(root, {
+      every: STEP,
+      step: () => program.step(),
+      draw,
+      play: action(root, 'play'),
+    });
+
+    action(root, 'startle', () => {
+      program.startle();
+      if (!timeline.playing) {
+        program.step();
+        timeline.redraw();
+      }
+    });
+  });
+</script>

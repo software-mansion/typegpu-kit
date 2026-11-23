@@ -1,0 +1,9 @@
+{
+  "title": "Fish tank",
+  "category": "simulations",
+  "rarity": "uncommon",
+  "description": "A tank of 3 340 fish in three species, schooling as GPU boids. Each fish checks its neighbours through a sorted grid to keep its distance, match their speed and stay with the school. Press F to drop food and the nearest fish go for it. The GPU counts the bites on each pellet, and the CPU clears the eaten ones. Caustics ripple over the sand and bubbles rise.",
+  "line": "3 340 schooling fish as GPU boids. Press F to feed them.",
+  "order": 17,
+  "hint": "press F to feed \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

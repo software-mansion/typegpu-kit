@@ -1,0 +1,201 @@
+---
+title: Trails
+description: Ribbons behind moving things, pushed from kernels or written from the CPU.
+modules: [kit/trails]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import Trails from '../../../components/viz/Trails.astro';
+
+A wake, a drawn line or a comet's path follows recent positions. Rebuilding ribbons on the CPU requires vertices for every trail each frame, with joins that can crack at sharp turns. Store each trail as a **ring** of recent points on the GPU. Push points from a kernel or write a whole line from the CPU. One draw turns all trails into [lines](/kit/lines/) with joins and caps.
+
+<Hidden card="fireworks">
+  <Trails />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu, type TgpuComputePass } from 'typegpu';
+import { cameras, clock, frames, passes } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+const sim = clock.fixedStep({ step: 1 / 60 });
+const swimmers = root.createReadonly(d.arrayOf(d.vec3f, 64));
+declare const school: { step(pass: TgpuComputePass): void };
+// ---cut---
+import { trails } from '@typegpu/kit';
+
+const wakes = trails.create(root, { capacity: 64, length: 48, settings: { width: 0.2 } });
+const canvas = passes.create(root, surface).pipe(view.inject());
+const drawn = canvas.add(wakes.drawing);
+
+const follow = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 64) return;
+  wakes.push(gid.x, swimmers.$[gid.x]);
+});
+const following = root.createComputePipeline({ compute: follow });
+
+frames.animate(
+  frames.create(root, (frame) => {
+    const compute = frame.encoder.beginComputePass();
+    for (let steps = sim.update(frame.dt); steps > 0; steps--) {
+      school.step(compute);
+      compute.setPipeline(following);
+      compute.dispatchWorkgroups(1);
+    }
+    compute.end();
+
+    canvas.record(frame, drawn);
+  }),
+);
+```
+
+<Rules>
+
+- **Pushing** A push adds a point and drops the oldest once the trail holds `length` points. Push once per fixed step. Pushing once per frame makes trails shorter on faster displays.
+- **One thread** Allow only one thread to push a given trail per dispatch. Multiple threads would race to update its ring.
+- **Resetting** `reset(trail)` clears one trail from a kernel and counts as its push for that dispatch. The same thread can push after resetting. Do this when respawning an object to avoid a streak between its old and respawn positions. `clear(frame)` clears all trails.
+- **Drawing** `canvas.add(wakes.drawing)` builds the pipeline into a [pass description](/kit/passes/), shaped for the camera the description injects. One indexed draw renders all trails with at least two points, using one instance per segment.
+- **Blending** Ribbons blend and test depth without writing it. Draw them after opaque renderers, or pass `blend: 'translucent'` to draw them into the [translucency targets](/kit/passes/#translucent-drawings) in any order. See [Passes](/kit/passes/#what-each-target-gets) for their target outputs.
+- **Default ribbon** The default ribbon starts at `settings.width` and tapers to zero at the oldest point a full trail can hold. It uses `settings.color` and is brightest at its centre. Change width with `wakes.settings.patch({ width: 0.4 })`.
+- **The head** Points land on fixed steps, while [particles](/kit/particles/) draw between them, `ahead` of the last step. `head` draws a trail's newest end where its particle is drawn instead: `head: sparks.drawnAt`. The [fireworks](/examples/fireworks/) streaks push a point every few steps and stay on their stars this way.
+
+</Rules>
+
+The [solar system](/examples/solar-system/) example pushes each comet's trail from the kernel that moves it.
+
+## From the CPU
+
+`write(trail, positions)` replaces a trail with x, y and z values ordered oldest first. It keeps the newest `length` points. `write(trail, [])` clears it. Rewrite a player-drawn line whenever it changes:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { trails } from '@typegpu/kit';
+const root = await tgpu.init();
+const thread = trails.create(root, { capacity: 1, length: 256 });
+// ---cut---
+const line = new Float32Array(256 * 3);
+
+function threadChanged(points: readonly { x: number; y: number }[]) {
+  const kept = points.slice(-256);
+  for (const [i, point] of kept.entries()) {
+    line[i * 3] = point.x;
+    line[i * 3 + 1] = point.y;
+  }
+
+  thread.write(0, line.subarray(0, kept.length * 3));
+}
+```
+
+- Queue writes arrive before frame commands. Kernel pushes in that frame append to the written points.
+- A closed loop repeats its first point at the end.
+- Under a flat camera, trails lie in its plane and use `z` as depth.
+
+## Width and shade
+
+`width(point)` returns the width in world units. `shade(point, across)` returns premultiplied fragment colour, with `across` from -1 to 1 across the ribbon. Both receive a `trails.Sample` with `position`, `trail` and `along`. `along` is 0 at the newest point and 1 at the oldest point a full trail can hold.
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { trails } from '@typegpu/kit';
+
+const hues = root.createReadonly(d.arrayOf(d.vec3f, 8));
+
+const swell = (point: trails.Sample) => {
+  'use gpu';
+  return 0.3 * std.sin(point.along * Math.PI);
+};
+
+const ink = (point: trails.Sample, across: number) => {
+  'use gpu';
+  const alpha = (1 - std.smoothstep(0.6, 1, std.abs(across))) * (1 - point.along);
+  return d.vec4f(hues.$[point.trail] * alpha, alpha);
+};
+
+const strokes = trails.create(root, {
+  capacity: 8,
+  length: 64,
+  blend: 'over',
+  width: swell,
+  shade: ink,
+});
+```
+
+Both functions can read `cameras.current.$`. If one reads another module, [fill that dependency](/concepts/connecting-modules/). For example, a width function that samples cached Perlin noise uses `width: tgpu.fn(swell).pipe(noise.inject())`.
+
+## Joins and caps
+
+Ribbons take [the joins and caps of lines](/kit/lines/#joins-and-caps), round by default. Set `join` for the joins, `startCap` for the newest end and `endCap` for the oldest.
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { lines, trails } from '@typegpu/kit';
+
+const arrows = trails.create(root, {
+  capacity: 16,
+  length: 32,
+  join: lines.joins.miter,
+  startCap: lines.caps.arrow,
+  endCap: lines.caps.butt,
+});
+```
+
+## Points in your shaders
+
+Any shader reads trail points. `held(trail)` returns the point count. `pointAt(trail, k)` reads point `k` counting backward from the newest, with `k` below `held`. This kernel finds trail directions for arrowheads or sprites:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { trails } from '@typegpu/kit';
+const root = await tgpu.init();
+const wakes = trails.create(root, { capacity: 64, length: 48 });
+// ---cut---
+const headings = root.createMutable(d.arrayOf(d.vec3f, 64));
+
+const aim = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 64) return;
+
+  let heading = d.vec3f();
+  if (wakes.held(gid.x) >= 2) heading = wakes.pointAt(gid.x, 0) - wakes.pointAt(gid.x, 1);
+  headings.$[gid.x] = heading;
+});
+
+const aiming = root.createComputePipeline({ compute: aim });
+```
+
+## What it's made of
+
+| Part       |                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| `points`   | A storage buffer of `capacity * length` points, trail `t` in the `length` slots from `t * length`.    |
+| `rings`    | One `trails.Ring` per trail in a storage buffer. Each stores the next insertion slot and point count. |
+| `settings` | Colour and width for the defaults, a uniform.                                                         |
+
+Each point takes 16 bytes, so 64 trails of 48 points take 48 KiB.
+
+## Limits
+
+<Rules>
+
+- **Length** All trails in a set have the same `length`. Size it for the longest trail.
+- **Stopped trails** A stopped trail keeps its points until pushes or a write replace them. To fade it, keep each trail's stop time in a buffer of your own and read it by `point.trail` in `shade`.
+- **Dashes** `along` counts points rather than distance. Distance-based dashes and textures need your own calculation.
+- **Facing** Ribbons are joined on the screen, so they always face the camera.
+- **Near plane** A segment that crosses the near plane is cut there with no cap.
+- **Repeated points** A point pushed where the last one lies ends the ribbon there with `endCap` and starts it again with `startCap`. Unless both caps are round, push only points that moved.
+
+</Rules>

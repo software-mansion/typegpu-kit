@@ -1,0 +1,9 @@
+{
+  "title": "Survey model",
+  "category": "data",
+  "rarity": "common",
+  "description": "A noise-made island as a stacked survey model, its contour rings rising off a slate plinth. A kernel traces every ring, and all of them draw as lit enamel tubes in one draw, with every fifth ring bold and the soundings below the shoreline dashed. A graticule, a north arrow and a scale bar sit on the plinth. Point at a ring to pick it out.",
+  "line": "An island as a stack of contour rings, traced on the GPU.",
+  "order": 27,
+  "hint": "point at a ring \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

@@ -1,0 +1,712 @@
+---
+title: A finished look for model scenes
+description: A scene of many copies of loaded models with sun shadows, soft contact shadows, smooth edges, glow and a colour grade, in one file you can copy.
+---
+
+import { FileTree } from '@astrojs/starlight/components';
+import ModelLook from '../../../components/viz/ModelLook.astro';
+
+<ModelLook />
+
+A [lighting](/kit/lighting/) and a set of [instances](/kit/instances/) draw [glTF](/kit/gltf/) models lit by the sun and the sky. On their own they look flat. Every surface gets light from the whole sky. Nothing seems to rest on the ground. Edges step and shimmer as the view turns. Four stages finish the picture:
+
+- The sun's [shadows](/kit/lighting/#shadows), in cascades fitted to the view, set each model on the ground.
+- [Ambient occlusion](/kit/ao/) darkens the sky light where nearby surfaces hide the sky: under eaves, between trees and where a wall meets the grass.
+- [TAA](/kit/taa/) smooths edges and thin parts by taking a sample at a different offset each frame.
+- [Bloom](/kit/finish/#bloom) spreads light brighter than white, and the [final pass](/kit/finish/) tone maps and grades the picture.
+
+The program splits into three files. `look.ts` holds the lighting and every pass from the prepass to the canvas, so another program can copy it whole. The package ships it and `props.ts` whole in `docs/recipes/lit-models/`:
+
+<FileTree>
+
+- scene.ts `createScene` with the camera, the props, the look and the frame
+- look.ts `createLook` with the lighting, the passes and the post-processing
+- props.ts `createProps` with the mesh pool and the instances
+
+</FileTree>
+
+## The props
+
+Put every model in one [mesh pool](/kit/mesh-pool/) and every piece in one set of instances. In each pass, the set issues one draw per mesh that has instances. One house and a thousand copies of the same house take the same number of draw calls:
+
+```ts twoslash title="props.ts"
+import { instances, meshPool } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+
+/** A piece of the scene: a model by name, and its row's values. */
+export interface Placement {
+  readonly model: string;
+  /** Its position, rotation, scale and any material field, such as `emission`. */
+  readonly values: instances.Values;
+}
+
+/** One pool of every model and shape, and one set of instances placing them. */
+export function createProps(
+  root: TgpuRoot,
+  models: Readonly<Record<string, meshPool.ModelData | meshPool.Shape>>,
+  placements: readonly Placement[],
+) {
+  const pool = meshPool.create(root, meshPool.roomFor(Object.values(models)));
+  // A shape, such as `meshes.cylinder()`, is one mesh with nothing to decode
+  const add = (item: meshPool.ModelData | meshPool.Shape) =>
+    'meshes' in item ? pool.add(item) : { meshes: [pool.add(item)], ready: Promise.resolve() };
+  const added = new Map(Object.entries(models).map(([name, item]) => [name, add(item)]));
+  const modelOf = (name: string) => added.get(name)!;
+
+  // A model takes a row for each of its meshes
+  const rows = placements.reduce((sum, { model }) => sum + modelOf(model).meshes.length, 0);
+  const props = instances.create(root, pool, { capacity: rows });
+  for (const { model, values } of placements) props.add(modelOf(model), values);
+
+  return {
+    renderer: props.renderer(),
+    /** Settles once every model's textures are on the GPU. */
+    ready: Promise.all([...added.values()].map((model) => model.ready)),
+    flush: () => props.flush(),
+    destroy() {
+      props.destroy();
+      pool.destroy();
+    },
+  };
+}
+```
+
+- `meshPool.roomFor` sizes the pool for every model's vertices and indices. A shape such as `meshes.cylinder()` goes in `models` beside the glTF models, as the figure's lantern posts do.
+- A row starts with its mesh's material from the file. Values you give replace it, so a lantern's glass takes an `emission` above 1 and glows through the bloom.
+- Pieces with shaders of their own, such as turning sails or lit windows, take a [kind](/kit/instances/#kinds) in a second set from the same pool. The look draws that set's renderer the same way.
+
+Each placement carries the values its row starts with:
+
+```ts twoslash
+import type { instances } from '@typegpu/kit';
+interface Placement {
+  readonly model: string;
+  readonly values: instances.Values;
+}
+// ---cut---
+/** A turn of `yaw` radians round +y, as a quaternion. */
+const turned = (yaw: number) => [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)] as const;
+
+const placements: Placement[] = [
+  { model: 'church', values: { position: [0, 0, 0] } },
+  { model: 'house', values: { position: [2, 0, 0], rotation: turned(Math.PI / 3) } },
+  { model: 'house', values: { position: [-2, 0, 0], rotation: turned(Math.PI), scale: 0.9 } },
+  { model: 'tree', values: { position: [1, 0, 1.73], scale: 1.2 } },
+  { model: 'lantern', values: { position: [1, 0, 0.58], emission: [6, 3.6, 1.8] } },
+];
+```
+
+## The lighting and the occlusion
+
+Ambient occlusion reads a depth texture drawn before the scene shades. The look draws every solid prop into a half-resolution prepass and traces the occlusion from it. The lighting's `ambient` hook dims the sky light by the occlusion. The sun's shadow fits two cascades to the view:
+
+```ts twoslash title="look.ts"
+import {
+  ao,
+  bloom,
+  finish,
+  lighting,
+  passes,
+  pipelines,
+  shading,
+  taa,
+  targets,
+  tone,
+  type cameras,
+  type Frame,
+  type instances,
+  type Surface,
+} from '@typegpu/kit';
+import { d, std, type TgpuRoot } from 'typegpu';
+
+/** The stages of the look. Each turns off without rebuilding anything. */
+export interface Stages {
+  shadows: boolean;
+  occlusion: boolean;
+  taa: boolean;
+  bloom: boolean;
+}
+
+export interface LookOptions {
+  /** How far the sun's shadow reaches, a little past the farthest prop the view shows. */
+  readonly far: number;
+  /** The size of the gaps the occlusion darkens, in world units. */
+  readonly crease: number;
+  readonly light: Partial<d.InferInput<typeof lighting.Settings>>;
+  /** The stages that run, read every frame. Call `apply` after changing `taa` or `bloom`. */
+  readonly stages: Stages;
+}
+// ---cut---
+/** Sky light, dimmed where nearby surfaces hide the sky. */
+const occludedSky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+
+/** The lighting and every pass from the prepass to the canvas, seen through `view`. */
+export function createLook(
+  root: TgpuRoot,
+  surface: Surface,
+  view: cameras.OrbitCamera,
+  options: LookOptions,
+) {
+  const { stages } = options;
+  // Half-resolution depth of the solid props, drawn first for the occlusion to read
+  const early = targets.create(root, surface, {
+    depth: { format: 'depth32float', scale: 0.5, sampled: true },
+  });
+  const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+  const occlusion = ao.create(root, view, {
+    depth: () => early.textures.depth,
+    temporal: true, // turns its directions each frame for TAA to average
+    settings: { radius: options.crease, power: 3 },
+    enabled: () => stages.occlusion,
+  });
+  const light = lighting.create(root, {
+    shading: { ambient: occludedSky },
+    shadow: {
+      eye: view,
+      cascades: 2,
+      far: options.far,
+      filter: 9,
+      enabled: () => stages.shadows,
+    },
+  });
+  light.settings.patch(options.light);
+  // ---cut-after---
+}
+```
+
+- Set `far` a little past the farthest prop the view shows. The cascades spread the same texels over `far`, so a longer reach blurs every shadow. See [cascades fitted to the view](/kit/lighting/#cascades-fitted-to-the-view).
+- Set `crease` near the size of the gaps the occlusion should darken. The figure uses 0.7 world units for houses about one unit tall.
+- The occlusion dims only the sky light. Sunlit faces keep their brightness, and the sun's shadow keeps its own edge.
+- For reflections of a sky panorama, call `environment.occluded` with the same `ao.at` in place of `shading.hemisphere`, as [shading with an environment](/kit/environment/#shading-with-it) shows.
+
+## The picture
+
+The scene shades into an `rgba16float` target through the lighting, offset by TAA's jitter. It takes the occlusion's part as `shared`. The shared part supplies what `ao.at` reads, and keeps the pipelines working when a resize replaces the occlusion's texture. TAA blends the current frame with its accumulated history into a smooth picture. The bloom and the final pass both read that picture. Inside `createLook`, after the lighting:
+
+```ts twoslash title="look.ts"
+import {
+  ao,
+  bloom,
+  finish,
+  lighting,
+  passes,
+  pipelines,
+  shading,
+  taa,
+  targets,
+  tone,
+  type cameras,
+  type Frame,
+  type instances,
+  type Surface,
+} from '@typegpu/kit';
+import { d, std, type TgpuRoot } from 'typegpu';
+
+/** The stages of the look. Each turns off without rebuilding anything. */
+export interface Stages {
+  shadows: boolean;
+  occlusion: boolean;
+  taa: boolean;
+  bloom: boolean;
+}
+
+export interface LookOptions {
+  /** How far the sun's shadow reaches, a little past the farthest prop the view shows. */
+  readonly far: number;
+  /** The size of the gaps the occlusion darkens, in world units. */
+  readonly crease: number;
+  readonly light: Partial<d.InferInput<typeof lighting.Settings>>;
+  /** The stages that run, read every frame. Call `apply` after changing `taa` or `bloom`. */
+  readonly stages: Stages;
+}
+/** How strongly the glow adds to the picture. */
+const GLOW = 0.2;
+
+/** Sky light, dimmed where nearby surfaces hide the sky. */
+const occludedSky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+// ---cut---
+/** Cools the shadows and warms the lights after the tone curve. */
+const dusk = (color: d.v3f, _uv: d.v2f) => {
+  'use gpu';
+  const light = std.saturate(tone.luminance(color) * 2);
+  return color * std.mix(d.vec3f(0.84, 0.93, 1.14), d.vec3f(1.02, 1, 0.96), light);
+};
+// ---cut-start---
+/** The lighting and every pass from the prepass to the canvas, seen through `view`. */
+export function createLook(
+  root: TgpuRoot,
+  surface: Surface,
+  view: cameras.OrbitCamera,
+  options: LookOptions,
+) {
+  const { stages } = options;
+  // Half-resolution depth of the solid props, drawn first for the occlusion to read
+  const early = targets.create(root, surface, {
+    depth: { format: 'depth32float', scale: 0.5, sampled: true },
+  });
+  const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+  const occlusion = ao.create(root, view, {
+    depth: () => early.textures.depth,
+    temporal: true, // turns its directions each frame for TAA to average
+    settings: { radius: options.crease, power: 3 },
+    enabled: () => stages.occlusion,
+  });
+  const light = lighting.create(root, {
+    shading: { ambient: occludedSky },
+    shadow: {
+      eye: view,
+      cascades: 2,
+      far: options.far,
+      filter: 9,
+      enabled: () => stages.shadows,
+    },
+  });
+  light.settings.patch(options.light);
+  // ---cut-end---
+  const screen = targets.create(root, surface, {
+    hdr: { format: 'rgba16float', sampled: true },
+    depth: { format: 'depth24plus', sampled: true },
+  });
+  const aa = taa.create(root, {
+    source: () => screen.textures.hdr,
+    depth: () => screen.textures.depth,
+    camera: view,
+  });
+  const scene = passes
+    .create(
+      root,
+      screen,
+      { hdr: passes.color, depth: passes.depth },
+      { jitter: aa.jitter, shared: { ao: occlusion.part } },
+    )
+    .pipe(view.inject())
+    .beneath(light.inject());
+  const glow = bloom.create(root, { source: aa });
+  const final = finish.create(root, { format: surface.format, source: aa, glow, grade: dusk });
+  // ---cut-after---
+  return { light, prepass, scene, aa, glow, final, stages };
+}
+```
+
+- TAA reprojects last frame's picture by the camera's motion and the scene's depth, so its depth target is `sampled`. Props that hold still need nothing more.
+- Props that move need motion of their own. Give the scene a `motion: taa.motion` target, TAA its texture as `motion`, and the moving set [`history: true`](/kit/instances/#motion).
+- The bloom spreads only light above its `threshold`, 1 by default. A lit wall stays below it, and a lantern's glass at `emission` 6 glows.
+- `grade` runs inside the final pass, after the tone curve, on colours in display range. See [grading](/kit/finish/#grading).
+
+## Drawing and recording
+
+The look adds each renderer to the three passes that draw it. It records the shadow, the prepass and the occlusion before shading. Then it records TAA, bloom and the final pass in that order. Inside `createLook`, after the final pass:
+
+```ts twoslash title="look.ts"
+import {
+  ao,
+  bloom,
+  finish,
+  lighting,
+  passes,
+  pipelines,
+  shading,
+  taa,
+  targets,
+  tone,
+  type cameras,
+  type Frame,
+  type instances,
+  type Surface,
+} from '@typegpu/kit';
+import { d, std, type TgpuRoot } from 'typegpu';
+
+/** The stages of the look. Each turns off without rebuilding anything. */
+export interface Stages {
+  shadows: boolean;
+  occlusion: boolean;
+  taa: boolean;
+  bloom: boolean;
+}
+
+export interface LookOptions {
+  /** How far the sun's shadow reaches, a little past the farthest prop the view shows. */
+  readonly far: number;
+  /** The size of the gaps the occlusion darkens, in world units. */
+  readonly crease: number;
+  readonly light: Partial<d.InferInput<typeof lighting.Settings>>;
+  /** The stages that run, read every frame. Call `apply` after changing `taa` or `bloom`. */
+  readonly stages: Stages;
+}
+/** How strongly the glow adds to the picture. */
+const GLOW = 0.2;
+
+/** Sky light, dimmed where nearby surfaces hide the sky. */
+const occludedSky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+
+/** Cools the shadows and warms the lights after the tone curve. */
+const dusk = (color: d.v3f, _uv: d.v2f) => {
+  'use gpu';
+  const light = std.saturate(tone.luminance(color) * 2);
+  return color * std.mix(d.vec3f(0.84, 0.93, 1.14), d.vec3f(1.02, 1, 0.96), light);
+};
+
+/** The lighting and every pass from the prepass to the canvas, seen through `view`. */
+export function createLook(
+  root: TgpuRoot,
+  surface: Surface,
+  view: cameras.OrbitCamera,
+  options: LookOptions,
+) {
+  const { stages } = options;
+  // Half-resolution depth of the solid props, drawn first for the occlusion to read
+  const early = targets.create(root, surface, {
+    depth: { format: 'depth32float', scale: 0.5, sampled: true },
+  });
+  const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+  const occlusion = ao.create(root, view, {
+    depth: () => early.textures.depth,
+    temporal: true, // turns its directions each frame for TAA to average
+    settings: { radius: options.crease, power: 3 },
+    enabled: () => stages.occlusion,
+  });
+  const light = lighting.create(root, {
+    shading: { ambient: occludedSky },
+    shadow: {
+      eye: view,
+      cascades: 2,
+      far: options.far,
+      filter: 9,
+      enabled: () => stages.shadows,
+    },
+  });
+  light.settings.patch(options.light);
+  const screen = targets.create(root, surface, {
+    hdr: { format: 'rgba16float', sampled: true },
+    depth: { format: 'depth24plus', sampled: true },
+  });
+  const aa = taa.create(root, {
+    source: () => screen.textures.hdr,
+    depth: () => screen.textures.depth,
+    camera: view,
+  });
+  const scene = passes
+    .create(
+      root,
+      screen,
+      { hdr: passes.color, depth: passes.depth },
+      { jitter: aa.jitter, shared: { ao: occlusion.part } },
+    )
+    .pipe(view.inject())
+    .beneath(light.inject());
+  const glow = bloom.create(root, { source: aa });
+  const final = finish.create(root, { format: surface.format, source: aa, glow, grade: dusk });
+  // ---cut---
+  const shapes: passes.Drawn[] = [];
+  const casters: passes.Drawn[] = [];
+  const drawn: passes.Drawn[] = [];
+
+  return {
+    light,
+
+    /** Draws `renderer` in the prepass, the sun's shadow and the scene. */
+    add(renderer: instances.Renderer) {
+      shapes.push(prepass.add(renderer));
+      casters.push(light.shadow.add(renderer));
+      drawn.push(scene.add(renderer));
+    },
+
+    /** Applies `stages` to TAA and the final pass, which keep their own state. */
+    apply() {
+      aa.enable(stages.taa);
+      final.settings.patch({ glowIntensity: stages.bloom ? GLOW : 0 });
+    },
+
+    initAsync: () => pipelines.compile([prepass, occlusion, light, scene, aa, glow, final]),
+
+    record(frame: Frame) {
+      early.fit();
+      screen.fit();
+      light.shadow.record(frame, casters); // a depth pass per cascade
+      if (stages.occlusion) prepass.record(frame, shapes);
+      occlusion.record(frame); // reads the prepass
+      scene.record(frame, drawn); // reads the shadow and the occlusion
+      aa.record(frame);
+      if (stages.bloom) glow.record(frame); // reads TAA's picture
+      final.record(frame, surface.view(frame));
+    },
+
+    destroy() {
+      scene.destroy();
+      prepass.destroy();
+      light.destroy();
+      glow.destroy();
+      aa.destroy();
+      occlusion.destroy();
+      screen.destroy();
+      early.destroy();
+    },
+  };
+  // ---cut-after---
+}
+```
+
+`initAsync` lists the descriptions and modules whose pipelines it compiles. `destroy` frees their targets, buffers and drawings. Each description frees the drawings added to it, and the lighting frees its shadow casters.
+
+## The scene
+
+`scene.ts` composes the parts. It owns the camera, hands it to the look, and adds the props' renderer:
+
+```ts twoslash title="scene.ts"
+// @filename: props.ts
+import { instances, meshPool } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+
+/** A piece of the scene: a model by name, and its row's values. */
+export interface Placement {
+  readonly model: string;
+  /** Its position, rotation, scale and any material field, such as `emission`. */
+  readonly values: instances.Values;
+}
+
+/** One pool of every model and shape, and one set of instances placing them. */
+export function createProps(
+  root: TgpuRoot,
+  models: Readonly<Record<string, meshPool.ModelData | meshPool.Shape>>,
+  placements: readonly Placement[],
+) {
+  const pool = meshPool.create(root, meshPool.roomFor(Object.values(models)));
+  // A shape, such as `meshes.cylinder()`, is one mesh with nothing to decode
+  const add = (item: meshPool.ModelData | meshPool.Shape) =>
+    'meshes' in item ? pool.add(item) : { meshes: [pool.add(item)], ready: Promise.resolve() };
+  const added = new Map(Object.entries(models).map(([name, item]) => [name, add(item)]));
+  const modelOf = (name: string) => added.get(name)!;
+
+  // A model takes a row for each of its meshes
+  const rows = placements.reduce((sum, { model }) => sum + modelOf(model).meshes.length, 0);
+  const props = instances.create(root, pool, { capacity: rows });
+  for (const { model, values } of placements) props.add(modelOf(model), values);
+
+  return {
+    renderer: props.renderer(),
+    /** Settles once every model's textures are on the GPU. */
+    ready: Promise.all([...added.values()].map((model) => model.ready)),
+    flush: () => props.flush(),
+    destroy() {
+      props.destroy();
+      pool.destroy();
+    },
+  };
+}
+// @filename: look.ts
+import {
+  ao,
+  bloom,
+  finish,
+  lighting,
+  passes,
+  pipelines,
+  shading,
+  taa,
+  targets,
+  tone,
+  type cameras,
+  type Frame,
+  type instances,
+  type Surface,
+} from '@typegpu/kit';
+import { d, std, type TgpuRoot } from 'typegpu';
+
+/** The stages of the look. Each turns off without rebuilding anything. */
+export interface Stages {
+  shadows: boolean;
+  occlusion: boolean;
+  taa: boolean;
+  bloom: boolean;
+}
+
+export interface LookOptions {
+  /** How far the sun's shadow reaches, a little past the farthest prop the view shows. */
+  readonly far: number;
+  /** The size of the gaps the occlusion darkens, in world units. */
+  readonly crease: number;
+  readonly light: Partial<d.InferInput<typeof lighting.Settings>>;
+  /** The stages that run, read every frame. Call `apply` after changing `taa` or `bloom`. */
+  readonly stages: Stages;
+}
+
+/** How strongly the glow adds to the picture. */
+const GLOW = 0.2;
+
+/** Sky light, dimmed where nearby surfaces hide the sky. */
+const occludedSky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+
+/** Cools the shadows and warms the lights after the tone curve. */
+const dusk = (color: d.v3f, _uv: d.v2f) => {
+  'use gpu';
+  const light = std.saturate(tone.luminance(color) * 2);
+  return color * std.mix(d.vec3f(0.84, 0.93, 1.14), d.vec3f(1.02, 1, 0.96), light);
+};
+
+/** The lighting and every pass from the prepass to the canvas, seen through `view`. */
+export function createLook(
+  root: TgpuRoot,
+  surface: Surface,
+  view: cameras.OrbitCamera,
+  options: LookOptions,
+) {
+  const { stages } = options;
+  // Half-resolution depth of the solid props, drawn first for the occlusion to read
+  const early = targets.create(root, surface, {
+    depth: { format: 'depth32float', scale: 0.5, sampled: true },
+  });
+  const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+  const occlusion = ao.create(root, view, {
+    depth: () => early.textures.depth,
+    temporal: true, // turns its directions each frame for TAA to average
+    settings: { radius: options.crease, power: 3 },
+    enabled: () => stages.occlusion,
+  });
+  const light = lighting.create(root, {
+    shading: { ambient: occludedSky },
+    shadow: {
+      eye: view,
+      cascades: 2,
+      far: options.far,
+      filter: 9,
+      enabled: () => stages.shadows,
+    },
+  });
+  light.settings.patch(options.light);
+
+  const screen = targets.create(root, surface, {
+    hdr: { format: 'rgba16float', sampled: true },
+    depth: { format: 'depth24plus', sampled: true },
+  });
+  const aa = taa.create(root, {
+    source: () => screen.textures.hdr,
+    depth: () => screen.textures.depth,
+    camera: view,
+  });
+  const scene = passes
+    .create(
+      root,
+      screen,
+      { hdr: passes.color, depth: passes.depth },
+      { jitter: aa.jitter, shared: { ao: occlusion.part } },
+    )
+    .pipe(view.inject())
+    .beneath(light.inject());
+  const glow = bloom.create(root, { source: aa });
+  const final = finish.create(root, { format: surface.format, source: aa, glow, grade: dusk });
+
+  const shapes: passes.Drawn[] = [];
+  const casters: passes.Drawn[] = [];
+  const drawn: passes.Drawn[] = [];
+
+  return {
+    light,
+
+    /** Draws `renderer` in the prepass, the sun's shadow and the scene. */
+    add(renderer: instances.Renderer) {
+      shapes.push(prepass.add(renderer));
+      casters.push(light.shadow.add(renderer));
+      drawn.push(scene.add(renderer));
+    },
+
+    /** Applies `stages` to TAA and the final pass, which keep their own state. */
+    apply() {
+      aa.enable(stages.taa);
+      final.settings.patch({ glowIntensity: stages.bloom ? GLOW : 0 });
+    },
+
+    initAsync: () => pipelines.compile([prepass, occlusion, light, scene, aa, glow, final]),
+
+    record(frame: Frame) {
+      early.fit();
+      screen.fit();
+      light.shadow.record(frame, casters); // a depth pass per cascade
+      if (stages.occlusion) prepass.record(frame, shapes);
+      occlusion.record(frame); // reads the prepass
+      scene.record(frame, drawn); // reads the shadow and the occlusion
+      aa.record(frame);
+      if (stages.bloom) glow.record(frame); // reads TAA's picture
+      final.record(frame, surface.view(frame));
+    },
+
+    destroy() {
+      scene.destroy();
+      prepass.destroy();
+      light.destroy();
+      glow.destroy();
+      aa.destroy();
+      occlusion.destroy();
+      screen.destroy();
+      early.destroy();
+    },
+  };
+}
+// @filename: scene.ts
+// ---cut---
+import { cameras, pipelines, type Frame, type gltf, type Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+import { createLook } from './look.ts';
+import { createProps, type Placement } from './props.ts';
+
+export interface SceneOptions {
+  /** Each model as `gltf.read` returns it, by name. */
+  readonly models: Readonly<Record<string, gltf.ModelData>>;
+  readonly placements: readonly Placement[];
+}
+
+export async function createScene(root: TgpuRoot, surface: Surface, options: SceneOptions) {
+  const view = cameras.orbit(root, {
+    size: surface,
+    target: [0, 0.2, 0.5],
+    distance: 14,
+    pitch: 0.6,
+  });
+  const props = createProps(root, options.models, options.placements);
+  const look = createLook(root, surface, view, {
+    far: 28,
+    crease: 0.7,
+    light: { sunDirection: [-0.75, 0.4, -0.45], sunColor: [1, 0.66, 0.4], sunIntensity: 1.6 },
+    stages: { shadows: true, occlusion: true, taa: true, bloom: true },
+  });
+  look.add(props.renderer);
+  look.apply();
+  await Promise.all([props.ready, pipelines.compile([look])]);
+
+  return {
+    view,
+    frame(frame: Frame) {
+      view.update(frame.dt);
+      props.flush();
+      look.record(frame);
+    },
+    destroy() {
+      look.destroy();
+      props.destroy();
+    },
+  };
+}
+```
+
+A game adds its own parts beside the props, such as a [picker](/kit/picker/) for the piece under the pointer or [lines](/kit/lines/) for a selection outline. Record the picker in a compute pass. To draw the outline with the props, add the line drawing to the scene description in `createLook`. To draw it over the finished picture, add it to a separate pass description, record that after `look.record` and load the canvas colour.
+
+## What each stage costs
+
+- **Shadows** draw every caster once per cascade. The map's 2048-texel layers take 8 MB each in the default `depth16unorm`, and `filter: 9` takes nine comparisons per shaded pixel. One cascade suits a view that shows a small board from one height.
+- **Occlusion** draws every solid prop again into the half-resolution prepass, then traces and denoises at half resolution, a quarter of the pixels.
+- **TAA** takes one full-screen pass and two `rgba16float` history textures. [FXAA](/kit/fxaa/) costs one pass on the finished 8-bit picture and keeps no history. It smooths steps in a still frame but leaves thin parts shimmering as the view turns. Prefer it on the weakest phones.
+- **Bloom** draws six levels down and five up, each half the size of the one before.
+- **The final pass** tone maps, adds the glow and grades in one full-screen pass.
+
+A stage turns off without rebuilding anything. The look reads its `stages` every frame. It switches the shadow and the occlusion through their `enabled` options, and turns off the prepass and the bloom by skipping their recording. TAA and the glow keep state of their own, so `apply` passes a change to them through `aa.enable` and the final pass's `glowIntensity`. The figure above is this look, with buttons that flip its `stages`.

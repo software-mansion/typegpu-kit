@@ -1,0 +1,763 @@
+---
+title: Write a module
+description: Write a module that moves 65 536 particles through noise, use it from your scene and test what it records.
+---
+
+import { FileTree, Steps } from '@astrojs/starlight/components';
+import Hidden from '../../../components/album/Hidden.astro';
+import Install from '../../../components/site/Install.astro';
+import DrawAhead from '../../../components/viz/DrawAhead.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import FixedStep from '../../../components/viz/FixedStep.astro';
+import Workgroups from '../../../components/viz/Workgroups.astro';
+
+Build the [flow field example](/examples/flow-field/): 65 536 particles that drift through Perlin noise. You write the particles as a module, `createFlowField`, the way the kit writes its own. Start the module with a factory. It borrows your root, allocates the module's GPU resources and returns methods that record work into passes you open. Your scene makes the module and records each frame. [Modules](/concepts/modules/#writing-a-module) is the one-page reference for what you write here.
+
+The GPU runs the same small function for every particle at once. You write those functions in TypeScript, and [TypeGPU](https://typegpu.com) turns them into shaders, the programs the GPU runs. [Slime mould](/tutorials/slime-mould/) explains them at a slower pace.
+
+:::tip[Follow along]
+Work in the project from [Getting started](/getting-started/#host-a-scene), and create each new file in `src/`, beside `index.ts`. The page reloads when you save. The finished files are in the [example](/examples/flow-field/).
+:::
+
+<Steps>
+
+1. **Put the particles in a buffer, and scatter them.**
+
+   A [buffer](https://docs.swmansion.com/TypeGPU/fundamentals/buffers/) is GPU memory that holds many values of one shape. Each `Particle` holds a position and the direction it last moved in. Positions are in clip space, where the canvas spans −1 to 1 on both axes.
+
+   Create `flow-field.ts`. The factory takes the root and an options object, and allocates the buffer once, when the scene makes the module. Nothing allocates while a frame records.
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-1.ts
+   // ---cut---
+   import type { SizeSource } from '@typegpu/kit';
+   import { randf } from '@typegpu/noise';
+   import { d, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+
+   const WORKGROUP = 64;
+
+   const Particle = d.struct({ position: d.vec2f, direction: d.vec2f });
+
+   export interface FlowFieldOptions {
+     readonly count: number;
+     /** Seconds per `step`. */
+     readonly step: number;
+     readonly format: GPUTextureFormat;
+     /** What the particles are drawn into, such as the canvas surface. */
+     readonly size: SizeSource;
+   }
+
+   export function createFlowField(root: TgpuRoot, options: FlowFieldOptions) {
+     const { count, step, format, size } = options;
+
+     const particles = root.createBuffer(d.arrayOf(Particle, count)).$usage('storage');
+     const writable = particles.as('mutable');
+     const readable = particles.as('readonly');
+     // ---cut-after---
+     return {};
+   }
+   ```
+
+   - `size` is anything with a `width` and `height` in pixels, such as the canvas surface. The module reads it when it draws.
+   - [Free the particle buffer](/concepts/modules/#freeing-what-a-scene-made) with the module. Leave small uniforms, samplers and pipelines to the garbage collector.
+   - `writable` and `readable` are the same buffer, bound for writing in kernels and for reading in the vertex function. WebGPU forbids writable storage in a vertex function.
+
+   A **kernel** is a [compute function](https://docs.swmansion.com/TypeGPU/fundamentals/pipelines/) the GPU runs many times at once. Each run is a **thread**, numbered by `gid.x` from 0. Thread `n` places particle `n`. Threads start in **workgroups** of 64, so dispatch enough workgroups to cover every particle. The last workgroup can run past the end of the buffer, and the bounds check stops those threads:
+
+   <Hidden card="jump-flood">
+     <Workgroups noun="particle" />
+   </Hidden>
+
+   Add the `seed` kernel and return the module's first recording method:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-2.ts
+   import { randf } from '@typegpu/noise';
+   import { d, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+   const WORKGROUP = 64;
+   const Particle = d.struct({ position: d.vec2f, direction: d.vec2f });
+   // ---cut---
+   /** A random position across the canvas, in clip space. */
+   const spawn = () => {
+     'use gpu';
+     return d.vec2f(randf.sample(), randf.sample()) * 2 - 1;
+   };
+
+   // ---cut-start---
+   export function createFlowField(root: TgpuRoot, options: { count: number }) {
+     const { count } = options;
+     const particles = root.createBuffer(d.arrayOf(Particle, count)).$usage('storage');
+     const writable = particles.as('mutable');
+     // ---cut-end---
+     // Inside createFlowField
+     const seedValue = root.createUniform(d.f32);
+     const workgroups = Math.ceil(count / WORKGROUP);
+
+     const seedKernel = tgpu.computeFn({
+       workgroupSize: [WORKGROUP],
+       in: { gid: d.builtin.globalInvocationId },
+     })(({ gid }) => {
+       'use gpu';
+       if (gid.x >= count) return;
+
+       randf.seed2(d.vec2f(d.f32(gid.x), seedValue.$));
+       writable.$[gid.x] = Particle({ position: spawn(), direction: d.vec2f() });
+     });
+
+     const seedPipeline = root.createComputePipeline({ compute: seedKernel });
+
+     return {
+       seed(pass: TgpuComputePass) {
+         seedValue.write(Math.random());
+         pass.setPipeline(seedPipeline);
+         pass.dispatchWorkgroups(workgroups);
+       },
+
+       destroy() {
+         particles.destroy();
+       },
+     };
+   }
+   ```
+
+   - `randf` from `@typegpu/noise` gives each thread its own random numbers once you seed it. Seed it with the thread number and a value the CPU picks, so every reseed scatters the particles differently.
+   - `seedValue` is a **uniform**, a small value the CPU writes and every thread reads.
+   - `seed` takes a compute pass that the caller opens, so a scene can record several modules into one pass. It records a dispatch and returns; the scene submits the frame.
+   - `destroy` frees the particle buffer, so stop using the module before you call it.
+
+   Nothing draws yet. The scene uses the module in step 3.
+
+2. **Draw them.**
+
+   A [draw](https://docs.swmansion.com/TypeGPU/fundamentals/pipelines/) runs two functions. The **vertex** function places the corners of shapes on the screen, and the **fragment** function colours each pixel they cover. Draw each particle as a small square of four corners, one instance per particle.
+
+   The square's size is in pixels, so the vertex function needs the canvas size. The point size is a setting the reader can change. Describe the settings with a struct at module scope, so other code can name its type, and keep them in a uniform. Give the canvas size a uniform of its own:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-3.ts
+   import type { SizeSource } from '@typegpu/kit';
+   import { d, type TgpuRoot } from 'typegpu';
+   // ---cut---
+   export const FlowSettings = d.struct({
+     /** Clip-space units per second. */
+     speed: d.f32,
+     /** Noise cells across the height. */
+     scale: d.f32,
+     /** Particle diameter in pixels. */
+     pointSize: d.f32,
+   });
+
+   export const FLOW = { speed: 0.2, scale: 1.5, pointSize: 2 };
+   // ---cut-start---
+   interface FlowFieldOptions {
+     readonly size: SizeSource;
+     // ---cut-end---
+     // In FlowFieldOptions
+     /** Initial speed, scale and point size. */
+     readonly settings?: Partial<d.InferInput<typeof FlowSettings>>;
+     // ---cut-start---
+   }
+   export function createFlowField(root: TgpuRoot, options: FlowFieldOptions) {
+     const { size } = options;
+     // ---cut-end---
+
+     // Inside createFlowField
+     const settings = root.createUniform(FlowSettings, { ...FLOW, ...options.settings });
+     const viewport = root.createUniform(d.vec2f, d.vec2f(size.width, size.height));
+     // ---cut-after---
+     return { settings };
+   }
+   ```
+
+   `speed` and `scale` steer the particles from step 4. Below the uniforms, write the two functions. The vertex function runs four times per particle. It reads the particle at `instanceIndex`, turns `vertexIndex` into a corner of the square and colours the particle by its direction. The fragment function fades the square into a soft dot:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-4.ts
+   import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot;
+   const Particle = d.struct({ position: d.vec2f, direction: d.vec2f });
+   const FlowSettings = d.struct({ speed: d.f32, scale: d.f32, pointSize: d.f32 });
+   const readable = root.createBuffer(d.arrayOf(Particle, 4)).$usage('storage').as('readonly');
+   const settings = root.createUniform(FlowSettings);
+   const viewport = root.createUniform(d.vec2f);
+   // ---cut---
+   const vertex = tgpu.vertexFn({
+     in: { vertexIndex: d.builtin.vertexIndex, instanceIndex: d.builtin.instanceIndex },
+     out: { position: d.builtin.position, color: d.vec3f, corner: d.vec2f },
+   })(({ vertexIndex, instanceIndex }) => {
+     'use gpu';
+     const particle = readable.$[instanceIndex];
+
+     const corner = d.vec2f(d.f32(vertexIndex & 1), d.f32(vertexIndex >>> 1)) * 2 - 1;
+     const extent = (corner * settings.$.pointSize) / viewport.$;
+     const center = particle.position;
+
+     return {
+       position: d.vec4f(center + extent, 0, 1),
+       color: d.vec3f(particle.direction * 0.5 + 0.5, 0.9),
+       corner,
+     };
+   });
+
+   const fragment = tgpu.fragmentFn({
+     in: { color: d.vec3f, corner: d.vec2f },
+     out: d.vec4f,
+   })(({ color, corner }) => {
+     'use gpu';
+     const falloff = 1 - std.smoothstep(0.4, 1, std.length(corner));
+
+     return d.vec4f(color * (falloff * 0.5), falloff);
+   });
+   ```
+
+   Make the render pipeline with additive blending, so dots that overlap brighten. Return `draw`, which takes a render pass, and `initAsync`. Import `pipelines` from `@typegpu/kit` and the type `TgpuRenderCommands` from `typegpu`:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-5.ts
+   import { pipelines, type SizeSource } from '@typegpu/kit';
+   import { d, tgpu, type TgpuComputePass, type TgpuRenderCommands, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot, count: number, format: GPUTextureFormat, size: SizeSource;
+   declare const seedPipeline: { initAsync(): Promise<void> };
+   declare const particles: { destroy(): void };
+   const FlowSettings = d.struct({ speed: d.f32, scale: d.f32, pointSize: d.f32 });
+   const settings = root.createUniform(FlowSettings);
+   const viewport = root.createUniform(d.vec2f);
+   const vertex = tgpu.vertexFn({
+     out: { position: d.builtin.position, color: d.vec3f, corner: d.vec2f },
+   })(() => {
+     'use gpu';
+     return { position: d.vec4f(), color: d.vec3f(), corner: d.vec2f() };
+   });
+   const fragment = tgpu.fragmentFn({ in: { color: d.vec3f, corner: d.vec2f }, out: d.vec4f })(
+     () => {
+       'use gpu';
+       return d.vec4f();
+     },
+   );
+   // ---cut---
+   const drawPipeline = root.createRenderPipeline({
+     vertex,
+     fragment,
+     targets: { format, blend: pipelines.blend.add },
+     primitive: { topology: 'triangle-strip' },
+   });
+
+   let width = size.width;
+   let height = size.height;
+
+   return {
+     settings,
+
+     initAsync: () => pipelines.compile([seedPipeline, drawPipeline]),
+
+     draw(pass: TgpuRenderCommands) {
+       if (size.width !== width || size.height !== height) {
+         width = size.width;
+         height = size.height;
+         viewport.write(d.vec2f(width, height));
+       }
+
+       pass.setPipeline(drawPipeline);
+       pass.draw(4, count);
+     },
+     // ---cut-start---
+     seed(pass: TgpuComputePass) {},
+     destroy() {
+       particles.destroy();
+     },
+     // ---cut-end---
+     // seed and destroy from step 1
+   };
+   ```
+
+   - A triangle strip of four corners makes the square from two triangles. `draw(4, count)` draws it once for every particle.
+   - `draw` writes `viewport` only when the canvas size changes. It compares against the size it last wrote, so a steady frame uploads nothing.
+   - `initAsync` compiles the seed and draw pipelines before the first frame. Without it, each pipeline compiles when it first records, and that frame stalls.
+   - `settings` is returned so the scene can write it when a setting changes, in step 6.
+
+3. **Run the module in your scene.**
+
+   Replace `scene.ts` from Getting started. The scene makes the field and waits for its pipelines. Each [frame](/kit/frames/) records into an **encoder**, a list of GPU commands that the loop **submits** when `frame` returns. Commands come in **passes**. Here a compute pass runs the seed, then a render pass clears the canvas and draws:
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/scene-tutorial-1.ts
+   // ---cut---
+   import type { Frame, Surface } from '@typegpu/kit';
+   import type { TgpuRoot } from 'typegpu';
+   import { createFlowField } from './flow-field.ts';
+
+   export async function createScene(root: TgpuRoot, surface: Surface) {
+     const field = createFlowField(root, {
+       count: 65_536,
+       step: 1 / 60,
+       format: surface.format,
+       size: surface,
+     });
+     await field.initAsync();
+     let seeding = true;
+
+     return {
+       frame(frame: Frame) {
+         const compute = frame.encoder.beginComputePass();
+         if (seeding) field.seed(compute);
+         seeding = false;
+         compute.end();
+
+         const pass = frame.encoder.beginRenderPass({
+           colorAttachments: { view: surface.view(frame), clearValue: [0.01, 0.015, 0.03, 1] },
+         });
+         field.draw(pass);
+         pass.end();
+       },
+
+       destroy() {
+         field.destroy();
+       },
+     };
+   }
+   ```
+
+   The scene calls `field.destroy()` when the host closes it. The root and surface are borrowed from the host, so the scene leaves them alone. The seed and the draw go into one encoder, so the GPU scatters the particles before it draws them.
+
+   The particles appear, scattered and still:
+
+   <ExampleFigure
+     example="flow-field"
+     values={{ paused: true }}
+     controls={['reseed']}
+     caption="Reseed to scatter the particles again. The simulation is paused, as yours is until step 4."
+   />
+
+4. **Move them through noise.**
+
+   Each step, every particle samples Perlin noise at its position, turns the value into an angle and moves that way. Nearby positions get similar angles, so the particles flow in smooth streams. Import `perlin2d` from `@typegpu/noise` and `std` from `typegpu`, and add the `step` kernel:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-6.ts
+   import { perlin2d, randf } from '@typegpu/noise';
+   import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot, count: number, step: number, workgroups: number;
+   declare const seedPipeline: { initAsync(): Promise<void> };
+   declare const drawPipeline: { initAsync(): Promise<void> };
+   declare const spawn: () => d.v2f;
+   const WORKGROUP = 64;
+   const Particle = d.struct({ position: d.vec2f, direction: d.vec2f });
+   const FlowSettings = d.struct({ speed: d.f32, scale: d.f32, pointSize: d.f32 });
+   const writable = root.createBuffer(d.arrayOf(Particle, 4)).$usage('storage').as('mutable');
+   const settings = root.createUniform(FlowSettings);
+   const viewport = root.createUniform(d.vec2f);
+   // ---cut---
+   const TAU = Math.PI * 2;
+   /** Chance per step of respawning a particle elsewhere. Prevents particles collecting in sinks. */
+   const RESPAWN = 1 / 240;
+
+   // Inside createFlowField
+   const stepKernel = tgpu.computeFn({
+     workgroupSize: [WORKGROUP],
+     in: { gid: d.builtin.globalInvocationId },
+   })(({ gid }) => {
+     'use gpu';
+     if (gid.x >= count) return;
+     const particle = writable.$[gid.x];
+
+     const aspect = viewport.$.x / viewport.$.y;
+     const sample = particle.position * d.vec2f(aspect, 1) * settings.$.scale;
+     const angle = perlin2d.sample(sample) * TAU;
+     const direction = d.vec2f(std.cos(angle), std.sin(angle));
+
+     let position = particle.position + direction * (settings.$.speed * step);
+
+     randf.seed3(d.vec3f(position, d.f32(gid.x)));
+     if (randf.sample() < RESPAWN || std.any(std.gt(std.abs(position), d.vec2f(1)))) {
+       position = spawn();
+     }
+
+     writable.$[gid.x] = Particle({ position, direction });
+   });
+   const stepPipeline = root.createComputePipeline({ compute: stepKernel });
+   ```
+
+   - The sample position is stretched by the canvas's aspect ratio, so the noise's cells stay square on a wide canvas.
+   - `step` is a constant from the options. The kernel captures it, so no frame uploads the step length.
+   - A few particles respawn at random each step, and every particle that leaves the canvas does. Without that, particles would gather where the streams meet and leave the rest of the canvas empty.
+
+   Return `step` beside `seed`. It records one fixed step into the caller's compute pass. Add `stepPipeline` to the list that `initAsync` compiles:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-6b.ts
+   import { pipelines } from '@typegpu/kit';
+   import { tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+   declare const root: TgpuRoot, workgroups: number;
+   const stepKernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+     'use gpu';
+   });
+   const stepPipeline = root.createComputePipeline({ compute: stepKernel });
+   declare const seedPipeline: { initAsync(): Promise<void> };
+   declare const drawPipeline: { initAsync(): Promise<void> };
+   const members = {
+     // ---cut---
+     initAsync: () => pipelines.compile([seedPipeline, stepPipeline, drawPipeline]),
+
+     step(pass: TgpuComputePass) {
+       pass.setPipeline(stepPipeline);
+       pass.dispatchWorkgroups(workgroups);
+     },
+     // ---cut-start---
+   };
+   // ---cut-end---
+   ```
+
+   Stepping once per frame would move the particles twice as fast at 120 Hz as at 60 Hz. Use a [fixed step](/kit/clock/#fixed-step) instead. Each frame, its `update` counts how many 1/60 s steps fit in the time since the last frame and carries the rest into the next frame:
+
+   <FixedStep />
+
+   In `scene.ts`, import `clock` from `@typegpu/kit`, make the fixed step, and step the field after the seed:
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/scene-tutorial-2.ts
+   import { clock, type Frame, type Surface } from '@typegpu/kit';
+   import type { TgpuComputePass, TgpuRoot } from 'typegpu';
+   import { createFlowField } from './flow-field.ts';
+   declare const root: TgpuRoot, surface: Surface, frame: Frame, compute: TgpuComputePass;
+   // ---cut---
+   // In createScene
+   const sim = clock.fixedStep({ step: 1 / 60 });
+   const field = createFlowField(root, {
+     count: 65_536,
+     step: sim.step,
+     format: surface.format,
+     size: surface,
+   });
+
+   // In frame, after the seed
+   for (let steps = sim.update(frame.dt); steps > 0; steps--) {
+     field.step(compute);
+   }
+   ```
+
+   The particles stream across the canvas. At 30 frames a second, each frame runs two steps in its one compute pass; at 120, half the frames run none.
+
+5. **Move on every frame.**
+
+   On a display faster than 60 Hz, the particles hold still on the frames that run no step, then jump a whole step, so they stutter. `sim.ahead` is the time since the last step, in seconds. Draw each particle farther along its direction by its speed times that time. Its drawn position then updates every frame while the simulation still steps 60 times a second:
+
+   <DrawAhead />
+
+   `ahead` changes every frame, so it gets a uniform of its own. The scene owns that uniform and writes it. The module reads it through an **accessor**, a value the shader reads from whatever source the pipeline gives it. When the scene passes its uniform, the shader reads the uniform. Without one, it reads 0. Import the type `TgpuUniform` from `typegpu`:
+
+   ```ts twoslash title="flow-field.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-7.ts
+   import { pipelines } from '@typegpu/kit';
+   import { d, tgpu, type TgpuRoot, type TgpuUniform } from 'typegpu';
+   declare const root: TgpuRoot, format: GPUTextureFormat;
+   const Particle = d.struct({ position: d.vec2f, direction: d.vec2f });
+   const FlowSettings = d.struct({ speed: d.f32, scale: d.f32, pointSize: d.f32 });
+   const readable = root.createBuffer(d.arrayOf(Particle, 4)).$usage('storage').as('readonly');
+   const settings = root.createUniform(FlowSettings);
+   // ---cut-start---
+   interface FlowFieldOptions {
+     // ---cut-end---
+     // In FlowFieldOptions
+     /**
+      * Seconds since the last fixed step, written from `sim.ahead` each frame. Particles are drawn
+      * that far along their direction, so they move at the display rate. Default 0.
+      */
+     readonly ahead?: TgpuUniform<d.F32>;
+     // ---cut-start---
+   }
+   declare const options: FlowFieldOptions;
+   // ---cut-end---
+
+   // Inside createFlowField
+   const ahead = tgpu.accessor(d.f32);
+   // ---cut-start---
+   const vertex = tgpu.vertexFn({
+     in: { instanceIndex: d.builtin.instanceIndex },
+     out: { position: d.builtin.position },
+   })(({ instanceIndex }) => {
+     'use gpu';
+     const particle = readable.$[instanceIndex];
+     // ---cut-end---
+
+     // In vertex, in place of the center at the particle's position
+     const center = particle.position + particle.direction * (settings.$.speed * ahead.$);
+     // ---cut-start---
+     return { position: d.vec4f(center, 0, 1) };
+   });
+   const fragment = tgpu.fragmentFn({ out: d.vec4f })(() => {
+     'use gpu';
+     return d.vec4f();
+   });
+   // ---cut-end---
+
+   // In place of root.createRenderPipeline
+   const drawPipeline = root.with(ahead, options.ahead ?? 0).createRenderPipeline({
+     // ---cut-start---
+     vertex,
+     fragment,
+     targets: { format, blend: pipelines.blend.add },
+     // ---cut-end---
+     // ...the same description as before
+   });
+   ```
+
+   In `scene.ts`, import `d` from `typegpu`, make the uniform, hand it to the field and write it after the steps:
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/scene-tutorial-3.ts
+   import { clock, type Frame, type Surface } from '@typegpu/kit';
+   import { d, type TgpuRoot } from 'typegpu';
+   import { createFlowField } from './flow-field.ts';
+   declare const root: TgpuRoot, surface: Surface, frame: Frame;
+   const sim = clock.fixedStep({ step: 1 / 60 });
+   // ---cut---
+   // In createScene
+   const ahead = root.createUniform(d.f32);
+   const field = createFlowField(root, {
+     count: 65_536,
+     step: sim.step,
+     ahead,
+     format: surface.format,
+     size: surface,
+   });
+
+   // In frame, after the steps
+   ahead.write(sim.ahead);
+   ```
+
+   On a 120 Hz or faster display, the particles move smoothly on every frame.
+
+6. **Change the settings.**
+
+   Writing a uniform uploads all of it, so group values by how often they change. The field has four:
+
+   | Uniform     | Holds                    | Written                                 |
+   | ----------- | ------------------------ | --------------------------------------- |
+   | `settings`  | speed, scale, point size | by the scene, when a setting changes    |
+   | `viewport`  | the canvas size          | by `draw`, when the canvas size changes |
+   | `ahead`     | the time since a step    | by the scene, once a frame              |
+   | `seedValue` | the random seed          | by `seed`                               |
+
+   A steady frame uploads 4 bytes, the `ahead` value. [Data on the GPU](/concepts/data-on-the-gpu/#settings-that-change) has the rule for every module. Keep `values` in a plain object and hand it to the field as its starting settings. Return `settings` with `values`, a `write` that uploads them and a `reseed` action:
+
+   ```ts twoslash title="scene.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/scene-tutorial-4.ts
+   import { clock, type Frame, type Surface } from '@typegpu/kit';
+   import { d, type TgpuRoot } from 'typegpu';
+   import { createFlowField, FLOW } from './flow-field.ts';
+   declare const root: TgpuRoot, surface: Surface;
+   const sim = clock.fixedStep({ step: 1 / 60 });
+   const ahead = root.createUniform(d.f32);
+   let seeding = true;
+   // ---cut---
+   // In createScene
+   const values = { ...FLOW, paused: false };
+   const field = createFlowField(root, {
+     count: 65_536,
+     step: sim.step,
+     ahead,
+     format: surface.format,
+     size: surface,
+     settings: values,
+   });
+   let writes = 0;
+   const settings = {
+     values,
+     write() {
+       sim.paused = values.paused;
+       field.settings.write(values);
+       writes += 1;
+     },
+     actions: {
+       reseed() {
+         seeding = true;
+       },
+     },
+     readouts: { 'settings writes': () => writes },
+   };
+   // ---cut-start---
+   const scene = {
+     // ---cut-end---
+     settings,
+     // ---cut-start---
+     frame(frame: Frame) {},
+     destroy() {
+       field.destroy();
+     },
+   };
+   // ---cut-end---
+   ```
+
+   The page decides how to show the settings. Add [lil-gui](https://lil-gui.georgealways.com/) to the project:
+
+   <Install add="lil-gui" />
+
+   In `index.ts`, build the panel in `attach`, which [`web.host`](/kit/hosting/#on-the-web) calls once the scene is made. When the host frees the scene, it calls the function that `attach` returns:
+
+   ```ts twoslash title="index.ts"
+   // @filename: src/flow-field/scene.ts
+   import type { Frame, Surface } from '@typegpu/kit';
+   import type { TgpuRoot } from 'typegpu';
+   export declare function createScene(
+     root: TgpuRoot,
+     surface: Surface,
+   ): Promise<{
+     settings: {
+       values: { speed: number; scale: number; pointSize: number; paused: boolean };
+       write(): void;
+       actions: { reseed(): void };
+       readouts: { 'settings writes': () => number };
+     };
+     frame(frame: Frame): void;
+     destroy(): void;
+   }>;
+   // @filename: src/flow-field/index.ts
+   // ---cut---
+   import * as web from '@typegpu/kit/web';
+   import GUI from 'lil-gui';
+   import { createScene } from './scene.ts';
+
+   web.host(createScene, {
+     canvas: document.querySelector('canvas')!,
+     attach({ scene }) {
+       const gui = new GUI({ title: 'flow field' });
+       const { values, write, actions } = scene.settings;
+       gui.add(values, 'speed', 0, 1, 0.01);
+       gui.add(values, 'scale', 0.1, 6, 0.1);
+       gui.add(values, 'pointSize', 0.5, 8, 0.5);
+       gui.add(values, 'paused');
+       gui.onChange(write);
+       gui.add(actions, 'reseed');
+       write();
+       return () => gui.destroy();
+     },
+   });
+   ```
+
+   The panel changes the field as you drag. Pausing stops the steps and holds the particles still. The figure has the same controls, and its `settings writes` readout counts uploads of `settings`. It rises only when you change a setting:
+
+   <ExampleFigure
+     example="flow-field"
+     controls={['speed', 'pointSize', 'reseed', 'settings writes']}
+     caption="Change the speed or point size to add one uniform write. Reseeding and waiting leave the count unchanged."
+   />
+
+7. **Test the module.**
+
+   A test of the module checks what it records, without a GPU. `recordingRoot()` from [`@typegpu/kit/testing`](/kit/testing/) is a root on a stand-in device that logs commands and writes. `offscreenSurface` stands in for the canvas. Add Vitest. It reads `vite.config.ts`, so the TypeGPU plugin transforms your module in tests too:
+
+   <Install dev="vitest" />
+
+   Create `flow-field.test.ts` beside the module. Make the field on a recording root and record frames as a scene would:
+
+   ```ts twoslash title="flow-field.test.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-1.test.ts
+   // ---cut---
+   import { frames } from '@typegpu/kit';
+   import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+   import { expect, it } from 'vitest';
+   import { createFlowField } from './flow-field.ts';
+
+   it('records into the passes it is given, and a steady frame writes and creates nothing', async () => {
+     const { root, log } = recordingRoot();
+     const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+     const field = createFlowField(root, {
+       count: 1000,
+       step: 1 / 60,
+       format: surface.format,
+       size: surface,
+     });
+     await field.initAsync();
+     expect(log.pipelines).toBe(3);
+
+     let seeding = true;
+     const loop = frames.create(root, (frame) => {
+       const compute = frame.encoder.beginComputePass();
+       if (seeding) field.seed(compute);
+       seeding = false;
+       field.step(compute);
+       compute.end();
+       const pass = frame.encoder.beginRenderPass({
+         colorAttachments: { view: surface.view(frame) },
+       });
+       field.draw(pass);
+       pass.end();
+     });
+     // ---cut-after---
+   });
+   ```
+
+   `initAsync` compiled all three pipelines, so none compiles during a frame. Run two frames first. They seed the particles and let TypeGPU make its first-use objects. Then check a third:
+
+   ```ts twoslash title="flow-field.test.ts"
+   // @filename: ../../packages/typegpu-kit-examples/src/flow-field/flow-field-tutorial-2.test.ts
+   import { frames } from '@typegpu/kit';
+   import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
+   import { expect, it } from 'vitest';
+   import { createFlowField } from './flow-field.ts';
+   it('records', () => {
+     const { root, log } = recordingRoot();
+     const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
+     const field = createFlowField(root, {
+       count: 1000,
+       step: 1 / 60,
+       format: surface.format,
+       size: surface,
+     });
+     const loop = frames.create(root, () => {});
+     // ---cut---
+     // In the test, after the loop
+     loop.run(0);
+     loop.run(1 / 60);
+     const counts = log.counts();
+     log.events.length = 0;
+     log.writes.length = 0;
+
+     loop.run(2 / 60);
+     expect(log.events).toEqual([
+       'begin-compute',
+       'dispatch',
+       'end-compute',
+       'begin-render',
+       'draw',
+       'end-render',
+       'submit',
+     ]);
+     expect(log.writes).toEqual([]);
+     expect(log.counts()).toEqual(counts);
+
+     surface.setSize({ width: 128, height: 72 });
+     loop.run(3 / 60);
+     expect(log.writes.map((write) => write.size)).toEqual([8]); // the viewport
+
+     field.destroy();
+     // ---cut-after---
+   });
+   ```
+
+   - The steady frame records one step and one draw into the passes it was given, submits once, writes nothing and creates no GPU object. Without a scene, nothing writes `ahead`.
+   - A new canvas size writes the 8 bytes of `viewport`, once.
+   - `destroy` frees the particle buffer after its last frame.
+
+   Run `pnpm vitest`. [Testing](/kit/testing/) covers the rest of the log, and how to compile the WGSL on a real GPU.
+
+</Steps>
+
+## What you wrote
+
+<FileTree>
+
+- src/
+  - index.ts the page: `web.host` and the settings panel
+  - scene.ts `createScene(root, surface)` with the field, the fixed step and the frame
+  - flow-field.ts the module
+  - flow-field.test.ts its test on a recording root
+
+</FileTree>
+
+## Next
+
+- Let the field drift over time. Sample `perlin3d` in place of `perlin2d`, with elapsed simulation time as the third coordinate. Derive that time from [a step counter on the GPU](/kit/clock/#a-value-per-step).
+- Add finer eddies. Sample the noise again at twice the scale and add half of it to the angle.
+- Give `Particle` an age, count it up in the step kernel and fade each particle in after it respawns.
+- Package the module as the kit does, as [Modules](/concepts/modules/#in-a-package) describes.

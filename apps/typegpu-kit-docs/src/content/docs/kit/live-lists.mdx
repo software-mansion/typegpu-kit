@@ -1,0 +1,177 @@
+---
+title: Live lists
+description: Live rows per group, with indirect draw and dispatch arguments, written on the GPU every frame.
+modules: [kit/liveLists]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import LiveLists from '../../../components/viz/LiveLists.astro';
+
+A [table](/kit/table/) keeps rows in stable slots, leaving holes when rows are removed. Drawing over every slot still does vertex work for those holes. With half the slots dead, the pass takes 1.5 to 2 times as long.
+
+**Live lists** list each group's live slots on the GPU every frame and write each group's instance count into an indirect draw, so the CPU never counts them.
+
+<Hidden card="platformer">
+  <LiveLists />
+</Hidden>
+
+```ts twoslash
+import { d, tgpu, type TgpuRenderPipeline } from 'typegpu';
+import { frames, table } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const view: GPUTextureView;
+declare const solid: TgpuRenderPipeline;
+const SOLID = 0;
+// ---cut---
+import { liveLists } from '@typegpu/kit';
+
+const Block = table.define('Block', { host: { shape: d.u32, position: d.vec3f } });
+const blocks = table.create(root, Block, { capacity: 4096 });
+
+const live = liveLists.create(root, {
+  ...blocks.live(), // the table's capacity, alive and span
+  group: blocks.gpu.shape, // a shader function from a slot to a group
+  draws: [{ vertexCount: 36 }, { indexCount: 240 }], // one per group
+});
+
+frames.create(root, (frame) => {
+  blocks.flush();
+
+  const compute = frame.encoder.beginComputePass();
+  live.compact(compute); // each group's live slots, then its instance count
+  compute.end();
+
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view } });
+  pass.setPipeline(solid);
+  live.draw(pass, SOLID); // drawIndirect, or drawIndexedIndirect for an indexed draw
+  pass.end();
+});
+```
+
+The vertex shader reads its row's slot with `live.slot(SOLID, instanceIndex)`, in any pipeline. The pipeline captures `SOLID` as a constant, including the start of that group's list, so the draw keeps `firstInstance` at 0. This works on every device and requires one pipeline per group.
+
+<Rules>
+
+- **Grouping** Group by mesh or pipeline, such as fish species. Rows that share both stay one group and branch on a field, as the platformer's walkers and bats do.
+- **Default group** Without `group`, every live row is in group 0; rows whose group is out of range aren't drawn.
+- **Swapping a draw** `setDraw(group, draw)` swaps a group's draw, such as for a new mesh, and keeps its count.
+- **Table rows** `blocks.live()` returns the table's `capacity`, its `gpu.alive` and its `span`. Without `alive`, every slot is live, and the types refuse a `span`.
+- **Your own test** `alive` can be any shader function. `(i) => block.alive(i) && block.shape(i) !== HIDDEN`, with `block = blocks.gpu`, selects some table rows. Particles test their ages. The [neighbour grid](/kit/grid/) takes its `alive`, `position` and `itemOf` the same way.
+- **Compacting** `compact` tests every slot up to the `span` it reads as it records, or `capacity` without one. A row added after `compact` records shows from the next frame.
+- **Recording order** `draw` and `dispatch` throw until a `compact` or `finish` has been recorded. A render bundle can record its draws before that.
+- **Cost** Drawing through the list costs the same as drawing dense rows.
+
+</Rules>
+
+:::tip[When the CPU already knows]
+If the CPU knows who is alive and which mesh each uses, a counting sort into a vertex buffer can be simpler.
+:::
+
+## One pipeline for every group
+
+With `firstInstance: true`, each group's draw starts at its own region. The shader finds its row from the instance index alone. One pipeline draws every group, so adding a group compiles no pipeline.
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { table } from '@typegpu/kit';
+const Block = table.define('Block', { host: { shape: d.u32, position: d.vec3f } });
+// ---cut---
+import { liveLists } from '@typegpu/kit';
+
+const root = await tgpu.init({
+  device: { optionalFeatures: ['indirect-first-instance'] },
+});
+const blocks = table.create(root, Block, { capacity: 4096 });
+
+const live = liveLists.create(root, {
+  ...blocks.live(),
+  group: blocks.gpu.shape,
+  // two meshes in one index buffer
+  draws: [{ indexCount: 36 }, { indexCount: 240, firstIndex: 36, baseVertex: 24 }],
+  firstInstance: true,
+});
+
+const vertex = tgpu.vertexFn({
+  in: { instance: d.builtin.instanceIndex },
+  out: { position: d.builtin.position },
+})(({ instance }) => {
+  'use gpu';
+  const slot = live.instanceSlot(instance); // no group anywhere
+  return { position: d.vec4f(blocks.gpu.position(slot), 1) };
+});
+```
+
+Set the pipeline on the pass once, then draw each group with `live.draw(pass, 0)` and `live.draw(pass, 1)`. `create` throws without `indirect-first-instance` because these indirect draws otherwise produce nothing without an error. Check `root.device.features` and fall back to a pipeline per group when the feature is absent.
+
+## Running over a group
+
+`compact` also writes indirect dispatch arguments for each group's live rows. `live.dispatch(pass, group)` dispatches the pipeline set on the pass over the group's rows, in workgroups of `workgroupSize` threads, 64 by default. Its threads return at or beyond `live.count(group)`, the group's live row count, and find their rows with `live.slot(group, i)`. An update to the walkers then skips holes and bats:
+
+```ts twoslash
+import { d, tgpu, type TgpuComputePass } from 'typegpu';
+import { liveLists, table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Block = table.define('Block', { host: { shape: d.u32, position: d.vec3f } });
+const blocks = table.create(root, Block, { capacity: 4096 });
+const live = liveLists.create(root, {
+  ...blocks.live(),
+  group: blocks.gpu.shape,
+  draws: [{ vertexCount: 36 }, { indexCount: 240 }],
+});
+declare const compute: TgpuComputePass;
+const WALKERS = 1;
+// ---cut---
+const walk = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= live.count(WALKERS)) return;
+  const slot = live.slot(WALKERS, gid.x);
+  // … move Block slot `slot`
+});
+const walking = root.createComputePipeline({ compute: walk });
+
+live.compact(compute);
+compute.setPipeline(walking);
+live.dispatch(compute, WALKERS);
+```
+
+Match the kernel's `workgroupSize` to the lists' and pass the group as a captured constant.
+
+## Listing from your own kernel
+
+A kernel that already visits every row, such as a simulation step, can list rows as it goes with `live.list(group, i)` and skip the separate pass of `compact`. Every thread of a workgroup must call it once, outside any branch, because the workgroup lists together. A row it doesn't list passes a group of `groups` or above. Record `live.finish(pass)` after the kernel to write the counts. [Machines](/kit/machines/#work-in-one-state) list rows by state this way. Without `draws`, `groups` sets the number of groups for lists that only dispatch:
+
+```ts twoslash
+import { d, tgpu, type TgpuComputePass } from 'typegpu';
+import { liveLists } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const compute: TgpuComputePass;
+declare function heat(i: number): number;
+const COUNT = 4096;
+// ---cut---
+const burning = liveLists.create(root, { capacity: COUNT, groups: 1 });
+
+const spread = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+  gid,
+}) => {
+  'use gpu';
+  const i = gid.x;
+  let group = d.u32(1); // not listed
+  if (i < COUNT && heat(i) > 0.5) group = 0;
+  burning.list(group, i);
+});
+const spreading = root.createComputePipeline({ compute: spread });
+
+compute.setPipeline(spreading);
+compute.dispatchWorkgroups(COUNT / 64);
+burning.finish(compute);
+```
+
+## Limits
+
+- At most 256 groups are allowed. The slot list uses `groups × capacity × 4` bytes and must fit one storage binding, 128 MiB unless the device requests a higher limit. `create` throws if either limit is exceeded.
+- `compact` runs a thread a slot, 256 to a workgroup, so `create` throws past 256 times the device's `maxComputeWorkgroupsPerDimension`. `dispatch` runs a thread a listed row; past that many workgroups, the device skips it.
+- The order within a group changes between frames, so overlapping see-through instances may shimmer. Draw see-through groups in a stable order of your own.

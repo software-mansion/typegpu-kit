@@ -1,0 +1,9 @@
+{
+  "title": "Domino run",
+  "category": "simulations",
+  "rarity": "rare",
+  "description": "1 474 dominoes on a walnut floor, running through S-bends, three forks and twin spirals. Tap one to start the wave. Each strike kicks up a little dust, and ambient occlusion darkens the gaps where they crowd together. In the portrait layout, a picture painted on their backs in sixteen colours appears as they fall. It's a sunset by default, or drop in your own image. The Domino run tutorial builds this scene.",
+  "line": "1 474 dominoes in late sun. Tap one and the wave runs.",
+  "order": 15,
+  "hint": "tap a domino to topple it \u00b7 drop an image for a portrait \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

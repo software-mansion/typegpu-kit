@@ -1,0 +1,109 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="bloom-chain">
+  <p class="viz-title">The bloom chain halves the source level by level</p>
+  <svg viewBox="0 0 520 240" role="img" aria-label="Bloom levels, dimensions and downsample and upsample passes"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <label>source <select data-control="size" autocomplete="off">
+      <option value="3840x2160">3840×2160</option>
+      <option value="1920x1080" selected>1920×1080</option>
+      <option value="1179x2556">1179×2556 phone</option>
+      <option value="640x360">640×360</option>
+      <option value="40x24">40×24</option>
+    </select></label>
+    <Slider inline name="levels" min={1} max={8} value={6} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Choose a small source to see the chain stop when its dimensions run out. Each pass draws one triangle.
+  </figcaption>
+</figure>
+
+<script>
+  import { createProgram, type Chain } from './BloomChain.program.ts';
+  import { control, each, slider } from './figure.ts';
+  import { badge, plate, fitWidth, svg, text } from './svg.ts';
+
+  const ROW = 24;
+  const TOP = 36;
+  const BAR = 128;
+
+  const rowY = (row: number) => TOP + row * ROW;
+
+  each('bloom-chain', (root) => {
+    const figure = root.querySelector('svg')!;
+    const sizeSelect = control<HTMLSelectElement>(root, 'size');
+
+    const parse = () => {
+      const [width, height] = sizeSelect.value.split('x').map(Number);
+      return { width: width!, height: height! };
+    };
+
+    const build = () => createProgram({ ...parse(), levels: levelsInput.valueAsNumber });
+
+    const draw = fitWidth(
+      figure,
+      (across) => {
+        const barWidth = Math.min(260, across - BAR - 136);
+        const DOWN = BAR + barWidth + 52;
+        const UP = DOWN + 56;
+        const { rows, arrows, passes } = chain;
+        const count = rows.length - 1;
+        const sourceWidth = rows[0].width;
+
+        text(figure, DOWN, 14, 'clears', { 'text-anchor': 'middle', fill: 'var(--viz-c)' });
+        text(figure, UP, 14, 'adds', { 'text-anchor': 'middle', fill: 'var(--viz-d)' });
+
+        rows.forEach(({ width, height }, row) => {
+          const top = rowY(row);
+          text(figure, 0, top + 4, row === 0 ? 'source' : `level ${row - 1}`, row === 0 ? { class: 'strong' } : {});
+          text(figure, 56, top + 4, `${width}×${height}`);
+          plate(figure, BAR, top - 6,
+            Math.max(1.5, (width / sourceWidth) * barWidth), 10,
+            { active: row === count, depth: 2 });
+        });
+
+        for (const { pass, from: fromRow, to: toRow, clears } of arrows) {
+          const from = rowY(fromRow);
+          const to = rowY(toRow);
+          const column = clears ? DOWN : UP;
+          const down = to > from;
+          const tip = to + (down ? -7 : 7);
+
+          svg('line', { x1: column, x2: column, y1: from + (down ? 5 : -5), y2: tip, stroke: toRow === count ? 'var(--viz-accent)' : clears ? 'var(--viz-c)' : 'var(--viz-d)', 'stroke-width': 1.5 }, figure);
+          svg('path', {
+            d: `M ${column - 4} ${tip} L ${column + 4} ${tip} L ${column} ${to + (down ? -2 : 2)} Z`,
+            fill: toRow === count ? 'var(--viz-accent)' : clears ? 'var(--viz-c)' : 'var(--viz-d)',
+          }, figure);
+          badge(figure, clears ? column - 16 : column + 16, (from + to) / 2 - 9, pass, toRow === count);
+        }
+
+        const asked = levelsInput.valueAsNumber;
+        const trimmed = count < asked ? `${count} of ${asked} levels · ` : '';
+        const bottom = rowY(count) + 28;
+        text(figure, 0, bottom, `${trimmed}${passes} passes`);
+        return bottom + 6;
+      },
+      300,
+    );
+
+    const levelsInput = slider(root, 'levels', () => {
+      program.destroy();
+      program = build();
+      chain = program.frame();
+      draw();
+    });
+
+    let program = build();
+    let chain: Chain = program.frame();
+
+    sizeSelect.addEventListener('input', () => {
+      Object.assign(program.size, parse());
+      chain = program.frame();
+      draw();
+    });
+
+    draw();
+  });
+</script>

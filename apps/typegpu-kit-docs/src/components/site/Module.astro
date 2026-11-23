@@ -1,0 +1,20 @@
+---
+import { loadListed } from './load.ts';
+import Strip from './Strip.astro';
+
+interface Props {
+  /** The module's id, as the page's `modules` lists it. */
+  id: string;
+  /** The namespace the card had before a rename, whose anchor published links still use. */
+  was?: string;
+}
+
+const { id, was } = Astro.props;
+const { entry } = Astro.locals.starlightRoute;
+const { modules, listed } = await loadListed(entry.data);
+const module = listed.find((each) => each.id === id);
+if (!module) throw new Error(`The page ${entry.id} places ${id}, which its modules don't list.`);
+---
+
+{was && <span id={`module-${was}`} />}
+<Strip module={module} modules={modules} />

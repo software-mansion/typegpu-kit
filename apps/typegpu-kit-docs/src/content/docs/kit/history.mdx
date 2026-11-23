@@ -1,0 +1,144 @@
+---
+title: History
+description: Write a shader function once and run it with this frame's values or last frame's, to find how far each point on screen has moved.
+modules: [kit/history]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import HistoryBuffers from '../../../components/viz/HistoryBuffers.astro';
+
+Motion vectors and reprojection need last frame's camera and object positions. Maintaining separate shader functions for current and previous state risks differences between them.
+
+<ExampleFigure
+  example="lattice"
+  controls={['turn', 'view', 'speed', 'taa']}
+  values={{ view: 'motion' }}
+>
+  The lattice stores its turn angle in `history.create(root, d.f32, { usage: 'uniform' })`.
+  TAA's motion output runs the vertex code again with `previously` to read last frame's angle.
+  Switch to a plain uniform to make both runs read the current angle. The motion view then shows
+  only camera motion. TAA samples last frame's colour at the wrong positions, and the beams dim as
+  they turn. Raise the speed to see the effect.
+</ExampleFigure>
+
+`history.previously(fn)` compiles `fn` a second time. In that copy, accessors filled with `history.temporal(current, previous)` read `previous`. `history.create` stores last frame's buffer state for that fill. The kit's [cameras](/kit/cameras/#last-frames-view) store their own previous views, and a [table](/kit/table/#last-frames-rows) or a set of [instances](/kit/instances/#motion) created with `history: true` keeps its own rows. [Passes](/kit/passes/) use `previously` to compute last frame's vertex for outputs such as motion.
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+declare const next: d.v3f[];
+// ---cut---
+import { history } from '@typegpu/kit';
+
+const offsets = tgpu.accessor(d.arrayOf(d.vec3f, 64));
+const placed = history.create(root, d.arrayOf(d.vec3f, 64));
+
+const offsetOf = (i: number) => {
+  'use gpu';
+  return offsets.$[i];
+};
+const offsetBefore = history.previously(offsetOf); // last frame's
+
+const moved = root.createMutable(d.arrayOf(d.f32, 64));
+const measure = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= 64) return;
+  moved.$[gid.x] = std.distance(offsetOf(gid.x), offsetBefore(gid.x));
+});
+const measuring = root.with(offsets, placed.reading).createComputePipeline({ compute: measure });
+
+placed.write(next); // lands at the next record
+frames.animate(
+  frames.create(root, (frame) => {
+    placed.record(frame);
+    const pass = frame.encoder.beginComputePass();
+    pass.setPipeline(measuring);
+    pass.dispatchWorkgroups(1);
+    pass.end();
+  }),
+);
+```
+
+## Last frame's code
+
+- `history.epoch` is a slot, `'current'` or `'previous'`, and `previously` resolves its function with `'previous'`. Call what it returns from any `'use gpu'` function, in any stage.
+- `history.temporal(current, previous)` fills an accessor with any values it accepts. You can use two uniforms, two buffers, or a current constant and a previous uniform.
+- Code that never calls a `previously` function binds `current` only.
+
+## A buffer's history
+
+`history.create(root, schema, options)` owns three buffers, for current state, previous state and the next write.
+
+- The default storage `usage` binds `reading` read-only in render pipelines and read-write in compute pipelines, so it can fill a mutable accessor for kernels that update the state. `usage: 'uniform'` suits small state written by the CPU.
+- Write through `write`, not straight into `current`. A queue write lands before everything the frame submits, so it would be copied aside as last frame's too.
+- Call `record` once a frame, before what reads or moves the state. A write shows from the first `record` after it in a frame that submits, so a frame that throws leaves the write for the next.
+
+<Hidden card="classroom">
+  <HistoryBuffers />
+</Hidden>
+
+## In a drawing
+
+Store state that moves a drawing, such as the lattice's turn angle, in a history. Read it through a vertex-code accessor filled with `reading` by the [drawing](/kit/passes/#drawings). Outputs that compute last frame's vertex then include the object's motion:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { cameras, passes, targets, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+declare const canvas: HTMLCanvasElement;
+declare const frame: Frame;
+declare const motion: passes.Output<unknown, { readonly position: d.v4f }>;
+const root = await tgpu.init();
+const surface = web.surface(root, canvas);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  motion: { format: 'rg16float', sampled: true },
+});
+const scene = passes.create(root, screen, { hdr: passes.color, motion }).pipe(view.inject());
+const Corner = d.struct({ position: d.vec4f });
+const Seen = d.struct({ color: d.vec4f });
+const pixelOf = (_corner: d.Infer<typeof Corner>) => {
+  'use gpu';
+  return Seen({ color: d.vec4f(1) });
+};
+// ---cut---
+import { history } from '@typegpu/kit';
+
+// How far the triangle has turned, now and last frame
+const turn = tgpu.accessor(d.f32);
+const turned = history.create(root, d.f32, { usage: 'uniform' });
+
+const at = (vertexIndex: number, _instanceIndex: number) => {
+  'use gpu';
+  const angle = turn.$ + d.f32(vertexIndex) * 2.1;
+  const world = d.vec3f(std.cos(angle), std.sin(angle), 0);
+  return Corner({ position: cameras.toClip(world) });
+};
+const spinner = scene.add({
+  Vertex: Corner,
+  at,
+  pixelOf,
+  color: passes.shaded,
+  inject: () => (cfg) => cfg.with(turn, turned.reading),
+  draw: (pass) => pass.draw(3),
+});
+
+// Each frame, before the pass that draws it
+turned.write(frame.time);
+turned.record(frame);
+```
+
+Filled with a plain uniform, last frame's code reads this frame's turn, and the motion output sees only the camera move.
+
+## Limits
+
+- History stores only one previous frame.
+- `record` copies the whole state every frame, and again in a frame with a write.
+- A write that jumps the state, such as a teleport, reads as motion for a frame.

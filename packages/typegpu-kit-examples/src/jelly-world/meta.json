@@ -1,0 +1,13 @@
+{
+  "title": "Jelly world",
+  "category": "worlds",
+  "rarity": "legendary",
+  "description": "A port of TypeGPU's Jelly Slider, after Voicu Apostol's design. The jelly is ray-marched from a distance field, so it bends and wobbles as you drag it. Stretch it, squash it, pull the lever, or just give it a few seconds. The resolution adapts to hold the frame rate, and TAA keeps the picture smooth.",
+  "line": "A ray-marched jelly slider to squish and stretch. Give it a few seconds.",
+  "order": 1,
+  "features": ["timestamp-query"],
+  "hint": "drag the jelly to stretch or squash it",
+  "poster": {
+    "seconds": 13
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "title": "Skeletons",
+  "category": "animation",
+  "rarity": "uncommon",
+  "description": "300 skeletons in a walled courtyard at night rise, wander, taunt, fight, fall and get back up. A state machine on the GPU decides what each one does and starts its animations, and a skeleton that takes a hit flinches on top of whatever it's doing. The moon casts long shadows across the flagstones, and twelve braziers flicker along the walls. The skeletons and their animations are from Kay Lousberg's KayKit packs (CC0).",
+  "line": "300 skeletons brawling in a moonlit courtyard, run by a GPU state machine.",
+  "order": 21,
+  "features": ["indirect-first-instance"],
+  "hint": "drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 9
+  }
+}

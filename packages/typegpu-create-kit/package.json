@@ -1,0 +1,50 @@
+{
+  "name": "@typegpu/create-kit",
+  "version": "0.1.0",
+  "description": "Starts a Vite project with TypeGPU Kit and a scene to build on.",
+  "keywords": [
+    "typegpu",
+    "webgpu"
+  ],
+  "homepage": "https://docs.swmansion.com/typegpu-kit/getting-started/",
+  "bugs": "https://github.com/software-mansion/typegpu-kit/issues",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/software-mansion/typegpu-kit.git",
+    "directory": "packages/typegpu-create-kit"
+  },
+  "bin": {
+    "create-kit": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "ui.js",
+    "logo.svg",
+    "scenes",
+    "template"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test:types": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@clack/core": "^1.6.0"
+  },
+  "devDependencies": {
+    "@typegpu/kit": "workspace:*",
+    "@typegpu/noise": "catalog:",
+    "@types/node": "catalog:types",
+    "@webgpu/types": "catalog:types",
+    "typegpu": "catalog:",
+    "typescript": "catalog:types",
+    "vitest": "catalog:test"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}

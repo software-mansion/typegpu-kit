@@ -1,0 +1,98 @@
+---
+title: Effects you can scrub
+description: Draw particles from their seed and the time since the effect started, so a replay can jump to any moment.
+---
+
+import Scrub from '../../../components/viz/Scrub.astro';
+
+<Scrub />
+
+A [particle system](/kit/particles/) moves its particles forward one step at a time, so a replay can't jump back to an earlier moment. When each particle's motion has a closed form, compute it from its seed and the time since the effect started. Then any moment draws the same way, played forward, paused, rewound or jumped to. Write the particle at a moment as a function of its index:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { randf } from '@typegpu/noise';
+import { particles } from '@typegpu/kit';
+
+// Seconds since the blast, which the app writes from its replay clock
+const since = root.createUniform(d.f32);
+
+const sparkAt = (i: number) => {
+  'use gpu';
+  randf.seed(d.f32(i) + 1);
+  const velocity = randf.inUnitSphere() * 5 + d.vec3f(0, 3, 0);
+  const life = 0.6 + randf.sample() * 0.6;
+  const age = since.$;
+  const alive = age >= 0 && age < life;
+
+  return particles.Particle({
+    position: velocity * age + d.vec3f(0, -4.9, 0) * (age * age),
+    age,
+    velocity,
+    life,
+    color: d.vec4f(4, 1.6, 0.4, 1),
+    size: std.select(0, 0.12, alive),
+    seed: randf.sample(),
+  });
+};
+```
+
+## Draw them
+
+Draw one quad per spark as a [drawing](/kit/passes/#drawings). `particles.facing` and `particles.softDisc` place and shade it as a particle system does:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, frames, particles, passes } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 8 });
+const canvas = passes.create(root, surface).pipe(view.inject());
+const since = root.createUniform(d.f32);
+declare const sparkAt: (i: number) => particles.Particle;
+declare const replay: { time: number };
+declare const blastAt: number;
+// ---cut---
+import { pipelines } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+
+const COUNT = 400;
+const quad = meshes.unindexed(meshes.plane({ width: 2, depth: 2 }));
+
+const drawn = canvas.add({
+  label: 'replayed sparks',
+  Vertex: particles.Corner,
+  at: (vertexIndex: number, instanceIndex: number) => {
+    'use gpu';
+    const corner = quad.vertexAt(vertexIndex).position.xz;
+    const world = particles.facing(sparkAt(instanceIndex), corner);
+    const position = cameras.toClip(world);
+    return particles.Corner({ position, world, local: corner, slot: instanceIndex });
+  },
+  pixelOf: (corner: d.Infer<typeof particles.Corner>) => {
+    'use gpu';
+    const color = particles.softDisc(sparkAt(corner.slot), corner.local);
+    return particles.Seen({ world: corner.world, color });
+  },
+  color: passes.shaded,
+  blend: pipelines.blend.add,
+  depthStencil: { depthWriteEnabled: false, depthCompare: 'less' },
+  draw: (pass) => pass.draw(quad.vertexCount, COUNT),
+});
+
+frames.animate(
+  frames.create(root, (frame) => {
+    since.write(replay.time - blastAt);
+    canvas.record(frame, drawn);
+  }),
+);
+```
+
+- Nothing is stored between frames. The seed fixes each spark's velocity, life and look, and `since` fixes where it is.
+- A spark outside its life takes size 0, so its quad covers no pixels. Every spark still runs its vertices each frame.
+- Each pixel computes its spark again from the seed. Keep the per-spark work small.
+- The motion needs a closed form, such as `v t + g t² / 2` under gravity. Collisions, `update` callbacks and anything that reads the last step need a particle system.
+- For several blasts, draw `COUNT` instances per blast and read each blast's origin and start time from a buffer at `instanceIndex / COUNT`.

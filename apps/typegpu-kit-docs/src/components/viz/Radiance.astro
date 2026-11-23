@@ -1,0 +1,67 @@
+---
+import Choice from './Choice.astro';
+import { MAX, SIZES, START } from './Radiance.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="radiance">
+  <p class="viz-title">Moving glows and four pillars in one radiance field</p>
+  <canvas aria-label="Moving glows and shadows cast by four pillars in a radiance field"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider name="count" label="glows" min={1} max={MAX} value={12} />
+    <div class="sizes">
+      <Choice name="texels" label="texels" options={SIZES} value={START} />
+      <span class="memory" data-read="bytes"></span>
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Reduce the field to 64 texels per side to see blocky emitters and softer shadows. Glows are opaque emitting discs, and pillars are opaque non-emitting squares.
+  </figcaption>
+</figure>
+
+<style>
+  .sizes {
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+
+  .memory {
+    margin-left: var(--s-2);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--type-label);
+    padding: 1px var(--s-1);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+
+<script>
+  import { choice, each, live, reducedMotion, slider } from './figure.ts';
+  import type { Size } from './Radiance.scene.ts';
+
+  each('radiance', (figure) => {
+    const bytes = figure.querySelector<HTMLElement>('[data-read=bytes]')!;
+    const count = slider(figure, 'count', (value) => {
+      shown.update((scene) => scene.count(value));
+    });
+    let picked = false;
+    const texels = choice(figure, 'texels', () => {
+      picked = true;
+      shown.update(resize);
+    });
+    const resize = (scene: { resize(texels: Size): void; readonly byteSize: number }) => {
+      if (picked) scene.resize(Number(texels.value) as Size);
+      bytes.textContent = `${(scene.byteSize / 2 ** 20).toFixed(1)} MB`;
+    };
+
+    const shown = live(
+      figure,
+      () => import('./Radiance.scene.ts'),
+      () => ({ motion: !reducedMotion(), count: count.valueAsNumber }),
+      { animate: true, grade: 1, ready: resize },
+    );
+  });
+</script>

@@ -1,0 +1,225 @@
+---
+// A module page shows its lead module's strip under the title, or where the page places it with
+// <Module id="..." /> when it covers several; MarkdownContent.astro ends the page with the cards
+import { loadListed } from './load.ts';
+import { checkPlacement, placedIn } from './modules.ts';
+import { guideLabel, kindOf } from './nav.ts';
+import Strip from './Strip.astro';
+import { PAGE_TITLE_ID, pageHref } from './urls.ts';
+
+const { entry, toc } = Astro.locals.starlightRoute;
+const { data } = entry;
+const { modules, listed: shown } = await loadListed(data);
+const ids = shown.map((module) => module.id);
+checkPlacement(entry.id, ids, placedIn(entry.body ?? ''));
+const label = kindOf(entry.id === 'index' ? '' : entry.id, ids[0]);
+const only = [...new Set(shown.map((module) => module.platform))];
+const first = data.readFirst;
+/** The page's sections, but its title, which the contents list first. */
+const sections = (toc?.items ?? []).filter((item) => item.slug !== PAGE_TITLE_ID);
+---
+
+<header class="page-title">
+  {
+    label && (
+      <p class="kind" data-pagefind-ignore>
+        <b>{label.kind}</b>
+        {label.place && <span>{label.place}</span>}
+        {only.length === 1 && only[0] && <span class="only">{only[0]} only</span>}
+        {label.concept && (
+          <a class="concept" href={label.concept.href}>
+            Concept: {label.concept.label}
+          </a>
+        )}
+      </p>
+    )
+  }
+  <h1 id={PAGE_TITLE_ID}>{data.title}</h1>
+  {data.description && <p class="lede">{data.description}</p>}
+  {
+    first && (
+      <p class="first" data-pagefind-ignore>
+        <span>Read first</span>
+        <span>
+          <a href={pageHref(first.page)}>{guideLabel(first.page) ?? first.page}</a>, {first.for}
+        </span>
+      </p>
+    )
+  }
+</header>
+
+{shown.length === 1 && <Strip module={shown[0]} modules={modules} />}
+
+{
+  // Where the window is too narrow for the contents beside the page, they fold under the title
+  sections.length > 1 && (
+    <details class="onpage not-content" data-pagefind-ignore>
+      <summary>On this page</summary>
+      <ul>
+        {sections.map((item) => (
+          <li>
+            <a href={`#${item.slug}`}>{item.text}</a>
+            {item.children.length > 0 && (
+              <ul>
+                {item.children.map((child) => (
+                  <li>
+                    <a href={`#${child.slug}`}>{child.text}</a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+<script>
+  // A section picked from the folded contents closes them
+  for (const fold of document.querySelectorAll<HTMLDetailsElement>('details.onpage')) {
+    fold.addEventListener('click', (event) => {
+      if ((event.target as Element).closest('a')) fold.open = false;
+    });
+  }
+</script>
+
+<style>
+  .kind {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-1) var(--s-3);
+    margin: 0 0 var(--s-3);
+    color: var(--muted);
+    font: 500 11px/20px var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .kind b {
+    padding: 0 6px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--accent-high);
+    font-weight: 500;
+  }
+
+  .only {
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .concept {
+    margin-left: auto;
+    color: var(--text-2);
+    letter-spacing: 0;
+    text-decoration: none;
+    text-transform: none;
+  }
+
+  .concept::after {
+    content: ' →';
+    color: var(--muted);
+  }
+
+  .concept:hover {
+    color: var(--accent-high);
+  }
+
+  .first {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    margin: var(--s-4) 0 0;
+    padding: var(--s-2) 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    color: var(--text-2);
+    font-size: 14.5px;
+    line-height: 22px;
+  }
+
+  .first > span:first-child {
+    color: var(--muted);
+    font: 500 11px/22px var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .first a {
+    color: var(--link);
+    text-decoration: none;
+  }
+
+  .first a:hover {
+    color: var(--accent-high);
+  }
+
+  .onpage {
+    margin: var(--s-4) 0 0;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+  }
+
+  @media (min-width: 72rem) {
+    .onpage {
+      display: none;
+    }
+  }
+
+  .onpage summary {
+    padding: var(--s-2) var(--s-4);
+    color: var(--text);
+    font: 500 12px/20px var(--font-mono);
+    cursor: pointer;
+  }
+
+  .onpage ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .onpage > ul {
+    padding: 0 var(--s-4) var(--s-3);
+    border-top: 1px solid var(--rule);
+  }
+
+  .onpage ul ul {
+    padding-left: var(--s-4);
+  }
+
+  .onpage a {
+    display: block;
+    padding: 4px 0;
+    color: var(--text-2);
+    font: 400 13px/20px var(--font-mono);
+    text-decoration: none;
+  }
+
+  .onpage a:hover {
+    color: var(--accent-high);
+  }
+
+  h1 {
+    margin: 0;
+    color: var(--text);
+    font: 500 clamp(30px, 4vw, 40px) / 1.15 var(--font-sans);
+    letter-spacing: -0.02em;
+  }
+
+  .lede {
+    max-width: 60ch;
+    margin: var(--s-3) 0 0;
+    color: var(--text-2);
+    font-size: 19px;
+    line-height: 1.5;
+    letter-spacing: -0.005em;
+  }
+
+  @media (max-width: 49.99em) {
+    .lede {
+      font-size: 17px;
+    }
+  }
+</style>

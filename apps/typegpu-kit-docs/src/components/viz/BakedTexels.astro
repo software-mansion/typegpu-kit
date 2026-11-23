@@ -1,0 +1,89 @@
+<figure class="viz" data-viz="baked-texels">
+  <p class="viz-title">A baker's function runs at the centre of each texel</p>
+  <svg
+    viewBox="0 0 640 220"
+    role="img"
+    tabindex="0"
+    aria-label="An 8 by 4 texture, with the uv at the centre of each texel that a baker's function receives"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Tap a texel, or use the arrow keys, to see the <code>uv</code> its function receives. It lands on the texel's centre, so no texel reads an edge.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    cursor: pointer;
+  }
+
+  svg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<script>
+  import { each, onKeys, rounded, statusLine } from './figure.ts';
+  import { fitWidth, svg, text } from './svg.ts';
+
+  const WIDTH = 8;
+  const HEIGHT = 4;
+  const uvOf = (x: number, y: number) => [(x + 0.5) / WIDTH, (y + 0.5) / HEIGHT] as const;
+
+  each('baked-texels', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    let chosen = { x: 2, y: 1 };
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const left = 20;
+        const top = 22;
+        const cell = Math.min((width - left * 2) / WIDTH, 52);
+        const right = left + cell * WIDTH;
+        const bottom = top + cell * HEIGHT;
+        text(figure, left, top - 8, '0', { 'text-anchor': 'middle', fill: 'var(--viz-muted)' });
+        text(figure, right, top - 8, 'u = 1', { 'text-anchor': 'end', fill: 'var(--viz-muted)' });
+        text(figure, left - 6, bottom + 4, '1', { 'text-anchor': 'end', fill: 'var(--viz-muted)' });
+        text(figure, left, bottom + 18, 'v grows down', { fill: 'var(--viz-muted)' });
+        for (let y = 0; y < HEIGHT; y++) {
+          for (let x = 0; x < WIDTH; x++) {
+            const on = x === chosen.x && y === chosen.y;
+            const rect = svg('rect', {
+              x: left + x * cell,
+              y: top + y * cell,
+              width: cell,
+              height: cell,
+              fill: 'var(--ground)',
+              stroke: on ? 'var(--viz-accent)' : 'var(--viz-line)',
+            }, figure);
+            svg('circle', {
+              cx: left + (x + 0.5) * cell,
+              cy: top + (y + 0.5) * cell,
+              r: on ? 3 : 2,
+              fill: on ? 'var(--viz-accent)' : 'var(--viz-line)',
+            }, figure);
+            rect.addEventListener('click', () => choose(x, y));
+          }
+        }
+
+        const [u, v] = uvOf(chosen.x, chosen.y);
+        status.textContent = `Texel (${chosen.x}, ${chosen.y}) gets uv (${rounded(u, 3)}, ${rounded(v, 3)})`;
+        return bottom + 26;
+      },
+      360,
+    );
+
+    const choose = (x: number, y: number) => {
+      chosen = { x, y };
+      draw();
+    };
+    onKeys(figure, {
+      arrow: (dx, dy) =>
+        choose((chosen.x + Math.sign(dx) + WIDTH) % WIDTH, (chosen.y + Math.sign(dy) + HEIGHT) % HEIGHT),
+    });
+    draw();
+  });
+</script>

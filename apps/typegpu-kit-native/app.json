@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "TypeGPU Kit",
+    "slug": "typegpu-kit-native",
+    "version": "0.0.0",
+    "icon": "./assets/icon.png",
+    "orientation": "default",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0a0d12",
+    "scheme": "typegpukit",
+    "platforms": ["ios"],
+    "ios": {
+      "bundleIdentifier": "com.swmansion.typegpukit",
+      "supportsTablet": true,
+      "infoPlist": {
+        "CADisableMinimumFrameDurationOnPhone": true
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "react-native-webgpu",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Pick a photo for examples that use one, such as Domino run.",
+          "cameraPermission": "Examples such as Ember mirror use the camera to see you move.",
+          "microphonePermission": false
+        }
+      ]
+    ]
+  }
+}

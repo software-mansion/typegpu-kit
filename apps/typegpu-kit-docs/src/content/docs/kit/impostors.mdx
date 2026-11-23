@@ -1,0 +1,223 @@
+---
+title: Impostors
+description: Capture mesh models into an atlas and draw lit, shadowed cards.
+modules: [kit/impostors]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import Impostors from '../../../components/viz/Impostors.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+
+Distant models can spend thousands of triangles on a few pixels. An **impostor** draws a model as one camera-facing card, using captures nearest the viewing direction. It receives lighting, casts shadows and supports culling. Its drawing cost depends on covered pixels rather than model triangles.
+
+<Hidden card="quiver-trees">
+  <Impostors />
+</Hidden>
+
+```ts twoslash
+import { cameras, passes, targets } from '@typegpu/kit';
+import { lighting, meshPool } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 30,
+});
+const screen = targets.create(
+  root,
+  { width: 1, height: 1 },
+  {
+    hdr: { format: 'rgba16float', samples: 4 },
+    depth: { format: 'depth24plus', samples: 4 },
+  },
+);
+const light = lighting.create(root, { shadow: {} });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .beneath(light.inject());
+const pool = meshPool.create(root, { capacity: 64 });
+// ---cut---
+import { impostors, instances } from '@typegpu/kit';
+
+const trunk = pool.add(meshes.cylinder({ radius: 0.14, height: 1.8 }));
+const crown = pool.add(meshes.icosphere({ radius: 1.6, segments: 2 }));
+const card = pool.add(impostors.CARD).meshes[0]; // once, for every atlas
+
+const atlas = impostors.create(
+  root,
+  pool,
+  [
+    { mesh: trunk, position: [0, 0.9, 0], color: [0.07, 0.04, 0.02] },
+    { mesh: crown, position: [0, 3, 0], color: [0.11, 0.23, 0.02] },
+  ],
+  { card },
+);
+// Record the views while loading, after baking the shapes
+const loading = root.createCommandEncoder();
+atlas.record(loading);
+loading.submit();
+
+const oaks = instances.create(root, pool, { kind: impostors.Impostor, capacity: 20_000 });
+oaks.add(card, { position: [12, 0, -40], scale: 1.2, roughness: 0.9 });
+
+const renderer = oaks.renderer().pipe(atlas.inject());
+const drawn = scene.add(renderer);
+const cast = light.shadow.add(renderer);
+```
+
+The renderer flushes, culls, casts shadows and draws like an [instances](/kit/instances/) renderer. Opaque impostors require pass descriptions with depth.
+
+## Capturing
+
+<Rules>
+
+- **Subjects** Capture a mesh, model or list of pieces. Each piece references a pool mesh with `position`, `rotation`, `scale` and a colour that multiplies its textures.
+- **The card** Every atlas draws on one card: add `impostors.CARD` to the pool once and give its mesh to each `impostors.create`, which allocates the atlas and pipelines.
+- **Recording** `atlas.record(frame)` records the bounding-sphere kernels, one pass per view and the atlas's [mipmaps](/kit/mipmaps/). The atlas stays blank until you submit that encoder.
+- **Views** Views form a grid with `views` entries per side over the upper hemisphere. Use `hemisphere: false` to cover the whole sphere. Each view stores colour, coverage, normal and depth.
+- **Mesh settings** Captures preserve mesh rendering settings. Double-sided meshes show back faces lit from that side. Masked meshes keep their cutouts.
+- **Timing** Record after shape baking, either in the same encoder or after submitting the bake encoder. Await `model.ready` first to include textures. Record again when the subject changes.
+- **Invalid options** Creation throws if `views` is outside 2 to 16, `size` is not a power of two from 16 to 512, the subject has no meshes, or a mesh or the card belongs to another pool.
+
+</Rules>
+
+To capture animation, give a piece a `pose` from `options.poses`, a set of [poses](/kit/poses/). An array of poses creates one atlas phase per pose. A row's `phase` selects which to draw. The stampede captures six phases of a horse gallop:
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+import { impostors, meshPool, poses } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const horse: gltf.ModelData;
+// ---cut---
+const pool = meshPool.create(root, meshPool.roomFor([horse, impostors.CARD])); // room for the card
+const body = pool.add(horse);
+const card = pool.add(impostors.CARD).meshes[0];
+
+const gallop = poses.clip(horse, 'Gallop');
+const figures = poses.create(root, horse.skin!, { gallop }, { capacity: 6 });
+const phases = Array.from(
+  { length: 6 },
+  (_, i) => figures.add('gallop', 0, { from: (gallop.duration * i) / 6, speed: 0 }), // held still
+);
+
+const atlas = impostors.create(
+  root,
+  pool,
+  body.meshes.map((mesh) => ({ mesh, pose: phases })),
+  { card, poses: figures, views: 5, size: 64 },
+);
+
+const loading = root.createCommandEncoder();
+const posing = loading.beginComputePass();
+figures.animate(posing, 0); // pose before the views, in the same encoder
+posing.end();
+atlas.record(loading);
+loading.submit();
+```
+
+- Capture bounds include posed vertices from every phase.
+- Poses must be live and meshes must have joints. All pose arrays must have the same nonzero length. A single pose or unposed piece repeats across phases.
+
+## Drawing
+
+<Rules>
+
+- **Facing** The card faces the camera through the subject centre. Its bounds fit the projected subject box to reduce unused pixels.
+- **Row fields** Cards use instance fields. Row `color` multiplies atlas colour. Roughness, metallic and emission come from the row.
+- **Shading point** Each pixel shades at the captured subject point, so light, fog and shadows use that position. The shadow pass writes its depth 12 atlas texels farther from the light, so a card doesn't shadow itself where its views disagree.
+- **Coverage** The kind's `coverage` reads the captured coverage. With multisampling, coverage selects a fraction of pixel samples. Without it, pixels below half coverage are omitted.
+- **Overlap** Cards that overlap, such as a forest, draw best with `prepass: true` on their renderer: depth first, then each visible pixel shades once. With `blend: 'translucent'`, one draw composites row opacity times captured coverage over the background without writing depth.
+- **Culling** `cull: true` tests the sphere around the captured subject.
+
+</Rules>
+
+## Moving cards on the device
+
+Use `impostors.define` to add kind fields and choose who writes transforms, as with `instances.define`. Device fields also include `phase`, indexed from 0. Values beyond the atlas phase count select the last phase. Kernels can move cards and select phases:
+
+```ts twoslash
+import { tgpu, d } from 'typegpu';
+import { meshPool, impostors, instances } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+declare const card: meshPool.Mesh;
+// ---cut---
+const Walker = impostors.define('Walker', {
+  transform: 'device',
+  host: { member: d.u32 },
+});
+const cards = instances.create(root, pool, { kind: Walker, capacity: 1024 });
+cards.add(card, { member: 0 });
+cards.flush();
+
+const walker = cards.gpu;
+const move = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (gid.x >= walker.span() || !walker.alive(gid.x)) return;
+  walker.device.$[gid.x].position = d.vec3f(walker.member(gid.x), 0, 0);
+  walker.device.$[gid.x].phase = 1;
+});
+const moving = root.createComputePipeline({ compute: move });
+```
+
+To read a simulation's own buffer instead, give `define` a [`place`](/kit/instances/#placed-from-your-own-data) that returns the card's transform and a `visible` that hides a card in every pass, as for instances. The card faces the camera from that transform, and culling follows it.
+
+## Sampling
+
+Atlas sampling determines pixel cost. `atlas.inject(sampling)` defaults to `'blended'`:
+
+| Renderer is piped          | Reads                                                                 | Samples a pixel |
+| -------------------------- | --------------------------------------------------------------------- | --------------- |
+| `atlas.inject('nearest')`  | Selects the nearest view, switching as the camera turns.              | 2               |
+| `atlas.inject()`           | Blends the three nearest views, weighted by direction.                | 6               |
+| `atlas.inject('parallax')` | Blends three views with depth-based ray correction for close viewing. | 18              |
+
+A renderer with `prepass: true` also reads the coverage in its depth pass: 1, 3 or 3 samples.
+
+The [quiver trees](/examples/quiver-trees/) draw distant trees and boulders as impostors.
+
+Use [`from` and `to`](/kit/instances/#by-distance) to draw near cards with `'parallax'` and far cards with `'nearest'`. Both renderers can share an atlas.
+
+## A stampede
+
+<ExampleFigure
+  example="stampede"
+  options={{ count: 4096 }}
+  controls={['handOff', 'tint', 'skinned', 'impostors']}
+  caption="Hover a horse to see its name, click it to follow, or click the ground for a thunderclap. Change the hand-off distance or tint cards to see where impostors replace skinned meshes."
+/>
+
+The atlas has six gallop phases and four walk phases, each with 25 views at 64 texels. Each horse selects the phase matching its stride. Hovered and followed horses keep skinned meshes. Renderers cull horses outside the camera and sun views.
+
+## Memory
+
+| What      |                                                                                                                               |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| an atlas  | 8 bytes per texel per view per phase, plus one third for mipmaps. Defaults use 25 MB; 6 views, 6 phases and size 64 use 9 MB. |
+| capturing | Four samples at 12 bytes per texel for one view, retained until `destroy` for recapture. Size 128 uses 786 KB.                |
+
+## Tearing down
+
+Destroy an unused atlas with `atlas.destroy()`. The card stays in the pool for other atlases.
+
+## Limits
+
+<Rules>
+
+- **Phases** Phases do not interpolate. Capture phases for deformation too. A one-phase tree stops swaying when it becomes a card.
+- **Layers** `views² × phases` must fit `maxTextureArrayLayers`, at least 256 on WebGPU.
+- **Materials** The atlas keeps colour and normals, not the meshes' roughness, metallic or emission.
+- **From below** A hemisphere atlas seen from below shows its lowest views.
+- **Pipelines** Each sampling mode needs separate colour, depth and shadow pipelines.
+- **Far cards** Small far cards show their edges as dots under 4× multisampling, where few samples are covered.
+- **Small models** Use meshes for low-triangle models. Atlas sampling can cost more than their vertex work.
+
+</Rules>

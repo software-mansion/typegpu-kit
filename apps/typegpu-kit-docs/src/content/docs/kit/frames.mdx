@@ -1,0 +1,164 @@
+---
+title: Frames
+description: A frame loop that hands you one command encoder each frame and submits it once, with the time and callbacks that run after the submit.
+modules: [kit/frames]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import FrameSteps from '../../../components/viz/FrameSteps.astro';
+
+Modules record into an encoder you hand them. The loop creates one encoder each frame, runs your recorder with it and submits it once, so a GPU capture shows the whole frame.
+
+<FrameSteps />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { frames } from '@typegpu/kit';
+
+const loop = frames.create(root, ({ encoder, time, dt, index }) => {
+  // record passes into `encoder`; don't submit it
+});
+
+frames.animate(loop); // calls loop.run(seconds) at every animation frame
+```
+
+<Rules>
+
+- **The clock** `time` is seconds since the first submitted frame. `dt` is seconds since the previous frame and is `0` on the first. `index` counts frames submitted before this one. `loop.seconds` holds the time of the last submitted frame, so a frame that throws leaves it unchanged.
+- **Scheduling** The loop schedules nothing. `run(seconds)` records one frame and submits it. It throws a `RangeError` if `seconds` isn't finite or is smaller than `loop.seconds`.
+- **Animating** [`frames.animate(loop)`](#running-the-loop) calls `run` at every animation frame. A test or a benchmark [calls `run` itself](#stepping-by-hand).
+- **Synchronous** The recorder is synchronous. Returning a promise throws a `TypeError`, and so does calling `run` from inside it.
+- **Errors** If the recorder throws or calls `destroy()`, the frame submits no further commands and the clock doesn't advance. Queue writes and commands already sent with [`frame.submit()`](#submitting-early) still run. After `destroy()`, `run` returns `false`.
+
+</Rules>
+
+## Running the loop
+
+`frames.animate(loop, options)` runs the loop at every animation frame, on the web and React Native.
+
+<Rules>
+
+- **Stalls** Each frame advances time by at most `maxDt`, which defaults to 0.1 s. A frame after a stall, or after a hidden tab comes back, adds no more than that.
+- **Pausing** With a `surface`, animation and time stop while it is paused. The first frame after `resume()` has a `dt` of 0. On React Native, pause it from `AppState`. On the web, pause it for a canvas scrolled out of view or a pause menu; browsers already stop a hidden tab's frames.
+- **Stopping** `destroy()` on the animation returned by `animate` requests no more frames. Call it from inside a frame to make that frame the last. The loop stays yours. If you destroy the loop, the animation stops too.
+- **Errors** An error ends animation and reaches `onError` once. Without `onError`, the animation frame callback throws it.
+- **Wall time** `frame.time` is the loop's own time, so it drifts from `performance.now()` after the first pause or stall. Read `performance.now()` for wall time.
+
+</Rules>
+
+A canvas that draws only while on screen pauses its surface from an `IntersectionObserver`:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas')!;
+const surface = web.surface(root, canvas);
+const loop = frames.create(root, () => {});
+// ---cut---
+frames.animate(loop, { surface });
+
+new IntersectionObserver(([entry]) =>
+  entry?.isIntersecting ? surface.resume() : surface.pause(),
+).observe(canvas);
+```
+
+## After the submit
+
+A readback records its copy in the frame but can only map it once the copy is submitted. A module that has to wait for the submit registers a callback while it records:
+
+```ts twoslash
+import type { Frame } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+// ---cut---
+function createProbe(root: TgpuRoot /* , ... */) {
+  const map = () => {
+    // staging.mapAsync(GPUMapMode.READ).then(...)
+  };
+
+  return {
+    record(frame: Frame) {
+      // copy into the staging buffer on frame.encoder
+      frame.afterSubmit(map);
+    },
+  };
+}
+```
+
+- Callbacks run right after the frame's last submit, in registration order, and only for frames that finish.
+- Every callback runs even if one throws. The frame still counts. `run` throws the callback error afterwards, or an `AggregateError` if several failed.
+- `afterSubmit` throws unless its own frame is recording. Each `run` makes a new `Frame`, so a module that acts once per frame can tell frames apart by that object.
+- Create the callback once, as above, so recording allocates nothing.
+
+## Submitting early
+
+`frame.submit()` submits the commands recorded so far. The next access to `frame.encoder` creates another encoder, and the loop submits the remaining commands when your recorder returns. Before you submit early, try [per-step values](/kit/clock/#a-value-per-step). Each early submit adds a `queue.submit` and splits the frame in a GPU capture.
+
+```ts twoslash
+import type { Frame } from '@typegpu/kit';
+import { d, tgpu, type TgpuComputePipeline } from 'typegpu';
+const root = await tgpu.init();
+const params = root.createUniform(d.struct({ phase: d.f32 }));
+declare const step: TgpuComputePipeline;
+declare const phases: number[];
+// ---cut---
+function frame(frame: Frame) {
+  for (const phase of phases) {
+    params.write({ phase });
+    const pass = frame.encoder.beginComputePass();
+    pass.setPipeline(step);
+    pass.dispatchWorkgroups(64);
+    pass.end();
+    frame.submit(); // queued ahead of the next write
+  }
+
+  // the draws go into a fresh frame.encoder, which the loop submits
+}
+```
+
+- End every pass first. A submit with a pass open is a WebGPU validation error, and it voids everything recorded since the last submit. A [recording root](/kit/testing/) throws there instead.
+- Only the recorder you pass to `frames.create` calls `submit()`. A module never submits. It reads `frame.encoder` at each call and never keeps it, since a kept encoder may already have been submitted.
+- A recording method that takes a frame or an encoder reads the encoder with `frames.encoderOf(target)` at each call.
+- A frame ending with `submit()` sends no empty command buffer. It creates another encoder only if `frame.encoder` is read again.
+- Kit modules mark their recorded copies as sent when their encoder submits. Copies sent by an early `frame.submit()` still count if the frame throws later. A `Frame` you build yourself marks them through `afterSubmit`, after its last submit.
+
+Submit once per frame unless an early submit is required. Use one when:
+
+<Rules>
+
+- **Per-step values** A step reads a value you can't supply another way, such as a library kernel that reads its own `createUniform`.
+- **Library submits** A library call submits its own work during a frame. Examples include a pipeline drawn without an encoder and a mesh pool's `add` without an encoder. That work runs before your frame's pending commands. Submit first to preserve order, or pass the encoder where supported.
+- **Risky commands** A command may be invalid. WebGPU invalidates its whole command buffer, while commands submitted before it still run.
+- **An early start** The GPU could start sooner. Submitting the simulation before recording draws lets the GPU work while the CPU records the rest.
+
+</Rules>
+
+## Stepping by hand
+
+A benchmark or GPU capture needs the same steps on every run, regardless of display rate. Leave out `frames.animate` and [`web.host`](/kit/hosting/#on-the-web), make the loop yourself, and call `run` once per step:
+
+```ts twoslash
+import { frames, type Frame } from '@typegpu/kit';
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const scene: { frame(frame: Frame): void };
+// ---cut---
+const STEP = 1 / 60;
+const STEPS = 600;
+const loop = frames.create(root, (frame) => scene.frame(frame));
+
+const start = performance.now();
+for (let i = 0; i < STEPS; i++) {
+  loop.run(i * STEP); // one step, one submit
+}
+await root.device.queue.onSubmittedWorkDone();
+const msPerStep = (performance.now() - start) / STEPS;
+```
+
+- `run` takes a time in seconds. With `i * STEP`, the first frame has a `dt` of zero. Each later frame advances by one step.
+- Each `run` submits, so a uniform written for one step can't change what the step before it reads. No [count on the GPU](/kit/clock/#a-value-per-step) is needed here.
+- `onSubmittedWorkDone()` resolves once the GPU has finished everything submitted. Wait for it before stopping a timer or reading results.
+- A [fixed step](/kit/clock/) of the same length runs exactly one step per frame. A canvas surface of a [fixed size](/kit/web/#a-fixed-size) draws the same pixels on every screen, and `offscreenSurface` from [`@typegpu/kit/testing`](/kit/testing/) gives the scene a surface without a canvas.

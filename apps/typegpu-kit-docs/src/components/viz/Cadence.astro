@@ -1,0 +1,114 @@
+---
+import Choice from './Choice.astro';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="cadence">
+  <p class="viz-title">Two cadences over the same frames, one counting them and one keeping time</p>
+  <svg viewBox="0 0 640 140" role="img" aria-label="Frames as boxes on a time axis, lit where each cadence runs, with the hz cadence's schedule as ticks"></svg>
+  <div class="viz-controls" data-pagefind-ignore>
+    <button data-action="play" aria-pressed="true">Pause</button>
+    <button data-action="stall">Stall 150 ms</button>
+    <button data-action="reset">reset()</button>
+    <Choice name="fps" label="display" options={[30, 60, 144].map((fps) => ({ value: fps, label: `${fps} fps` }))} value={60} />
+    <Slider inline name="every" min={1} max={8} value={4} />
+    <Slider inline name="hz" min={1} max={30} value={25} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Switch the display to 144 fps, then stall a frame. The <code>every</code> runs crowd together as frames shorten while the <code>hz</code> runs keep their spacing, and a stall starts the <code>hz</code> schedule again at its end. Time runs at one fifth speed.
+  </figcaption>
+</figure>
+
+<script>
+  import { action, choice, each, slider } from './figure.ts';
+  import { CHAR, fitWidth, svg, text } from './svg.ts';
+  import { axis, frameBoxes, frameStrip, PER_SECOND, playStrip, PRESENT, scroll, STALL, x } from './frame-strip.ts';
+  import { createProgram, type Ran } from './Cadence.program.ts';
+
+  const LANE = 30;
+  const EVERY_TOP = 18;
+  const RATE_LABEL = EVERY_TOP + LANE + 21;
+  /** The schedule's ticks stand on the rate lane. */
+  const TICK = 10;
+  const RATE_TOP = RATE_LABEL + 6 + TICK;
+  const HEIGHT = RATE_TOP + LANE + 24;
+  /** Seconds of frames the figure opens on, with a stall a phone is too narrow to show. */
+  const OPENING = 1.28;
+  /** Seconds the strip's own hitches take: a stall now and then. */
+  const HITCHES = [STALL, 0, 0, 0];
+
+  const EVERY = 'var(--viz-b)';
+  const RATE = 'var(--viz-c)';
+  const MISSED = 'var(--viz-bad)';
+
+  each('cadence', (root) => {
+    const figure = root.querySelector('svg')!;
+    const fps = choice(root, 'fps', () => shown.show());
+    const every = slider(root, 'every', () => rebuild());
+    const hz = slider(root, 'hz', () => rebuild());
+
+    const create = () => createProgram({ every: every.valueAsNumber, hz: hz.valueAsNumber });
+    let program = create();
+    /** When `reset()` was called, so a replay calls it in the same frames. */
+    let resets: number[] = [];
+    const strip = frameStrip<Ran>({
+      seed: 17,
+      fps: () => Number(fps.value),
+      hitches: HITCHES,
+      first: 0.82,
+      run: ({ start, end }) => {
+        if (resets.some((at) => at >= start && at < end)) program.reset();
+        return program.frame(start, end);
+      },
+    });
+
+    const draw = fitWidth(figure, (width) => {
+      const right = width - PRESENT;
+      const view = scroll(figure, strip.now, 0, right, HEIGHT);
+      const { group, from } = view;
+      const label = `every: ${every.value}`;
+      text(figure, 0, EVERY_TOP - 7, label, { fill: EVERY });
+      text(figure, 0, RATE_LABEL, `hz: ${hz.value}`, { fill: RATE });
+
+      frameBoxes(figure, view, strip, EVERY_TOP, LANE, (ran) => (ran.counted ? EVERY : undefined));
+      frameBoxes(figure, view, strip, RATE_TOP, LANE, (ran) => (ran.timed ? RATE : undefined));
+
+      const tick = (at: number, colour: string) =>
+        svg('rect', { x: Math.round(x(at)) - 1, y: RATE_TOP - TICK - 2, width: 2, height: TICK, fill: colour }, group);
+      for (const { end, ran } of strip.frames) {
+        if (!ran.timed || end < from - 0.2) continue;
+        tick(ran.timed.at, RATE);
+        for (const missed of ran.timed.missed) tick(missed, MISSED);
+      }
+
+      // Where `reset()` was called, through both lanes
+      const clear = label.length * CHAR + 8;
+      for (const at of resets) {
+        const left = Math.round(x(at)) + 0.5;
+        svg('line', { x1: left, x2: left, y1: EVERY_TOP - 4, y2: RATE_TOP + LANE, stroke: 'var(--viz-accent)' }, group);
+        if (right - (strip.now - at) * PER_SECOND > clear) {
+          text(group, left + 4, EVERY_TOP - 7, 'reset()', { fill: 'var(--link)' });
+        }
+      }
+
+      axis(figure, 0, right, RATE_TOP + LANE);
+      return HEIGHT;
+    });
+
+    const shown = playStrip(root, strip, draw);
+
+    /** Asks new cadences about the same frames. */
+    const rebuild = () => {
+      program = create();
+      strip.replay();
+      shown.redraw();
+    };
+
+    action(root, 'reset', () => {
+      resets = [...resets.filter((at) => at > strip.now - 2), strip.now];
+      shown.show();
+    });
+
+    strip.advance(OPENING);
+  });
+</script>

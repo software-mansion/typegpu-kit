@@ -1,0 +1,16 @@
+{
+  "title": "Slime mould",
+  "category": "simulations",
+  "rarity": "uncommon",
+  "description": "400 000 slime mould agents spread across dark agar looking for food, and their trails grow into a glowing network. Each agent senses the trail ahead, turns toward it and adds to it, while another kernel blurs and fades the trails. Tap to drop more food. The first tutorial builds this scene.",
+  "line": "400 000 agents grow a slime mould network toward the food you drop.",
+  "order": 14,
+  "card": {
+    "count": 100000,
+    "grid": 1024
+  },
+  "hint": "tap to drop more food",
+  "poster": {
+    "seconds": 24
+  }
+}

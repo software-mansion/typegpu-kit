@@ -1,0 +1,351 @@
+---
+title: How the kit works
+description: One frame written in plain TypeGPU, then piece by piece with the kit, and the seven rules every module follows.
+---
+
+import FrameGraph from '../../../components/viz/FrameGraph.astro';
+import RecordingLog from '../../../components/viz/RecordingLog.astro';
+import Ripple from '../../../components/viz/Ripple.astro';
+
+TypeGPU Kit is a set of modules for [TypeGPU](https://typegpu.com). Your program keeps the GPU device, the loop and every command. Each module takes over one piece you would otherwise write by hand, such as textures that follow the canvas size, a glow or a pool of particles.
+
+This page writes one frame in plain TypeGPU, then moves it onto the kit one piece at a time. Each step introduces one of the seven rules every module follows, yours included.
+
+## A frame in plain TypeGPU
+
+The frame draws rings that ripple out from the middle of the canvas. A small program on the GPU, a **kernel**, moves the ripple forward each frame, and a **fragment function** colours every pixel from it.
+
+<Ripple />
+
+TypeGPU starts from a **root**, which holds the GPU device and creates everything else. A **pipeline** holds one or more GPU functions compiled with the settings they run with. The program asks the root for two pieces of GPU memory and two pipelines:
+
+```ts twoslash
+import { common, d, std, tgpu } from 'typegpu';
+
+const root = await tgpu.init();
+const context = root.configureContext({ canvas: document.querySelector('canvas')! });
+
+const tint = root.createUniform(d.vec4f, d.vec4f(0.2, 0.6, 1, 1)); // written by the CPU
+const phase = root.createMutable(d.f32); // written by the kernel
+
+const advance = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  phase.$ += 0.05;
+});
+const rings = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(({ uv }) => {
+  'use gpu';
+  const wave = std.sin(std.length(uv - d.vec2f(0.5)) * 40 - phase.$) * 0.5 + 0.5;
+  return tint.$ * wave;
+});
+
+const advancing = root.createComputePipeline({ compute: advance });
+const drawing = root.createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment: rings, // draws in the canvas's format
+});
+```
+
+- `'use gpu'` marks a function TypeGPU compiles for the GPU. Inside one, `+`, `-`, `*` and `/` work on vectors such as `d.vec2f`.
+- A **uniform** holds a few values that are the same for every pixel. The CPU writes it. A **mutable** buffer is memory that kernels write. A shader reads either through `.$`.
+- `configureContext` connects the canvas to the root's device. Its format and a pipeline's both default to the browser's preferred format.
+- `common.fullScreenTriangle` is TypeGPU's vertex function for one triangle that covers the canvas. It hands each pixel its `uv`, which runs from 0 to 1 across the canvas.
+- Compiling a pipeline takes time, so a program creates its pipelines once, before the first frame.
+
+The GPU doesn't run commands as they are called. An **encoder** records them. Work goes into **passes**: a compute pass runs kernels, and a render pass draws into textures. A **submit** sends what the encoder recorded to the GPU, which runs it in order:
+
+```ts twoslash
+import { common, d, tgpu, type TgpuComputePipeline, type TgpuRenderPipeline } from 'typegpu';
+const root = await tgpu.init();
+const context = root.configureContext({ canvas: document.querySelector('canvas')! });
+declare const advancing: TgpuComputePipeline;
+declare const drawing: TgpuRenderPipeline;
+// ---cut---
+function frame() {
+  const encoder = root.createCommandEncoder();
+
+  const compute = encoder.beginComputePass();
+  compute.setPipeline(advancing);
+  compute.dispatchWorkgroups(1); // runs the kernel once
+  compute.end();
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: { view: context.getCurrentTexture().createView() },
+  });
+  pass.setPipeline(drawing);
+  pass.draw(3); // the triangle's three corners
+  pass.end();
+
+  encoder.submit(); // one command buffer for the whole frame
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+```
+
+A larger program also needs a loop with time, textures that follow the canvas size, effects such as a glow, and thousands of objects. The kit's modules provide those.
+
+## You own the frame
+
+The kit's [`frames`](/kit/frames/) runs the loop part of `frame()`. It creates the encoder, calls your function with it, and submits once your function returns. [`web.surface`](/kit/web/) configures the canvas and follows its size. The passes stay yours:
+
+```ts twoslash
+import { tgpu, type TgpuComputePipeline, type TgpuRenderPipeline } from 'typegpu';
+const root = await tgpu.init();
+const canvas = document.querySelector('canvas')!;
+declare const advancing: TgpuComputePipeline;
+declare const drawing: TgpuRenderPipeline;
+// ---cut---
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+
+const surface = web.surface(root, canvas);
+
+const loop = frames.create(root, (frame) => {
+  const compute = frame.encoder.beginComputePass();
+  compute.setPipeline(advancing);
+  compute.dispatchWorkgroups(1);
+  compute.end();
+
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: surface.view(frame) } });
+  pass.setPipeline(drawing);
+  pass.draw(3);
+  pass.end();
+}); // submits frame.encoder after this returns
+
+frames.animate(loop); // runs the loop at every animation frame
+```
+
+`frame` holds the `encoder`, the `time` in seconds and `dt`, the seconds since the last frame.
+
+The **first rule** is that your program owns the device, the loop, the encoder, the passes and the submit. No module submits during a frame. Each records into a pass or an encoder you hand it, so the GPU runs the frame in the order of your calls.
+
+## A module borrows
+
+A glow makes the bright rings bleed light. It needs the frame drawn into a texture with more range than the canvas, a **high dynamic range** (HDR) texture. A blur then reads that texture. Three modules cover it:
+
+- [`targets`](/kit/targets/) holds a set of textures that follow the canvas size. `fit()` replaces them when the size changes.
+- [`bloom`](/kit/finish/#bloom) blurs the bright parts of a texture into a glow texture.
+- [`finish`](/kit/finish/), the final pass, brings HDR colour into the canvas's range and adds the glow.
+
+```ts twoslash
+import { common, d, tgpu } from 'typegpu';
+import { frames } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const rings = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(() => {
+  'use gpu';
+  return d.vec4f(1);
+});
+// ---cut---
+import { bloom, finish, targets } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+const hdr = () => screen.textures.hdr;
+const glow = bloom.create(root, { source: hdr });
+const final = finish.create(root, { format: surface.format, source: hdr, glow });
+
+const drawing = root.createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment: rings,
+  targets: { format: 'rgba16float' }, // into the HDR texture now
+});
+
+frames.create(root, (frame) => {
+  screen.fit();
+  const pass = frame.encoder.beginRenderPass({ colorAttachments: { view: screen.views.hdr } });
+  pass.setPipeline(drawing);
+  pass.draw(3);
+  pass.end();
+
+  glow.record(frame); // opens its own passes
+  final.record(frame, surface.view(frame));
+});
+```
+
+Each module came from a factory, `create(root, options)`. A factory allocates what the module needs and returns a handle:
+
+- **Resources**, as TypeGPU objects you read and write. `glow.settings` is a uniform, so `glow.settings.patch({ threshold: 0.8 })` changes the threshold. `glow.output` is the glow texture, which your own passes can sample.
+- **Recording methods**, such as `glow.record(frame)`, which record into what you pass them.
+- **`'use gpu'` functions** your shaders can call, on modules that have them, such as particles' `emit`.
+- **`destroy()`**, which frees what the module made and nothing it borrowed. `glow.destroy()` frees the glow's textures, and the screen's stay.
+
+The **second rule** is that a module is a factory that borrows. It takes the root and the resources you hand it, and destroys only what it made, so two glows share nothing. A recording method takes the smallest piece of the frame it needs. One that adds to a pass you opened takes the pass. One that records passes or copies of its own takes the frame or its encoder. One that works after the submit takes the frame. Maths on the CPU takes numbers, as `view.update(frame.dt)` does.
+
+The figure shows a larger frame: a flow field, particles, a readback and a glow, each recording into the one encoder. Turn a module off to see what it recorded.
+
+<FrameGraph />
+
+Next to plain WebGPU, TypeGPU and a renderer such as three.js, the kit keeps TypeGPU's shaders and schemas and leaves you the passes and the submit:
+
+|                  | WebGPU                | TypeGPU                                   | TypeGPU Kit                                           | Three.js                             |
+| ---------------- | --------------------- | ----------------------------------------- | ----------------------------------------------------- | ------------------------------------ |
+| Shaders          | WGSL strings          | TypeScript marked `'use gpu'`             | TypeGPU shader functions                              | built-in materials, TSL for your own |
+| Memory layout    | byte offsets, by hand | schemas such as `d.struct`                | TypeGPU schemas and [tables](/kit/table/)             | attributes and uniforms it uploads   |
+| Objects          |                       |                                           | rows in buffers                                       | a scene graph of `Object3D`          |
+| Passes and order | yours                 | yours                                     | yours; [modules](/concepts/modules/) record into them | the renderer's                       |
+| The submit       | yours                 | yours, or one per call without an encoder | yours, once a frame                                   | the renderer's                       |
+| Reusable pieces  |                       | functions, slots and accessors            | modules that borrow your root                         | classes and add-ons                  |
+
+## Nothing is hidden
+
+Creating GPU objects during a frame costs time and memory the frame can't spare. A pipeline compiled during a frame stalls it. So the modules allocate when you create them, compile in `initAsync`, and only record during frames:
+
+```ts
+await Promise.all([
+  advancing.initAsync(),
+  drawing.initAsync(),
+  glow.initAsync(),
+  final.initAsync(),
+]);
+```
+
+After that a steady frame creates no GPU objects. The figure runs a scene on a recording root. A recording root needs no GPU and counts what the device creates. Run a frame twice and the counts stay put.
+
+<RecordingLog />
+
+The **third rule** is that costs are stated and checked. Each module's page ends with a card generated from its source, and the card states the module's costs:
+
+- **allocates** names anything a module creates after setup, such as the bind group a [video feed](/kit/video/) makes for each camera frame it copies.
+- **owns** lists what the module allocates.
+- **binds** counts the storage buffers and uniforms its shaders add. WebGPU guarantees 8 storage buffers per shader stage, so the counts tell you what fits in one pipeline.
+- **records** says where its work goes and in which order.
+- **injects** names the accessors it fills, which the next section explains.
+- **submits setup** marks the few calls that submit on their own, such as [`meshPool.add`](/kit/mesh-pool/) without an encoder, so you make them while loading.
+
+[`recordingRoot()`](/kit/testing/) runs your own scene the same way in a test.
+
+## Modules connect through TypeGPU
+
+The ripple can become a module too. The colouring shader reads its phase through an **accessor**, a typed value that shader code reads and a pipeline can refill. Make the accessor inside `createRipple`, with that ripple's phase as its default. `heightAt` then carries its own fill:
+
+```ts twoslash
+import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+// ---cut---
+export function createRipple(root: TgpuRoot) {
+  const phase = root.createMutable(d.f32);
+  const ripple = tgpu.accessor(d.f32, phase);
+
+  const advance = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    phase.$ += 0.05;
+  });
+  const advancing = root.createComputePipeline({ compute: advance });
+
+  return {
+    heightAt: (uv: d.v2f) => {
+      'use gpu';
+      return std.sin(std.length(uv - d.vec2f(0.5)) * 40 - ripple.$) * 0.5 + 0.5;
+    },
+    step: (pass: TgpuComputePass) => {
+      pass.setPipeline(advancing);
+      pass.dispatchWorkgroups(1);
+    },
+  };
+}
+```
+
+A shader that calls `heightAt` reads that ripple, and its pipeline needs no fill:
+
+```ts twoslash
+import { common, d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+const root = await tgpu.init();
+declare const ripple: { heightAt(uv: d.v2f): number };
+// ---cut---
+const rings = tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.vec4f })(({ uv }) => {
+  'use gpu';
+  return d.vec4f(0.2, 0.6, 1, 1) * ripple.heightAt(uv);
+});
+const drawing = root.createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment: rings,
+  targets: { format: 'rgba16float' },
+});
+```
+
+The **fourth rule** is that modules connect through TypeGPU's own accessors, slots and `pipe`, never through a registry. The kit's modules connect this way everywhere:
+
+- Every renderer reads the camera through one accessor, `cameras.current`. A scene picks its camera with `.pipe(view.inject())`.
+- Any kernel can start particles in `sparks` with `sparks.emit`, which carries its own fill.
+
+An accessor that each pipeline fills, such as `cameras.current`, is a placeholder. A placeholder that needs a fill, like this one, defaults to `unfilled`, which throws an error naming the `inject()` to pipe. [Connecting modules](/concepts/connecting-modules/) covers members and placeholders, callbacks and resources that are replaced.
+
+## Identity is the object
+
+Call `createRipple(root)` twice and you have two ripples. Nothing else tells them apart. Each ripple's `heightAt` reads its own phase, so one shader can read both instances.
+
+The **fifth rule** is that identity is JS identity. The kit keeps no registry and no string keys. Resources live inside instances. Module scope holds only schemas, hooks and pure functions. A name, such as the `'Enemy'` in `table.define('Enemy', …)`, only labels types and WGSL.
+
+## Objects are rows in buffers
+
+A pipeline is compiled from its code, and a value captured into the code is part of it. Ten ripples with their centres captured into the shader would compile ten pipelines. With the centres in a buffer, one pipeline draws all ten. An eleventh ripple needs one more row and no new pipeline:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+declare const centres: d.v2f[];
+// ---cut---
+// One pipeline per ripple: each centre is part of a shader's code
+const ringsAround = centres.map((centre) => (uv: d.v2f) => {
+  'use gpu';
+  return std.sin(std.length(uv - centre) * 40);
+});
+
+// One pipeline for every ripple: the centres are data
+const centreOf = root.createReadonly(d.arrayOf(d.vec2f, 16), centres);
+const ringsOf = (i: number, uv: d.v2f) => {
+  'use gpu';
+  return std.sin(std.length(uv - centreOf.$[i]) * 40);
+};
+```
+
+The **sixth rule** is that many of a thing are rows in a buffer, and state that evolves stays on the GPU. The kit gives those buffers structure:
+
+- A [table](/kit/table/) is a buffer of rows with named fields. The CPU writes some fields, kernels write the others, and the table uploads only what changed.
+- [Instances](/kit/instances/) draw every mesh's objects from a table's rows, and [particles](/kit/particles/) live in a pool of rows.
+
+[Data on the GPU](/concepts/data-on-the-gpu/) covers rows, fixed steps, settings and reading results back.
+
+## Scenes are described once
+
+A real scene draws more than colour. TAA needs to know where each pixel was last frame, picking needs an id at every pixel, and the depth decides what is in front. Every renderer would have to write all of these.
+
+Instead, [`passes.create`](/kit/passes/) describes once what each target holds. A renderer hands over a **drawing**: what each corner carries to its pixels, what a pixel looks like, and how to draw. Here is the ripple as a drawing:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { frames, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+declare const ripple: { heightAt(uv: d.v2f): number };
+// ---cut---
+import { passes } from '@typegpu/kit';
+
+const Seen = d.struct({ color: d.vec4f }); // what a pixel looks like
+
+const scene = passes.create(root, screen, { hdr: passes.color });
+const water = scene.add({
+  ...passes.fullScreen, // one triangle over the screen, carrying uv
+  pixelOf: (corner: d.Infer<typeof passes.fullScreen.Vertex>) => {
+    'use gpu';
+    return Seen({ color: d.vec4f(0.2, 0.6, 1, 1) * ripple.heightAt(corner.uv) });
+  },
+  color: passes.shaded, // writes the pixel's colour as it is
+  draw: (pass) => pass.draw(3),
+});
+
+frames.create(root, (frame) => scene.record(frame, [water]));
+```
+
+`scene.add` builds the pipeline that writes every target the description lists. Add a motion target to the description and the same drawing writes motion too.
+
+The **seventh rule** is that scenes are described once. Every renderer, the kit's included, hands over a drawing, and the description compiles its pipelines. [Scenes and passes](/concepts/scenes-and-passes/) covers outputs, shadows and other views.
+
+## What the kit leaves to you
+
+The kit has no scene graph, ECS, physics, required asset format or engine loop. Parent-child transforms, game state and input stay in your code. A [host](/kit/hosting/), such as `web.host` or React Native's `useScene`, runs a scene for you, and the scene still records its own frame.
+
+Modules return TypeGPU resources, and most fit in one source file. You can edit a module or write your own and record both into the same encoder. The kit can also share a device with three.js or vgpu. [Beside other renderers](/recipes/other-renderers/) shows how to pass buffers, textures and images between them.
+
+[Modules](/concepts/modules/) covers the module contract in detail.

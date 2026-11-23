@@ -1,0 +1,16 @@
+{
+  "title": "Censer",
+  "category": "simulations",
+  "rarity": "epic",
+  "description": "A bronze censer swings on its chain, trailing incense smoke. Drag it to throw it around. The chain is solved on the CPU in small XPBD steps, so it goes slack when you lift the censer over the pivot and snaps taut when it drops. The smoke is a 3D fluid simulation on the GPU, after Crane, Llamas and Tariq's chapter in GPU Gems 3, and the swinging censer pushes it around. It's ray-marched at half resolution and lit by a key light and the embers inside. The smoke setting goes from a thin thread to a thick cloud.",
+  "line": "Incense smoke from a swinging censer, simulated in 3D on the GPU.",
+  "order": 13,
+  "features": ["texture-formats-tier1"],
+  "card": {
+    "emission": 2
+  },
+  "poster": {
+    "seconds": 6.5
+  },
+  "hint": "drag the censer to swing it \u00b7 drag elsewhere to orbit \u00b7 wheel to zoom"
+}

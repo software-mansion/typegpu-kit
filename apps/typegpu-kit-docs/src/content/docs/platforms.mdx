@@ -1,0 +1,38 @@
+---
+title: Platforms
+description: Browser and React Native requirements for running TypeGPU Kit.
+---
+
+## WebGPU
+
+The kit requires core WebGPU. The kit's renderers can read vertices from storage buffers in the vertex stage. A compatibility-mode device can have a limit of zero for those buffers. A description of passes uses up to three of the four bind groups, as its [limits](/kit/passes/#limits) say.
+
+## Chrome and Edge
+
+Use a browser with WebGPU enabled. WebGPU requires HTTPS outside localhost.
+
+## Safari
+
+Safari compiles pipelines one at a time and builds Metal state at the first draw or dispatch. Compile the pipelines under a loading screen with `initAsync` or [`pipelines.compile`](/kit/pipelines/). Then draw frames behind the loading screen until frame times settle. Wrap `vec3` uniforms in structs to avoid Metal packing errors.
+
+## Firefox
+
+Reuse texture views and bind groups across frames because Firefox retains them until garbage collection.
+
+## React Native on iOS and Android
+
+Use `react-native-webgpu`. [Setting up a project](/getting-started/#setting-up-a-project) gives the versions, and the Babel, Metro and worklets configuration for [hosted scenes](/kit/hosting/#on-react-native).
+
+- Hermes lacks `Array.prototype.toSorted`. Copy an array before sorting it.
+- Each draw costs JavaScript time on Hermes, so use fewer, larger draws. Set the pipeline on the pass once with `pass.setPipeline(pipeline)` and draw through the pass.
+- Import kit subpaths, such as `@typegpu/kit/frames`, since Metro keeps every file it reaches.
+- Pause GPU work while the app is in the background.
+- A device used across threads requires `implicit-device-synchronization`. react-native-webgpu requests it for every device unless you pass `implicitDeviceSynchronization: false`. A host that runs its scene off the JS thread throws for a device without it.
+
+## Device features
+
+Indirect draws that use `firstInstance` require the `indirect-first-instance` feature. Request it, and check `device.features.has` after creating the device. [Live lists](/kit/live-lists/) with `firstInstance: true` throw without it. Direct draws need no feature.
+
+## iOS simulator and older iPhones
+
+Shadow maps use comparison samplers. On pre-A9 GPUs and the iOS simulator, they need Dawn built for iOS 16 or later. For an older deployment target, use `textureGather` and compare depth in the shader.

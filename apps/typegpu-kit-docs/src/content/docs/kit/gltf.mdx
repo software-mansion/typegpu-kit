@@ -1,0 +1,267 @@
+---
+title: glTF models
+description: Read a glTF model file into arrays on the CPU for its meshes, materials, skeleton and animations.
+modules: [kit/gltf]
+---
+
+import GltfRead from '../../../components/viz/GltfRead.astro';
+import SkinWeights from '../../../components/viz/SkinWeights.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+`gltf.read` converts a `.glb` to CPU arrays and materials. It flattens nodes and unpacks accessors. The [mesh pool](/kit/mesh-pool/#models) uploads the result with one write per array. The reader needs neither WebAssembly nor `TextDecoder` and runs in browsers, Node and Hermes. Only [Draco meshes](#draco-meshes) need a decoder you add.
+
+<Hidden card="skeletons">
+  <GltfRead />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { instances, meshPool } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+// ---cut---
+import { gltf } from '@typegpu/kit';
+
+const response = await fetch('/models/windmill.glb');
+const model = gltf.read(await response.arrayBuffer());
+
+const windmill = pool.add(model);
+await windmill.ready;
+
+things.add(windmill, { position: [2, 0, 0] });
+```
+
+Load the bytes with `fetch` on the web, `readFileSync` in Node or `expo-file-system` on React Native. Pass an `ArrayBuffer` or any view of one to `read`, including a Node `Buffer`.
+
+[A finished look for model scenes](/recipes/lit-models/) lights a scene of many models with shadows, ambient occlusion, TAA and bloom.
+
+## Models in several files
+
+`gltf.load` fetches a `.glb` or `.gltf` with the buffers and images it keeps in separate files, such as a shared `Textures/colormap.png`, and reads it as `read` does:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { meshPool } from '@typegpu/kit';
+import { gltf } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+// ---cut---
+const crate = await gltf.load('/models/space-kit/crate.glb');
+const crates = pool.add(crate);
+```
+
+- `load` resolves each file's URI against the model's URL and fetches the files at once. It decodes base64 `data:` URIs without fetching.
+- It takes the options of `read`, and `fetch` for a fetch of your own, such as one that adds headers.
+- A file that fails to load throws an error naming its URL.
+
+## Draco meshes
+
+Exporters often shrink meshes with Draco compression, `KHR_draco_mesh_compression`, which needs a decoder. The kit bundles none. Create a decoder module with the [`draco3d`](https://www.npmjs.com/package/draco3d) package, wrap it with `gltf.draco` and pass it to `read` or `load`:
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+// ---cut---
+import { createDecoderModule } from 'draco3d';
+
+const wasm = await fetch('/draco/draco_decoder.wasm');
+const decoder = await createDecoderModule({ wasmBinary: await wasm.arrayBuffer() });
+const draco = gltf.draco(decoder);
+
+const response = await fetch('/models/windmill-draco.glb');
+const model = gltf.read(await response.arrayBuffer(), { draco });
+```
+
+<Rules>
+
+- **Serving** Serve `draco_decoder.wasm` from the `draco3d` package beside your files, or import its URL through your bundler. In Node, leave out `wasmBinary` and the module finds the file itself.
+- **Decoder only** The `draco3d` entry also loads Draco's encoder. To bundle only the decoder, import `createDecoderModule` as the default export of `draco3d/draco_decoder_nodejs.js`.
+- **One decoder** Create the decoder once and pass it to every read. Reading stays synchronous. The [night market](/examples/night-market/) loads its market this way, on the web with `draco3d` and on React Native with the JavaScript build below.
+- **Decoding** `read` decodes each compressed primitive once, also with [`placements`](#meshes-placed-many-times), and checks the decoded arrays against their accessors' counts and types.
+- **React Native** Hermes has no WebAssembly. On React Native, bundle Google's JavaScript build of the decoder, [`draco_decoder_gltf.js`](https://github.com/google/draco/tree/1.5.9/javascript), and pass `gltf.draco` the module its `DracoDecoderModule()` resolves to. It decodes slower than WebAssembly. A `gltf.Draco` of your own, a function that decodes one primitive's bytes into indices and attributes, works too.
+
+</Rules>
+
+## What comes back
+
+`read` returns a `gltf.ModelData` that you can pass to `pool.add`:
+
+| Field        |                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------- |
+| `meshes`     | One `meshPool.MeshData` per material, with node transforms applied.                      |
+| `images`     | Encoded images referenced by index from material textures.                               |
+| `parts`      | Requested [parts](#parts-that-move), keyed by node name. Empty if none were requested.   |
+| `clips`      | Animations as `poses.ClipData`. Empty if the file has none.                              |
+| `skin`       | Joint data as `poses.SkinData`, present only for skinned meshes.                         |
+| `placements` | Mesh transforms from nodes, present only with [`placements`](#meshes-placed-many-times). |
+
+Each mesh holds:
+
+| Field       |                                                                                                       |
+| ----------- | ----------------------------------------------------------------------------------------------------- |
+| `positions` | Three floats a vertex.                                                                                |
+| `normals`   | Three floats a vertex, unit length.                                                                   |
+| `uvs`       | Two floats a vertex, from `TEXCOORD_0`, or zero.                                                      |
+| `uvs1`      | Two floats a vertex, from `TEXCOORD_1`, when a texture of its material reads it or with `uvs1: true`. |
+| `indices`   | `u32`, three a triangle, counter-clockwise seen from its front.                                       |
+| `material`  | glTF's metallic-roughness material, below.                                                            |
+| `joints`    | Four a vertex, indices in the model's `skin.joints`, with a skin.                                     |
+| `weights`   | Four floats a vertex beside `joints`, adding up to 1.                                                 |
+| `extra`     | `color`, four floats a vertex, linear RGBA, from `COLOR_0`, when present.                             |
+
+- For the default scene, `read` transforms positions by node matrices and normals by their inverse transposes. Mirrored nodes reverse triangle winding so fronts remain counter-clockwise.
+- Strips and fans become triangle lists.
+- A mesh without normals gets flat normals. Each triangle needs separate vertices, increasing the vertex count by up to three times.
+- If any primitive has `COLOR_0`, its mesh gets `extra.color`. Vertices from other primitives are white. Create the [mesh pool](/kit/mesh-pool/#extra-vertex-attributes) with `extra: { color: d.vec4f }` to keep these colours. Otherwise the pool drops them and warns once.
+
+Each `meshPool.MaterialData` holds every field, with glTF defaults for omitted ones:
+
+| Field                  | Default           |                                                                                                                                                                                                                                |
+| ---------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                 | `''`              |                                                                                                                                                                                                                                |
+| `color`                | `[1, 1, 1, 1]`    | Base colour factor, linear, with alpha.                                                                                                                                                                                        |
+| `roughness`            | `1`               |                                                                                                                                                                                                                                |
+| `metallic`             | `1`               |                                                                                                                                                                                                                                |
+| `emission`             | `[0, 0, 0]`       | Linear, times `KHR_materials_emissive_strength`.                                                                                                                                                                               |
+| `textures`             | none              | `color`, `metallicRoughness`, `normal`, `emission` and `occlusion`. Each has an `image` index into `images`, a `sampler` with WebGPU address modes and filters, and a `uvSet` and `transform` when it reads other coordinates. |
+| `normalScale`          | `1`               | How far the normal texture bends the normal.                                                                                                                                                                                   |
+| `occlusionStrength`    | `1`               | How far the occlusion texture darkens, from 0 for none to 1 for all of it.                                                                                                                                                     |
+| `alpha`, `alphaCutoff` | `'opaque'`, `0.5` | `'opaque'`, `'mask'` or `'blend'`, and where a mask cuts. A renderer draws `'blend'` as opaque.                                                                                                                                |
+| `doubleSided`          | `false`           | Whether its back faces show too.                                                                                                                                                                                               |
+
+Without an explicit metallic factor or texture, a material renders as rough white metal. The rogue's `Glow` material in the figure has this default. Set its instance to `metallic: 0`, or set the factor in the file.
+
+## Parts that move
+
+Meshes merge by material, so a turret barrel and base with the same material become one mesh. Request independently moving nodes by name to keep them separate, each with its own pivot:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { instances, meshPool } from '@typegpu/kit';
+import { gltf } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 1024 });
+declare const bytes: ArrayBuffer;
+// ---cut---
+const turret = gltf.read(bytes, { parts: ['barrel'] });
+const base = pool.add(turret); // everything but the barrel
+const barrel = pool.add(turret.parts.barrel); // the barrel uses its node pivot
+
+const [x, y, z] = turret.parts.barrel.position;
+things.add(base, { position: [4, 0, 0] });
+things.add(barrel, { position: [4 + x, y, z], rotation: [...turret.parts.barrel.rotation] });
+```
+
+- A name selects one node in the default scene and all its descendants. Missing names throw with a list of the first 20 available names. Duplicate names also throw.
+- A part uses its node's local space, so rotations use the exported pivot, unless it holds a skinned mesh ([skinned parts](#skins-and-clips)). Node scale and mirroring stay in the vertices. Use `position` and `rotation` to place the part within the model.
+- A named descendant of another named node becomes a separate part, excluded from its parent.
+- Pass a part to `pool.add` as a model. It shares the parent model's `images`, which the pool decodes once.
+
+## Meshes placed many times
+
+By default, a house mesh placed a thousand times becomes a thousand copies merged by material. Set `placements: true` to read each glTF mesh once in local space and return its node transforms as `placements`. The pool then stores the house once, and [instances](/kit/instances/) draw each placement:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { instances, meshPool } from '@typegpu/kit';
+import { gltf } from '@typegpu/kit';
+const root = await tgpu.init();
+const pool = meshPool.create(root, { capacity: 64 });
+const things = instances.create(root, pool, { capacity: 4096 });
+declare const bytes: ArrayBuffer;
+// ---cut---
+const town = gltf.read(bytes, { placements: true });
+const houses = pool.add(town); // stores each glTF mesh once, split by material
+
+for (const { mesh, position, rotation, scale } of town.placements) {
+  things.add(houses.meshes[mesh], { position, rotation, scale });
+}
+```
+
+- A placement decomposes a node transform into `position`, `rotation` and `scale`. This loses shear. A mirrored node produces a negative x scale.
+- A glTF mesh with two materials becomes two meshes. Each node that places it therefore produces two placements.
+- Parts behave the same with or without placements. A model with a skin throws when read with placements.
+
+## Skins and clips
+
+For [poses](/kit/poses/), `read` returns skinned meshes in their bind pose with `skin` data. It returns animations as `clips` whether or not the file has meshes:
+
+| Field         |                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `skin.joints` | Joints and their ancestor nodes, with parents before children. Each has a name, parent index, rest transform and inverse bind matrix. |
+| `clips`       | Animation names, durations and channels. Each channel names a node, its position, rotation or scale, and its keyframes.               |
+
+A skinned mesh's `joints` name four of these joints for each vertex, and its `weights` say how much of each joint's movement the vertex takes.
+
+<SkinWeights />
+
+<Rules>
+
+- **Rigid meshes** An unskinned mesh attached to a joint, such as a helmet, binds to that joint alone. An unattached mesh throws; read it as a part instead.
+- **Skinned parts** A part holding a skinned mesh stays bound to the skin, so one figure can split into pieces you highlight or hide apart. Its meshes keep `joints` and `weights` in model space, and its `position` and `rotation` are the model's origin. Add each piece to the pool and draw it with the same pose as the rest. A rigid mesh in such a part follows its joint, as in `meshes`. Other parts do not bind to joints.
+- **Clip files** A file containing only clips is valid. Its clips play on skins with matching joint names.
+- **Names** Unnamed nodes and animations get names such as `node 12` and `animation 3`.
+- **One skin** All meshes in a model must use one skin. Multiple skins or vertices with more than four joints through `JOINTS_1` throw.
+
+</Rules>
+
+## A model that faces another way
+
+glTF and [`instances.toward`](/kit/instances/#moved-by-your-kernels) use +z as forward. Rotate differently oriented models in the exporter or when reading them. Kernels and `deform` then use that orientation:
+
+```ts twoslash
+import { gltf } from '@typegpu/kit';
+declare const bytes: ArrayBuffer;
+// ---cut---
+const fish = gltf.read(bytes, { rotation: [0, -Math.SQRT1_2, 0, Math.SQRT1_2] }); // nose from +x to +z
+```
+
+Rotation uses the model origin and applies to parts, the skin and clips. Apply the same rotation when reading a separate clip file for that model.
+
+## Images
+
+Images contain encoded bytes and a MIME type, defaulting to `image/png` if omitted. `read` copies image bytes so the pool's texture cache does not retain the whole file. `pool.add` decodes images, and meshes draw without textures until `ready` settles. Runtimes without `createImageBitmap`, including worklets and Node, need [another decoder](/kit/mesh-pool/#decoding-off-the-main-thread).
+
+## Files it refuses
+
+Convert these before you ship them. The error names the [`gltf-transform`](https://gltf-transform.dev/cli) command. A model that needs Draco without a [decoder](#draco-meshes) throws too, naming the same `copy` command:
+
+| The file                           | Run                                           |
+| ---------------------------------- | --------------------------------------------- |
+| compresses its meshes with meshopt | `gltf-transform copy in.glb out.glb`          |
+| keeps its textures in KTX2 only    | `gltf-transform ktxdecompress in.glb out.glb` |
+
+- `read` takes one `.glb` and refuses buffers and images in separate files. [`load`](#models-in-several-files) fetches them, or `gltf-transform copy in.gltf out.glb` packs them into one file.
+
+- The reader supports these required extensions: `KHR_mesh_quantization`, `KHR_materials_emissive_strength`, `KHR_texture_transform` and `EXT_texture_webp`, and `KHR_draco_mesh_compression` with a decoder. Other required extensions throw.
+- The reader skips morph targets, cameras and lights. It skips `TEXCOORD_1` where no texture reads it, unless read with `{ uvs1: true }`, which keeps the unwrap of a lightmap your own shader samples. It skips later sets.
+- A texture that reads `TEXCOORD_1` needs a pool made with [`uvs1: true`](/kit/mesh-pool/#textures), which `meshPool.roomFor` sets for such a model. Textures using `TEXCOORD_2` or later throw. A texture's `KHR_texture_transform` becomes its [`transform`](/kit/mesh-pool/#textures). The [cloister](/examples/cloister/) reads both from Blender's export.
+- Lines and points throw an error such as `gltf.read reads triangles, got a primitive of mode 1.`
+
+## Broken files
+
+Before following an index, buffer view or accessor range, `read` checks that it is valid. This matters when loading player uploads:
+
+```txt
+Accessor 0 exceeds its buffer view. It needs 12000000 bytes, but the view has 36.
+```
+
+<Rules>
+
+- **Not a glTF** Non-binary-glTF bytes, including a server's 404 page, throw `The bytes aren't a binary glTF.` A file shorter than the length declared in its header throws before its contents are read.
+- **Node cycles** A node that is its own ancestor, or has two parents, throws.
+- **Size limit** By default, each node placement copies a mesh. A small file could therefore request millions of copies. Before reading mesh data, `read` totals the bytes of the vertex and index arrays it returns and throws above `maxBytes`, which defaults to 256 MiB. For uploads, lower it with `{ maxBytes: 32 * 2 ** 20 }`. Named parts count toward it too. With `placements`, each mesh counts once, however many nodes place it. The size error suggests that option.
+- **Draco files** A decoded primitive must match the counts its accessors declare, so the limit covers what Draco returns. The decoder's own memory is outside the limit, and a primitive is decoded before its counts are checked, so read Draco files only from sources you trust.
+- **Bare accessors** An accessor without a buffer view throws. glTF permits it to request `count` zero values, which lets a small JSON field request gigabytes. Exporters use these accessors for morph targets, which `read` skips.
+- **Key times** An animation whose key times don't increase throws.
+
+</Rules>
+
+## Limits
+
+- Meshopt and KTX2 need WebAssembly decoders that the kit does not include. [Convert those files](#files-it-refuses).
+- A mirrored placement turns its mesh's triangles inside out, so back-face culling hides its fronts.
+- Part names must match exported node names. A missing name throws when the model loads.
+- A nested part uses model space rather than its parent part's space. For a barrel on a rotating turret, compose the turret rotation into the barrel rotation.

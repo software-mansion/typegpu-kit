@@ -1,0 +1,186 @@
+---
+import Slider from './Slider.astro';
+import { ao } from '@typegpu/kit';
+
+const { radius, power } = ao.defaults;
+---
+
+<figure class="viz" data-viz="ao-horizons">
+  <p class="viz-title">The horizons one pixel finds, on a surface cut through and seen from the side</p>
+  <svg class="viz-keys" viewBox="0 0 720 300" aria-label="A cut surface with a crease, a block and a narrow gap. From one pixel, three depth reads on each side set a horizon, and the wedge of sky between the two horizons is the light the pixel keeps."
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider name="radius" min={0.1} max={0.6} step={0.05} value={radius} />
+    <Slider inline name="power" min={1} max={4} step={0.1} value={power} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag the pixel along the surface. In the crease and at the foot of a block a horizon rises, the wedge of open sky narrows and the surface darkens. Lower <code>radius</code> until the tops of the blocks lie outside its reach and the gap between them opens.
+  </figcaption>
+</figure>
+
+<style>
+  @media (max-width: 40rem) {
+    .viz-status {
+      --lines: 2;
+    }
+  }
+
+  @media (max-width: 24rem) {
+    .viz-status {
+      --lines: 3;
+    }
+  }
+</style>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { createProgram, type Point, type Side } from './AoHorizons.program.ts';
+  import { each, onKeys, slider, statusLine } from './figure.ts';
+  import { fitWidth, onStroke, stipple, svg, text } from './svg.ts';
+
+  /** Air over the ground and solid under the crease, in world units. */
+  const SKY = 0.6;
+  const DEEP = 0.3;
+  /** The margin over the air, which holds the eye, and the solid under the deepest point, in SVG units. */
+  const TOP = 20;
+  const FOOT = 12;
+  /** The lit skin of the surface, as deep as it is drawn. */
+  const SKIN = 10;
+  /** Tones the skin prints, as dither densities. */
+  const TONES = 8;
+  /** The least the wedge's radius draws at, so a small `radius` still shows its angle. */
+  const WEDGE = 30;
+  /** The pixel the figure opens on, at the bottom of the crease. */
+  const START = 31;
+
+  const percent = (share: number) => `${Math.round(share * 100)}%`;
+  const at = (x: number, y: number) => `${x.toFixed(1)},${y.toFixed(1)}`;
+
+  each('ao-horizons', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const program = createProgram();
+    const { pixels, texel, profile, settings } = program;
+    const width = pixels * texel;
+
+    let pixel = START;
+    let scale = 1;
+    let ground = 0;
+    let air = '';
+    /** The light the denoise leaves each pixel. */
+    let light: number[] = [];
+    const marks = svg('g');
+    const hit = svg('rect', { fill: 'transparent', style: 'touch-action: pan-y; cursor: ew-resize' });
+    const place = ([x, height]: Point): Point => [x * scale, ground - height * scale];
+    const points = (line: readonly Point[]) => line.map((point) => at(...place(point))).join(' ');
+
+    /** The pixel, its walk and the wedge it leaves open. */
+    const mark = () => {
+      marks.replaceChildren();
+      const trace = program.trace(pixel);
+      const [x, y] = place(trace.at);
+      const reach = program.reach * scale;
+      const wedge = clamp(reach, WEDGE, y - TOP);
+      const towards = (angle: number, length: number): Point => [x + Math.sin(angle) * length, y - Math.cos(angle) * length];
+
+      svg('circle', { cx: x, cy: y, r: reach, fill: 'none', stroke: 'var(--viz-muted)', 'stroke-dasharray': '2 4', 'clip-path': air }, marks);
+
+      // The open sky, bounded by the two horizons
+      const [x0, y0] = towards(trace.left.angle, wedge);
+      const [x1, y1] = towards(trace.right.angle, wedge);
+      const large = trace.right.angle - trace.left.angle > Math.PI ? 1 : 0;
+      svg('path', { d: `M${at(x, y)}L${at(x0, y0)}A${wedge},${wedge} 0 ${large} 1 ${at(x1, y1)}Z`, fill: stipple(figure, 'var(--viz-c)', 0.375), 'clip-path': air }, marks);
+
+      // A read that sets a horizon gets a hairline from the pixel, which the horizon follows as far as the read counts
+      const rays = ({ highest }: Side) => {
+        if (!highest) return;
+        const [sx, sy] = place(highest.at);
+        svg('line', { x1: x, y1: y, x2: sx, y2: sy, stroke: 'var(--viz-b)' }, marks);
+      };
+      rays(trace.left);
+      rays(trace.right);
+      svg('path', { d: `M${at(x0, y0)}L${at(x, y)}L${at(x1, y1)}`, fill: 'none', stroke: 'var(--viz-c)', 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'clip-path': air }, marks);
+
+      for (const { steps, highest } of [trace.left, trace.right]) {
+        for (const step of steps) {
+          if (step.pixel < 0 || step.pixel >= pixels) continue;
+          const [sx, sy] = place(step.at);
+          if (step === highest) svg('circle', { cx: sx, cy: sy, r: 6, fill: 'none', stroke: 'var(--viz-b)' }, marks);
+          const counts = step.weight > 0;
+          svg('circle', { cx: sx, cy: sy, r: 3, fill: counts ? 'var(--viz-b)' : 'var(--ground)', 'fill-opacity': counts ? 0.3 + 0.7 * step.weight : 1, stroke: 'var(--viz-b)' }, marks);
+        }
+      }
+
+      svg('circle', { cx: x, cy: y, r: 6.5, fill: 'var(--ground)', stroke: 'var(--viz-accent)', 'stroke-width': 1.5 }, marks);
+      svg('circle', { cx: x, cy: y, r: 2.5, fill: 'var(--viz-a)' }, marks);
+
+      const seen = Math.min(trace.visibility, 1);
+      const line =
+        seen > 0.995 && light[pixel] > 0.995
+          ? 'The pixel sees its whole sky and keeps all of its light.'
+          : `The pixel sees ${percent(seen)} of its sky. After the denoise and the power ${settings.power}, it keeps ${percent(light[pixel])} of its light.`;
+      if (status.textContent !== line) status.textContent = line;
+    };
+
+    const draw = fitWidth(
+      figure,
+      (across) => {
+        scale = across / width;
+        ground = TOP + SKY * scale;
+        const height = Math.ceil(ground + DEEP * scale + FOOT);
+        const below = (ground - height) / scale;
+
+        const clip = svg('clipPath', { id: `ao-horizons-air-${Math.round(across)}` }, svg('defs', {}, figure));
+        // The air under the eye's row, which the reach and the wedge stay inside
+        svg('polygon', { points: points([[0, SKY], ...profile, [width, SKY]]) }, clip);
+        air = `url(#${clip.id})`;
+
+        svg('polygon', { points: points([[0, below], ...profile, [width, below]]), fill: stipple(figure, 'var(--viz-line)', 0.25) }, figure);
+
+        // The skin under each pixel, as light as the sky light it keeps. The eye sees no wall, so walls get none
+        light = Array.from({ length: pixels }, (_, k) => program.kept(k));
+        const skins = Array.from({ length: TONES + 1 }, () => '');
+        for (let k = 0; k < pixels; k++) {
+          const tone = Math.round(light[k] * TONES);
+          const [left, top] = place([k * texel, program.heightAt(k * texel + 1e-6)]);
+          const [right, end] = place([(k + 1) * texel, program.heightAt((k + 1) * texel - 1e-6)]);
+          skins[tone] += `M${at(left, top)}L${at(right, end)}v${SKIN}L${at(left, top + SKIN)}Z`;
+        }
+        skins.forEach((d, tone) => {
+          if (d) svg('path', { d, fill: tone === 0 ? 'var(--ground)' : stipple(figure, 'var(--text)', tone / TONES) }, figure);
+        });
+        svg('polyline', { points: points(profile), fill: 'none', stroke: 'var(--viz-muted)' }, figure);
+
+        // An orthographic eye looks straight down, the same from any height
+        text(figure, 0, 13, 'eye');
+        svg('path', { d: 'M30.5,4v10m-3,-3l3,3l3,-3M40.5,4v10m-3,-3l3,3l3,-3', fill: 'none', stroke: 'var(--viz-muted)' }, figure);
+
+        for (const [name, value] of Object.entries({ x: 0, y: 0, width: across, height })) hit.setAttribute(name, String(value));
+        figure.append(marks, hit);
+        mark();
+        return height;
+      },
+      300,
+    );
+
+    const move = (next: number) => {
+      const clamped = clamp(Math.round(next), 0, pixels - 1);
+      if (clamped === pixel) return;
+      pixel = clamped;
+      mark();
+    };
+    onStroke(figure, [[hit, ({ x }) => move(Math.floor(x / (texel * scale)))]]);
+    onKeys(figure, { arrow: (dx) => move(pixel + dx) }, 'arrow keys move the pixel');
+
+    slider(root, 'radius', (value) => {
+      settings.radius = value;
+      draw();
+    });
+    slider(root, 'power', (value) => {
+      settings.power = value;
+      draw();
+    });
+    draw();
+  });
+</script>

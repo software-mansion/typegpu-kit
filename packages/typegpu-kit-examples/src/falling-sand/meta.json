@@ -1,0 +1,12 @@
+{
+  "title": "Falling sand",
+  "category": "simulations",
+  "rarity": "epic",
+  "description": "A falling-sand cave. Paint sand, water, lava, wood or crystal, and the GPU steps every cell. The cave is lit only by its lava, fire, crystals and embers, through radiance cascades from @typegpu/radiance-cascades. Water tints the light, walls and steam bounce it, and crystals dim as sand buries them. Counters keep track of cooled lava and burnt wood.",
+  "line": "Paint sand, water and lava into a cave lit only by its own glow.",
+  "order": 11,
+  "hint": "drag to paint \u00b7 choose a material in the panel",
+  "poster": {
+    "seconds": 8
+  }
+}

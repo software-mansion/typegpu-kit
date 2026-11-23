@@ -1,0 +1,407 @@
+---
+import Choice from './Choice.astro';
+
+const FILES = [
+  { value: 'windmill', label: 'windmill' },
+  { value: 'rogue', label: 'rogue' },
+  { value: 'clips', label: 'attack clips' },
+  { value: 'short', label: 'truncated file' },
+  { value: 'page', label: 'a 404 page' },
+  { value: 'json', label: '.gltf' },
+];
+---
+
+<figure class="viz" data-viz="gltf-read">
+  <p class="viz-title">The nodes and parts <code>gltf.read</code> finds in a file</p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="file" options={FILES} value="windmill" />
+    <label class="open">
+      <input type="file" accept=".glb,model/gltf-binary" data-control="open" />
+      <span>open a .glb</span>
+    </label>
+  </div>
+  <div class="reading not-content" data-pagefind-ignore>
+    <pre class="call"><code></code></pre>
+    <div class="columns">
+      <section class="nodes" aria-label="Nodes of the default scene"></section>
+      <section class="result" aria-live="polite"></section>
+    </div>
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Click a named node to read it as a separate part. Open or drop your own <code>.glb</code> to inspect it in this browser without uploading it.
+  </figcaption>
+</figure>
+
+<style>
+  .open {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 var(--s-3);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--text);
+    font: var(--type-label)/1.5 var(--font-mono);
+    cursor: pointer;
+  }
+
+  .open:hover,
+  .open:has(:focus-visible) {
+    border-color: var(--accent);
+  }
+
+  .open input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .reading {
+    margin-top: var(--s-3);
+    font-size: var(--type-small);
+    line-height: 1.5;
+  }
+
+  .call {
+    margin: 0 0 var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    overflow-x: auto;
+    border-left: 2px solid var(--rule);
+    background: none;
+    color: var(--text-2);
+    font: var(--type-status)/1.5 var(--font-mono);
+  }
+
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+    gap: var(--s-4);
+  }
+
+  @media (max-width: 40rem) {
+    .columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .reading :global(.head) {
+    margin: 0 0 var(--s-1);
+    color: var(--text);
+    font: 500 var(--type-label)/1.5 var(--font-mono);
+
+  }
+
+  .reading :global(ul) {
+    margin: 0 0 var(--s-3);
+    padding: 0;
+    list-style: none;
+  }
+
+  .reading :global(li) {
+    margin: 0;
+  }
+
+  .nodes :global(button),
+  .nodes :global(.unnamed) {
+    display: block;
+    max-width: 100%;
+    margin: 1px 0;
+    padding: 1px var(--s-2);
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    background: none;
+    color: var(--text-2);
+    font: var(--type-status)/1.5 var(--font-mono);
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nodes :global(button) {
+    cursor: pointer;
+  }
+
+  .nodes :global(button:hover) {
+    border-color: var(--rule-strong);
+  }
+
+  .nodes :global(button[aria-pressed='true']) {
+    border-color: var(--accent);
+    background: none;
+    color: var(--accent-high);
+  }
+
+  .nodes :global(.unnamed) {
+    color: var(--muted);
+  }
+
+  .nodes :global(.tag) {
+    margin-left: var(--s-1);
+    color: var(--muted);
+    font-size: var(--type-label);
+  }
+
+  .result :global(.mesh) {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 0 var(--s-2);
+    align-items: center;
+    padding: var(--s-1) 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  .result :global(.swatch),
+  .result :global(.thumb) {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    object-fit: cover;
+  }
+
+  .result :global(.thumb.none) {
+    border-style: dashed;
+  }
+
+  .result :global(.name) {
+    overflow: hidden;
+    color: var(--text);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .result :global(.facts) {
+    color: var(--muted);
+  }
+
+  .result :global(.facts strong) {
+    color: var(--accent-high);
+    font-weight: 500;
+  }
+
+  .result :global(.status) {
+    margin: 0 0 var(--s-2);
+    color: var(--muted);
+  }
+
+  .result :global(.line) {
+    margin: 0 0 var(--s-3);
+    color: var(--text-2);
+  }
+
+  .result :global(.error) {
+    margin: 0;
+    color: var(--viz-bad);
+    font-family: var(--font-mono);
+    font-size: var(--type-status);
+    overflow-wrap: anywhere;
+  }
+</style>
+
+<script>
+  import windmill from 'typegpu-kit-examples/hex-isle/models/windmill.glb?url';
+  import clips from 'typegpu-kit-examples/skeletons/models/melee-clips.glb?url';
+  import rogue from 'typegpu-kit-examples/skeletons/models/rogue.glb?url';
+  import { choice, control, each, fail, whenNear } from './figure.ts';
+  import { broken, read, type Mesh, type Model, type Reading } from './GltfRead.program.ts';
+
+  type Source = 'windmill' | 'rogue' | 'clips' | 'short' | 'page' | 'json';
+
+  const files = new Map<string, Promise<Uint8Array>>();
+  function fetched(url: string) {
+    let bytes = files.get(url);
+    if (!bytes) {
+      bytes = fetch(url)
+        .then((response) => response.arrayBuffer())
+        .then((buffer) => new Uint8Array(buffer));
+      files.set(url, bytes);
+    }
+    return bytes;
+  }
+
+  /** Each source's bytes, and what the call the figure shows calls them. */
+  const SOURCES: Record<Source, { name: string; bytes: () => Promise<Uint8Array> }> = {
+    windmill: { name: 'windmill.glb', bytes: () => fetched(windmill) },
+    rogue: { name: 'rogue.glb', bytes: () => fetched(rogue) },
+    clips: { name: 'melee-clips.glb', bytes: () => fetched(clips) },
+    short: {
+      name: 'windmill.glb, cut short',
+      bytes: async () => (await fetched(windmill)).slice(0, 60_000),
+    },
+    page: { name: '404.html', bytes: async () => broken.page() },
+    json: { name: 'model.gltf', bytes: async () => broken.json() },
+  };
+
+  /** An element with its attributes and children. */
+  function el(tag: string, attributes: Record<string, string> = {}, ...children: (Node | string)[]) {
+    const element = document.createElement(tag);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+    element.append(...children);
+    return element;
+  }
+
+  const count = (n: number) => n.toLocaleString('en');
+  const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
+
+  each('gltf-read', (figure) => {
+    const open = control(figure, 'open');
+    const call = figure.querySelector<HTMLElement>('.call code')!;
+    const nodesBox = figure.querySelector<HTMLElement>('.nodes')!;
+    const result = figure.querySelector<HTMLElement>('.result')!;
+
+    let bytes: Uint8Array = new Uint8Array();
+    let name = '';
+    let parts: string[] = [];
+    let urls: string[] = [];
+
+    /** The mesh's colour texture, or an empty square without one. */
+    const thumbOf = (mesh: Mesh, model: Model) => {
+      const color = mesh.textures.find(([slot]) => slot === 'color');
+      if (!color) return el('span', { class: 'thumb none', title: 'no colour texture' });
+
+      const image = model.images[color[1]];
+      const url = URL.createObjectURL(
+        new Blob([image.bytes as Uint8Array<ArrayBuffer>], { type: image.mimeType }),
+      );
+      urls.push(url);
+      return el('img', { class: 'thumb', src: url, alt: `image ${color[1]}`, title: `image ${color[1]}` });
+    };
+
+    const meshRow = (mesh: Mesh, model: Model) => {
+      const flags = [
+        mesh.alpha !== 'opaque' && `alpha ${mesh.alpha}`,
+        mesh.doubleSided && 'double-sided',
+        mesh.skinned && 'skinned',
+      ].filter(Boolean);
+      const textures = mesh.textures.map(([slot, image]) => `${slot} ${image}`).join(', ');
+
+      // glTF's default metallic is 1, so a material that gives no factor reads as metal
+      const metallic = `metallic ${mesh.metallic}`;
+      const facts = el(
+        'div',
+        { class: 'facts' },
+        `${plural(mesh.vertices, 'vertex', 'vertices')}, ${plural(mesh.triangles, 'triangle')}; `,
+        mesh.metallic === 1 ? el('strong', {}, metallic) : metallic,
+        `, roughness ${mesh.roughness}`,
+        textures ? `; textures: ${textures}` : '; no textures',
+        flags.length > 0 ? `; ${flags.join(', ')}` : '',
+      );
+
+      return el(
+        'li',
+        { class: 'mesh' },
+        el('span', { class: 'swatch', style: `background: ${mesh.swatch}`, title: 'colour factor' }),
+        thumbOf(mesh, model),
+        el('div', {}, el('div', { class: 'name' }, mesh.material), facts),
+      );
+    };
+
+    const nodeRow = (node: Reading['nodes'][number]) => {
+      const tags = [node.mesh && 'mesh', node.joint && 'joint'].filter(Boolean).join(', ');
+      const label = [node.name, ...(tags ? [el('span', { class: 'tag' }, tags)] : [])];
+      const style = `padding-left: ${8 + node.depth * 12}px`;
+      if (!node.named) return el('li', {}, el('span', { class: 'unnamed', style }, ...label));
+
+      const button = el(
+        'button',
+        { type: 'button', style, 'aria-pressed': String(parts.includes(node.name)) },
+        ...label,
+      );
+      button.addEventListener('click', () => {
+        parts = parts.includes(node.name)
+          ? parts.filter((part) => part !== node.name)
+          : [...parts, node.name];
+        show();
+      });
+      return el('li', {}, button);
+    };
+
+    const show = () => {
+      const reading = read(bytes, parts);
+      for (const url of urls) URL.revokeObjectURL(url);
+      urls = [];
+
+      const asked = parts.map((part) => `'${part}'`).join(', ');
+      const options = asked ? `, { parts: [${asked}] }` : '';
+      call.textContent = `gltf.read(bytes${options}); // ${name}, ${count(bytes.byteLength)} bytes`;
+
+      const heading = reading.nodes.length > 0 ? 'nodes; a named one reads as a part' : 'no nodes';
+      nodesBox.replaceChildren(
+        el('p', { class: 'head' }, heading),
+        el('ul', {}, ...reading.nodes.map(nodeRow)),
+      );
+
+      const { model } = reading;
+      if (!model) {
+        result.replaceChildren(
+          el('p', { class: 'head' }, 'gltf.read threw'),
+          el('p', { class: 'error' }, reading.error ?? ''),
+        );
+        return;
+      }
+
+      const sections: Node[] = [
+        el('p', { class: 'status' }, `read in ${reading.ms.toFixed(1)} ms`),
+        el('p', { class: 'head' }, `meshes: ${count(model.meshes.length)}, one per material`),
+        el('ul', {}, ...model.meshes.map((mesh) => meshRow(mesh, model))),
+      ];
+
+      for (const part of model.parts) {
+        const at = part.position.map((x) => x.toFixed(2)).join(', ');
+        sections.push(
+          el('p', { class: 'head' }, `parts['${part.name}'], at ${at}`),
+          el('ul', {}, ...part.meshes.map((mesh) => meshRow(mesh, model))),
+        );
+      }
+
+      if (model.joints.length > 0) {
+        sections.push(
+          el('p', { class: 'head' }, `skin: ${plural(model.joints.length, 'joint')}`),
+          el('p', { class: 'line' }, model.joints.join(', ')),
+        );
+      }
+
+      const durations = model.clips.map((clip) => `${clip.name} ${clip.duration.toFixed(2)} s`);
+      sections.push(
+        el('p', { class: 'head' }, `clips: ${count(model.clips.length)}`),
+        el('p', { class: 'line' }, durations.join(', ') || 'none'),
+      );
+      result.replaceChildren(...sections);
+    };
+
+    const load = (next: Uint8Array, called: string) => {
+      bytes = next;
+      name = called;
+      parts = [];
+      show();
+    };
+
+    const pick = async (chosen: Source) => {
+      const source = SOURCES[chosen];
+      load(await source.bytes(), source.name);
+    };
+
+    const openFile = async (file: File | undefined) => {
+      if (file) load(new Uint8Array(await file.arrayBuffer()), file.name);
+    };
+
+    const failed = (error: unknown) => fail(figure, error);
+    const sources = choice<Source>(figure, 'file', (chosen) => {
+      pick(chosen).catch(failed);
+    });
+    open.addEventListener('change', () => {
+      openFile(open.files?.[0]).catch(failed);
+    });
+    figure.addEventListener('dragover', (event) => event.preventDefault());
+    figure.addEventListener('drop', (event) => {
+      event.preventDefault();
+      openFile(event.dataTransfer?.files[0]).catch(failed);
+    });
+
+    whenNear(figure, () => pick(sources.value));
+  });
+</script>

@@ -1,0 +1,220 @@
+---
+import Choice from './Choice.astro';
+---
+
+<figure class="viz" data-viz="mip-levels">
+  <p class="viz-title">A depth texture's mip levels, each texel combining a 2×2 block of the level before</p>
+  <svg
+    viewBox="0 0 640 200"
+    class="viz-keys"
+    role="img"
+    tabindex="0"
+    aria-label="A depth texture of 8 by 8 texels, a box and a thin pole before a wall, and its three smaller levels, each texel combining a 2 by 2 block of the level before"
+  ></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="combine" label="combine" options={['mean', 'largest']} value="largest" />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Tap a texel, or use the arrow keys, to light the 2×2 block it combines and what that block covers in the levels before. Then switch to <code>mean</code>, which blurs the box and the pole into what is behind them. <code>largest</code> keeps each block's farthest depth, so the pole is gone by level 1 and the box by level 2.
+  </figcaption>
+</figure>
+
+<style>
+  svg {
+    cursor: pointer;
+  }
+</style>
+
+<script>
+  import { clamp } from '../home/geometry.ts';
+  import { choice, each, onKeys, rounded, statusLine, whenNear } from './figure.ts';
+  import { CHAR, fitWidth, stipple, svg, text } from './svg.ts';
+  import type { CombineName, Level, Texel } from './MipLevels.program.ts';
+
+  const GAP = 20;
+  /** Room at the right edge, where a heading's last character would clip. */
+  const EDGE = 2;
+  /** Where the texels start under a level's heading. */
+  const TOP = 20;
+  /** The narrowest texel of level 0 that the levels still stand in one row with. */
+  const NARROW = 16;
+  /** The stipple densities of the nearest and the farthest depth of level 0. */
+  const NEAR = 0.16;
+  const FAR = 0.85;
+  /** A step of the shades' key, under the levels. */
+  const STEP = 10;
+
+  /** A texel as a string, for a set of lit texels. */
+  const key = ({ level, x, y }: Texel) => `${level} ${x} ${y}`;
+
+  each('mip-levels', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+
+    whenNear(root, async () => {
+      const { createProgram, blockOf } = await import('./MipLevels.program.ts');
+      const program = createProgram();
+      const pyramids: Record<CombineName, Level[]> = {
+        mean: program.levels('mean'),
+        largest: program.levels('largest'),
+      };
+      const depths = pyramids.largest[0].flat();
+      const nearest = Math.min(...depths);
+      const farthest = Math.max(...depths);
+      let chosen: Texel = { level: 2, x: 0, y: 0 };
+
+      const draw = fitWidth(
+        figure,
+        (width) => {
+          const levels = pyramids[combine.value];
+          const side = levels[0].length;
+          // Every level at the same size, so a texel sits over the block it combines. Four in a
+          // row, or two rows of two where the texels of level 0 would get too small
+          const room = width - EDGE;
+          const columns = (room - GAP * 3) / 4 / side >= NARROW ? 4 : 2;
+          const size = Math.floor((room - GAP * (columns - 1)) / columns / side) * side;
+          const between = (room - size * columns) / (columns - 1);
+          const place = (level: number) => ({
+            left: Math.round((level % columns) * (size + between)),
+            top: TOP + Math.floor(level / columns) * (size + TOP + GAP),
+          });
+          /** The square `texel` covers, in its own level or, with `at`, a level before it. */
+          const box = ({ level, x, y }: Texel, at = level) => {
+            const cell = size / levels[level].length;
+            const { left, top } = place(at);
+            return { x: left + x * cell, y: top + y * cell, width: cell, height: cell };
+          };
+          const inset = (rect: ReturnType<typeof box>, by: number) => ({
+            x: rect.x + by,
+            y: rect.y + by,
+            width: rect.width - 2 * by,
+            height: rect.height - 2 * by,
+          });
+          const value = ({ level, x, y }: Texel) => levels[level][y][x];
+          /** A depth as a shade, dark near and light far, in the accent where lit. */
+          const shade = (depth: number, on = false) => {
+            const far = (depth - nearest) / (farthest - nearest);
+            const density = Math.round((NEAR + (FAR - NEAR) * far) * 64) / 64;
+            return stipple(figure, on ? 'var(--viz-accent)' : 'var(--text-2)', density);
+          };
+
+          // The texel, the block it combines, and the blocks those combine, back to level 0
+          const lit = new Set<string>();
+          for (let front = [chosen]; front.length > 0; ) {
+            for (const texel of front) lit.add(key(texel));
+            const { level } = front[0];
+            front = level > 0 ? front.flatMap((texel) => blockOf(texel, levels[level - 1])) : [];
+          }
+          const block = chosen.level > 0 ? blockOf(chosen, levels[chosen.level - 1]) : [];
+
+          levels.forEach((texels, level) => {
+            const { left, top } = place(level);
+            const fill = level === chosen.level ? 'var(--link)' : 'var(--text-2)';
+            text(figure, left, top - 8, `level ${level}`, { fill });
+            const sides = `${texels.length}×${texels.length}`;
+            text(figure, left + size, top - 8, sides, { 'text-anchor': 'end' });
+            texels.forEach((row, y) =>
+              row.forEach((depth, x) => {
+                const texel = { level, x, y };
+                const on = lit.has(key(texel));
+                const rect = svg(
+                  'rect',
+                  { ...inset(box(texel), 0.5), fill: shade(depth, on) },
+                  figure,
+                );
+                rect.addEventListener('click', () => choose(texel));
+              }),
+            );
+          });
+
+          const marks = svg('g', { 'pointer-events': 'none' }, figure);
+          /** An outline on a rim of the ground that parts it from the shades. */
+          const outline = (
+            rect: ReturnType<typeof box>,
+            colour = 'var(--viz-accent)',
+            stroke = 1,
+          ) => {
+            const rim = { fill: 'none', stroke: 'var(--ground)', 'stroke-width': stroke + 2 };
+            svg('rect', { ...rect, ...rim }, marks);
+            svg('rect', { ...rect, fill: 'none', stroke: colour, 'stroke-width': stroke }, marks);
+          };
+          /** The texel's depth on a patch of ground, bright where it made the chosen texel's. */
+          const number = (texel: Texel, bright = true) => {
+            const { x, y, width: cell } = box(texel);
+            const words = rounded(value(texel));
+            const wide = words.length * CHAR + 5;
+            const patch = { width: wide, height: 14, rx: 1, fill: 'var(--ground)' };
+            svg('rect', { x: x + (cell - wide) / 2, y: y + cell / 2 - 7, ...patch }, marks);
+            text(marks, x + cell / 2, y + cell / 2 + 4, words, {
+              'text-anchor': 'middle',
+              fill: bright ? 'var(--accent-high)' : 'var(--muted)',
+            });
+          };
+          // What the block covers in each level before it, as one square
+          for (let level = 0; level < chosen.level - 1; level++) {
+            outline(inset(box(chosen, level), 0.5));
+          }
+          for (const texel of block) outline(inset(box(texel), 0.5));
+          outline(inset(box(chosen), 1), 'var(--viz-a)', 2);
+          // `largest` takes one depth of the four, and a mean takes all of them
+          for (const texel of block) {
+            number(texel, combine.value === 'mean' || value(texel) === value(chosen));
+          }
+          number(chosen);
+
+          status.textContent =
+            chosen.level === 0
+              ? `level 0 holds the depth drawn there, ${rounded(value(chosen))}`
+              : `${combine.value}(${block.map((texel) => rounded(value(texel))).join(', ')}) = ${rounded(value(chosen))}`;
+
+          // The shades' key, a step for each whole depth of level 0
+          const rows = Math.ceil(levels.length / columns);
+          const bottom = rows * (TOP + size) + (rows - 1) * GAP;
+          const steps = farthest - nearest + 1;
+          const base = bottom + 14 + STEP;
+          const ramp = 'near'.length * CHAR + 6;
+          text(figure, 0, base, 'near');
+          for (let step = 0; step < steps; step++) {
+            const square = { x: ramp + step * STEP, y: base - STEP + 1, width: STEP - 1 };
+            svg('rect', { ...square, height: STEP - 1, fill: shade(nearest + step) }, figure);
+          }
+          text(figure, ramp + steps * STEP + 5, base, 'far');
+          return base + 4;
+        },
+        280,
+      );
+
+      const choose = (next: Texel) => {
+        chosen = next;
+        draw();
+      };
+      const combine = choice<CombineName>(root, 'combine', () => draw());
+      onKeys(
+        figure,
+        {
+          arrow(dx, dy) {
+            const levels = pyramids[combine.value];
+            let { level, x } = chosen;
+            let y = chosen.y + dy;
+            x += dx;
+            // Past a level's side edge is the texel of the next level over, at the same place
+            if (x < 0 && level > 0) {
+              level -= 1;
+              x = levels[level].length - 1;
+              y *= 2;
+            } else if (x >= levels[level].length && level < levels.length - 1) {
+              level += 1;
+              x = 0;
+              y >>= 1;
+            }
+            const last = levels[level].length - 1;
+            choose({ level, x: clamp(x, 0, last), y: clamp(y, 0, last) });
+          },
+        },
+        'arrow keys move between texels',
+      );
+      draw();
+    });
+  });
+</script>

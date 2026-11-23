@@ -1,0 +1,73 @@
+---
+interface Props {
+  /** Which of the page's whole scenes it runs. */
+  scene: keyof typeof shown;
+}
+
+const shown = {
+  shader: {
+    label: 'Blue rings rippling out from the middle',
+    caption: 'Pause to hold the rings. They ripple out from the middle as the time the shader reads advances.',
+  },
+  lit: {
+    label: 'An orange box on a grey slab, lit from the left, with its shadow on the slab',
+    caption: 'Drag to look round. The box casts its shadow on the slab, on the side away from the sun.',
+  },
+  finished: {
+    label: 'A glowing orange box on a grey slab in sunlight',
+    caption: 'Drag to look round. The box is brighter than the screen can show, so bloom spreads a glow past its edges.',
+  },
+  simulation: {
+    label: 'Thousands of blue motes spiralling into a dark eye, turning ice where they speed up',
+    caption: 'Drag to look round. Every mote is a row the GPU steps. Motes turn from blue to ice as they speed up near the eye, then start again at the rim.',
+  },
+};
+
+const { scene } = Astro.props;
+const { label, caption } = shown[scene];
+---
+
+<figure class="viz" data-viz={`starter-${scene}`}>
+  <canvas class:list={{ orbit: scene !== 'shader' }} aria-label={label}></canvas>
+  {
+    (scene === 'shader' || scene === 'simulation') && (
+      <div class="viz-controls" data-pagefind-ignore>
+        <button data-action="play" aria-pressed="true">
+          Pause
+        </button>
+      </div>
+    )
+  }
+  <figcaption class="viz-caption"><b class="viz-try">Try</b> {caption}</figcaption>
+</figure>
+
+<style>
+  .orbit {
+    cursor: grab;
+    touch-action: pan-y;
+  }
+</style>
+
+<script>
+  import { action, each, live } from './figure.ts';
+
+  each('starter-shader', (figure) => {
+    live(figure, () => import('@typegpu/create-kit/scenes/shader/scene.ts'), undefined, {
+      animate: true,
+      play: action(figure, 'play'),
+    });
+  });
+  each('starter-lit', (figure) => {
+    live(figure, () => import('@typegpu/create-kit/scenes/lit/scene.ts'), undefined, { orbit: true });
+  });
+  each('starter-finished', (figure) => {
+    live(figure, () => import('@typegpu/create-kit/scenes/finished/scene.ts'), undefined, { orbit: true });
+  });
+  each('starter-simulation', (figure) => {
+    live(figure, () => import('@typegpu/create-kit/scenes/simulation/scene.ts'), undefined, {
+      animate: true,
+      orbit: true,
+      play: action(figure, 'play'),
+    });
+  });
+</script>

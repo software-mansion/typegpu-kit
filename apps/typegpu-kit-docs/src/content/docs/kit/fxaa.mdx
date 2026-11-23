@@ -1,0 +1,56 @@
+---
+title: FXAA
+description: Smooth stepped edges in the finished picture with one full-screen pass.
+modules: [kit/fxaa]
+---
+
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+
+With one sample per pixel, angled edges form steps. [MSAA](/kit/targets/) takes multiple samples in each drawing pass, and [TAA](/kit/taa/) gathers samples over several frames. FXAA 3.11 by Timothy Lottes smooths the finished image in one full-screen pass, using nearby colours to detect edges.
+
+<Hidden card="raymarch">
+  <ExampleFigure
+    example="raymarch"
+    controls={['fxaa', 'speed']}
+    loupe
+    caption="Hold the pointer over an edge against the floor and toggle FXAA. The loupe shows stepped edges on the raymarched balls and cube, then the smoothed pixels."
+  />
+</Hidden>
+
+Draw the final pass into an `rgba8unorm` target, then draw it to the screen with FXAA:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { targets, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+declare const frame: Frame;
+// ---cut---
+import { fxaa, finish } from '@typegpu/kit';
+
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  ldr: { format: 'rgba8unorm', sampled: true },
+});
+const final = finish.create(root, { format: 'rgba8unorm', source: () => screen.textures.hdr });
+const smooth = fxaa.create(root, { format: surface.format, source: () => screen.textures.ldr });
+
+// After the scene each frame
+final.record(frame, screen.views.ldr);
+smooth.record(frame, surface.view(frame));
+```
+
+- `record(frame, view)` opens a pass on `view`, draws and ends it, and also takes an encoder in place of the frame. `smooth.draw(pass)` draws into a pass you opened.
+- FXAA detects brightness edges in display-range colour. An `-srgb` source would decode while sampling, so it throws. An `-srgb` output is supported.
+- A rendered picture brings its `region`. Give `region` yourself only with a function source drawn below full [resolution](/kit/targets/#resolution-scale), such as `screen.regions.ldr`. FXAA follows edges in source pixels and stretches the region over the output.
+- FXAA also smooths texture edges such as checkerboards and can blur text. Draw the HUD after `smooth.draw` in the same pass.
+
+## Settings
+
+`smooth.settings` is a uniform. Use TypeGPU's `patch` when settings change, as the [final pass](/kit/finish/#settings) does. Raise `edge` and `floor` to preserve fine texture edges: they set the least contrast FXAA smooths. Set `subpixel` to 0 to keep details smaller than a pixel sharp.
+
+## Limits
+
+- FXAA uses the default FXAA 3.11 edge-search quality. It is not configurable.

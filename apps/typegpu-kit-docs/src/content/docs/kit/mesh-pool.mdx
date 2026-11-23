@@ -1,0 +1,236 @@
+---
+title: Mesh pool
+description: Shapes and glTF models in shared buffers, so one pipeline draws any of them.
+modules: [kit/meshPool]
+---
+
+import Rules from '../../../components/site/Rules.astro';
+import MeshPool from '../../../components/viz/MeshPool.astro';
+
+Separate mesh buffers require rebinding between draws. A **mesh pool** stores vertices in shared storage buffers and indices in one index buffer. One pipeline can then draw any mesh by its range. [Instances](/kit/instances/) use a pool, and [custom shaders](#in-your-own-shaders) can too.
+
+<MeshPool />
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { gltf } from '@typegpu/kit';
+import { meshPool } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+
+const pool = meshPool.create(root, { capacity: 16 });
+
+// Bake shapes into the same encoder
+const encoder = root.createCommandEncoder();
+const box = pool.add(meshes.roundedBox(), encoder);
+const ball = pool.add(meshes.sphere(), encoder);
+encoder.submit();
+
+const response = await fetch('/models/tavern.glb');
+const tavern = pool.add(gltf.read(await response.arrayBuffer()));
+await tavern.ready; // wait for image decoding and uploads
+```
+
+`add` returns a `Mesh` or a `Model` with one mesh per material. A mesh has its pool `index` and ranges `firstIndex`, `indexCount`, `baseVertex` and `vertexCount`. Meshes cannot be removed.
+
+## Shapes
+
+<Rules>
+
+- **Baking** `pool.add(shape)` bakes triangle-list shapes from [`@typegpu/kit/geometry`](/kit/meshes/) in a compute pass. Supply a frame or an encoder to record into it, or omit it to submit immediately.
+- **Bake pipelines** A bake's pipeline inlines the shape's `vertexAt` and `indexAt`. The pool compiles one, blocking, the first time it bakes those functions. It reuses that pipeline when you add the same shape again or a copy that shares them. Add new shapes while loading, or compile their bakes ahead.
+- **Indices and bounds** Unindexed shapes get one index per vertex. Baking also computes their bounding boxes.
+- **Defaults** Shapes default to white, roughness 1, metallic 0, single-sided, unmasked and untextured.
+
+</Rules>
+
+### Compiling bakes ahead
+
+Name the shapes you will add in `shapes`, and `initAsync` compiles their bakes without blocking. Include the pool in [`pipelines.compile`](/kit/pipelines/) with the scene's other pipelines, and those shapes bake later without a compile:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { type Frame } from '@typegpu/kit';
+const root = await tgpu.init();
+declare const frame: Frame;
+// ---cut---
+import { meshPool, pipelines } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+
+const rock = meshes.roundedBox();
+const ring = meshes.torus();
+const pool = meshPool.create(root, { capacity: 64, shapes: [rock, ring] });
+await pipelines.compile([pool]); // while loading
+
+// Later, in a frame
+const boulder = pool.add(rock, frame);
+```
+
+## Models
+
+<Rules>
+
+- **Adding** `pool.add(model)` copies a [`gltf.read`](/kit/gltf/) model into the pool. It validates every mesh before changing the pool. Empty models, insufficient capacity or mismatched normals, UVs, indices, joints or weights throw.
+- **Capacity** Size the pool for the combined mesh, vertex and index counts. `meshPool.roomFor(items)` totals them for models such as `impostors.CARD`, individual meshes, shapes and explicit counts. Spread the result into the pool options. It includes `uvs1: true` if a mesh carries `uvs1`.
+- **Factors** Mesh `material` stores file factors, with colour alpha in `opacity`. Textures multiply these factors. [Instance fields](/kit/instances/#rows) replace them.
+- **Masking** An `alpha: 'mask'` mesh cuts out pixels below `alphaCutoff` in colour and shadow passes. Alpha is texture alpha times instance opacity.
+- **Other fields** `doubleSided` draws back faces lit from their side. `normalScale` controls normal-map strength and `occlusionStrength` how far the occlusion texture darkens.
+- **Textured meshes** A mesh whose material names a texture or masks alpha is `textured`; renderers read textures only for those.
+- **Vertex colours** Preserve glTF vertex colours from `COLOR_0` by declaring an [extra](#extra-vertex-attributes) named `color`. A pool without it drops those colours and warns once, unless every colour is white.
+- **Skinned meshes** Skinned meshes retain joints and weights for [poses](/kit/poses/). The pool creates their buffer when the first skinned model is added.
+
+</Rules>
+
+## Extra vertex attributes
+
+Declare custom vertex fields with `extra`, using the same types as [tables](/kit/table/). Models supply arrays in `extra`, and shaders read them through `pool.extra`:
+
+```ts twoslash
+import { tgpu, d } from 'typegpu';
+const root = await tgpu.init();
+declare const bytes: ArrayBuffer;
+// ---cut---
+import { gltf } from '@typegpu/kit';
+import { instances, meshPool, shading } from '@typegpu/kit';
+
+const pool = meshPool.create(root, { capacity: 16, extra: { color: d.vec4f } });
+const painted = pool.add(gltf.read(bytes)); // its COLOR_0, in extra.color
+
+const Painted = instances.define('Painted', {
+  carry: (vertexIndex) => {
+    'use gpu';
+    return pool.extra.color(vertexIndex);
+  },
+  material: (pixel, base) => {
+    'use gpu';
+    const tinted = shading.Material(base);
+    tinted.color = base.color * pixel.carried.rgb;
+    return tinted;
+  },
+});
+const things = instances.create(root, pool, { kind: Painted, capacity: 64 });
+things.add(painted);
+```
+
+- Fields accept 32-bit scalars or vectors, including `d.f32`, `d.u32`, `d.i32` and `d.vec2f` through `d.vec4i`. Supply components in vertex order as `Float32Array`, `Uint32Array` or `Int32Array` matching the field type.
+- Shape extras and omitted fields default to zero. Undeclared extras are dropped with one warning per field, naming the declaration needed to keep it.
+- In a shader created from `root.pipe(pool.inject())`, `pool.extra.color(i)` reads the vertex indexed as `vertexAt` does. Use [`carry`](/kit/instances/#carried-from-each-vertex) to pass it to fragments.
+
+## Textures
+
+<Rules>
+
+- **Kinds** Meshes have colour, metallic-roughness, normal, emission and occlusion textures, all with mipmaps. Colour and emission use sRGB; the others use linear values. Normal maps need no tangents. A material without a normal map skips normal mapping, since its reading's `normalScale` is 0.
+- **Transforms** A texture's `transform` scales, rotates and then offsets the coordinates it reads, as glTF's `KHR_texture_transform` does. A mesh can then tile one texture and read another from an atlas. Each texture of a mesh keeps its own. The [cloister](/examples/cloister/) tiles its paving, turns its border and cuts its panels from one atlas this way.
+- **Second uv set** A texture with `uvSet: 1` reads the mesh's second uv set, `uvs1`, as a lightmap or occlusion map baked on its own unwrap does. The pool keeps `uvs1` only when created with `uvs1: true`, which `roomFor` sets for meshes that carry it. `add` throws for a mesh whose texture reads a uv set the pool can't keep. The cloister bakes its occlusion on a second set, and the [classroom](/examples/classroom/) its daylight and its lamps' bounce.
+- **Sampler** A material samples all its textures with one sampler. It takes the colour texture's, or the first texture's when there is no colour texture. The pool ignores the samplers a model gives its other textures, so give a lightmap's charts margins when the colour texture repeats.
+- **Shared images** The pool decodes each image once per format and shares identical bytes across meshes and models. The pool uploads pixels and bitmaps during `add`. It reuses the upload when the same image object is added again in the same format. Give changed pixels a new object. If one image is used for both colour and normals, it decodes twice.
+- **Loading** Meshes draw without textures until `ready` settles. A model whose materials name no texture is ready at once. Decode failures or destroying the pool before completion reject `ready`. Failed decodes are not cached, so later models can retry them.
+
+</Rules>
+
+### Decoding off the main thread
+
+Images decode with `createImageBitmap`, which some runtimes lack. Radiance HDR files, with the MIME type `images.HDR`, decode in the kit on any thread:
+
+- On React Native, react-native-webgpu installs it on the JS thread only. It ignores `colorSpaceConversion: 'none'`, so an image with a colour profile may decode differently than on the web.
+- Worklets, including [hosted scenes](/kit/hosting/#on-react-native), lack `createImageBitmap`. Decode on the JS thread with [`images.decodeBitmap`](/kit/images/#on-react-native), then pass the model with those bitmaps in the scene's options. A bitmap is a native object, so it reaches the worker as the device does.
+- Alternatively, supply `decode` returning `{ width, height, pixels }`, with four unpremultiplied bytes per pixel and rows from the top. A Skia decoder can provide this. Encoded images without a decoder cause `add` to throw.
+
+```ts
+// On the JS thread, before the scene starts
+const model = gltf.read(bytes);
+const decoded = { ...model, images: await Promise.all(model.images.map(images.decodeBitmap)) };
+```
+
+- Node and dawn.node also need a decoder. Pass it through scene options as in [Testing](/kit/testing/#models-with-images).
+
+## In your own shaders
+
+Build shaders from `root.pipe(pool.inject())` to call `meshPool.vertexAt(i)`. It decodes a pool vertex into the `@typegpu/kit/geometry` vertex type. Bind `pool.indices` and draw a mesh range:
+
+```ts twoslash
+import { cameras } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+import { meshPool } from '@typegpu/kit';
+import { d, tgpu, type TgpuRenderPass } from 'typegpu';
+const root = await tgpu.init();
+const view = cameras.orbit(root, {
+  size: { width: 1, height: 1 },
+  target: [0, 0, 0],
+  distance: 8,
+});
+const pool = meshPool.create(root, { capacity: 64 });
+const fragment = tgpu.fragmentFn({ in: { normal: d.vec3f }, out: d.vec4f })(({ normal }) => {
+  'use gpu';
+  return d.vec4f(normal * 0.5 + 0.5, 1);
+});
+declare const pass: TgpuRenderPass;
+// ---cut---
+const ring = pool.add(meshes.torus());
+
+const vertex = tgpu.vertexFn({
+  in: { i: d.builtin.vertexIndex },
+  out: { position: d.builtin.position, normal: d.vec3f },
+})(({ i }) => {
+  'use gpu';
+  const corner = meshPool.vertexAt(i); // i already counts from the mesh's baseVertex
+  return {
+    position: cameras.toClip(corner.position),
+    normal: corner.normal,
+  };
+});
+
+const pipeline = root
+  .pipe(pool.inject())
+  .pipe(view.inject())
+  .createRenderPipeline({ vertex, fragment, targets: { format: 'rgba16float' } });
+
+const drawing = pipeline.withIndexBuffer(pool.indices); // at setup
+
+pass.setPipeline(drawing);
+pass.drawIndexed(ring.indexCount, 1, ring.firstIndex, ring.baseVertex);
+```
+
+<Rules>
+
+- **Vertex data** Depth passes can read only `meshPool.positionAt(i)`. `influencesAt(i)` reads joints and weights. `boundsOf(mesh.index)` returns the mesh box in local space.
+- **Textures** Bind `pool.texturesOf(mesh.index)` before drawing a textured mesh. In the fragment shader, use `materials.textured` and `materials.mappedNormal(normal, world, uv, uv1)`, with `uv1` from `meshPool.uv1At(i)`, which reads zero in a pool without `uvs1`.
+- **Masked meshes** For masked meshes, discard where `materials.masked(uv, uv1, opacity)` requests it.
+- **Double-sided meshes** Use `cullMode: 'none'` for double-sided meshes.
+- **Your own sampling** `meshPool.textureLayout` exposes the bind-group layout for custom sampling. `materials.uvOf(meshPool.textureLayout.$.reading.uvs.color, uv, uv1)` gives the coordinates the colour texture reads. It reads `uv1` only in a pipeline piped with the `inject()` of a pool made with `uvs1`.
+
+</Rules>
+
+## Memory
+
+| What     |                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------- |
+| a pool   | 20 bytes per vertex and 4 per index of capacity. Defaults use about 2.4 MB.                   |
+| skinned  | 8 additional bytes per vertex of capacity after the first skinned model. Defaults add 512 KB. |
+| `uvs1`   | 8 additional bytes per vertex of capacity, as full floats. Defaults add 512 KB.               |
+| extras   | Struct size per vertex of capacity. A `d.vec4f` adds 1 MB at default capacity.                |
+| an image | 4 bytes per pixel plus one third for mipmaps, per format. A 1024 × 1024 image uses 5.6 MB.    |
+
+## Errors
+
+| Message                                                          | Thrown by                                                                                                    |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `The mesh pool is full (64 meshes).`                             | `add`, past the pool's `capacity`                                                                            |
+| `The mesh pool has room for 120 vertices and 400 indices. …`     | `add`, for a shape or a model that doesn't fit                                                               |
+| `Mesh 2 of the model has …`                                      | `add`, for a model whose arrays don't agree, naming the count that is off                                    |
+| `Mesh 2 of the model supplies extra 'tint' as Int32Array. …`     | `add`, for an extra in another array than its type reads                                                     |
+| `Mesh 2 of the model reads uv set 1 in its emission texture…`    | `add`, for a texture reading `uvs1` that the mesh lacks or the pool doesn't keep                             |
+| ``This platform lacks `createImageBitmap`. …``                   | `add`, for a model with encoded images on a runtime without it, given no `decode`                            |
+| `The mesh pool was destroyed before its images were …`           | `ready`, rejected                                                                                            |
+| `The mesh pool has no skinned model. …`                          | a pipeline that reads joints, such as a posed kind's renderer, compiled before the pool held a skinned model |
+| `The pipeline is missing a fill for the mesh pool's vertices. …` | a pipeline that calls `vertexAt` without `root.pipe(pool.inject())`                                          |
+
+## Limits
+
+- The pool's size is fixed at creation.
+- Indices use `u32` because WGSL has no 16-bit storage.
+- UVs use half floats. Their precision is 1/2048 below 1 and 1/16 between 64 and 128, so large tiled UV values can drift.
+- A material's textures share one sampler.
+- Normal maps use per-pixel screen-space derivatives without tangents. Maps baked with MikkTSpace tangents can differ near UV seams or stretched coordinates.

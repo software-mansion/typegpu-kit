@@ -1,0 +1,12 @@
+{
+  "title": "Star map",
+  "category": "data",
+  "rarity": "uncommon",
+  "description": "20 000 stars around a galactic core. Hover one and it lights up, picked on the GPU in the same frame. Click to choose it, and a callout pins beside it with its name and distance from the core, typed out in MSDF text.",
+  "line": "20 000 stars. Hover one and the GPU picks it in the same frame.",
+  "order": 26,
+  "card": {
+    "choose": [-5, 0, -1.5]
+  },
+  "hint": "hover a star \u00b7 click to choose \u00b7 drag to orbit \u00b7 wheel to zoom"
+}

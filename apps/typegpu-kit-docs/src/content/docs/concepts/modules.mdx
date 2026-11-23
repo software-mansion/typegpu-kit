@@ -1,0 +1,248 @@
+---
+title: Modules
+description: The contract every TypeGPU Kit module follows, and how to write one.
+readFirst:
+  page: concepts/how-the-kit-works
+  for: for the frame and the seven rules every module follows
+---
+
+import ModuleLife from '../../../components/viz/ModuleLife.astro';
+
+Every module has a factory, `create(root, options)`, that allocates resources and returns them with shader functions and recording methods. [How the kit works](/concepts/how-the-kit-works/) introduces the rules modules follow. This page covers the details you rely on when using or writing one.
+
+## Lifecycle
+
+<ModuleLife />
+
+- `initAsync()` compiles every pipeline. It is optional. Without it, each pipeline compiles when it is first used, which stalls that frame and is slow on [WebKit](/platforms/#safari).
+- A few setup calls submit on their own, such as [`meshPool.add(shape)`](/kit/mesh-pool/#shapes) and [`meshes.bake`](/kit/meshes/) given nothing to record into. Their cards mark them **submits setup**. Call them while loading, or hand them the frame's encoder.
+- A handle has `destroy()` when its module made textures, non-uniform buffers, query sets or other modules. It frees those and nothing the module borrowed. Uniforms, samplers, bind groups, layouts and pipelines are left to the garbage collector. `[Symbol.dispose]`, where present, is the same function.
+- The card's **owns** lists what a module allocates, and **lifecycle** shows whether it has `destroy()`. A drawing built by a description has its own `drawn.destroy()`.
+- Stop using a module before you destroy it, and call `destroy()` once.
+
+### Freeing what a scene made
+
+Compile the pipelines before the first frame with an explicit list for [`pipelines.compile`](/kit/pipelines/), and free what the scene made in its `destroy`:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, clock, particles, passes, pipelines, type Frame } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const sim = clock.fixedStep({ step: 1 / 60 });
+// ---cut---
+const view = cameras.orbit(root, { size: surface, target: [0, 0.4, 0], distance: 5 });
+const canvas = passes.create(root, surface).pipe(view.inject());
+const time = root.createUniform(d.f32);
+const sparks = particles.create(root, view, { capacity: 2048, step: sim.step, blend: 'add' });
+const drawn = [canvas.add(sparks.drawing)];
+await pipelines.compile([canvas]);
+
+const scene = {
+  view,
+  frame(frame: Frame) {
+    time.write(frame.time);
+    view.update(frame.dt);
+    canvas.record(frame, drawn);
+  },
+  destroy() {
+    sparks.destroy();
+  },
+};
+```
+
+- With several things to free, loop over a list: `for (const made of [screen, sparks, glow]) made.destroy()`.
+- `sparks.destroy()` frees the particles' resources. The description holds nothing that needs freeing here, so the scene leaves it out. A description whose drawings build resources of their own frees them in its `destroy()`.
+- When a resize replaces a texture or buffer, free the old one at that moment. Free the current one in `destroy`.
+- Leave out what the scene borrows: the root, the surface and the host's resources.
+
+## Recording methods
+
+A method takes the smallest piece of the frame it needs, so the call site shows the pass structure.
+
+| Method           | Takes                           | When                                                                                    |
+| ---------------- | ------------------------------- | --------------------------------------------------------------------------------------- |
+| `step(pass)`     | `TgpuComputePass`               | compute dispatches, in a pass you share between modules                                 |
+| `draw(pass)`     | `TgpuRenderCommands`            | draws into your attachments, or into a render bundle you replay                         |
+| `record(frame)`  | `Frame` or `TgpuCommandEncoder` | passes or copies of its own, such as a shadow map, a post chain or a table's `flush`    |
+| `capture(frame)` | `Frame`                         | work after the submit too, through [`frame.afterSubmit`](/kit/frames/#after-the-submit) |
+| `update(dt)`     | numbers                         | maths on the CPU over time, such as a camera easing towards its goal                    |
+
+A method that records passes or copies of its own takes either the frame or its encoder, so a frame's code passes `frame` to each. A description that draws into a surface takes only the frame, which holds the surface's view.
+
+```ts
+const compute = frame.encoder.beginComputePass();
+particles.step(compute);
+wind.step(compute);
+compute.end();
+
+light.shadow.record(frame, casters); // opens and ends its own depth pass
+
+const pass = scene.begin(frame);
+terrain.draw(pass); // what scene.add(drawing) built
+embers.draw(pass);
+pass.end();
+```
+
+- A renderer returns a drawing. A [description of passes](/kit/passes/) builds it with `scene.add(drawing)`, which returns a handle with `draw(pass)`.
+- `step` runs one fixed step and can run several times in a pass. Compute work that runs once per frame has a specific name, such as live lists' `compact` or the particles' `spawn`.
+
+Bind a pipeline's groups at setup, then set it on the pass and draw through the pass. Each `.with(...)` returns a new object. If the pipeline object changes from one draw to the next, the pass sets the pipeline, groups and buffers again:
+
+```ts del={1} ins={3-5}
+pipeline.with(group).with(pass).draw(3); // in the frame: a new object and all state on every draw
+
+const bound = pipeline.with(group); // at setup
+pass.setPipeline(bound); // in the frame
+pass.draw(3); // a later draw with the same pipeline sets nothing
+```
+
+- A `pass.setBindGroup` or `setVertexBuffer` between draws makes the next draw set everything again.
+- A group that follows a replaced texture comes from [`memo`](/kit/targets/#following-new-textures). The pipeline bound to that group can come from `memo` too, as finish's does.
+- A module sets only its pipeline on the caller's pass. It makes no other state changes such as `pass.setBindGroup` there, because later draws would inherit them. Your frame code can make those changes.
+
+`draw` takes a render pass or a render bundle encoder. `pass.executeBundles([bundle])` replays the recorded draws in one call, which saves per-draw JS work on Hermes:
+
+```ts
+const bundler = root['~unstable'].createRenderBundleEncoder({
+  colorFormats: [format],
+  depthStencilFormat: 'depth24plus',
+});
+terrain.draw(bundler);
+props.draw(bundler);
+const bundle = bundler.finish();
+
+// each frame
+pass.executeBundles([bundle]);
+embers.draw(pass);
+```
+
+- A bundle replays fixed draw calls while buffer contents can change. Record it again when the draw calls or resources change. Instances need this when a mesh without instances gains one, or when a mesh's textures arrive. Finish needs it when bloom replaces its output.
+- A method that sets a viewport or a scissor can't go in a bundle. It takes a pass, or it takes the frame and opens its own passes, as bloom's `record` does.
+
+:::caution[An open pass]
+Don't call a method that takes the frame or its encoder while a pass is open. WebGPU rejects commands on an encoder whose pass is still open:
+
+```ts del={5}
+const pass = encoder.beginRenderPass({
+  colorAttachments: { view: surface.view(frame) },
+});
+terrain.draw(pass);
+glow.record(encoder); // the render pass is still open
+pass.end();
+```
+
+:::
+
+## Writing a module
+
+This module damps a buffer of velocities. Its rate is a setting; its step length is fixed at creation:
+
+```ts twoslash
+import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+
+const DampingSettings = d.struct({ rate: d.f32 }); // no root needed
+
+interface DampingOptions {
+  readonly count: number;
+  /** Seconds per `step`. */
+  readonly step: number;
+}
+
+export function createDamping(root: TgpuRoot, options: DampingOptions) {
+  const { count, step } = options;
+  const settings = root.createUniform(DampingSettings, { rate: 2 });
+  const velocities = root.createMutable(d.arrayOf(d.vec2f, count));
+
+  const kernel = tgpu.computeFn({
+    workgroupSize: [64],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= count) return;
+    const decay = std.exp(-settings.$.rate * step);
+    velocities.$[gid.x] *= decay;
+  });
+  const pipeline = root.createComputePipeline({ compute: kernel });
+  const destroy = () => {
+    velocities.buffer.destroy();
+  };
+
+  return {
+    settings,
+    velocities,
+    initAsync: () => pipeline.initAsync(),
+    step(pass: TgpuComputePass) {
+      pass.setPipeline(pipeline);
+      pass.dispatchWorkgroups(Math.ceil(count / 64));
+    },
+    destroy,
+    [Symbol.dispose]: destroy,
+  };
+}
+
+export type Damping = ReturnType<typeof createDamping>;
+```
+
+- Schemas and shader functions that capture no instance's resources live at module scope.
+- `destroy` frees the velocity buffer.
+- Validation and allocation happen in the factory; recording methods only record.
+- Some factories infer the type of their options literal, as `targets.create` infers its specs. Such a factory types its options parameter `Checked<O, Options>`. A misspelt option then reports one error at its key, naming the option, as in `'smapled is not an option here'`. What the factory returns keeps its type.
+- A test builds it on [`recordingRoot`](/kit/testing/) and checks what it records.
+
+### Pitfalls
+
+- `d.struct` rejects WGSL's reserved words as field names, such as `type` and `target`.
+- unplugin-typegpu doesn't transform a `'use gpu'` object shorthand method, `{ alive(i) { 'use gpu'; … } }`. Write it as a property: `alive: (i) => { 'use gpu'; … }`.
+- Shift a `u32` right with `>>>`: `d.u32(0x32) >>> corner`. TypeGPU warns about `>>` on a `u32`, and a bare literal on the left of a shift is an `i32`.
+- Code that runs on React Native follows the [platform rules](/platforms/#react-native-on-ios-and-android), such as copying an array before sorting it.
+
+| Error                                                             | Cause                                                                                                             |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `Missing value for 'slot:wind'`                                   | a pipeline reads a placeholder nothing filled; pipe the `inject()` that fills it into the pipeline's root         |
+| ``The pipeline is missing a fill for `cameras.current`. …``       | the same, for an accessor whose default is `unfilled`; it names the `inject()`                                    |
+| `A pipeline reads the shared part 'ao', …`                        | a description builds a pipeline that reads a [part](/kit/bindings/) it wasn't given; it names the `shared` to add |
+| `Missing bind groups for layouts`                                 | a pipeline reads a [shared layout](/kit/bindings/), and a pass you opened has no group set for it                 |
+| `readonly buffers cannot be mutated`                              | a render pipeline writes a buffer it binds read-only, such as a table's device rows                               |
+| `bindGroupLayoutCount (5) is larger than the maximum allowed (4)` | the pipeline uses more bind groups than the device allows; a [census](/kit/pipelines/#census) counts them         |
+| `Found duplicate TypeGPU version`                                 | two copies of TypeGPU loaded; see [Setting up a project](/getting-started/#setting-up-a-project)                  |
+
+[Write a module](/tutorials/write-a-module/) builds a module step by step, from its first kernel to its test.
+
+## Collecting with an owner
+
+If your program makes many resources, you can collect them with the optional `owner` helper and free them with one call:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { bloom, owner, pipelines, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+// ---cut---
+const own = owner();
+const screen = own(
+  targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } }),
+);
+const glow = own(bloom.create(root, { source: () => screen.textures.hdr }));
+await pipelines.compile(own);
+
+// when the program closes
+own.destroy();
+```
+
+`own(item)` returns the item. `own.destroy()` frees the last item taken first. An item taken after `own.destroy()` is freed at once. If async work can finish after `destroy()`, call `own.usable()` after the await and before using the resources. It throws if the owner has been destroyed. The reference card lists the helper's members.
+
+## In a package
+
+A package exports each module as a namespace. The module's file calls its factory `create` and its options `Options`, and the package entry re-exports the file:
+
+```ts
+// damping.ts: export function create(…), export interface Options, export type Damping
+// index.ts
+export * as damping from './damping.ts';
+export type { Damping } from './damping.ts';
+```
+
+Call `damping.create(root, options)` and name the result for what it holds, as in `const drag = damping.create(...)`. `frames.create` and `bloom.create` follow the same convention. A module in your own program can stay a plain `createDamping`.

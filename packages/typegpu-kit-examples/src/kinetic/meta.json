@@ -1,0 +1,9 @@
+{
+  "title": "Kinetic",
+  "category": "worlds",
+  "rarity": "common",
+  "description": "A Calder-style mobile of thirteen pieces turns slowly on four wire arms. The top pieces are red, yellow, blue, black and white lacquer, and the ones below are mirror, brushed steel, brass and copper. The GPU bakes each sky into reflections and soft diffuse light for every piece. Move the time of day from noon to deep dusk and the sun comes round into view and sets, with the sky re-baking fifteen times a second. The HDR skies are CC0 panoramas from Poly Haven.",
+  "line": "A Calder mobile turning under a GPU-baked sky, from noon to dusk.",
+  "order": 10,
+  "hint": "drag to orbit \u00b7 wheel to zoom"
+}

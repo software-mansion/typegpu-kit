@@ -1,0 +1,144 @@
+---
+title: Connecting modules
+description: How a shader in one module reads the buffers and textures of another, and how the kit's own modules do it.
+readFirst:
+  page: concepts/how-the-kit-works
+  for: for the frame and the seven rules every module follows
+---
+
+import Inject from '../../../components/viz/Inject.astro';
+
+A particle kernel reads the camera. A fish's steering reads the neighbour grid. Your lighting reads ambient occlusion. Each time, a shader reads resources another module owns. An instance's members read that instance's own resources. A shader calls them and the pipeline needs nothing more, as with the ripple in [How the kit works](/concepts/how-the-kit-works/#modules-connect-through-typegpu). A placeholder, such as the current camera, is filled by each pipeline from `root.pipe(view.inject())`.
+
+## A module others read
+
+A weather module keeps the wind in a uniform and offers `windAt` to other shaders. A snow module's kernel calls it, so the snow takes the weather as an argument:
+
+```ts twoslash
+import { d, tgpu, type TgpuRoot } from 'typegpu';
+const WeatherState = d.struct({ wind: d.vec2f });
+// ---cut---
+export function createWeather(root: TgpuRoot) {
+  const state = root.createUniform(WeatherState);
+
+  return {
+    state,
+    windAt: () => {
+      'use gpu';
+      return state.$.wind;
+    },
+  };
+}
+
+export function createSnow(root: TgpuRoot, weather: ReturnType<typeof createWeather>) {
+  const drift = root.createMutable(d.arrayOf(d.vec2f, 1024));
+  const fall = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+    gid,
+  }) => {
+    'use gpu';
+    if (gid.x >= 1024) return;
+    drift.$[gid.x] += weather.windAt();
+  });
+
+  return root.createComputePipeline({ compute: fall });
+}
+```
+
+- `windAt` reads this weather's uniform in any pipeline. Two weathers' `windAt` work side by side in one kernel.
+- A factory takes each module it reads as a named argument, never a list of modules.
+
+## Members and placeholders
+
+An **instance's members carry their fill**. They are made in `create` and read that instance's resources: particles' `emit`, the grid's `walk`, counters' `add`, live lists' `slot`, text's `setLabel`, the picker's `found`, and the `gpu` members of a [table](/kit/table/#two-tables-in-one-kernel) or a [machine](/kit/machines/). One kernel reads two tables of one definition through `reds.gpu` and `blues.gpu`.
+
+A **placeholder is filled by the pipeline**. Each pipeline holds one fill for it, the last one piped:
+
+- A **hook** is a piece each pipeline chooses. Two descriptions of passes can then draw the same drawings through two cameras, such as a scene and a reflection. Hooks include `cameras.current`, the lighting's `reflect`, `ambient`, `fog` and `sunShadow`, `ao.at`, `dof.circle` and `video.sample`.
+- A **definition's members**, such as `Enemy.position(i)`, exist before any table. A kind's `material` or a machine's guards can use those members to work with any table of that definition. The table's `inject()` fills them. The mesh pool's `vertexAt`, the environment's cube and the sun are placeholders too.
+
+Two limits come with members:
+
+- A member is bound when its instance is created, and can't be re-pointed at another copy. Code that serves any table of a layout reads the definition's placeholders.
+- A pipeline that reads a member of a destroyed instance fails as it resolves, with TypeGPU's `This buffer has been destroyed`.
+
+The figure shows which resources a pipeline binds. Try calling the members of two block tables, reading through their definition or reading through the camera hook. Pipe in neither, one or both of the offered fills. When using both, you can change their order.
+
+<Inject />
+
+Each module's card lists its placeholders.
+
+## Callbacks carry their fills
+
+A module that takes a `'use gpu'` function, such as particles' `update` or bloom's `bright`, builds its pipelines without knowing what the function reads. A member the function calls needs nothing more. For a placeholder, pipe its fill into the function itself:
+
+```ts
+const dust = particles.create(root, view, {
+  capacity: 2048,
+  step,
+  shade: tgpu.fn(puff).pipe(light.inject()), // reads the sun
+});
+```
+
+Particles' `update`, `born`, `died` and `place`, a trail's `width` and `shade`, and the lighting's shading hooks all take functions this way. A callback can read `cameras.current.$` without a fill, because the description of passes fills the camera.
+
+## Resources that are replaced
+
+A fill binds a fixed resource, so replacing the resource would need a new pipeline. A resource that is replaced, such as a texture that follows the screen size or each new camera frame, goes in a [`bindings`](/kit/bindings/) part instead. Your program shares every part into one layout before the pipelines that read the parts are built. It then sets that layout's group on each pass.
+
+- [Ambient occlusion](/kit/ao/) and [depth of field](/kit/dof/) keep their textures in parts, because they follow the depth's size.
+- A [live video](/kit/video/#without-a-copy) binds each camera frame through its part.
+- `passes.create(…, { shared: { ao: occlusion.part } })` shares the parts, sets their group on every pass the description opens and fills them in the pipelines it builds.
+
+## Missing fills
+
+A pipeline that reads a placeholder nothing filled fails at first use or in `initAsync`. Warm-up therefore catches it while loading. Placeholders that need a fill, such as `cameras.current`, default to `unfilled`, whose error names the `inject()` to add, as in ``The pipeline is missing a fill for `cameras.current`. …``. Yours can do the same:
+
+```ts
+const wind = tgpu.accessor(d.vec2f, unfilled('the wind', 'weather', 'a `createWeather`'));
+```
+
+Some parts must be shared. A pipeline that reads one nobody shared throws as it builds, and the error names the call to add. If the part is shared but a pass description wasn't given it, the draw throws instead, because the pass has no group for it.
+
+## All three together
+
+Ambient occlusion and lighting use every way of connecting. The occlusion reaches the lighting through a callback. Both read the camera through a hook. The occlusion's texture sits in a shared part, because a resize of the depth replaces it. The scene fills its shared parts in every pipeline it builds, so the callback needs no fill of its own:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { cameras, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float', sampled: true },
+  depth: { format: 'depth24plus' },
+});
+const early = targets.create(root, surface, {
+  depth: { format: 'depth32float', scale: 0.5, sampled: true },
+});
+// ---cut---
+import { ao, lighting, passes, shading } from '@typegpu/kit';
+
+const occlusion = ao.create(root, view, { depth: () => early.textures.depth });
+
+const sky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+const light = lighting.create(root, {
+  shading: { ambient: sky }, // a callback
+});
+
+const scene = passes
+  .create(
+    root,
+    screen,
+    { hdr: passes.color, depth: passes.depth },
+    { shared: { ao: occlusion.part } }, // a part
+  )
+  .pipe(view.inject()) // a hook
+  .pipe(light.inject()); // placeholders: the sun, the lights, the shadow
+```
+
+[Ambient occlusion](/kit/ao/) runs this scene in full, and [Write a module](/tutorials/write-a-module/) builds a module of your own.

@@ -1,0 +1,61 @@
+---
+import Choice from './Choice.astro';
+import { BLUR, HOUR, SKIES, START } from './Environment.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="environment">
+  <p class="viz-title">Four metals and a matte sphere lit by the sky</p>
+  <canvas aria-label="Four metal spheres from a mirror to rough metal and a white matte sphere, lit by the sky behind them"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Choice name="sky" label="sky" options={SKIES} value={START.sky} />
+    <Slider name="hour" label="time of day" min={HOUR.min} max={HOUR.max} step={HOUR.step} value={START.hour} unit=" h" />
+    <Slider name="blur" min={BLUR.min} max={BLUR.max} step={BLUR.step} value={START.blur} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Drag to look round. Each sphere reads the reflections at its roughness, and the matte one the diffuse light. Move the time of day to re-bake the daylight; blur reads a rougher level behind the scene without a bake.
+  </figcaption>
+</figure>
+
+<style>
+  canvas {
+    cursor: grab;
+    touch-action: pan-y;
+  }
+</style>
+
+<script>
+  import { choice, each, live, slider } from './figure.ts';
+  import type { Sky } from './Environment.scene.ts';
+
+  each('environment', (figure) => {
+    const sky = choice<Sky>(figure, 'sky', (chosen) => {
+      shown.update((scene) => scene.sky(chosen));
+    });
+    const hour = slider(
+      figure,
+      'hour',
+      (value) => {
+        shown.update((scene) => scene.hour(value));
+      },
+      (value) => `${Math.floor(value)}:${String(Math.round((value % 1) * 60)).padStart(2, '0')}`,
+    );
+    const blur = slider(
+      figure,
+      'blur',
+      (value) => {
+        shown.update((scene) => scene.blur(value));
+      },
+      (value) => value.toFixed(2),
+    );
+    const shown = live(figure, () => import('./Environment.scene.ts'), undefined, {
+      loading: 'Loading the panorama, 1.4 MB.',
+      orbit: true,
+      ready(scene) {
+        scene.hour(hour.valueAsNumber);
+        scene.sky(sky.value);
+        scene.blur(blur.valueAsNumber);
+      },
+    });
+  });
+</script>

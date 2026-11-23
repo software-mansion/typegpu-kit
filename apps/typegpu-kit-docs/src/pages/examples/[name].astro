@@ -1,0 +1,355 @@
+---
+import '../../styles/tokens.css';
+import Meta from '../../components/site/Meta.astro';
+import { BASE, exampleHref, markdownHref, sourceHref } from '../../components/site/urls.ts';
+import { examples, type Example } from '../../examples/examples.ts';
+
+export function getStaticPaths() {
+  return examples.map((example) => ({
+    params: { name: example.key },
+    props: { example },
+  }));
+}
+
+const { example } = Astro.props as { example: Example };
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    {/* maximum-scale keeps iOS from zooming into the panel's small inputs; a pinch still zooms */}
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <link rel="icon" href={`${BASE}favicon.svg`} type="image/svg+xml" />
+    <title>{example.title} · TypeGPU Kit</title>
+    <Meta
+      title={`${example.title} · TypeGPU Kit`}
+      description={example.description}
+      canonical={exampleHref(example.key)}
+      markdown={markdownHref(`examples/${example.key}`)}
+    />
+    <style is:global>
+      :root {
+        --page: var(--ground);
+        --bar-top: 12px;
+        --bar-height: 36px;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--page);
+        color: var(--text-2);
+        font: 12px/1.4 var(--font-mono);
+      }
+      #example {
+        position: fixed;
+        inset: 0;
+      }
+      #example > canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      /* lil-gui's values in the site's colours. */
+      .lil-gui {
+        --number-color: var(--link);
+        --string-color: var(--f-needs);
+      }
+      /* On a phone, an example's controls sit beside the bar, as tall and drawn as it, and open
+         under it, much smaller than lil-gui's touch sizes and no taller than half the screen. */
+      @media (max-width: 560px) {
+        .lil-gui.autoPlace {
+          top: var(--bar-top);
+          right: 12px;
+          left: calc(var(--bar-end, 160px) + 8px);
+          max-height: 50%;
+          --width: auto;
+          --background-color: var(--ground);
+          --title-background-color: var(--ground);
+          border: 1px solid var(--rule-strong);
+          border-radius: 2px;
+          overflow: hidden;
+        }
+        .lil-gui.autoPlace > .lil-title {
+          display: flex;
+          align-items: center;
+          height: calc(var(--bar-height) - 2px);
+          padding: 0 10px;
+          color: var(--text-2);
+          font: 400 12px/1 var(--font-mono);
+        }
+        body .lil-gui.lil-allow-touch-styles,
+        body .lil-gui.lil-allow-touch-styles .lil-gui {
+          --widget-height: 20px;
+          --padding: 3px;
+          --spacing: 3px;
+          --font-size: 11px;
+          --input-font-size: 11px;
+          --folder-indent: 6px;
+          --slider-input-min-width: 34px;
+        }
+      }
+      /* A touch screen plays with the example's pads, not its keys. */
+      @media (pointer: coarse) {
+        #keys {
+          display: none;
+        }
+      }
+      /* The generic page's hint line, and the texts an example's ui.ts places at the corners. */
+      .hint {
+        position: fixed;
+        right: 12px;
+        bottom: 10px;
+        left: 12px;
+        opacity: 0.6;
+        pointer-events: none;
+        text-align: right;
+      }
+      .hint span {
+        white-space: nowrap;
+      }
+      .hud {
+        position: fixed;
+        pointer-events: none;
+        white-space: pre;
+      }
+      .hud.top-right,
+      .hud.bottom-right {
+        right: 12px;
+        text-align: right;
+      }
+      .hud.top-left,
+      .hud.bottom-left {
+        left: 12px;
+      }
+      .hud.top-right {
+        top: 10px;
+      }
+      .hud.top-left {
+        top: calc(var(--bar-top) + var(--bar-height) + 8px);
+      }
+      .hud.bottom-left,
+      .hud.bottom-right {
+        bottom: 10px;
+      }
+      .pads {
+        position: fixed;
+        bottom: calc(env(safe-area-inset-bottom) + 14px);
+        z-index: 1;
+        display: grid;
+        gap: 6px;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      .pads.left {
+        left: 14px;
+      }
+      .pads.right {
+        right: 14px;
+        justify-items: end;
+      }
+      .pads > div {
+        display: flex;
+        gap: 6px;
+      }
+      .pads > div > * {
+        min-width: 52px;
+        height: 52px;
+      }
+      .pads button {
+        padding: 0 12px;
+        border: 1px solid var(--rule-control);
+        border-radius: 2px;
+        background: color-mix(in srgb, var(--ground) 70%, transparent);
+        color: var(--text);
+        font: 400 13px/1 var(--font-mono);
+        touch-action: none;
+      }
+      .pads button.held {
+        border-color: var(--accent);
+        color: var(--accent-high);
+      }
+      .pads button:focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="bar" aria-label="Example">
+      <a href={exampleHref()}><span aria-hidden="true">←</span> Examples</a>
+      <span class="title">{example.title}</span>
+      <a href={sourceHref(example.key)}>Source</a>
+      <button id="pause" type="button" aria-pressed="false" hidden>Pause</button>
+      <button id="debug" type="button" aria-pressed="false" hidden>Profile</button>
+    </nav>
+    <main id="example" data-key={example.key}>
+      <canvas aria-label={example.line} />
+      {example.hint && <div id="keys" class="hint">{example.hint.split('·').map((part, i, parts) => <span>{part.trim()}{i < parts.length - 1 ? ' ·' : ''} </span>)}</div>}
+    </main>
+    <div id="cover"><span>loading</span></div>
+    <output id="notice" role="alert"></output>
+    <script>
+      import { gpuDebug } from '@typegpu/kit/debug';
+      import { fail, run, tell } from '../../examples/page.ts';
+
+      // Where the bar ends, for the controls beside it on a phone
+      const bar = document.querySelector<HTMLElement>('.bar')!;
+      new ResizeObserver(() => {
+        const end = bar.getBoundingClientRect().right;
+        document.documentElement.style.setProperty('--bar-end', `${end}px`);
+      }).observe(bar);
+
+      const key = document.getElementById('example')?.dataset.key;
+
+      if (!('gpu' in navigator)) tell('This browser has no WebGPU.');
+      else if (!key) fail(new Error('The page names no example.'));
+      else {
+        // The profiler patches WebGPU before the example requests its device, and stays idle until
+        // the button starts it
+        const debug = gpuDebug.install();
+        const button = document.getElementById('debug')!;
+        button.hidden = false;
+
+        const setProfiling = (on: boolean) => {
+          if (on) debug.start();
+          else debug.stop();
+
+          button.setAttribute('aria-pressed', String(on));
+          const url = new URL(location.href);
+          if (on) url.searchParams.set('debug', '');
+          else url.searchParams.delete('debug');
+          url.search = url.searchParams.toString().replace(/=(?=&|$)/g, '');
+          history.replaceState(history.state, '', url);
+        };
+
+        if (new URLSearchParams(location.search).has('debug')) setProfiling(true);
+
+        button.addEventListener('click', () => setProfiling(!debug.running));
+
+        try {
+          run(key);
+        } catch (error) {
+          fail(error);
+        }
+      }
+    </script>
+  </body>
+</html>
+
+<style>
+  .bar {
+    position: fixed;
+    top: var(--bar-top);
+    left: 12px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    box-sizing: border-box;
+    height: var(--bar-height);
+    max-width: calc(100vw - 24px);
+    padding: 3px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    font: 400 12px/1 var(--font-mono);
+  }
+
+  .bar > * {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .bar > [hidden] {
+    display: none;
+  }
+
+  .bar a,
+  .bar button {
+    color: var(--text-2);
+    text-decoration: none;
+  }
+
+  .bar a:hover,
+  .bar button:hover {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+
+  .title {
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+  }
+
+  /* A phone leaves the top right to the example's own readout. */
+  @media (max-width: 560px) {
+    .title {
+      display: none;
+    }
+  }
+
+  button {
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  button[aria-pressed='true'] {
+    border-color: var(--accent);
+    background: transparent;
+    color: var(--accent-high);
+  }
+
+  .bar :focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  #cover {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: var(--page);
+  }
+
+  #cover > span {
+    position: relative;
+    transition: opacity 0.3s;
+  }
+
+  #cover.lifting {
+    background: none;
+  }
+
+  #cover.lifting > span {
+    opacity: 0;
+  }
+
+  #notice:not(:empty) {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 1;
+    box-sizing: border-box;
+    max-width: min(60ch, calc(100vw - 32px));
+    padding: var(--s-3) var(--s-4);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--ground);
+    color: var(--text);
+    translate: -50% -50%;
+    white-space: pre-wrap;
+  }
+</style>

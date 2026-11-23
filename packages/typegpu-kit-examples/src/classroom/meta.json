@@ -1,0 +1,9 @@
+{
+  "title": "Classroom",
+  "category": "worlds",
+  "rarity": "common",
+  "description": "Blender's Classroom scene on a late afternoon. The sun and its shadow are live. Everything else, the daylight through the windows and the six ceiling lamps, is baked in Cycles into lightmaps on the model's second UV set. Sunbeams cut through the dust, from a froxel grid that samples the sun's shadow a little each frame and reuses what it sampled before, while 4 000 motes drift on Perlin noise. Toggles switch the baked light, the occlusion, the lamps and the dust on and off. The room is Christophe Seux's Classroom from the Blender demo files (CC0).",
+  "line": "Blender's Classroom with baked lightmaps and sunbeams through the dust.",
+  "order": 2,
+  "hint": "drag to orbit · wheel to zoom"
+}

@@ -1,0 +1,427 @@
+---
+title: Tables
+description: Per-object rows with separate buffers for CPU and GPU writes, so uploads preserve kernel updates.
+modules: [kit/table]
+---
+
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+import NeighbourReads from '../../../components/viz/NeighbourReads.astro';
+import SlotAllocation from '../../../components/viz/SlotAllocation.astro';
+import TableFlush from '../../../components/viz/TableFlush.astro';
+import TableParts from '../../../components/viz/TableParts.astro';
+
+A game may keep enemies, pickups, lights or fish in a GPU buffer. If the CPU and kernels write the same fields, a stale CPU copy can overwrite a kernel's update, such as the start of a death animation.
+
+A **table** separates CPU-owned `host` fields from GPU-owned `device` fields in different buffers. Uploading host rows preserves the device fields that kernels wrote.
+
+<TableParts />
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+const root = await tgpu.init();
+// ---cut---
+import { frames, table } from '@typegpu/kit';
+
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, tint: d.vec4f, radius: d.f32 }, // written by the CPU
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 }, // by kernels
+});
+
+const enemies = table.create(root, Enemy, {
+  capacity: 4096,
+  defaults: { tint: [1, 1, 1, 1], radius: 0.5, health: 10 },
+});
+
+const id = enemies.add({ species: 2, position: [4, 0, 1] });
+enemies.fields.tint.set(id, 1, 0, 0, 1);
+
+frames.create(root, (frame) => {
+  enemies.flush(); // uploads what changed, before submit
+  // ... passes
+});
+
+enemies.remove(id);
+```
+
+<Rules>
+
+- **Definitions** `table.define` takes no root. Its name labels WGSL names such as `EnemyHost` and `Enemy_position`, as well as buffers and errors. Nothing looks up a table by name.
+- **Parts** Either part may be omitted. A host-only table holds instance data, such as Blockfall's blocks. A field in both parts is a type error, and `define` throws for it. `define` also throws for `f16` and `bool` fields.
+- **Capacity** The capacity is fixed, at most 2^20, and `add` throws when the table is full. Fields start at `defaults`, or zero, and `add()` with no values allocates nothing. `count` is the number of live rows. `clear()` removes them all.
+- **Types** The types take the definition: `table.Table<typeof Enemy>`, `table.Options`, `table.Fields`.
+- **Buffers** `enemies.buffers` holds the `host`, `device` and `live` buffers and the `index` uniform, which stores the span and the id mask. Use them for a [readback](/kit/readback/) or a bind group of your own.
+- **Row schemas** `table.rows(Enemy, 'device', capacity)` gives a part's array schema, for a buffer or [history](/kit/history/) of your own. It throws for a capacity a table can't have, or a part with no fields.
+
+</Rules>
+
+## Row ids
+
+`add` returns a **row id**, a `u32` that holds the slot and its generation. Its type is `RowId<typeof Enemy>`. A plain number or another definition's id is a type error.
+
+<Rules>
+
+- **Stale ids** `remove(id)` bumps the slot's generation. A field handle given the old id then throws, so check with `has(id)` first. `idAt(slot)` turns a slot read back from the GPU into an id.
+- **Other tables** The types accept an id from another table of `Enemy`. The starting generation varies by table to help catch ids from another table of the same definition. A table decodes an id using its own capacity. If the decoded slot is out of range, empty or has a different generation, `has` returns false and `remove`, `write` and field handles throw.
+- **Zero ids** Generations start above 0, so a zeroed `u32` is never a live id.
+
+</Rules>
+
+The capacity determines how many bits the slot needs. The generation uses the remaining bits. Once a slot's generation wraps, an old id is valid again. A bullet spawned and freed every frame takes the same slot every frame, so at 120 fps it wraps after:
+
+| Capacity | Generation bits | Wraps after |
+| -------- | --------------- | ----------- |
+| 8        | 29              | 52 days     |
+| 300      | 23              | 19 hours    |
+| 4096     | 20              | 2.4 hours   |
+| 2^20     | 12              | 34 seconds  |
+
+## Writing fields
+
+`enemies.fields` has a handle per field, which writes the CPU copy at a fixed offset:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { table, type RowId } from '@typegpu/kit';
+const root = await tgpu.init();
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, tint: d.vec4f, radius: d.f32 },
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 },
+});
+const enemies = table.create(root, Enemy, { capacity: 4096 });
+declare const hit: RowId<typeof Enemy>[];
+declare const id: RowId<typeof Enemy>;
+// ---cut---
+const tint = enemies.fields.tint; // keep it outside the loop
+
+for (const id of hit) tint.set(id, 1, 0, 0, 1); // components: nothing allocated
+
+tint.write(id, [1, 0, 0, 1]); // allocates the tuple
+tint.get(id, d.vec4f()); // host fields read back from the CPU copy
+enemies.write(id, { tint: [1, 0, 0, 1], health: 10 }); // several fields, both parts
+```
+
+- A vector field's `write` and `get` also take any array of numbers, such as a `Float32Array` from a math library. `write` reads its first components.
+- Matrices, arrays and nested structs have only `write`. A matrix may be a `Float32Array` in its padded layout.
+- Device fields have no `get`. A device write sets an absolute value before the frame's GPU work, for a teleport or a revive. Apply relative changes, such as damage, with a [command](#changes-the-gpu-applies).
+
+## Uploading changes
+
+<TableFlush />
+
+Nothing reaches the GPU until `flush()`. Call it once per frame, before submit. Without [history](#last-frames-rows), `flush()` needs no argument and can go anywhere in the frame, since `queue.writeBuffer` lands before every later submit. A flush uploads:
+
+- written host rows in runs, bridging gaps of fewer than 16 unwritten rows from the CPU copy;
+- each run of written device fields in a row, with the padding between them, so a kernel's field between two written ones keeps its value;
+- new rows' device values, whole;
+- runs that meet across rows, such as adjacent new rows, as one upload;
+- the live bits, and the span when it changed.
+
+### Last frame's rows
+
+For its motion output, a drawing runs its vertex code a second time, compiled with [`history.previously`](/kit/history/). To give moving rows a motion of their own, create the table with `history: true`. The second run then reads last frame's rows through the table's getters:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { frames, table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, tint: d.vec4f, radius: d.f32 },
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 },
+});
+// ---cut---
+const enemies = table.create(root, Enemy, { capacity: 4096, history: true });
+
+frames.create(root, (frame) => {
+  enemies.flush(frame); // copies last frame's rows aside, then lands the uploads
+  // ... kernels that move them, passes that draw them
+});
+```
+
+<Rules>
+
+- **Flushing** The table is then a `HistoryTable`, whose `flush` takes the frame or an encoder. Record the flush before the passes that read the table. Called with no argument, even through the plain `Table` type, it throws.
+- **Unfinished frames** A frame that throws leaves its uploads and new rows to the next flush. Given a bare encoder, `flush` treats its recorded copies as sent. Dropping that encoder loses its copies of the row uploads and history.
+- **Second flush** A second flush in one frame lands what changed since the first and leaves last frame's rows as they were. If both flushes upload the same fields before the submit, commands recorded between them read the second upload, as without history. Call `frame.submit()` between the flushes to let those commands read the first.
+- **New rows** A row added this frame starts last frame where it is, so it doesn't streak in from the origin.
+- **Current rows** Kernels and render pipelines read and write the current rows, as without history. Only code compiled with `previously` reads last frame's.
+- **One buffer** Last frame's rows follow the current ones in the same buffer, from slot `capacity`, so reading them binds no more buffers. Read rows through the getters, such as `enemy.position(i)`, since `enemy.device.$[i]` always reads the current rows.
+- **Copies** Each flush copies the device rows across the span. It copies host rows only in the frame after an upload changed them.
+- **Teleports** A write that jumps a row, such as a teleport, reads as motion for a frame.
+
+</Rules>
+
+## Removing rows
+
+Slots never move. An id stays valid until its row is removed, and other buffers can refer to rows by slot. The **span** is the highest live slot plus one. `add` takes the lowest free slot to keep the span short. Kernels skip dead rows but still read memory across the span. A span with half its rows dead at random costs about twice as much as dense rows.
+
+<Hidden card="blockfall">
+  <SlotAllocation />
+</Hidden>
+
+## Drawing rows
+
+A dead instance costs as much vertex work as a live one, so don't draw over the span. [Live lists](/kit/live-lists/) list each group's live slots on the GPU every frame. They draw them indirectly at the cost of dense rows.
+
+Live lists group rows by a field, such as `species: d.u32`. Groups share one capacity in any mix; rows with different fields belong in different tables.
+
+To light and draw meshes, use a set of [instances](/kit/instances/). A set is a table whose `add` takes a mesh, and its renderer draws the live rows of each mesh.
+
+## Rows in shaders
+
+A table's `gpu` members read its own rows in any pipeline: a getter per field, `row(i)`, `alive(i)`, `span()`, `slotOf(id)`, and the `host` and `device` arrays. A pipeline that reads them needs no fill:
+
+```ts twoslash
+import { d, std, tgpu, type TgpuUniform } from 'typegpu';
+import { liveLists, table, type RowOf } from '@typegpu/kit';
+import { meshes } from '@typegpu/kit/geometry';
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, tint: d.vec4f, radius: d.f32 },
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 },
+});
+declare const enemies: table.Table<typeof Enemy>;
+declare const viewProjection: TgpuUniform<d.Mat4x4f>;
+declare const live: liveLists.LiveLists;
+const SKELETON = 0;
+const cube = meshes.unindexed(meshes.box());
+// ---cut---
+const enemy = enemies.gpu;
+
+// A helper that takes a whole row: the dead sink into the floor
+const sinkOf = (row: RowOf<typeof Enemy>) => {
+  'use gpu';
+  return std.select(d.f32(0), row.radius * 2, row.health <= 0);
+};
+
+const vertex = tgpu.vertexFn({
+  in: { vertexIndex: d.builtin.vertexIndex, instanceIndex: d.builtin.instanceIndex },
+  out: { position: d.builtin.position },
+})(({ vertexIndex, instanceIndex }) => {
+  'use gpu';
+  const slot = live.slot(SKELETON, instanceIndex);
+  const center = enemy.position(slot); // loads one field
+  const row = enemy.row(slot); // the whole row
+
+  const corner = cube.vertexAt(vertexIndex).position * row.radius;
+  const world = center + corner - d.vec3f(0, sinkOf(row), 0);
+
+  return { position: viewProjection.$ * d.vec4f(world, 1) };
+});
+```
+
+- The definition has the same members, as placeholders for code written over any table of `Enemy`, such as an [instance kind](/kit/instances/)'s hooks. The pipeline fills them with one table's `inject()`, as in `root.pipe(enemies.inject())`.
+- Without it, the pipeline fails at first use or in `initAsync` with an error that names the accessor and the `inject()` it needs, such as ``The pipeline is missing a fill for `Enemy_host`. …``.
+- Prefer getters to `row(i)` in hot code. `row(i)` copies every field, and some compilers keep loads the shader doesn't use.
+- `host`, `device`, `row`, `alive`, `span` and `slotOf` are taken; a field can't use them.
+
+### Two tables in one kernel
+
+Each table's members read its own buffers, so one kernel reads and writes two tables of one definition, such as enemies that defect to the other side:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32 },
+  device: { position: d.vec3f, health: d.f32 },
+});
+// ---cut---
+const reds = table.create(root, Enemy, { capacity: 1024 });
+const blues = table.create(root, Enemy, { capacity: 1024 });
+const red = reds.gpu;
+const blue = blues.gpu;
+const claimed = root.createMutable(d.atomic(d.u32));
+
+const defect = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!red.alive(i) || red.position(i).x > 0) return;
+
+  blue.device.$[std.atomicAdd(claimed.$, 1)].health = red.health(i);
+  red.device.$[i].health = 0;
+});
+const defecting = root.createComputePipeline({ compute: defect });
+```
+
+[Connecting modules](/concepts/connecting-modules/#members-and-placeholders) states the limits of members.
+
+### Writing device fields
+
+A kernel writes through a reference from `enemy.device`, and reads through the getters:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+import { table } from '@typegpu/kit';
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, tint: d.vec4f, radius: d.f32 },
+  device: { position: d.vec3f, velocity: d.vec3f, health: d.f32 },
+});
+declare const enemies: table.Table<typeof Enemy>;
+declare const toPlayer: (position: d.v3f) => d.v3f;
+// ---cut---
+const enemy = enemies.gpu;
+const STEP = 1 / 60;
+
+const crowd = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!enemy.alive(i)) return; // also false past the span
+
+  const speed = 2 / enemy.radius(i); // a host field: small enemies are fast
+  const row = enemy.device.$[i]; // a reference: writes go to the buffer
+
+  row.velocity = std.mix(row.velocity, toPlayer(row.position) * speed, 0.1);
+  row.position += row.velocity * STEP;
+});
+```
+
+Device rows bind read-write in compute pipelines and read-only in render pipelines. WebGPU forbids read-write storage in vertex stages. Writing device rows in a render pipeline fails with `readonly buffers cannot be mutated`. Host rows are read-only everywhere.
+
+### Reading neighbours while writing them
+
+<NeighbourReads />
+
+A boid kernel reads neighbours while other threads move them. Some neighbours may have moved this step and others may not. First copy the fields neighbours need in a separate dispatch. Have the steering kernel read only that copy:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Fish = table.define('Fish', {
+  host: { species: d.u32 },
+  device: { position: d.vec3f, velocity: d.vec3f },
+});
+const school = table.create(root, Fish, { capacity: 4096 });
+// ---cut---
+const fish = school.gpu;
+/** A fish as its neighbours see it. */
+const Seen = d.struct({ position: d.vec3f, velocity: d.vec3f });
+const seen = root.createMutable(d.arrayOf(Seen, 4096));
+
+const snapshot = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!fish.alive(i)) return;
+
+  seen.$[i] = Seen({ position: fish.position(i), velocity: fish.velocity(i) });
+});
+// the steering kernel reads seen.$[k] and writes only fish.device.$[i]
+```
+
+- Two dispatches in one compute pass run in order, so the copy is whole before steering starts.
+- The copy holds only what neighbours read. In the fish tank, the [neighbour grid](/kit/grid/)'s sort writes it, in sorted order.
+
+## Modules that read a table
+
+A module that reads rows takes getters in its options, such as the table's `gpu` members. The module receives no table handle, and its factory defines shaders that call those getters:
+
+```ts twoslash
+// @errors: 2322
+import { d, tgpu, type TgpuRoot } from 'typegpu';
+import { table } from '@typegpu/kit';
+const root = await tgpu.init();
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32, size: d.f32 },
+  device: { position: d.vec3f, velocity: d.vec3f },
+});
+const enemies = table.create(root, Enemy, { capacity: 4096 });
+// ---cut---
+interface TrailsOptions {
+  readonly capacity: number;
+  readonly alive: (i: number) => boolean;
+  readonly position: table.Getter<d.Vec3f>;
+  readonly width: table.Getter<d.F32>;
+}
+
+export function createTrails(root: TgpuRoot, options: TrailsOptions) {
+  const { capacity, alive, position, width } = options;
+
+  const step = tgpu.computeFn({
+    workgroupSize: [64],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= capacity || !alive(gid.x)) return;
+
+    const p = position(gid.x);
+    const w = width(gid.x);
+    // ..
+  });
+
+  return root.createComputePipeline({ compute: step });
+}
+
+const enemy = enemies.gpu;
+const trails = { ...enemies.live(), position: enemy.position };
+createTrails(root, { ...trails, width: enemy.size });
+createTrails(root, { ...trails, width: enemy.species }); // species is a u32
+```
+
+- `table.Getter` keeps a field's schema in its type, also through `pipe`. A `u32` field then can't pass for an `f32`, though both are numbers in TypeScript.
+- You can pass any shader function. `(i) => enemy.alive(i) && enemy.species(i) === BOSS` selects some rows.
+- `enemies.live()` returns the table's `capacity`, its `gpu.alive` and a `span` function. Spread them into options for the [neighbour grid](/kit/grid/), [live lists](/kit/live-lists/), [picker](/kit/picker/) or [state machines](/kit/machines/): `liveLists.create(root, { ...enemies.live(), draws })`. Each dispatches only up to the span.
+
+## Changes the GPU applies
+
+The CPU doesn't know a device field's value. To apply a relative change such as "take 5 damage", send a command to the kernel that owns the field. A host-only table holds the commands:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { table, type RowId } from '@typegpu/kit';
+const root = await tgpu.init();
+const Enemy = table.define('Enemy', {
+  host: { species: d.u32 },
+  device: { position: d.vec3f, health: d.f32 },
+});
+const enemies = table.create(root, Enemy, { capacity: 4096 });
+declare const id: RowId<typeof Enemy>;
+// ---cut---
+const Hits = table.define('Hits', { host: { victim: d.u32, amount: d.f32 } });
+const hits = table.create(root, Hits, { capacity: 256 });
+const enemy = enemies.gpu;
+const hit = hits.gpu;
+
+hits.add({ victim: id, amount: 5 }); // an enemy's id, stored as a u32
+// after the frame: hits.clear()
+
+// The kernel that owns `health`:
+const damage = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const i = gid.x;
+  if (!enemy.alive(i)) return;
+
+  const row = enemy.device.$[i];
+  for (let h = d.u32(0); h < hit.span(); h++) {
+    if (hit.alive(h) && enemy.slotOf(hit.victim(h)) === i) row.health -= hit.amount(h);
+  }
+});
+```
+
+- Use one thread per row to scan the commands. A thread per command can lose an update when two commands hit the same row, and WGSL has no float atomics.
+- The kernel does rows × commands checks, which suits a few hundred commands per frame. For more, sort them by target or use fixed-point atomics.
+
+## Limits
+
+<Rules>
+
+- **Adding rows** Rows can't be added on the GPU; [particles](/kit/particles/) keep a ring of their own.
+- **Layout** No struct-of-arrays layout, and no packed fields such as rgba8 in a `u32`.
+- **Storage bindings** A table uses three of the eight storage bindings WebGPU guarantees per stage, for host rows, device rows and live bits.
+- **Id mask** `slotOf(id)` reads the id mask from the uniform the table binds for its span, so a shader that reads ids binds it too.
+- **Same names** Two definitions with one name and the same fields share their ids' type.
+- **Hooks** The instances renderer passes a whole row to each of an instance kind's hooks per vertex and per fragment. Prefer field getters in hot shader code to avoid unnecessary loads.
+
+</Rules>

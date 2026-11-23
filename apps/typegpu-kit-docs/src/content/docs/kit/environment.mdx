@@ -1,0 +1,231 @@
+---
+title: Environment light
+description: Reflections and soft light on every surface, from a panorama photo, six images or a sky.
+modules: [kit/environment]
+---
+
+import Environment from '../../../components/viz/Environment.astro';
+import Hidden from '../../../components/album/Hidden.astro';
+import Rules from '../../../components/site/Rules.astro';
+
+A [lighting](/kit/lighting/) lights a surface from its sun and a two-colour sky. A real surface takes light from everywhere around it. A mirror shows the sky and the ground, brushed metal shows a blur of them, and a matte surface sums a whole hemisphere. Reading a panorama in every direction for every pixel is too slow for a frame, so an environment bakes it first. A bake turns the panorama into a cube of reflections at six roughnesses and nine numbers of diffuse light. Shading then reads one texel and sums nine terms.
+
+<Hidden card="hex-isle">
+  <Environment />
+</Hidden>
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { cameras, frames, passes, targets } from '@typegpu/kit';
+import * as web from '@typegpu/kit/web';
+const root = await tgpu.init();
+const surface = web.surface(root, document.querySelector('canvas')!);
+const view = cameras.orbit(root, { size: surface, target: [0, 0, 0], distance: 6 });
+const screen = targets.create(root, surface, {
+  hdr: { format: 'rgba16float' },
+  depth: { format: 'depth24plus' },
+});
+// ---cut---
+import { environment, lighting, images } from '@typegpu/kit';
+
+const file = await fetch('/skies/meadow.hdr');
+const meadow = images.create(root, images.decodeHdr(new Uint8Array(await file.arrayBuffer())));
+
+const sky = environment.create(root, { settings: { blur: 0.1 } });
+const panorama = sky.add(meadow);
+await sky.initAsync();
+
+const light = lighting.create(root, { shading: { ambient: sky.ambient } });
+const scene = passes
+  .create(root, screen, { hdr: passes.color, depth: passes.depth })
+  .pipe(view.inject())
+  .pipe(light.inject());
+// After the opaque drawings: it fills only the pixels they leave
+const behind = scene.add(sky.background());
+
+let baked = false;
+frames.animate(
+  frames.create(root, (frame) => {
+    if (!baked) sky.bake(frame, panorama);
+    baked = true;
+    scene.record(frame, [behind]); // after the scene's opaque drawings
+  }),
+);
+```
+
+`sky.ambient` is the lighting's `ambient` hook. It replaces the sky gradient's light with the environment's diffuse light and reflections, at each material's roughness. The sun still lights and shadows as before.
+
+`bake` records one compute pass. Shading in later passes of the frame reads the new light. The pass runs:
+
+1. the source once per texel of the six faces at `size`, writing the mirror level of both cubes;
+2. a dispatch per radiance mip level, each texel the weighted average of the four it covers in the level above, down to 1 texel;
+3. a dispatch per rougher reflection level, each texel `samples` reads of the radiance;
+4. one workgroup of 64 threads that sums the nine harmonics from the radiance level of at most 32 texels a side.
+
+## Sources
+
+`add` reads one of three sources and builds the kernel that bakes it. Add every source while loading, then bake the one to show:
+
+- A 2D texture is a panorama in equirectangular projection, such as a decoded `.hdr` file from [`images`](/kit/images/#hdr-images). It has +Y up, its centre facing +X and its left quarter facing −Z, as Blender writes it.
+- A texture of six layers is a cube map in WebGPU's face order.
+- A `'use gpu'` function from a direction to its light is a sky you write. Pipe its fills in, as `tgpu.fn(f).pipe(light.inject())` does for one that reads the lighting.
+
+A panorama needs one bake. Bake a function again when what it reads changes.
+
+`environment.gradient` is the lighting's sky gradient as a source. Baked, it lights a matte surface as `shading.hemisphere` does, as long as `skyBottom` is at least a fifth of `skyTop`. It also adds reflections of the same colours.
+
+## Daylight
+
+`environment.daylight` is a sky from the lighting's sun. It scatters sunlight through air and ozone, so the sky is blue by day, bright at the horizon and red at sunset. The lighting's sky gradient adds to it at every hour and is all that remains once the sun sets. Keep `skyTop` and `skyBottom` at a night sky's dark colours, or they tint the day:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { clock, environment, lighting, type Frame } from '@typegpu/kit';
+const root = await tgpu.init();
+const sky = environment.create(root);
+// ---cut---
+const light = lighting.create(root, { shading: { ambient: sky.ambient } });
+const daylight = sky.add(tgpu.fn(environment.daylight).pipe(light.inject()));
+
+let moved = true;
+const place = (hour: number) => {
+  const sun = environment.sunAt(hour, 0.7, 0.3); // 40° north in early summer
+  const color = environment.sunColor(sun);
+  light.settings.patch({ sunDirection: sun, sunColor: color });
+  moved = true;
+};
+
+const rebake = clock.cadence({ hz: 15 });
+const frame = (frame: Frame) => {
+  if (moved && rebake.due(frame.dt)) {
+    sky.bake(frame, daylight);
+    moved = false;
+  }
+};
+```
+
+<Rules>
+
+- **Sun direction** `environment.sunAt(hour, latitude, declination)` points to the sun at an hour of local solar time. The latitude and the sun's declination are in radians. The declination is about 0.41 at midsummer in the north and 0 at the equinoxes. +X is east, +Y up and +Z south. Turn the compass with `environment.turn`.
+- **Sun colour** `sunIntensity` is the sun above the air. `environment.sunColor(direction)` runs on the CPU and returns how much of it reaches the ground, reddened near the horizon and 0 below it. Set the lighting's `sunColor` to it, so the sun lights surfaces as the sky shows it.
+- **Exposure** The sky's brightness follows `sunIntensity`. The air dims a low sun far more than the sky around it, so expose for `sunColor` times `sunIntensity`.
+- **Bake cost** Baked, `daylight` runs per texel of the six faces: 16 steps along the view ray, each with 6 steps towards the sun. Bake it when the sun has moved, at a capped rate as above, never every frame.
+- **Sun disc** `environment.sunDisc(direction, brightness)` returns the sun's disc. Add it to a background of your own, [below](#background).
+
+</Rules>
+
+## Settings
+
+`sky.settings` holds `intensity`, `rotation` and `blur`. Shading reads them at every lookup, so changing one needs no bake.
+
+- `intensity` scales the diffuse light, the reflections and the background.
+- `rotation` turns the environment about the vertical, in radians, carrying +X towards +Z. Turn the lighting's sun with it: `environment.turn(direction, rotation)` turns a direction the same way, on the CPU or the GPU.
+- `blur` is the roughness the background draws at, from 0 for the sharp panorama to 1.
+
+## Shading with it
+
+`sky.ambient` carries its own fills, so a lighting that takes it needs nothing more. Your own shaders read the environment through these functions, filled with `sky.inject()`:
+
+- `environment.reflection(direction, roughness)` returns the reflection along `direction` at `roughness`.
+- `environment.irradiance(normal)` returns the diffuse light on a surface facing `normal`. A white matte surface under a uniform environment of radiance 1 gets 1.
+
+`environment.occluded(material, point, visibility)` is the ambient light `sky.ambient` gives, darkened by a `visibility` from 0 to 1 on top of the material's `occlusion`. Rough reflections dim as diffuse light does. Sharp ones dim less where the surface faces the eye and more at grazing angles. Give it [ambient occlusion](/kit/ao/), recorded before the passes that shade. The scene's description takes `shared: { ao: occlusion.part }`, which fills `ao.at`. The hook then pipes only the environment's fills:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { environment, lighting, ao, shading } from '@typegpu/kit';
+const root = await tgpu.init();
+const sky = environment.create(root);
+// ---cut---
+const shaded = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return environment.occluded(material, point, ao.at(point.position));
+};
+const light = lighting.create(root, {
+  shading: { ambient: tgpu.fn(shaded).pipe(sky.inject()) },
+});
+```
+
+Reflections follow the lighting's `skyReflection`, as `shading.hemisphere`'s do.
+
+## Background
+
+`sky.background()` is a drawing that fills every pixel left uncovered with the environment at `blur`, through the scene's camera. It lies on the far plane and tests depth without writing it, so add it after the opaque drawings and before translucent ones. Covered pixels skip its shader.
+
+- It writes only colour. Every other output keeps its clear value, as if nothing drew there. [TAA](/kit/taa/) then finds the sky's motion from depth and the camera.
+- Depth must clear to 1, as it does by default, or to 0 for [reversed depth](/kit/passes/#reversed-depth).
+- `{ label }` names its pipelines in GPU captures.
+
+For a background of your own, pass a `'use gpu'` function from a direction to its light to `environment.background`, with its fills piped in. Here `withSun` adds the sun's disc to `environment.backdrop`:
+
+```ts twoslash
+import { d, tgpu } from 'typegpu';
+import { environment, lighting } from '@typegpu/kit';
+const root = await tgpu.init();
+const sky = environment.create(root);
+const light = lighting.create(root, { shading: { ambient: sky.ambient } });
+// ---cut---
+const withSun = (direction: d.v3f) => {
+  'use gpu';
+  return environment.backdrop(direction) + environment.sunDisc(direction, 40);
+};
+const behind = environment.background(tgpu.fn(withSun).pipe(sky.inject()).pipe(light.inject()), {
+  label: 'sky',
+});
+```
+
+`environment.stars({ cells, chance, size })` returns a function that finds the star in a direction. Each cell of a cube around the eye holds at most one star, a soft disc of radius `size` in pixels. It gives the disc's coverage and three random values fixed per star, to shape its brightness, tint or twinkle. Call it only in a fragment shader, such as a background's, since the disc reads derivatives:
+
+```ts twoslash
+import { d, std } from 'typegpu';
+import { environment } from '@typegpu/kit';
+// ---cut---
+const starAt = environment.stars({ cells: 96, chance: 0.2 });
+
+const night = environment.background((direction) => {
+  'use gpu';
+  const star = starAt(direction);
+  const tint = std.mix(d.vec3f(1, 0.85, 0.7), d.vec3f(0.7, 0.8, 1), star.seed.y);
+  return d.vec3f(0.002, 0.003, 0.01) + tint * (std.pow(star.seed.x, 6) * star.disc);
+});
+```
+
+## A sun in a panorama
+
+A photographed sun is far brighter than its sky. Baked into an environment, it gives a mirror its glint but casts no shadow. Nine numbers can't hold so small a source, so its diffuse light rings, too bright in some directions and too dark in others. `environment.clip` lowers the panorama's brightest texels and returns the light it took from the strongest source, in the lighting's units. Give that back as the lighting's sun, with its shadow:
+
+```ts twoslash
+import { tgpu } from 'typegpu';
+import { environment, lighting, images } from '@typegpu/kit';
+const root = await tgpu.init();
+const sky = environment.create(root);
+declare const meadow: images.HdrImage;
+// ---cut---
+const { image, direction, color, intensity } = environment.clip(meadow);
+const panorama = sky.add(images.create(root, image));
+const light = lighting.create(root, {
+  shading: { ambient: sky.ambient },
+  settings: { sunDirection: direction, sunColor: color, sunIntensity: intensity },
+});
+```
+
+- `clip(image, ceiling)` lowers every channel above `ceiling`, 30 by default, and takes what was above it. Clipped texels within 20° of a brighter one count as one source.
+- `direction` is in the panorama's frame. Turn it with `environment.turn(d.vec3f(...direction), rotation)`.
+- A panorama with two light sources of about equal light, such as two softboxes, gives back one of them. The other's clipped light is lost.
+
+## Tearing down
+
+`sky.destroy()` frees both cubes and the harmonics buffer. The textures you added stay yours.
+
+## Limits
+
+<Rules>
+
+- **One pass** A bake runs in one compute pass and can't be split across frames. Re-bake a moving sky at a capped rate.
+- **Distance** Reflections come from infinitely far away. They don't move as a surface moves, and they don't show the scene itself.
+- **Diffuse detail** Nine numbers of diffuse light hold only broad changes. A small, bright source rings; clip it and light with the sun.
+- **One per pipeline** Each pipeline reads one environment. Two environments in one frame need two sets of pipelines.
+- **Memory** Each environment holds two cubes of 8 bytes a texel with their mips: about 8 MB at size 256, four times that at each doubling, and 537 MB at 2048. A bake's time grows with the texels too.
+- **Small cubes** The reflection cube has six roughness levels from size 256. Below that it has fewer, so the roughest keeps 8 texels a side.
+
+</Rules>

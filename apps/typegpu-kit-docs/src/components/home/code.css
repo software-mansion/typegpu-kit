@@ -1,0 +1,65 @@
+/* The home page's code, as code.ts renders it: highlighted, with numbers to drag. */
+
+.home-code .k {
+  color: var(--f-injects);
+}
+
+.home-code .f {
+  color: var(--f-records);
+}
+
+.home-code .s,
+.home-code .n {
+  color: var(--f-needs);
+}
+
+.home-code .c {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.home-code .p {
+  color: var(--muted);
+}
+
+.home-code .y {
+  color: var(--accent-high);
+}
+
+/* A number to drag, as the figures' (viz.css), set in the line of code. */
+.home-code .knob {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.home-code .knob .viz-range {
+  display: inline;
+  min-height: 0;
+}
+
+.home-code .knob input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* Without the GPU a number is only a number. */
+:root:not(.home-staged) .home-code .knob {
+  cursor: auto;
+  user-select: text;
+}
+
+:root:not(.home-staged) .home-code .knob input {
+  display: none;
+}
+
+:root:not(.home-staged) .home-code .knob output {
+  border-bottom: 0;
+  background: none;
+  color: var(--f-needs);
+}

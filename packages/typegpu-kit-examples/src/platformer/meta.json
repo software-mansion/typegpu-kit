@@ -1,0 +1,11 @@
+{
+  "title": "Platformer",
+  "category": "games",
+  "rarity": "rare",
+  "description": "Pixel art printed on paper cards under a desk lamp. Each card casts a soft shadow on the ones behind it, and its cut edges catch the light. The art moves by whole texels, so it stays crisp. The hero's physics runs on the CPU, while the critters move on the GPU, which counts every stomp and every hit on the hero. Run, jump and grab the coins.",
+  "line": "A pixel-art platformer printed on paper cards under a desk lamp.",
+  "order": 28,
+  "hint": "\u2190 \u2192 or A D move \u00b7 space, \u2191 or W jumps, longer when held",
+  "card": { "demo": [2.2] },
+  "poster": { "seconds": 2.62 }
+}

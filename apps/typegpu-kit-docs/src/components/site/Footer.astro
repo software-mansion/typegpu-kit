@@ -1,0 +1,245 @@
+---
+// A page ends with the pages beside it in its own group: the one before by its name, the one
+// after with what it is about
+import mark from '../../assets/software-mansion-mark.svg?raw';
+import { neighbours } from './nav.ts';
+import { loadIndex } from './sidebar.ts';
+import { pageHref, slugOf } from './urls.ts';
+
+const { groups, pages } = await loadIndex();
+const { prev, next } = neighbours(groups, pages, slugOf(Astro.url.pathname));
+---
+
+{
+  (prev || next) && (
+    <footer class="pages print:hidden">
+      {prev && (
+        <a href={pageHref(prev.page)} rel="prev">
+          <span class="kicker">{prev.kicker}</span>
+          <span class="title">{prev.label}</span>
+        </a>
+      )}
+      {next && (
+        <a href={pageHref(next.page)} rel="next">
+          <span class="kicker">{next.kicker}</span>
+          <span class="title">{next.label}</span>
+          {next.description && <span class="about">{next.description}</span>}
+        </a>
+      )}
+    </footer>
+  )
+}
+
+<p class="legal">
+  <a class="mark" href="https://swmansion.com/" aria-label="Software Mansion"
+    ><Fragment set:html={mark} /></a
+  >
+  <span>
+    &copy; <a href="https://swmansion.com/">Software Mansion</a>{' '}
+    {new Date().getFullYear()}. All trademarks and copyrights belong to their respective owners.
+    Read about our <a href="https://swmansion.com/privacy/policy/">Privacy Policy</a>.
+  </span>
+  <button type="button" class="cards" data-cards-toggle hidden></button>
+</p>
+
+<canvas class="horizon print:hidden" aria-hidden="true"></canvas>
+
+<script>
+  import { cardsOn, setCards } from '../album/cards.ts';
+  import { clamp } from '../home/geometry.ts';
+  import { paint, rampOf } from './dither.ts';
+
+  // The reader's switch for the cards hidden in the docs, where WebGPU runs
+  const toggle = document.querySelector<HTMLButtonElement>('[data-cards-toggle]');
+  if (toggle && navigator.gpu) {
+    const show = () => {
+      toggle.hidden = document.documentElement.hasAttribute('data-cards-failed');
+      toggle.textContent = `Hidden cards: ${cardsOn() ? 'on' : 'off'}`;
+      toggle.setAttribute('aria-pressed', String(cardsOn()));
+    };
+    show();
+    toggle.addEventListener('click', () => setCards(!cardsOn()));
+    // As the cards are also turned off from a pull's welcome, or where the GPU fails
+    new MutationObserver(show).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-cards', 'data-cards-failed'],
+    });
+  }
+
+  const horizon = document.querySelector<HTMLCanvasElement>('canvas.horizon');
+  if (horizon) {
+    const ramp = rampOf(horizon);
+    const still = matchMedia('(prefers-reduced-motion: reduce)');
+
+    // A pool of light, widest at the foot, a few specks of ice where it is brightest. It leans
+    // toward the pointer while the pointer is near it
+    let middle = 0.5;
+    let target = 0.5;
+    let frame = 0;
+    const draw = () =>
+      paint(
+        horizon,
+        (x, y) => {
+          const across = (x - middle) / 0.36;
+          return 0.86 * Math.exp(-across * across) * (1 - (2 * x - 1) ** 8) * y ** 1.8;
+        },
+        { ramp },
+      );
+    const step = () => {
+      frame = 0;
+      middle += (target - middle) * (still.matches ? 1 : 0.08);
+      draw();
+      if (Math.abs(target - middle) > 0.002) frame = requestAnimationFrame(step);
+    };
+
+    addEventListener('pointermove', (event) => {
+      const box = horizon.getBoundingClientRect();
+      const near = event.clientY > box.top - 240 && event.clientY < box.bottom + 40;
+      const x = (event.clientX - box.left) / box.width;
+      target = near ? 0.5 + (clamp(x) - 0.5) * 0.6 : 0.5;
+      if (!frame && Math.abs(target - middle) > 0.002) frame = requestAnimationFrame(step);
+    });
+    new ResizeObserver(draw).observe(horizon);
+  }
+</script>
+
+<script is:inline id="typegpu-kit-land">
+  // Scroll to the anchor before first paint; Chrome otherwise paints the page top first
+  // Preserve browser-restored positions on reload and back navigation
+  {
+    const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (target && performance.getEntriesByType('navigation')[0]?.type === 'navigate') {
+      target.scrollIntoView();
+    }
+  }
+</script>
+
+<style>
+  .pages {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+    gap: var(--s-5);
+    margin-top: var(--s-8);
+    padding-top: var(--s-5);
+    border-top: 1px solid var(--rule);
+  }
+
+  .legal {
+    display: flex;
+    gap: var(--s-4);
+    align-items: center;
+    margin: var(--s-7) 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .legal a {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--rule-strong);
+  }
+
+  .legal a:hover {
+    color: var(--text);
+  }
+
+  .legal .cards {
+    flex: none;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--rule-strong);
+    cursor: pointer;
+  }
+
+  .legal .cards:hover {
+    color: var(--text);
+  }
+
+  .legal .mark {
+    flex: none;
+    color: var(--text-2);
+  }
+
+  .legal .mark :global(svg) {
+    display: block;
+    width: 44px;
+    height: auto;
+  }
+
+  .horizon {
+    display: block;
+    width: 100%;
+    height: 160px;
+    margin-top: var(--s-7);
+    /* Down to the page's foot, over the padding Starlight leaves under main. */
+    margin-bottom: -64px;
+    image-rendering: pixelated;
+  }
+
+  .pages a {
+    display: grid;
+    gap: var(--s-1);
+    padding: var(--s-3) var(--s-4);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  [rel='next'] {
+    grid-column: 2;
+    border-color: var(--rule-strong);
+  }
+
+  .kicker {
+    color: var(--muted);
+    font: 500 11px/20px var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .title {
+    font: 500 17px/1.4 var(--font-sans);
+  }
+
+  [rel='prev'] .title {
+    color: var(--text-2);
+    font-size: 15px;
+  }
+
+  [rel='next'] .title::after {
+    content: ' →';
+    color: var(--muted);
+  }
+
+  .about {
+    color: var(--text-2);
+    font-size: 14.5px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 40rem) {
+    .pages {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    [rel='next'] {
+      grid-column: 1;
+      grid-row: 1;
+    }
+  }
+
+  .pages a:hover {
+    border-color: var(--accent);
+    color: var(--accent-high);
+  }
+</style>

@@ -1,0 +1,12 @@
+{
+  "title": "Robot arm",
+  "category": "animation",
+  "rarity": "uncommon",
+  "description": "A toy robot arm on a workbench. Tap a block and it picks it up, then tap the bench or another block to put it down or stack it. Leave it alone and it sorts the painted blocks into a tower per colour, then scatters a few and starts again. Its joints are solved with cyclic coordinate descent using wgpu-matrix, and a desk lamp lights the dim workshop with soft-edged shadows.",
+  "line": "A toy robot arm stacking painted blocks by colour. Tap one to move it.",
+  "order": 24,
+  "hint": "tap a block, then tap where it goes \u00b7 point to steer the arm \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "seconds": 101.6
+  }
+}

@@ -1,0 +1,120 @@
+---
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="domino-links">
+  <p class="viz-title">Eleven dominoes linked by index, with a fork at 4</p>
+  <svg viewBox="0 0 640 230" role="img" aria-label="Eleven linked dominoes seen from above, with a two-way fork"></svg>
+  <p class="viz-status" aria-live="polite"></p>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="domino" label="domino" min={0} max={10} value={4} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Pick a domino to see its <code>prev</code> and <code>next</code> links, with arrows between list indices. Domino 4 pushes 5 and 8 at the same depth, splitting the wave.
+  </figcaption>
+</figure>
+
+<script>
+  import { NONE, SPACING, THICKNESS, WIDTH } from 'typegpu-kit-examples/dominoes/layout.ts';
+  import { each, slider, statusLine } from './figure.ts';
+  import { stipple, fitWidth, svg, text } from './svg.ts';
+
+  interface Entry {
+    readonly x: number;
+    readonly y: number;
+    readonly prev: number;
+    readonly next: readonly [number, number];
+    readonly depth: number;
+  }
+
+  /** Where each stands, in spacings: a lead of five, then two lines from the fork at 4. */
+  const AT: readonly (readonly [number, number])[] = [
+    [0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+    [4.95, -0.42], [5.85, -0.95], [6.75, -1.48],
+    [4.95, 0.42], [5.85, 0.95], [6.75, 1.48],
+  ];
+  const ENTRIES: readonly Entry[] = AT.map(([x, y], i) => {
+    const lead = i <= 4;
+    const first = i === 5 || i === 8;
+    const last = i === 7 || i === 10;
+    return {
+      x,
+      y,
+      prev: i === 0 ? NONE : first ? 4 : i - 1,
+      next: i === 4 ? [5, 8] : last ? [NONE, NONE] : [i + 1, NONE],
+      depth: lead ? i : 5 + ((i - 5) % 3),
+    };
+  });
+
+  const named = (i: number) => (i === NONE ? 'NONE' : String(i));
+
+  each('domino-links', (root) => {
+    const figure = root.querySelector('svg')!;
+    const status = statusLine(root);
+    const chosen = slider(root, 'domino', () => draw());
+
+    const draw = fitWidth(
+      figure,
+      (width) => {
+        const side = 28;
+        const unit = Math.min((width - side * 2) / 6.75, 68);
+        const height = Math.round(unit * 3.74 + 44);
+        const left = (width - unit * 6.75) / 2;
+        const middle = height / 2;
+        const place = (entry: Entry) => [left + entry.x * unit, middle + entry.y * unit] as const;
+        const pick = chosen.valueAsNumber;
+        const self = ENTRIES[pick];
+
+        ENTRIES.forEach((entry, i) => {
+          for (const to of entry.next) {
+            if (to === NONE) continue;
+            const [x0, y0] = place(entry);
+            const [x1, y1] = place(ENTRIES[to]);
+            const length = Math.hypot(x1 - x0, y1 - y0);
+            const ux = (x1 - x0) / length;
+            const uy = (y1 - y0) / length;
+            const gap = Math.min(unit * 0.2, 12);
+            const [ax, ay] = [x0 + ux * gap, y0 + uy * gap];
+            const [bx, by] = [x1 - ux * gap, y1 - uy * gap];
+            const colour =
+              i === pick ? 'var(--viz-c)' : to === pick ? 'var(--viz-b)' : 'var(--viz-line)';
+            const head = 5;
+            svg('path', {
+              d: `M${ax},${ay}L${bx},${by}M${bx - ux * head - uy * head * 0.7},${by - uy * head + ux * head * 0.7}L${bx},${by}L${bx - ux * head + uy * head * 0.7},${by - uy * head - ux * head * 0.7}`,
+              fill: 'none', stroke: colour, 'stroke-width': colour === 'var(--viz-line)' ? 1 : 2,
+            }, figure);
+          }
+        });
+
+        ENTRIES.forEach((entry, i) => {
+          const [x, y] = place(entry);
+          const from = entry.prev === NONE ? entry : ENTRIES[entry.prev];
+          const to = entry.prev === NONE ? ENTRIES[entry.next[0]] : entry;
+          const angle = (Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI;
+          const along = (THICKNESS / SPACING) * unit;
+          const across = (WIDTH / SPACING) * unit;
+          const role =
+            i === pick ? 'self' : i === self.prev ? 'prev' : self.next.includes(i) ? 'next' : 'other';
+          const colour = role === 'self' ? 'var(--viz-accent)' : role === 'prev' ? 'var(--viz-b)' : role === 'next' ? 'var(--viz-c)' : 'var(--viz-muted)';
+          const fill = stipple(figure, colour, role === 'other' ? 0.125 : role === 'prev' ? 0.375 : 0.625);
+          svg('rect', {
+            x: -along / 2, y: -across / 2, width: along, height: across, rx: 1.5,
+            transform: `translate(${x},${y}) rotate(${angle})`,
+            fill, stroke: colour,
+          }, figure);
+          const below = entry.y > 0.2;
+          text(figure, x, y + (below ? across / 2 + 15 : -across / 2 - 7), String(i), {
+            'text-anchor': 'middle', fill: colour,
+          });
+        });
+
+        const next = `[${self.next.map(named).join(', ')}]`;
+        status.textContent = `Domino ${pick}. Depth ${self.depth}, prev ${named(self.prev)}, next ${next}.`;
+        return height;
+      },
+      320,
+    );
+
+    draw();
+  });
+</script>

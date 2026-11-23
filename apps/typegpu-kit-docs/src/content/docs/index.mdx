@@ -1,0 +1,42 @@
+---
+title: TypeGPU Kit
+description: Building blocks for TypeGPU. Interchangeable by design. Use what you want and fill the gaps with your own code.
+template: splash
+hero:
+  tagline: 'Building blocks for TypeGPU.<br />Interchangeable by design. Use what you want and fill the gaps with your own code.'
+  actions:
+    - text: Get started
+      link: /getting-started/
+      variant: primary
+    - text: Examples
+      link: /examples/
+      variant: secondary
+---
+
+import Highlights from '../../components/site/Highlights.astro';
+import ModuleMap from '../../components/site/ModuleMap.astro';
+import TakeItApart from '../../components/home/TakeItApart.astro';
+import YourRule from '../../components/home/YourRule.astro';
+import SoftwareMansion from '../../components/home/SoftwareMansion.astro';
+
+<TakeItApart />
+
+## What it is
+
+TypeGPU Kit provides GPU modules in one package, `@typegpu/kit`. It uses [TypeGPU](https://typegpu.com) in WebGPU browsers and React Native. Each module borrows your root and records into the passes you give it. You own the loop, frame and canvas. [How the kit works](/concepts/how-the-kit-works/) compares it with plain WebGPU and TypeGPU.
+
+<YourRule />
+
+## Modules
+
+<ModuleMap />
+
+## Examples
+
+<Highlights>
+
+[Every example](/examples/) opens full-screen and includes a GPU debug panel.
+
+</Highlights>
+
+<SoftwareMansion />

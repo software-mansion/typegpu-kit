@@ -1,0 +1,1528 @@
+---
+title: Domino run
+description: Build 1 474 dominoes on a walnut floor in low sunlight and simulate their fall on the GPU from the one you tap.
+---
+
+import { FileTree, Steps } from '@astrojs/starlight/components';
+import Hidden from '../../../components/album/Hidden.astro';
+import Install from '../../../components/site/Install.astro';
+import DominoChain from '../../../components/viz/DominoChain.astro';
+import DominoCount from '../../../components/viz/DominoCount.astro';
+import DominoLean from '../../../components/viz/DominoLean.astro';
+import DominoLinks from '../../../components/viz/DominoLinks.astro';
+import DominoPick from '../../../components/viz/DominoPick.astro';
+import DominoRewind from '../../../components/viz/DominoRewind.astro';
+import DominoStage from '../../../components/viz/DominoStage.astro';
+import ExampleFigure from '../../../components/viz/ExampleFigure.astro';
+import LitSphere from '../../../components/viz/LitSphere.astro';
+import OrbitCamera from '../../../components/viz/OrbitCamera.astro';
+
+Build the [domino run example](/examples/dominoes/) with 1 474 dominoes on a walnut floor in low sunlight. The run follows an S-bend through three forks into two spirals. Tap a domino to start the fall there.
+
+[Slime mould](/tutorials/slime-mould/) introduces roots, surfaces, frames, passes, shaders, uniforms, buffers, kernels and bloom in 2D. Here you add a camera, depth, meshes, instances, light and shadow to make a 3D scene. Kernels simulate the fall and write directly into the buffers used for drawing. A picker finds the domino under your finger.
+
+:::tip[Follow along]
+Work in the project from [Getting started](/getting-started/#host-a-scene), and put each file beside `index.ts` in `src/`. Each block shows what a step adds. The finished files are one link away, behind the Source link on [the example](/examples/dominoes/).
+:::
+
+<Steps>
+
+1.  **Point a camera at the floor.**
+
+    Use centimetres for world units, with `y` pointing up. A **camera** defines the eye position and viewing direction. Its **projection** maps world positions onto the screen, making distant objects smaller. An [orbit camera](/kit/cameras/) circles a `target` at `distance`. Its `yaw` turns around the target and its `pitch` tilts above the floor, both in radians. Dragging changes the orbit, and the camera eases toward the chosen values.
+
+    <OrbitCamera />
+
+    **Depth** records the distance to the nearest drawn surface at each pixel. The GPU skips a pixel if a nearer surface is already there. A domino therefore hides the floor behind it regardless of draw order.
+
+    - Draw the scene into [targets](/kit/targets/), textures that the scene owns. Draw only the final pass into the canvas.
+    - Give `scene` and `depth` four samples per pixel to smooth edges. These [transient targets](/kit/targets/#transient-targets) clear when a pass begins. When the pass ends, `resolve` averages the colour samples into `hdr`. Then the transient contents are discarded.
+    - The `hdr` format holds brightness above white, such as sunlight on lacquer. The [final pass](/kit/finish/) maps it into the screen's range with the `tone.aces` filmic tone curve. `vignette` darkens the corners.
+    - A [pass description](/kit/passes/) defines the scene's outputs and clears them to the room colour. Use `pipe(view.inject())` to give the camera to each shader drawn in the pass.
+    - Place the camera low over the floor, 1.85 m from the lead. Set its depth range from `near`, 2 cm, to `far`, 40 m. The pitch and distance ranges limit dragging and zooming.
+    - [Free the textures and non-uniform buffers the scene makes](/concepts/modules/#freeing-what-a-scene-made) in `destroy()`. Leave uniforms, samplers, bind groups and pipelines to the garbage collector.
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-1.ts
+    // ---cut---
+    import { cameras, passes, targets, type Surface } from '@typegpu/kit';
+    import { finish, tone } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+
+    /** Linear colour of the dim room. The floor fades into it. */
+    const ROOM = [0.07, 0.05, 0.035] as const;
+
+    export async function createScene(root: TgpuRoot, surface: Surface) {
+      const screen = targets.create(root, surface, {
+        scene: { format: 'rgba16float', samples: 4 },
+        depth: { format: 'depth24plus', samples: 4 },
+        hdr: { format: 'rgba16float', sampled: true },
+      });
+      const view = cameras.orbit(root, {
+        size: surface,
+        target: [0, 0, 45],
+        distance: 185,
+        yaw: -0.3,
+        pitch: 0.38,
+        fov: 0.6,
+        near: 2,
+        far: 4000,
+        pitchRange: [0.08, 1.4],
+        distanceRange: [40, 900],
+      });
+      // ---cut-after---
+      return {
+        frame() {},
+        destroy() {
+          screen.destroy();
+        },
+      };
+    }
+    ```
+
+    Below the camera, describe the scene's pass and the final pass that draws `hdr` onto the canvas:
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-1b.ts
+    import { cameras, passes, targets, type Surface } from '@typegpu/kit';
+    import { finish, tone } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    const ROOM = [0.07, 0.05, 0.035] as const;
+    export async function createScene(root: TgpuRoot, surface: Surface) {
+      const screen = targets.create(root, surface, {
+        scene: { format: 'rgba16float', samples: 4 },
+        depth: { format: 'depth24plus', samples: 4 },
+        hdr: { format: 'rgba16float', sampled: true },
+      });
+      const view = cameras.orbit(root, { size: surface, target: [0, 0, 45], distance: 185 });
+      // ---cut---
+      const scene = passes
+        .create(
+          root,
+          screen,
+          { scene: passes.color, depth: passes.depth },
+          { resolve: { scene: 'hdr' }, clear: [...ROOM, 1] },
+        )
+        .pipe(view.inject());
+      const final = finish.create(root, {
+        format: surface.format,
+        source: () => screen.textures.hdr,
+        tone: tone.aces,
+        settings: { exposure: 0.85, vignette: 0.45 },
+      });
+      // ---cut-after---
+      return {
+        frame() {},
+        destroy() {
+          screen.destroy();
+        },
+      };
+    }
+    ```
+
+    Each frame, ease the camera, fit the targets to the canvas, record the scene pass and draw the final pass onto the canvas. Before the first frame, [`pipelines.compile([scene, final])`](/kit/pipelines/) compiles the scene and final pass. Return `view` so `index.ts` can turn the camera, and free the targets in `destroy()`.
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-2.ts
+    import { cameras, passes, pipelines, targets } from '@typegpu/kit';
+    import { finish, tone, type Frame, type Surface } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    export async function createScene(root: TgpuRoot, surface: Surface) {
+      const screen = targets.create(root, surface, {
+        scene: { format: 'rgba16float', samples: 4 },
+        depth: { format: 'depth24plus', samples: 4 },
+        hdr: { format: 'rgba16float', sampled: true },
+      });
+      const view = cameras.orbit(root, { size: surface, target: [0, 0, 45], distance: 185 });
+      const scene = passes
+        .create(
+          root,
+          screen,
+          { scene: passes.color, depth: passes.depth },
+          {
+            resolve: { scene: 'hdr' },
+            clear: [0.07, 0.05, 0.035, 1],
+          },
+        )
+        .pipe(view.inject());
+      const final = finish.create(root, {
+        format: surface.format,
+        source: () => screen.textures.hdr,
+        tone: tone.aces,
+        settings: { exposure: 0.85, vignette: 0.45 },
+      });
+      // ---cut---
+      await pipelines.compile([scene, final]);
+
+      return {
+        view,
+
+        frame(frame: Frame) {
+          view.update(frame.dt);
+          screen.fit();
+
+          const pass = scene.begin(frame);
+          pass.end();
+
+          final.record(frame, surface.view(frame));
+        },
+
+        destroy() {
+          screen.destroy();
+        },
+      };
+    }
+    ```
+
+    In `index.ts`, host the scene and create `web.orbitControls` inside `attach` to turn the camera when you drag. The controls are destroyed with the scene.
+
+    ```ts twoslash title="index.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/index-tutorial-1.ts
+    // ---cut---
+    import * as web from '@typegpu/kit/web';
+    import { createScene } from './scene.ts';
+
+    const canvas = document.querySelector('canvas')!;
+    web.host(createScene, {
+      canvas,
+      attach: ({ scene }) => web.orbitControls(scene.view, canvas),
+    });
+    ```
+
+    The canvas shows only the room colour. You have a camera, but nothing to draw yet.
+
+2.  **Lay a walnut floor in the late sun.**
+
+    - A **mesh** is a surface made of triangles. Each corner is a **vertex** with a position, a **normal** that gives the surface direction, and UV coordinates that locate it on the surface. [`@typegpu/kit/geometry`](/kit/meshes/) creates planes, boxes and other shapes. A [mesh pool](/kit/mesh-pool/) stores all the scene's meshes in one pair of buffers.
+    - An **instance** is one copy of a mesh with its own position, rotation, scale and material. A [set of instances](/kit/instances/) has one table row per instance. Its **renderer** draws the set.
+    - A **material** defines how a surface reflects light. It gives the colour, roughness and whether the surface is metal. Roughness ranges from glassy to chalky.
+    - A **kind** adds fields to instance rows and functions to their shaders.
+
+    Create the floor as one plane, 40 m square. The kind's `material` function runs for every pixel the plane covers. It computes the wood colour from the pixel's world position, `point.position.xz`.
+
+    ```ts twoslash title="floor.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/floor-tutorial-1.ts
+    // ---cut---
+    import { meshes } from '@typegpu/kit/geometry';
+    import { instances, materials, type MeshPool } from '@typegpu/kit';
+    import { d, type TgpuRoot } from 'typegpu';
+    // ---cut-start---
+    declare const woodAt: (at: d.v2f) => d.v3f;
+    // ---cut-end---
+
+    const Floor = instances.define('Floor', {
+      material: (pixel) => {
+        'use gpu';
+        return materials.glossy(woodAt(pixel.point.position.xz), 0.78);
+      },
+    });
+
+    /** Lays a walnut floor 40 m square under the run. */
+    export function createFloor(root: TgpuRoot, pool: MeshPool) {
+      const boards = instances.create(root, pool, { kind: Floor, capacity: 1 });
+      boards.add(pool.add(meshes.plane({ width: 4000, depth: 4000 })), { position: [0, 0, -400] });
+      boards.flush();
+      return boards;
+    }
+    ```
+
+    `pool.add` stores a mesh in the pool. `boards.add` writes an instance row on the CPU, and `flush` uploads changed rows. `renderer()` creates a drawing. When you draw it in a pass, that pass's lighting shades it. You add that lighting next.
+
+    The boards are 16 cm by 1.8 m. Inside `woodAt`:
+
+    - Use `randf` from `@typegpu/noise` for each board's shade and joints. Seed it with the board's row and position along the row so every pixel on a board gets the same numbers.
+    - Use **noise** for the grain. `perlin2d.sample` returns a value from -1 to 1 that changes smoothly with position. Stretch low-frequency noise along the boards for the broad pattern. Use it to bend higher-frequency noise for the fine dark lines.
+    - Lines finer than a pixel shimmer when the camera moves. `std.fwidth(x)` measures how much `x` changes between nearby pixels. Fade the grain to its average when a pixel spans more than a line. `seam(at, width)` smooths the joints the same way.
+    - The floor darkens past 3.5 m from the run's middle.
+
+    ```ts twoslash title="floor.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/floor-tutorial-2.ts
+    import { srgbToLinear } from '@typegpu/color';
+    import { perlin2d, randf } from '@typegpu/noise';
+    import { d, std } from 'typegpu';
+    // ---cut---
+    /** A board's width and length, in centimetres. The boards run along z. */
+    const BOARD = d.vec2f(16, 180);
+    // ---cut-start---
+    const DARK = srgbToLinear(d.vec3f(0.2, 0.13, 0.085));
+    const LIGHT = srgbToLinear(d.vec3f(0.36, 0.24, 0.155));
+    const SEAM = srgbToLinear(d.vec3f(0.08, 0.05, 0.035));
+    const CENTER = d.vec2f(0, -80);
+    const FADE = d.vec2f(350, 1200);
+    declare const seam: (at: number, width: number) => number;
+    // ---cut-end---
+
+    const woodAt = (at: d.v2f) => {
+      'use gpu';
+      const across = at.x / BOARD.x;
+      const row = std.floor(across);
+      randf.seed(row);
+      // Offset joints between rows
+      const along = at.y / BOARD.y + randf.sample();
+      randf.seed2(d.vec2f(row, std.floor(along)));
+      const shade = randf.sample();
+      const phase = randf.sample() * 50;
+
+      const figure = perlin2d.sample(d.vec2f(at.x * 0.3, at.y * 0.008) + phase);
+      const lines = perlin2d.sample(d.vec2f(at.x * 1.1 + figure * 2, at.y * 0.02) + phase * 2);
+      const fine = std.pow(1 - std.abs(lines), 5);
+      const sharp = std.saturate(2 - std.fwidth(at.x) * 8);
+      const grain = std.mix(0.18, fine, sharp);
+
+      const tone = std.saturate(0.25 + shade * 0.45 + figure * 0.3);
+      const wood = std.mix(DARK, LIGHT, tone) * (1 - grain * 0.45);
+      const seams = std.max(seam(across, 0.012), seam(along, 0.003));
+      const far = std.smoothstep(FADE.x, FADE.y, std.distance(at, CENTER));
+      return std.mix(wood, SEAM, seams * 0.8) * (1 - far * 0.85);
+    };
+    ```
+
+    `srgbToLinear` converts a screen colour to linear light for shader calculations. Scaling the noise by `(0.3, 0.008)` makes it vary nearly 40 times faster across the boards than along them, producing long streaks.
+
+    [Lighting](/kit/lighting/) stores a sun direction and colour, plus sky light for shaded surfaces. A rough material spreads sunlight across a broad highlight. A smooth material concentrates it into a small bright highlight. Use `glossy` for plastic, paint and varnished wood.
+
+    <LitSphere />
+
+    {/* prettier-ignore */}
+    - Light values are linear. A sun intensity of 5.6 lights a white surface facing it to 5.6. The final pass maps that into the screen's range.
+    - `sunAt(degrees)` returns the direction toward a sun that many degrees above the horizon.
+    - The blue sky cools shadows. `skyBottom` represents light bounced off the floor and warms shaded sides. Fog fades distant surfaces into the room colour.
+    - `beneath(light.inject())` lights every drawing added to the scene. Create the lighting first and give it to the scene description.
+    - `scene.add` builds floor pipelines for the scene pass. Draw the result each frame.
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-3.ts
+    import { cameras, passes, targets, type Frame, type Surface } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    declare const root: TgpuRoot, surface: Surface, frame: Frame;
+    const screen = targets.create(root, surface, {
+      scene: { format: 'rgba16float', samples: 4 },
+      depth: { format: 'depth24plus', samples: 4 },
+      hdr: { format: 'rgba16float', sampled: true },
+    });
+    const view = cameras.orbit(root, { size: surface, target: [0, 0, 45], distance: 185 });
+    const ROOM = [0.07, 0.05, 0.035] as const;
+    // ---cut---
+    import { lighting, meshPool } from '@typegpu/kit';
+    import { createFloor } from './floor.ts';
+
+    /** Direction toward a sun `degrees` above the floor, to the left and behind the run. */
+    const sunAt = (degrees: number): [number, number, number] => {
+      const up = (degrees * Math.PI) / 180;
+      const around = 2.3;
+      return [Math.cos(up) * Math.cos(around), Math.sin(up), -Math.cos(up) * Math.sin(around)];
+    };
+
+    const LIGHT = {
+      sunDirection: sunAt(24),
+      sunColor: [1, 0.7, 0.4],
+      sunIntensity: 5.6,
+      skyTop: [0.19, 0.33, 0.78],
+      skyBottom: [0.2, 0.13, 0.07],
+      skyIntensity: 0.75,
+      skyReflection: 0.8,
+      fogColor: ROOM,
+      fogDensity: 0.0012,
+    } as const;
+
+    const light = lighting.create(root, { settings: LIGHT });
+    const scene = passes
+      // ---cut-start---
+      .create(
+        root,
+        screen,
+        { scene: passes.color, depth: passes.depth },
+        {
+          resolve: { scene: 'hdr' },
+          clear: [...ROOM, 1],
+        },
+      )
+      .pipe(view.inject())
+      // ---cut-end---
+      .beneath(light.inject());
+    const pool = meshPool.create(root, { capacity: 2 });
+    const floor = createFloor(root, pool);
+    const drawn = [scene.add(floor.renderer())];
+
+    // Inside frame(frame)
+    scene.record(frame, drawn);
+    ```
+
+    [`skyReflection`](/kit/lighting/#changing-the-light) scales sky reflections on shiny surfaces independently of sky illumination. Compile `light` with the pass descriptions, and free `floor`, `light` and `pool` with `screen` in the scene's `destroy()`.
+
+    <DominoStage stage="floor">
+      Drag to turn the camera. The walnut boards catch the low, warm sun and fade into the dim room.
+    </DominoStage>
+
+3.  **Stand up one domino.**
+
+    - Use a stacking domino 2.4 cm wide, 4.8 cm tall and 0.75 cm thick. `meshes.roundedBox` rounds its edges by 1.2 mm with two segments so they catch light. The origin is at the mesh centre. Place a standing domino half its height above the floor.
+    - `yaw` gives the falling direction as an angle around the up axis, measured from `+z`. Instance rows store rotations as **quaternions**, four numbers that encode a rotation. A turn of `yaw` around `y` is `[0, sin(yaw / 2), 0, cos(yaw / 2)]`.
+    - Use colours from domino-building sets. With `glossy` roughness at 0.38, sunlight makes a broad satin highlight like lacquer.
+
+    ```ts twoslash title="dominoes.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/dominoes-tutorial-1.ts
+    // ---cut---
+    import { srgbToLinear } from '@typegpu/color';
+    import { meshes } from '@typegpu/kit/geometry';
+    import { instances, materials, type MeshPool } from '@typegpu/kit';
+    import { d, type TgpuRoot } from 'typegpu';
+    import { HEIGHT, THICKNESS, WIDTH } from './layout.ts';
+
+    /** Linear colours for the domino palette. */
+    const PALETTE = (
+      [
+        [0.95, 0.92, 0.86],
+        [0.96, 0.7, 0.23],
+        [0.96, 0.52, 0.3],
+        [0.8, 0.16, 0.16],
+        [0.12, 0.6, 0.58],
+        [0.14, 0.28, 0.6],
+      ] as const
+    ).map(([r, g, b]) => srgbToLinear(d.vec3f(r, g, b)));
+    const ROUGHNESS = 0.38;
+
+    const shape = meshes.roundedBox({
+      width: WIDTH,
+      height: HEIGHT,
+      depth: THICKNESS,
+      radius: 0.12,
+      segments: 2,
+    });
+
+    /** Unit quaternion rotating +z toward `yaw`. */
+    const turned = (yaw: number) => [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)] as const;
+
+    // Inside createDominoes(root, { pool })
+    // ---cut-start---
+    function createDominoes(root: TgpuRoot, { pool }: { pool: MeshPool }) {
+      // ---cut-end---
+      const set = instances.create(root, pool, { capacity: 1 });
+      set.add(pool.add(shape), {
+        position: [30, HEIGHT / 2, 116],
+        rotation: turned(-1.67),
+        ...materials.glossy(PALETTE[1], ROUGHNESS),
+      });
+      set.flush();
+      return {
+        set,
+        destroy() {
+          set.destroy();
+        },
+      };
+      // ---cut-start---
+    }
+    // ---cut-end---
+    ```
+
+    Create the dominoes with the same pool as the floor. Add `scene.add(dominoes.set.renderer())` after the floor drawing, and call `dominoes.destroy()` in the scene's `destroy()`.
+
+    <DominoStage stage="one">
+      Look at the rounded edges of the first domino. Its saffron lacquer has a soft highlight, but
+      the missing shadow makes it seem to hover until step 5.
+    </DominoStage>
+
+4.  **Lay out the run.**
+
+    Store the run as a list of `Placed` values. Each holds a position, a direction and links to other dominoes. `prev` names the domino that pushes it. `next` names the one or two it pushes. Use `NONE` for an absent link. `depth` counts how many dominoes the wave passes to reach this one. Use it to colour the run in bands, stripes and stepped gradients.
+
+    ```ts twoslash title="layout.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/layout-tutorial-1.ts
+    // ---cut---
+    /** Sentinel id for a missing neighbour. */
+    export const NONE = -1;
+
+    export interface Placed {
+      /** Foot centre in world coordinates. */
+      readonly x: number;
+      readonly z: number;
+      /** Fall direction in radians around +y, measured from +z. */
+      readonly yaw: number;
+      /** Distance from the start in dominoes. */
+      readonly depth: number;
+      /** Id of the preceding domino, or `NONE`. */
+      prev: number;
+      /** Ids of the next one or two dominoes, or `NONE`. */
+      readonly next: [number, number];
+
+      readonly color: number;
+    }
+    ```
+
+    Place dominoes along curves that map `t`, from 0 to 1, to a point on the floor.
+
+    - `through(points)` makes a smooth curve through a list of points. The lead, where the run starts, follows nine points in an S-bend.
+    - `along(curve)` places dominoes every `SPACING`, or 3.1 cm, about two thirds of a domino's height. Each faces along the curve.
+    - Each spiral arm runs a little to the side of a spiral curve.
+    - `line` places dominoes along a curve and links each to the previous one. It takes the index of the domino that pushes the line's first domino, and returns the index of the line's last domino. Use that return value to start another line. If a domino already has one `next` link, adding a second creates a fork.
+
+    <DominoLinks />
+
+    ```ts twoslash title="layout.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/layout-tutorial-2.ts
+    import { NONE, type Placed } from './layout.ts';
+    type Curve = (t: number) => readonly [x: number, z: number];
+    declare const placed: Placed[], LEAD: Curve, approach: Curve;
+    declare const along: (curve: Curve) => { x: number; z: number; yaw: number }[];
+    declare const colorAt: (depth: number) => number;
+    // ---cut---
+    // Inside layOut(), which returns placed
+    /** Adds dominoes after `from`, linking it to the first. Returns the last index. */
+    const line = (stands: { x: number; z: number; yaw: number }[], from: number) => {
+      let prev = from;
+      const depth0 = from === NONE ? 0 : placed[from].depth + 1;
+      stands.forEach((stand, k) => {
+        const index = placed.length;
+        placed.push({
+          ...stand,
+          depth: depth0 + k,
+          prev,
+          next: [NONE, NONE],
+          color: colorAt(depth0 + k),
+        });
+        if (prev !== NONE) {
+          const pushes = placed[prev].next;
+          pushes[pushes[0] === NONE ? 0 : 1] = index;
+        }
+        prev = index;
+      });
+      return prev;
+    };
+
+    const fork = line(along(LEAD), NONE);
+    // For each spiral, link its approach to both arms
+    const split = line(along(approach), fork);
+    ```
+
+    The lead has 80 dominoes. Its last domino pushes two lines that curve toward the spirals. Each line forks into two spiral arms that wind inward side by side. The full run has 1 474 dominoes, and the deepest has a depth of 476.
+
+    Store the dominoes as instance rows on the GPU. Define a `Domino` kind with the fields the simulation needs. These are the centre of its `foot`, its `yaw`, its links and its `order` along the run from 0 to 1. Step 11 uses `order` to rewind the run.
+
+    `set.add` returns an **id** that identifies a row for its lifetime. A **slot** is the row's position in the buffers, which can change when rows are added or removed. Store ids in the links. In a kernel, the set's member `slotOf(id)` finds the slot of a linked domino. No row has id 0, so use 0 for no link.
+
+    ```ts twoslash title="dominoes.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/dominoes-tutorial-2.ts
+    import type { meshes } from '@typegpu/kit/geometry';
+    import { materials, type MeshPool } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    import { HEIGHT, NONE, type Placed } from './layout.ts';
+    declare const root: TgpuRoot, pool: MeshPool, run: Placed[], shape: meshes.IndexedGeometry;
+    declare const PALETTE: d.v3f[], ROUGHNESS: number, last: number;
+    declare const turned: (yaw: number) => readonly [number, number, number, number];
+    // ---cut---
+    import { instances } from '@typegpu/kit';
+    import { d } from 'typegpu';
+
+    export const Domino = instances.define('Domino', {
+      host: { foot: d.vec3f, yaw: d.f32, order: d.f32, prev: d.u32, next: d.vec2u },
+    });
+
+    // Inside createDominoes, with run and its maximum depth last
+    const set = instances.create(root, pool, { kind: Domino, capacity: run.length });
+    const mesh = pool.add(shape);
+    const ids = run.map((each) =>
+      set.add(mesh, {
+        position: [each.x, HEIGHT / 2, each.z],
+        rotation: turned(each.yaw),
+        ...materials.glossy(PALETTE[each.color], ROUGHNESS),
+        foot: [each.x, 0, each.z],
+        yaw: each.yaw,
+        order: each.depth / last,
+      }),
+    );
+    const idOf = (index: number) => (index === NONE ? 0 : ids[index]);
+    run.forEach((each, i) => {
+      set.write(ids[i], { prev: idOf(each.prev), next: [idOf(each.next[0]), idOf(each.next[1])] });
+    });
+    set.flush();
+    ```
+
+    Add every row before writing links with `write`, since a link can point to a domino added later. All 1 474 rows share one mesh, so one draw renders them all. The GPU repeats the mesh with each row's position and rotation. The floor is the frame's other draw.
+
+    <DominoStage stage="run">
+      Drag to look along the standing run. The striped lead starts at the near right, follows an
+      S-bend and forks toward the two spirals.
+    </DominoStage>
+
+5.  **Cast the sun's shadow.**
+
+    Without shadows, the dominoes appear to float above the floor. A **shadow map** records depth from the sun's viewpoint in a texture before the scene pass. A pixel lies in shadow if the map has a surface closer to the sun.
+
+    - Set the lighting's `shadow` option to 4096 texels across 5.6 m. That is 1.4 mm per texel, enough for a crisp shadow under a domino 7.5 mm thick. Use `center` to centre the map on the run.
+    - [`light.shadow.add`](/kit/lighting/#shadows) creates a shadow caster from a renderer. Call `record` each frame to draw the casters. The floor need not cast a shadow because nothing lies under it.
+    - Set `filter: 9` to compare each pixel with nine nearby shadow-map samples. The lighting averages the results, which softens the shadow edge.
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-4.ts
+    import type { Frame } from '@typegpu/kit';
+    import { lighting } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    import type { Dominoes } from './dominoes.ts';
+    declare const root: TgpuRoot, frame: Frame, degrees: number;
+    declare const dominoes: Dominoes;
+    declare const sunAt: (degrees: number) => [number, number, number];
+    declare const LIGHT: { sunIntensity: number };
+    // ---cut---
+    /** Shadow resolution of 4096 texels across 5.6 m, centred on the run. */
+    const SHADOW = { size: 4096, extent: 560, filter: 9, center: [0, 0, -80] } as const;
+
+    const light = lighting.create(root, { settings: LIGHT, shadow: SHADOW });
+    const casters = [light.shadow.add(dominoes.set.renderer())];
+
+    // Inside frame(frame), before the scene pass
+    light.shadow.record(frame, casters);
+
+    // When the sun's height changes
+    light.settings.patch({ sunDirection: sunAt(degrees) });
+    ```
+
+    <DominoStage stage="shadow">
+      Raise the sun to shorten the shadows. At a low angle, each domino casts a long shadow that
+      makes its contact with the floor visible.
+    </DominoStage>
+
+6.  **Tip a domino over.**
+
+    Turn a falling domino around its bottom front edge. `angle` is how far it has turned from upright, so a standing domino has an angle of 0. `spin` is its angular speed in radians per second.
+
+    - Weight acts at the centre. Below `TIP`, the centre lies behind the front edge and weight turns the domino upright. Past `TIP`, weight tips it farther forward. `TIP` is `atan(THICKNESS / HEIGHT)`, about 9°.
+    - The top rests on the back of the next domino. `leanOn` computes the resting angle from the next domino's angle. The last domino in a line has nothing to lean on and lies flat.
+
+    <DominoLean />
+
+    Write the fall in `topple.ts`, in a `createTopple` function that takes the dominoes. `const domino = dominoes.set.gpu` gives you the set's members, the functions and accessors that reach its rows from any pipeline. Keep the helpers and kernels that use them inside `createTopple`.
+
+    Simulate the fall in fixed steps of 1/120 s. Each step, add gravity to the spin, then use the spin to advance the angle. `leanLimit` gives the maximum angle against the domino whose id is `next`:
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-1.ts
+    import { d, std } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { HEIGHT, SPACING, THICKNESS } from './layout.ts';
+    // ---cut---
+    /** Seconds per step of the fall. */
+    export const STEP = 1 / 120;
+    /**
+     * Angular acceleration from gravity, in radians per second squared. Slower than a physical
+     * domino.
+     */
+    const GRAVITY = 700;
+    /** Tilt at which the centre of mass passes the pivot and gravity tips the domino forward. */
+    const TIP = Math.atan(THICKNESS / HEIGHT);
+
+    /**
+     * Resting angle against a neighbour tilted by `next` radians. The top corner meets the
+     * neighbour back face at distance `SPACING`.
+     */
+    const leanOn = (next: number) => {
+      'use gpu';
+      const reach = (SPACING * std.cos(next) - THICKNESS) / HEIGHT;
+      return next + std.asin(std.clamp(reach, -1, 1));
+    };
+
+    /** Maximum lean against domino id `next`. Id 0 allows falling flat. */
+    const leanLimit = (next: number) => {
+      'use gpu';
+      if (next === 0) return d.f32(Math.PI / 2);
+      return leanOn(domino.angle(domino.slotOf(next)));
+    };
+    ```
+
+    Store `angle` and `spin` in the kind's `device` fields. Kernels write these fields, and the CPU sets them only when adding a row. Set `transform: 'device'` to store position and rotation there too. The kernel can then tip and position a domino without CPU updates. Add `hit` in the next step.
+
+    ```ts twoslash title="dominoes.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/dominoes-tutorial-3.ts
+    import { instances } from '@typegpu/kit';
+    import { d } from 'typegpu';
+    // ---cut---
+    export const Domino = instances.define('Domino', {
+      transform: 'device',
+      host: { foot: d.vec3f, yaw: d.f32, order: d.f32, prev: d.u32, next: d.vec2u },
+      device: { angle: d.f32, spin: d.f32, hit: d.f32 },
+    });
+    ```
+
+    Run one `fall` thread per row. `domino.span()` gives the number of slots in use. `domino.alive(i)` tests whether slot `i` holds a row.
+
+    - A domino standing still stays put.
+    - Add `GRAVITY × sin(angle - TIP)` to a moving domino's spin, scaled by the step duration. Below `TIP`, the term is negative. It slows the fall, so a lightly nudged domino rocks back to 0.
+    - At the lean limit, rest on the next domino and turn no faster than it does.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-2.ts
+    import { d, std, tgpu, type TgpuMutable } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { STEP } from './topple.ts';
+    declare const GRAVITY: number, TIP: number, WORKGROUP: number;
+    declare const leanLimit: (next: number) => number;
+    const Motion = d.struct({ angle: d.f32, spin: d.f32, hit: d.f32 });
+    declare const motion: TgpuMutable<d.WgslArray<typeof Motion>>;
+    // ---cut---
+    const fall = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const i = gid.x;
+      if (i >= domino.span() || !domino.alive(i)) return;
+      let angle = domino.angle(i);
+      let spin = domino.spin(i);
+
+      if (angle > 0 || spin > 0) spin += GRAVITY * std.sin(angle - TIP) * STEP;
+      angle += spin * STEP;
+      if (angle <= 0) {
+        angle = 0;
+        spin = 0;
+      }
+
+      const on = domino.next(i).x;
+      const limit = leanLimit(on);
+      let hit = d.f32(0);
+      if (angle >= limit) {
+        hit = spin;
+        angle = limit;
+        if (on === 0) spin = 0;
+        else spin = std.min(spin, domino.spin(domino.slotOf(on)));
+      }
+      motion.$[i] = Motion({ angle, spin, hit });
+    });
+    ```
+
+    Each thread reads neighbouring angles, but threads run in no fixed order. Writing those angles in place would let a thread read either the old or updated value. Write the results of `fall` into a separate `motion` buffer. Dispatch `place` afterward to copy all the updated angles into the set. The [ping-pong pattern](/tutorials/slime-mould/) from slime mould works the same way, with a buffer here in place of a texture.
+
+    Use `place` to update position too. `rotationOf(yaw, angle)` faces the domino along its yaw and tips it forward. `middleOf` computes the centre after rotation around the front edge. Before rotation, the centre is half the height above that edge and half the thickness behind it.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-3.ts
+    import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { HEIGHT, THICKNESS } from './layout.ts';
+    declare const root: TgpuRoot, capacity: number, WORKGROUP: number;
+    declare const forwardOf: (i: number) => d.v3f;
+    declare const rotationOf: (yaw: number, angle: number) => d.v4f;
+    // ---cut---
+    /** Next-step values, copied to the table after all dominoes have read the current step. */
+    const Motion = d.struct({ angle: d.f32, spin: d.f32, hit: d.f32 });
+    const motion = root.createMutable(d.arrayOf(Motion, capacity));
+
+    /** Centre position after pivoting by `angle` around the bottom front edge. */
+    const middleOf = (i: number, angle: number) => {
+      'use gpu';
+      const forward = forwardOf(i);
+      const edge = domino.foot(i) + forward * (THICKNESS / 2);
+      const up = (HEIGHT / 2) * std.cos(angle) + (THICKNESS / 2) * std.sin(angle);
+      const ahead = (HEIGHT / 2) * std.sin(angle) - (THICKNESS / 2) * std.cos(angle);
+      return edge + d.vec3f(0, up, 0) + forward * ahead;
+    };
+
+    const place = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const i = gid.x;
+      if (i >= domino.span() || !domino.alive(i)) return;
+      const moved = Motion(motion.$[i]);
+      const row = domino.device.$[i];
+      row.angle = moved.angle;
+      row.spin = moved.spin;
+      row.hit = moved.hit;
+      row.rotation = rotationOf(domino.yaw(i), moved.angle);
+      row.position = middleOf(i, moved.angle);
+    });
+    ```
+
+    - `forwardOf(i)` is the way domino `i` falls, `(sin yaw, 0, cos yaw)`.
+    - `domino.device.$[i]` is the row's device fields. Changing them changes the row in the set.
+    - `domino`'s members already read this set's own buffers, so `root.createComputePipeline({ compute: fall })` needs no fill.
+
+    Return `record(pass, steps, dt)` from `createTopple`. It dispatches both kernels once per step into one compute pass. Each dispatch sees the previous dispatch's writes. Step 11 uses `dt` for the rewind. Use a [fixed step](/kit/clock/#fixed-step) to count steps, capped at 8 per frame:
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-5.ts
+    import { clock, type Frame } from '@typegpu/kit';
+    import type { TgpuComputePass, TgpuComputePipeline } from 'typegpu';
+    import { STEP } from './topple.ts';
+    declare const frame: Frame, set: { span: number }, WORKGROUP: number;
+    declare const falling: TgpuComputePipeline, placing: TgpuComputePipeline;
+    declare const topple: { record(pass: TgpuComputePass, steps: number, dt: number): void };
+    // ---cut---
+    // Inside createTopple, returned as record
+    const record = (pass: TgpuComputePass, steps: number, dt: number) => {
+      const groups = Math.ceil(set.span / WORKGROUP);
+      for (let step = 0; step < steps; step++) {
+        pass.setPipeline(falling);
+        pass.dispatchWorkgroups(groups);
+        pass.setPipeline(placing);
+        pass.dispatchWorkgroups(groups);
+      }
+    };
+
+    // Inside createScene
+    const sim = clock.fixedStep({ step: STEP, maxSteps: 8 });
+
+    // Inside frame(frame), before the shadow pass
+    const compute = frame.encoder.beginComputePass();
+    topple.record(compute, sim.update(frame.dt), frame.dt);
+    compute.end();
+    ```
+
+    The picture stays the same. Every domino has angle 0 and no spin, and nothing pushes the first one yet.
+
+7.  **Pass the fall on.**
+
+    - In the step where a domino comes to rest on the next one, `fall` writes the spin it had into `hit`.
+    - On the next step, a standing domino reads its `prev`. If the previous domino struck it, set its spin to the incoming speed times `CARRY`, which is 0.85. Each collision loses some speed.
+    - While the previous domino leans on it, add a push from that domino's weight. Replace the angle and spin update with `swing`, which adds this push to gravity.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-4.ts
+    import { d, std } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { STEP } from './topple.ts';
+    declare const i: number, GRAVITY: number, TIP: number;
+    declare let angle: number, spin: number;
+    declare const leanOn: (next: number) => number;
+    // ---cut---
+    /** The share of a domino's spin it hands the one it strikes. */
+    const CARRY = 0.85;
+    /** The share of a leaning domino's weight that pushes the one it leans on. */
+    const PUSH = 0.3;
+
+    export const swing = (angle: number, spin: number, pushed: number) => {
+      'use gpu';
+      let turning = spin;
+      if (angle > 0 || spin > 0) {
+        turning += GRAVITY * (std.sin(angle - TIP) + pushed * PUSH) * STEP;
+      }
+      const next = angle + turning * STEP;
+      if (next <= 0) return d.vec2f();
+      return d.vec2f(next, turning);
+    };
+
+    // ---cut-start---
+    (() => {
+      'use gpu';
+      // ---cut-end---
+      // Inside fall, after reading angle and spin
+      let pushed = d.f32(0);
+      const prev = domino.prev(i);
+      if (prev !== 0) {
+        const p = domino.slotOf(prev);
+        const before = domino.angle(p);
+        if (angle === 0 && spin === 0 && domino.hit(p) > 0) spin = domino.hit(p) * CARRY;
+        if (before >= leanOn(angle) - 0.001) pushed = std.max(std.sin(before - TIP), 0);
+      }
+
+      const swung = swing(angle, spin, pushed);
+      angle = swung.x;
+      spin = swung.y;
+      // ---cut-start---
+    })();
+    // ---cut-end---
+    ```
+
+    A struck domino starts faster than a tapped one. The wave accelerates over roughly the first ten dominoes, then holds about 25 dominoes per second, or 78 cm per second. Each domino reads only the previous step's values, so the wave advances at most one domino per step.
+
+    <DominoChain />
+
+    At a fork, `restsOn` selects the next domino that the falling top meets first, the one with the smaller lean limit. Both linked dominoes read the falling domino as `prev`, so they start in the same step and split the wave.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-5.ts
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    declare const i: number;
+    declare const leanOn: (next: number) => number, leanLimit: (next: number) => number;
+    // ---cut---
+    /**
+     * Chooses the next domino that limits the lean most. Returns id 0 at the end of a line, where
+     * the domino falls flat.
+     */
+    const restsOn = (i: number) => {
+      'use gpu';
+      const next = domino.next(i);
+      if (
+        next.y !== 0 &&
+        leanOn(domino.angle(domino.slotOf(next.y))) < leanOn(domino.angle(domino.slotOf(next.x)))
+      ) {
+        return next.y;
+      }
+      return next.x;
+    };
+
+    // ---cut-start---
+    (() => {
+      'use gpu';
+      // ---cut-end---
+      // Inside fall, replacing the single-link lookup
+      const on = restsOn(i);
+      const limit = leanLimit(on);
+      // ---cut-start---
+    })();
+    // ---cut-end---
+    ```
+
+    <DominoStage stage="falling">
+      Watch the wave split at the end of the lead and at each spiral. The figure pushes the first
+      domino by itself. Stand the dominoes up to watch the fall again. The next step lets you tap
+      any domino.
+    </DominoStage>
+
+8.  **Tap a domino.**
+
+    **Picker** finds an object under a point on the screen. Domino positions stay on the GPU, so run picking there too. A [picker](/kit/picker/) projects each candidate with the frame's camera. It selects the candidate whose centre is nearest the pointer within `reach`. The default reach is 24 points, about a fingertip.
+
+    - Return each candidate's centre from `position` through the set's `position` member.
+    - Set `radius` to half a domino's height in world units. The picker extends `reach` by the domino's projected radius. That lets you tap across a nearby domino, while `reach` alone keeps a distant one easy to hit.
+    - Use `alive` to reject dominoes that are already leaning. Only standing dominoes can be pushed.
+
+    <DominoPick />
+
+    Dispatch a one-thread push kernel immediately after picking in the same compute pass. `hits.found()` returns the selected domino or `picker.none`. Set the selected domino's spin to `KICK`, 6 radians per second, enough to carry it past `TIP`.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-6.ts
+    import type { CameraBase, Surface } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    import { Domino, type Dominoes } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { HEIGHT } from './layout.ts';
+    declare const root: TgpuRoot, view: CameraBase, surface: Surface, dominoes: Dominoes;
+    const { set } = dominoes;
+    const capacity = set.capacity;
+    // ---cut---
+    import { picker } from '@typegpu/kit';
+    import { tgpu } from 'typegpu';
+
+    /** Angular speed imparted by a tap, enough to tip the domino. */
+    const KICK = 6;
+
+    const hits = picker.create(root, view, {
+      capacity,
+      size: surface,
+      position: domino.position,
+      radius: () => {
+        'use gpu';
+        return HEIGHT / 2;
+      },
+      alive: (i: number) => {
+        'use gpu';
+        return domino.alive(i) && domino.angle(i) === 0;
+      },
+    });
+
+    const push = tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      const i = hits.found();
+      if (i === picker.none || domino.spin(i) > 0) return;
+      domino.device.$[i].spin = KICK;
+    });
+    const pushing = root.createComputePipeline({ compute: push });
+    ```
+
+    On a tap, save only the pointer position. In the next frame's compute pass, pick there, push the selected domino and then step the fall. The pointer and the picker both take `x` and `y` from 0 to 1 across the canvas.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-7.ts
+    import type { picker } from '@typegpu/kit';
+    import type { TgpuComputePass, TgpuComputePipeline } from 'typegpu';
+    declare const hits: picker.Picker, pushing: TgpuComputePipeline;
+    // ---cut---
+    let tapped: [x: number, y: number] | undefined;
+
+    /** Picks and pushes a domino at `x, y`, from 0 to 1 across the canvas from its top left. */
+    function tap(x: number, y: number) {
+      tapped = [x, y];
+    }
+
+    // Inside record(pass, steps, dt), before the simulation steps
+    // ---cut-start---
+    declare const pass: TgpuComputePass;
+    // ---cut-end---
+    if (tapped) {
+      hits.pick(pass, ...tapped);
+      pass.setPipeline(pushing);
+      pass.dispatchWorkgroups(1);
+      tapped = undefined;
+    }
+    ```
+
+    Return a `pointing.press(x, y)` handler from the scene that calls `topple.tap(x, y)`. In `index.ts`, the orbit controls already turn the camera on a drag. Add a [`web.pointer`](/kit/web/#pointer-input) and count a press as a tap only when it ends near its starting point. `attach` returns one disposable for both:
+
+    ```ts twoslash title="index.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/scene.ts
+    export { createScene } from '../scene.ts';
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/index.ts
+    import * as web from '@typegpu/kit/web';
+    import { createScene } from './scene.ts';
+    const canvas = document.querySelector('canvas')!;
+    // ---cut---
+    /** Pixels a press may move and still count as a tap. */
+    const SLOP = 6;
+
+    web.host(createScene, {
+      canvas,
+      attach({ scene }) {
+        const controls = web.orbitControls(scene.view, canvas);
+        let start: [x: number, y: number] | undefined;
+        const pointer = web.pointer(canvas, {
+          down: (x, y, event) => {
+            start = [event.clientX, event.clientY];
+          },
+          up: (x, y, event) => {
+            const [fromX, fromY] = start ?? [Infinity, Infinity];
+            const moved = Math.hypot(event.clientX - fromX, event.clientY - fromY);
+            if (event.type === 'pointerup' && moved < SLOP) scene.pointing.press(x, y);
+            start = undefined;
+          },
+        });
+        return () => {
+          controls.destroy();
+          pointer.destroy();
+        };
+      },
+    });
+    ```
+
+    Dragging turns the camera, and a press without a drag taps a domino. `up` also runs when the browser cancels a pointer, so tap only on `pointerup`.
+
+9.  **Count the fallen.**
+
+    Count fallen dominoes on the GPU with a [counter](/kit/counters/). Copy the counter back `hz` times per second and read each copy when it arrives. A panel can then show the count without making the frame wait for the GPU. Count a domino when it passes 45°. `was` holds its angle at the start of the step.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-8.ts
+    import type { TgpuRoot } from 'typegpu';
+    import type { Dominoes } from './dominoes.ts';
+    declare const root: TgpuRoot, set: Dominoes['set'], was: number, angle: number;
+    declare const fall: Parameters<TgpuRoot['createComputePipeline']>[0]['compute'];
+    // ---cut---
+    import { counters } from '@typegpu/kit';
+
+    const counts = counters.create(root, ['fallen'], { hz: 10 });
+
+    // ---cut-start---
+    (() => {
+      'use gpu';
+      // ---cut-end---
+      // Inside fall, before writing motion
+      if (was < Math.PI / 4 && angle >= Math.PI / 4) counts.add.fallen(1);
+      // ---cut-start---
+    })();
+    // ---cut-end---
+
+    const falling = root.createComputePipeline({ compute: fall });
+    ```
+
+    - After the compute pass, capture the counter with `topple.counts.capture(frame)`.
+    - Return `settings.readouts.fallen: () => topple.counts.latest?.fallen ?? 0` from the scene. Step 11 shows it on a panel.
+    - When the run stands up again, zero the counter with `counts.clear(frame)` before the compute pass.
+
+    If a domino passes 45° between captures, its count waits for the next capture before it can reach the CPU.
+
+    <DominoCount />
+
+10. **Raise dust.**
+
+    Add dust at each strike with [particles](/kit/particles/). The module keeps a pool of slots. A kernel ages and moves the live particles, and the module draws each one as a small square facing the camera. Its `shade` function colours each pixel using `local`, the position on that square from -1 to 1 in both directions.
+
+    Light the dust with the sun and sky. A puff in sunlight catches the sun; a puff in a domino's shadow receives only blue sky light.
+
+    - Read the sun and sky from `shading.settings()`. `shading.sunShare` samples the shadow map to find how much sun reaches a point.
+    - Return premultiplied colour from `puff`. Multiply the light by the puff's coverage, and store the coverage in `w`. `blend: 'over'` composites it over the scene.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-9.ts
+    import type { Particle } from '@typegpu/kit';
+    import { shading } from '@typegpu/kit';
+    import { d, std } from 'typegpu';
+    // ---cut---
+    /**
+     * Shades fading dust with sun and sky light. Fill its lighting accessors with
+     * `tgpu.fn(puff).pipe(light.inject())`.
+     */
+    export const puff = (particle: Particle, local: d.v2f) => {
+      'use gpu';
+      const env = shading.settings();
+      const sun = shading.sunShare(shading.pointAt(particle.position, d.vec3f(0, 1, 0)));
+      const light =
+        env.sunColor * (env.sunIntensity * sun * 0.3) + env.skyTop * (env.skyIntensity * 0.6);
+      const dot = std.saturate(1 - std.length(local));
+      const left = 1 - particle.age / particle.life;
+      const alpha = dot * dot * left * particle.color.w;
+      return d.vec4f(particle.color.xyz * light * alpha, alpha);
+    };
+    ```
+
+    When a struck domino starts spinning, call `strike(i)` from `fall`. Emit three puffs across the width at the bottom of its back. Make them rise and drift backward. Seed `randf` with the strike position to vary their spread, speed, lifetime and size.
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-10.ts
+    import { Particle, type Particles } from '@typegpu/kit';
+    import { randf } from '@typegpu/noise';
+    import { d } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { THICKNESS, WIDTH } from './layout.ts';
+    declare const dust: Particles, forwardOf: (i: number) => d.v3f;
+    // ---cut---
+    /** Mostly transparent, pale warm grey. */
+    const DUST = d.vec4f(0.85, 0.78, 0.68, 0.14);
+
+    /** Emits dust at the back foot of the struck domino `i`. */
+    const strike = (i: number) => {
+      'use gpu';
+      const forward = forwardOf(i);
+      const side = d.vec3f(forward.z, 0, -forward.x);
+      const at = domino.foot(i) - forward * (THICKNESS / 2);
+      randf.seed2(d.vec2f(at.xz));
+      for (let k = 0; k < 3; k++) {
+        const across = randf.sample() * 2 - 1;
+        dust.emit(
+          Particle({
+            position: at + side * (across * WIDTH * 0.5) + d.vec3f(0, 0.3, 0),
+            age: 0,
+            velocity: side * (across * 6) + d.vec3f(0, 2 + randf.sample() * 3, 0) - forward * 3,
+            life: 0.7 + randf.sample() * 0.5,
+            color: DUST,
+            size: 2 + randf.sample() * 1.5,
+            seed: randf.sample(),
+          }),
+        );
+      }
+    };
+    ```
+
+    - Pass the dust into `createTopple`. `dust.emit` reads the dust's own buffers, so the `fall` pipeline needs no fill. Fill `puff`'s lighting placeholders with the lighting.
+    - Step dust with the fall's fixed step so its speed stays the same at any frame rate. `compact` lists the live puffs for drawing.
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-7.ts
+    import type { FixedStep, Frame, OrbitCamera } from '@typegpu/kit';
+    import type { Lighting } from '@typegpu/kit';
+    import type { TgpuComputePass, TgpuRoot } from 'typegpu';
+    import { puff, STEP } from './topple.ts';
+    declare const root: TgpuRoot, view: OrbitCamera, sim: FixedStep, light: Lighting;
+    declare const frame: Frame, compute: TgpuComputePass, steps: number;
+    // ---cut---
+    import { particles } from '@typegpu/kit';
+    import { tgpu } from 'typegpu';
+
+    const dust = particles.create(root, view, {
+      capacity: 2048,
+      step: STEP,
+      blend: 'over',
+      shade: tgpu.fn(puff).pipe(light.inject()),
+      settings: { gravity: [0, -4, 0], drag: 3 },
+    });
+
+    // Inside the frame compute pass, after the fall
+    for (let step = 0; step < steps; step++) dust.step(compute);
+    dust.compact(compute, sim.ahead);
+    ```
+
+    Add `dust.drawing` after the domino drawing so puffs appear over the dominoes.
+
+    <ExampleFigure
+      example="dominoes"
+      controls={['fallen', 'reset']}
+      values={{ auto: false }}
+      caption="Tap a domino to send a wave toward the ends of its lines, with dust at each strike and a delayed count. A tap partway along leaves earlier dominoes standing; reset raises the whole run."
+    />
+
+11. **Finish the picture.**
+
+    Use [bloom](/kit/finish/#bloom) to blur values brighter than `threshold` and add them back to the picture. A threshold of 2 catches only sunlight highlights on the lacquer. Read `hdr` and pass the bloom to the final pass as `glow`:
+
+    ```ts twoslash title="scene.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-8.ts
+    import { targets, type Surface } from '@typegpu/kit';
+    import type { TgpuRoot } from 'typegpu';
+    declare const root: TgpuRoot, surface: Surface;
+    const screen = targets.create(root, surface, { hdr: { format: 'rgba16float', sampled: true } });
+    // ---cut---
+    import { bloom, finish, tone } from '@typegpu/kit';
+
+    const glow = bloom.create(root, {
+      source: () => screen.textures.hdr,
+      settings: { threshold: 2, knee: 0.8 },
+    });
+    const final = finish.create(root, {
+      format: surface.format,
+      source: () => screen.textures.hdr,
+      glow,
+      tone: tone.aces,
+      settings: { exposure: 0.85, glowIntensity: 0.1, vignette: 0.45 },
+    });
+    ```
+
+    The frame records `glow.record(frame)` after the scene's pass.
+
+    Make the run stand up again. `rise()` starts a timer on the CPU by setting `risen` to 0. In `record`, write `risen` to the `rising` uniform, then advance it by `dt`. After `RISE + LIFT + 0.2` seconds, set both to -1. While the timer runs, `fall` raises each domino instead of toppling it.
+
+    - Use `order` to raise dominoes from last to first over `RISE`, 5 seconds.
+    - `rewound` makes the wave nearly five times faster at the last domino than at the first, like a rewinding film.
+    - Raise each domino over `LIFT`, half a second, easing from its fallen angle. Keep that starting angle in `hit` during the lift.
+
+    <DominoRewind />
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-11.ts
+    import { d, std, type TgpuMutable, type TgpuUniform } from 'typegpu';
+    import { Domino } from './dominoes.ts';
+    declare const domino: import('@typegpu/kit').table.Table<typeof Domino>['gpu'];
+    import { LIFT, RISE } from './topple.ts';
+    declare const i: number, rising: TgpuUniform<d.F32>;
+    declare let angle: number;
+    declare const leanLimit: (next: number) => number, restsOn: (i: number) => number;
+    const Motion = d.struct({ angle: d.f32, spin: d.f32, hit: d.f32 });
+    declare const motion: TgpuMutable<d.WgslArray<typeof Motion>>;
+    // ---cut---
+    /**
+     * Reset start time as a fraction of `RISE`, at progress `back` from the last domino. The wave
+     * travels nearly five times faster at the end than at the start.
+     */
+    const rewound = (back: number) => {
+      'use gpu';
+      return back * (0.35 + 0.65 * back);
+    };
+
+    // ---cut-start---
+    (() => {
+      'use gpu';
+      // ---cut-end---
+
+      if (rising.$ >= 0) {
+        // During reset, `hit` stores the starting angle. Limit the lean against the rising
+        // neighbour so dominoes cannot pass through each other
+        const begin = rewound(1 - domino.order(i)) * RISE;
+        const t = std.saturate((rising.$ - begin) / LIFT);
+        let from = domino.hit(i);
+        if (t === 0) from = angle;
+        angle = std.min(from * (1 - std.smoothstep(0, 1, t)), leanLimit(restsOn(i)));
+        if (t === 1) from = 0;
+        motion.$[i] = Motion({ angle, spin: 0, hit: from });
+        return;
+      }
+      // ---cut-start---
+    })();
+    // ---cut-end---
+    ```
+
+    Return an `initAsync()` method from `createTopple` that compiles the picker and three kernels. Add a `destroy()` method that frees the picker, counter and motion buffer. Leave the uniform and pipelines to the garbage collector:
+
+    ```ts twoslash title="topple.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/topple-tutorial-12.ts
+    import { pipelines, type counters, type picker } from '@typegpu/kit';
+    import { d, type TgpuComputePipeline, type TgpuMutable } from 'typegpu';
+    declare const hits: picker.Picker, counts: counters.Counters<'fallen'>;
+    declare const falling: TgpuComputePipeline,
+      placing: TgpuComputePipeline,
+      pushing: TgpuComputePipeline;
+    const Motion = d.struct({ angle: d.f32, spin: d.f32, hit: d.f32 });
+    declare const motion: TgpuMutable<d.WgslArray<typeof Motion>>;
+    const lifecycle = {
+      // ---cut---
+      // Inside createTopple's return
+      initAsync: () => pipelines.compile([hits, falling, placing, pushing]),
+
+      destroy() {
+        hits.destroy();
+        counts.destroy();
+        motion.buffer.destroy();
+      },
+      // ---cut-after---
+    };
+    ```
+
+    Add automatic playback with the `ghost` coroutine in `scene.ts`. After one second, it projects the first domino with `view.projectAt` and taps that screen position. Once the fallen count stays unchanged for 2.5 seconds, it calls `rise()`, clears the counter and repeats. The camera slowly circles the run. Pressing the canvas stops automatic playback.
+
+    Return the panel state as `settings.values`, starting at `{ share: 1, sun: 24, auto: true }`. In `settings.write(key)`, patch the sun direction with `sunAt(values.sun)` and lay the run again when `key` is `share`. Return a `settings.actions.reset` that calls `topple.rise()` and clears the counter. `pointing.press` sets `values.auto` to false. Lowering `share` keeps the dominoes the wave reaches first. The lead stays, and the ends of the spirals disappear. Create the set with capacity for the full run, so changing the share creates no GPU resources.
+
+    Add [lil-gui](https://lil-gui.georgealways.com/) to the project:
+
+    <Install add="lil-gui" />
+
+    In `index.ts`, build the panel with lil-gui. `listen()` redraws a controller each frame, so the panel shows the fallen count and unticks automatic playback when you tap:
+
+    {/* prettier-ignore */}
+    ```ts twoslash title="index.ts"
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/scene.ts
+    export { createScene } from '../scene.ts';
+    // @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/index-tutorial-2.ts
+    // ---cut---
+    // ---cut-start---
+    import * as web from '@typegpu/kit/web';
+    import { createScene } from './scene.ts';
+    // ---cut-end---
+    import GUI from 'lil-gui';
+    // ---cut-start---
+    const canvas = document.querySelector('canvas')!;
+    web.host(createScene, {
+      canvas,
+      attach({ scene }) {
+        const controls = web.orbitControls(scene.view, canvas);
+        const pointer = web.pointer(canvas);
+    // ---cut-end---
+    // Inside attach, after the pointer
+    const gui = new GUI({ title: 'domino run' });
+    gui.add(scene.settings.values, 'share', 0.2, 1, 0.01).name('layout fraction')
+      .onChange(() => scene.settings.write('share'));
+    gui.add(scene.settings.values, 'sun', 10, 60, 1).name('sun elevation (degrees)')
+      .onChange(() => scene.settings.write('sun'));
+    gui.add(scene.settings.values, 'auto').name('automatic replay').listen();
+    gui.add(scene.settings.actions, 'reset');
+    const count = { get fallen() { return scene.settings.readouts.fallen(); } };
+    gui.add(count, 'fallen').listen().disable();
+
+    return () => {
+      controls.destroy();
+      pointer.destroy();
+      gui.destroy();
+    };
+    // ---cut-start---
+      },
+    });
+    // ---cut-end---
+    ```
+
+    <ExampleFigure
+      example="dominoes"
+      controls={['sun', 'share', 'auto', 'reset', 'fallen']}
+      caption="Lower the sun to stretch the shadows, shorten the run, or drag to orbit. Automatic playback taps the first domino and raises the run when it stops; tapping the canvas takes over."
+    />
+
+</Steps>
+
+## Going further with a portrait
+
+The second layout forms a portrait from 100 columns and 60 rows. Including the lead along the far edge, it has 6 100 dominoes. Their backs show a picture when they fall. The lead tips each column in turn, revealing the picture behind a diagonal wave. Choose an image to display it.
+
+It adds three things:
+
+- **Two colours per domino.** Add a `back` colour and a `cell` for the domino's pixel in the picture. In `material`, choose front or back using the surface direction in local coordinates. As a domino falls, change its edges to the back colour so the fallen field shows only the picture.
+- **A kernel that paints the backs.** In `picture.ts`, run one thread per domino. Average 4 × 4 image samples over its cell, using a mip level as coarse as the sample spacing. Match the result to the nearest of sixteen domino colours in Oklab. Distances in that colour space approximate perceived differences.
+- **An image picker.** A button on the panel opens a file picker and hands the image to the scene.
+
+```ts twoslash title="picture.ts"
+// @filename: ../../packages/typegpu-kit-examples/src/dominoes/picture-tutorial-1.ts
+import { linearRgbToOklab } from '@typegpu/color';
+import { d, std, type TgpuRoot } from 'typegpu';
+declare const root: TgpuRoot, PALETTE: d.v3f[];
+const palette = root.createReadonly(d.arrayOf(d.vec3f, 16), PALETTE);
+// ---cut---
+/** Finds the nearest palette colour in Oklab. */
+const nearest = (color: d.v3f) => {
+  'use gpu';
+  const wanted = linearRgbToOklab(color);
+  let best = d.vec3f(palette.$[0]);
+  let least = d.f32(1e9);
+  for (let k = d.u32(0); k < PALETTE.length; k++) {
+    const each = d.vec3f(palette.$[k]);
+    const gap = std.distance(linearRgbToOklab(each), wanted);
+    if (gap < least) {
+      least = gap;
+      best = d.vec3f(each);
+    }
+  }
+  return best;
+};
+```
+
+Add `layout: 'run'` to `settings.values`, and lay out the portrait when `settings.write` receives `layout`. Return `ui.portrait(image)`, which crops the image to the field and switches to the portrait. In `index.ts`, a file input reads the image, and `createImageBitmap` decodes it:
+
+{/* prettier-ignore */}
+```ts twoslash title="index.ts"
+// @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/scene.ts
+export { createScene } from '../scene.ts';
+// @filename: ../../packages/typegpu-kit-examples/src/dominoes/reader/index-tutorial-3.ts
+import * as web from '@typegpu/kit/web';
+import GUI from 'lil-gui';
+import { createScene } from './scene.ts';
+const canvas = document.querySelector('canvas')!;
+web.host(createScene, {
+  canvas,
+  attach({ scene }) {
+    const gui = new GUI();
+// ---cut---
+// Inside attach, after the panel
+gui.add(scene.settings.values, 'layout', ['run', 'portrait']).listen()
+  .onChange(() => scene.settings.write('layout'));
+
+const input = document.createElement('input');
+input.type = 'file';
+input.accept = 'image/*';
+input.addEventListener('change', async () => {
+  const file = input.files?.[0];
+  if (file) scene.ui.portrait(await createImageBitmap(file));
+});
+gui.add({ choose: () => input.click() }, 'choose').name('choose image');
+// ---cut-start---
+    return () => gui.destroy();
+  },
+});
+// ---cut-end---
+```
+
+Before you choose an image, a kernel in `sunset.ts` draws a sunset into the picture texture.
+
+<Hidden card="dominoes">
+  <ExampleFigure
+    example="dominoes"
+    controls={['layout', 'auto', 'reset']}
+    values={{ layout: 'portrait' }}
+    caption="Open the full example to choose your own image. Automatic playback topples the field to reveal the picture, starting with a sunset over hills."
+  />
+</Hidden>
+
+## Going further with occlusion
+
+The example darkens the sky light under each domino and in the narrow gaps of the spirals with [ambient occlusion](/kit/ao/). Without it, the floor under a domino gets as much sky light as open floor, and the dominoes seem to hover a little.
+
+`ao.create` reads a single-sample depth texture drawn before the scene pass. The scene's depth has four samples per pixel. Draw the floor and dominoes again into `early`, a half-resolution `depth32float` target with one sample per pixel. The lighting's `ambient` hook multiplies the sky light by `ao.at`. A `radius` of 2.5 cm, a little under the gap between dominoes, darkens only the creases.
+
+```ts twoslash title="scene.ts"
+// @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-9.ts
+import type { Frame, OrbitCamera, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+import type { Dominoes } from './dominoes.ts';
+import type { createFloor } from './floor.ts';
+import { LIGHT, SHADOW } from './scene.ts';
+declare const root: TgpuRoot, surface: Surface, view: OrbitCamera, frame: Frame;
+declare const floor: ReturnType<typeof createFloor>, dominoes: Dominoes;
+// ---cut---
+import { ao, lighting, passes, shading, targets } from '@typegpu/kit';
+
+const occludedSky = (material: shading.Material, point: shading.Point) => {
+  'use gpu';
+  return shading.hemisphere(material, point) * ao.at(point.position);
+};
+
+// Inside createScene, before the lighting
+const early = targets.create(root, surface, {
+  depth: { format: 'depth32float', scale: 0.5, sampled: true },
+});
+const prepass = passes.create(root, early, { depth: passes.depth }).pipe(view.inject());
+const occlusion = ao.create(root, view, {
+  depth: () => early.textures.depth,
+  settings: { radius: 2.5 },
+});
+const light = lighting.create(root, {
+  settings: LIGHT,
+  shading: { ambient: occludedSky },
+  shadow: SHADOW,
+});
+const shapes = [prepass.add(floor.renderer()), prepass.add(dominoes.set.renderer())];
+
+// Inside frame, after the shadow pass
+prepass.record(frame, shapes);
+occlusion.record(frame);
+```
+
+Give the scene pass `shared: { ao: occlusion.part }` beside `resolve` and `clear`. The scene's pipelines share a layout for the occlusion texture. On resize, the pass binds a group with the new texture and keeps the pipelines. The shared part supplies what `ao.at` reads, so `occludedSky` needs no fill of its own. Fit `early` with `screen`. The example also adds two settings. `occlusion` switches the effect off through the `enabled` option, as [turning it off](/kit/ao/#turning-it-off) describes. `view` shows the occlusion alone in grey through a second final pass, as in [another target](/kit/finish/#another-target).
+
+Compile the helpers before the first frame. Each helper's `initAsync()` compiles its pipelines. Free the targets, buffers and helpers the scene made when it ends:
+
+```ts twoslash title="scene.ts"
+// @filename: ../../packages/typegpu-kit-examples/src/dominoes/scene-tutorial-10.ts
+import {
+  ao,
+  bloom,
+  coroutines,
+  finish,
+  lighting,
+  meshPool,
+  particles,
+  passes,
+  pipelines,
+  targets,
+} from '@typegpu/kit';
+import type { Dominoes } from './dominoes.ts';
+import type { createFloor } from './floor.ts';
+import type { createPicture } from './picture.ts';
+import type { createTopple } from './topple.ts';
+declare const prepass: ReturnType<typeof passes.create>, scene: ReturnType<typeof passes.create>;
+declare const occlusion: ReturnType<typeof ao.create>, light: ReturnType<typeof lighting.create>;
+declare const picture: ReturnType<typeof createPicture>, dust: ReturnType<typeof particles.create>;
+declare const topple: ReturnType<typeof createTopple>, glow: ReturnType<typeof bloom.create>;
+declare const final: ReturnType<typeof finish.create>,
+  occlusionView: ReturnType<typeof finish.create>;
+declare const scheduler: ReturnType<typeof coroutines.create>;
+declare const screen: ReturnType<typeof targets.create>, early: ReturnType<typeof targets.create>;
+declare const floor: ReturnType<typeof createFloor>,
+  dominoes: Dominoes,
+  pool: ReturnType<typeof meshPool.create>;
+// ---cut---
+await pipelines.compile([
+  prepass,
+  occlusion,
+  light,
+  scene,
+  picture,
+  dust,
+  topple,
+  glow,
+  final,
+  occlusionView,
+]);
+
+// ---cut-start---
+const lifecycle = {
+  // ---cut-end---
+  // Inside the scene's return
+  destroy() {
+    for (const made of [
+      scheduler,
+      screen,
+      early,
+      occlusion,
+      light,
+      floor,
+      dominoes,
+      picture,
+      dust,
+      topple,
+      glow,
+      pool,
+    ]) {
+      made.destroy();
+    }
+  },
+  // ---cut-start---
+};
+// ---cut-end---
+```
+
+## What's in the example
+
+<FileTree>
+
+- src/
+  - index.ts `web.host`, the orbit controls, the tap and the panel
+  - scene.ts `createScene(root, surface)` with the camera, lighting, ambient occlusion, automatic playback, values and frame
+  - floor.ts the walnut floor
+  - layout.ts the run's curves, and the list of dominoes with their links
+  - dominoes.ts the dominoes' kind, their mesh and their colours
+  - topple.ts the fall and the rewind, the picker and the push, the counter and the dust
+  - field.ts the portrait's field
+  - picture.ts the kernel that paints a picture onto the field's backs
+  - sunset.ts the picture the portrait starts with
+
+</FileTree>
+
+The example's `scene.ts` also describes the panel controls in `settings.knobs`. The example's page hosts the scene without an `index.ts`.
+
+## Next
+
+Things to try in the example:
+
+- Add a branch of your own in `layOut`. Build a curve with `through`, space dominoes on it with `along`, and link it with `line` to the domino it starts from.
+- In `topple.ts`, lower `CARRY`, the share of its spin a domino hands on, and watch how the wave's speed changes.
+- Raise `SPACING` in `layout.ts` and find how far apart the dominoes can stand before the wave stops.
+
+[Write a module](/tutorials/write-a-module/) of your own and test it.

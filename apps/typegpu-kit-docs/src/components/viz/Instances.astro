@@ -1,0 +1,31 @@
+---
+import { MAX } from './Instances.scene.ts';
+import Slider from './Slider.astro';
+---
+
+<figure class="viz" data-viz="instances">
+  <p class="viz-title">Boxes and spheres in two draws, whatever the count</p>
+  <canvas aria-label="Boxes and spheres moving in a wave across a grid"></canvas>
+  <div class="viz-controls" data-pagefind-ignore>
+    <Slider inline name="count" min={0} max={MAX} value={96} />
+  </div>
+  <figcaption class="viz-caption">
+    <b class="viz-try">Try</b> Change the count to add boxes and spheres without increasing the two draws. Positions update every frame, while live lists update only after the count changes.
+  </figcaption>
+</figure>
+
+<script>
+  import { each, live, reducedMotion, slider } from './figure.ts';
+
+  each('instances', (figure) => {
+    const count = slider(figure, 'count', (value) => {
+      shown.update((scene) => scene.count(value));
+    });
+    const shown = live(
+      figure,
+      () => import('./Instances.scene.ts'),
+      () => ({ motion: !reducedMotion(), count: count.valueAsNumber }),
+      { animate: true, grade: 1 },
+    );
+  });
+</script>
