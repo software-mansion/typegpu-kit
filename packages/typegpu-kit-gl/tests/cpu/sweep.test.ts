@@ -1,6 +1,7 @@
 import { cpuRoot } from './device.ts';
 import { writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
+import { Session } from 'node:inspector/promises';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
@@ -11,7 +12,7 @@ import {
 } from 'typegpu/~internal';
 import { expect, it } from 'vitest';
 import { examples } from '../../../typegpu-kit-examples/src/index.ts';
-import { filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
+import { begin, filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
 import { fromDisk, driven } from '../../../typegpu-kit-examples/tests/utils/examples.ts';
 import { CpuGenerator } from '../../src/cpu/generator.ts';
 import { compile, isCpuModule } from '../../src/cpu/index.ts';
@@ -67,11 +68,34 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         string,
         { calls: number; milliseconds: number; invocations: number }
       >();
+      let steady = false;
+      let profileDispatches = 0;
+      const steadyDispatches: { calls: number; milliseconds: number; invocations: number } = {
+        calls: 0,
+        milliseconds: 0,
+        invocations: 0,
+      };
+      const session = process.env.CPU_PROFILE === '1' ? new Session() : undefined;
+      session?.connect();
+      if (session) {
+        await session.post('Profiler.enable');
+        await session.post('Profiler.start');
+      }
       const root =
         process.env.CPU_EXECUTE === '1'
           ? cpuRoot({
               generator: SweepGenerator,
               onDispatch: (code, milliseconds, invocations) => {
+                if (
+                  process.env.CPU_PROFILE_DISPATCHES &&
+                  ++profileDispatches >= Number(process.env.CPU_PROFILE_DISPATCHES)
+                )
+                  throw new Error('Profile dispatch limit reached');
+                if (steady) {
+                  steadyDispatches.calls++;
+                  steadyDispatches.milliseconds += milliseconds;
+                  steadyDispatches.invocations += invocations;
+                }
                 const previous = dispatched.get(code) ?? {
                   calls: 0,
                   milliseconds: 0,
@@ -114,20 +138,29 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           'quiver-trees': { count: 60 },
           skeletons: { count: 8 },
         };
-        scene = await createScene(root, surface, {
-          ...(await filesOf(example.key, fromDisk)),
-          ...(process.env.CPU_EXECUTE === '1' ? reduced[example.key] : {}),
-        });
+        scene = await begin(
+          await createScene(root, surface, {
+            ...(await filesOf(example.key, fromDisk)),
+            ...(process.env.CPU_EXECUTE === '1' ? reduced[example.key] : {}),
+          }),
+        );
         loop = frames.create(root, scene.frame);
         const driver = driven(loop, scene.ready);
         await driver.warmUp();
+        steady = true;
         await driver.run(2);
+        steady = false;
         const rawCompute = recording.log.shaders.find(
           (code) => !isCpuModule(code) && /@compute\b/.test(code),
         );
         if (rawCompute) throw new Error('Compute module bypassed CpuGenerator: raw WGSL');
         const modules = recording.log.shaders.filter(isCpuModule);
-        for (const code of modules) {
+        for (const [index, code] of modules.entries()) {
+          if (process.env.CPU_DIAGNOSTICS === '1')
+            writeFileSync(
+              new URL(`./${example.key}-${index}.generated.txt`, import.meta.url),
+              code,
+            );
           try {
             compile(code);
           } catch (error) {
@@ -143,6 +176,11 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
+                perFrame: {
+                  dispatches: steadyDispatches.calls / 2,
+                  invocations: steadyDispatches.invocations / 2,
+                  milliseconds: steadyDispatches.milliseconds / 2,
+                },
                 dispatches: [...dispatched].map(([code, timing]) => ({
                   entry: JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name,
                   ...timing,
@@ -168,6 +206,14 @@ it.runIf(process.env.CPU_SWEEP === '1')(
             : {}),
         });
       } finally {
+        if (session) {
+          const { profile } = await session.post('Profiler.stop');
+          await writeFile(
+            new URL(`./${example.key}.cpuprofile`, import.meta.url),
+            JSON.stringify(profile),
+          );
+          session.disconnect();
+        }
         loop?.destroy();
         scene?.destroy?.();
         surface.destroy();

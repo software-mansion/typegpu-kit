@@ -70,9 +70,27 @@ async function sorted(root: TgpuRoot): Promise<number[]> {
   return result;
 }
 
+async function privateBarriers(root: TgpuRoot): Promise<number[]> {
+  const privateState = tgpu.privateVar(d.vec2u);
+  const output = root.createMutable(d.arrayOf(d.vec2u, 16));
+  const kernel = tgpu.computeFn({ workgroupSize: [8], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    privateState.$ = d.vec2u(id.x, id.x + d.u32(7));
+    std.workgroupBarrier();
+    privateState.$ *= d.u32(3);
+    std.workgroupBarrier();
+    output.$[id.x] = privateState.$;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(2);
+  return (await output.read()).flatMap((v) => [v.x, v.y]);
+}
+
 for (const [name, run] of [
   ['composite vectors, barrier exchange, counters', composite],
   ['Kit radix sorter and workgroup reduction', sorted],
+  ['private vector state across barriers', privateBarriers],
 ] as const) {
   it(`matches dawn: ${name}`, async () => {
     const gpu = await gpuRoot();

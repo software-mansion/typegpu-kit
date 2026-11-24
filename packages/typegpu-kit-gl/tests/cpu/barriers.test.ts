@@ -1,3 +1,4 @@
+import { cpuRoot } from './device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -31,5 +32,48 @@ it('waits for every lane before reading shared memory and resets between groups'
   expect(Array.from(new Uint32Array(bytes))).toEqual([
     2, 3, 4, 5, 6, 7, 8, 1, 10, 11, 12, 13, 14, 15, 16, 9,
   ]);
+  root.destroy();
+});
+
+it('keeps private state per invocation across barriers', async () => {
+  const root = cpuRoot();
+  const state = tgpu.privateVar(d.u32);
+  const output = root.createMutable(d.arrayOf(d.u32, 16));
+  const kernel = tgpu.computeFn({ workgroupSize: [8], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    state.$ = id.x + d.u32(7);
+    std.workgroupBarrier();
+    state.$ *= d.u32(3);
+    std.workgroupBarrier();
+    output.$[id.x] = state.$;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(2);
+  expect(await output.read()).toEqual(Array.from({ length: 16 }, (_, i) => (i + 7) * 3));
+  root.destroy();
+});
+
+it('does not mistake names beginning with yield for barriers', () => {
+  let generated = '';
+  const root = cpuRoot({
+    onModule: (code) => {
+      generated = code;
+    },
+  });
+  const yields = tgpu.fn(
+    [d.u32],
+    d.bool,
+  )((value) => {
+    'use gpu';
+    return value > 0;
+  });
+  const output = root.createMutable(d.u32);
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    if (!yields(1)) output.$ = 7;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  expect(generated).not.toContain('"generator":true');
   root.destroy();
 });
