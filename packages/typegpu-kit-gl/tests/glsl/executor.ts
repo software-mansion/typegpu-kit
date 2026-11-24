@@ -6,6 +6,7 @@
 import {
   INVOCATIONS,
   LAYER,
+  LAYERS_PER_DRAW,
   PASS_VERTEX,
   WORKGROUPS,
   type ComputeModule,
@@ -258,20 +259,37 @@ export function dispatch(
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.viewport(0, 0, after.width, after.height);
     gl.disable(gl.BLEND);
-    for (let z = 0; z < after.depth; z++) {
-      if (after.target === gl.TEXTURE_2D) {
-        gl.framebufferTexture2D(
-          gl.FRAMEBUFFER,
-          gl.COLOR_ATTACHMENT0,
-          gl.TEXTURE_2D,
-          after.texture,
-          0,
-        );
-      } else {
-        gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, after.texture, 0, z);
-      }
-      gl.uniform1i(uniform(LAYER), z);
+    if (after.target === gl.TEXTURE_2D) {
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        after.texture,
+        0,
+      );
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.uniform1i(uniform(LAYER), 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else {
+      // A layered target's draw writes `LAYERS_PER_DRAW` layers, one per output
+      for (let z = 0; z < after.depth; z += LAYERS_PER_DRAW) {
+        const buffers: number[] = [];
+        for (let i = 0; i < LAYERS_PER_DRAW; i++) {
+          const point = gl.COLOR_ATTACHMENT0 + i;
+          const inside = z + i < after.depth;
+          gl.framebufferTextureLayer(
+            gl.FRAMEBUFFER,
+            point,
+            inside ? after.texture : null,
+            0,
+            z + i,
+          );
+          buffers.push(inside ? point : gl.NONE);
+        }
+        gl.drawBuffers(buffers);
+        gl.uniform1i(uniform(LAYER), z);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
     }
     gl.deleteFramebuffer(framebuffer);
     results.set(key, after);

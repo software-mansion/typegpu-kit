@@ -20,6 +20,7 @@ import {
   GPU_FORM,
   INVOCATIONS,
   LAYER,
+  LAYERS_PER_DRAW,
   TARGET,
   WORKGROUPS,
 } from './computeModule.ts';
@@ -117,6 +118,8 @@ function texelMapOf(own: Own): TexelMap | undefined {
 const plainMap = (map: TexelMap) => map.every(({ step, r }) => step === 1 && !r);
 
 const GID = 'kit_gid';
+/** The layer of a layered target the pass computes now, of the several one draw writes. */
+const Z = 'kit_z';
 const BEGIN = 'kit_begin';
 const RESULT = 'kit_result';
 
@@ -714,13 +717,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   override initGenerator(ctx: ResolutionCtx): void {
     super.initGenerator(ctx);
-    for (const name of [GID, BEGIN, RESULT, INVOCATIONS, WORKGROUPS, LAYER]) {
+    for (const name of [GID, BEGIN, RESULT, INVOCATIONS, WORKGROUPS, LAYER, Z]) {
       ctx.reserveIdentifier(name, 'global');
     }
     this.chunk(
       'shared',
-      [GID, INVOCATIONS, WORKGROUPS, LAYER],
-      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};`,
+      [GID, INVOCATIONS, WORKGROUPS, LAYER, Z],
+      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};\nint ${Z};`,
     );
   }
 
@@ -1230,7 +1233,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     if (!this.#plan?.columns.has(texture.id)) return `${shadow} = ${value}`;
     const layer = dimension === '3d' ? `${this.ivecOf(args[1], 3)}.z` : this.intOf(args[2]);
-    return `${shadow} = (${layer}) == ${LAYER} ? ${value} : ${shadow}`;
+    return `${shadow} = (${layer}) == ${Z} ? ${value} : ${shadow}`;
   }
 
   /** Whether a store's coordinates own a cell through a texel map; records the map if so. */
@@ -1481,7 +1484,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     for (const texture of this.#textures.values()) {
       const old = this.samplerUniform(texture);
       const cell = this.#columns.has(texture.id)
-        ? `ivec3(ivec2(kit_g.xy), ${LAYER})`
+        ? `ivec3(ivec2(kit_g.xy), ${Z})`
         : this.#ownCell(texture, 'kit_g');
       lines.push(`  ${this.#textureShadow(texture)} = texelFetch(${old}, ${cell}, 0);`);
     }
@@ -1568,7 +1571,6 @@ void main() {
       format,
     ].join(' ');
     const map = this.#maps.get(texture.id);
-    const cell = `uvec3(uvec2(gl_FragCoord.xy), uint(${LAYER}))`;
     const owner: string[] = [];
     if (map) {
       // A coordinate with a residue depends on the others, so it comes last
@@ -1584,14 +1586,21 @@ void main() {
       }
     }
     const gid = column ? 'uvec3(kit_cell.xy, 0u)' : map ? 'uvec3(0u)' : 'kit_cell';
-    const fallback = column
-      ? `ivec3(ivec2(kit_cell.xy), ${LAYER})`
-      : this.#cellOf(texture, 'kit_cell');
-    return `${CHUNK} pass${index} main
+    const fallback = column ? `ivec3(ivec2(kit_cell.xy), ${Z})` : this.#cellOf(texture, 'kit_cell');
+    const type = this.#texelType(texture);
+    // A layered target's draw writes several layers, one output each
+    const { dimension } = texture.kind;
+    const layered = dimension === '2d-array' || dimension === '3d';
+    const outputs = Array.from({ length: layered ? LAYERS_PER_DRAW : 1 }, (_, i) =>
+      layered ? `${RESULT}${i}` : RESULT,
+    );
+    if (!layered) {
+      return `${CHUNK} pass${index} main
 ${target}
-layout(location = 0) out ${this.#texelType(texture)} ${RESULT};
+layout(location = 0) out ${type} ${RESULT};
 void main() {
-  uvec3 kit_cell = ${cell};
+  ${Z} = ${LAYER};
+  uvec3 kit_cell = uvec3(uvec2(gl_FragCoord.xy), uint(${LAYER}));
   uvec3 kit_g = ${gid};
   bool kit_mine = true;
 ${owner.join('\n')}
@@ -1602,6 +1611,26 @@ ${owner.join('\n')}
   ${BEGIN}(kit_g);
   ${kernel}();
   ${RESULT} = ${this.#textureShadow(texture)};
+}`;
+    }
+    return `${CHUNK} pass${index} main
+${target}
+${outputs.map((name, i) => `layout(location = ${i}) out ${type} ${name};`).join('\n')}
+${type} kit_cellAt(int kit_layerHere) {
+  ${Z} = kit_layerHere;
+  uvec3 kit_cell = uvec3(uvec2(gl_FragCoord.xy), uint(kit_layerHere));
+  uvec3 kit_g = ${gid};
+  bool kit_mine = true;
+${owner.join('\n')}
+  if (!kit_mine || any(greaterThanEqual(kit_g, ${INVOCATIONS}))) {
+    return texelFetch(${old}, ${fallback}, 0);
+  }
+  ${BEGIN}(kit_g);
+  ${kernel}();
+  return ${this.#textureShadow(texture)};
+}
+void main() {
+${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n')}
 }`;
   }
 

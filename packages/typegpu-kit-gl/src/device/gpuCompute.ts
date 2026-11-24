@@ -11,6 +11,7 @@ import {
   type ComputeTarget,
   INVOCATIONS,
   LAYER,
+  LAYERS_PER_DRAW,
   PASS_VERTEX,
   WORKGROUPS,
 } from '../glsl/computeModule.ts';
@@ -24,6 +25,7 @@ import {
   glWritten,
   mipSize,
   onGl,
+  replaceStorage,
   type TextureImpl,
   type ViewImpl,
   writeEverything,
@@ -138,6 +140,56 @@ function give(
   pool.set(key, list);
   if (list.length < Math.max(keep, POOLED)) list.push(texture);
   else ctx.gl.deleteTexture(texture);
+}
+
+/** A layered texture of a target's size, for a pass to render every layer of, from the pool. */
+function takeLayered(
+  ctx: Ctx,
+  target: number,
+  internal: number,
+  size: readonly [number, number, number],
+): WebGLTexture {
+  const reused = poolOf(ctx)
+    .get(`${target}:${internal}:${size.join(':')}`)
+    ?.pop();
+  if (reused) return reused;
+  const { gl, state } = ctx;
+  const texture = gl.createTexture();
+  state.scratchTexture(target, texture);
+  gl.texStorage3D(target, 1, internal, ...size);
+  return texture;
+}
+
+function giveLayered(
+  ctx: Ctx,
+  target: number,
+  internal: number,
+  size: readonly [number, number, number],
+  texture: WebGLTexture,
+) {
+  const key = `${target}:${internal}:${size.join(':')}`;
+  const pool = poolOf(ctx);
+  const list = pool.get(key) ?? [];
+  pool.set(key, list);
+  if (list.length < POOLED) list.push(texture);
+  else ctx.gl.deleteTexture(texture);
+}
+
+/**
+ * Whether a pass may render a view's whole texture into new storage that then replaces the old:
+ * a single level, every layer, stored as the view's dimension.
+ */
+function replaceable(gl: WebGL2RenderingContext, view: ViewImpl): boolean {
+  const { texture } = view;
+  const layered = view.dimension === '3d' ? gl.TEXTURE_3D : gl.TEXTURE_2D_ARRAY;
+  return (
+    texture.mipLevelCount === 1 &&
+    texture.sampleCount === 1 &&
+    texture.canvas === undefined &&
+    texture.target === layered &&
+    (view.dimension === '3d' ||
+      (view.baseArrayLayer === 0 && view.arrayLayerCount === texture.depthOrArrayLayers))
+  );
 }
 
 type Resolved =
@@ -278,14 +330,39 @@ export function runGpu(
       internal = view.texture.info.internal;
     }
 
+    // A layered target's pass writes several layers a draw; a whole single-level texture is
+    // rendered into new layered storage that replaces it, and anything else layer by layer
+    const view = resource.kind === 'texture' ? resource.view : undefined;
+    const layered = view?.dimension === '2d-array' || view?.dimension === '3d';
+    const perDraw = layered ? LAYERS_PER_DRAW : 1;
+    const whole = layered && replaceable(gl, view as ViewImpl);
+    const shape = [width, height, layers] as const;
+    const storage = whole
+      ? takeLayered(ctx, (view as ViewImpl).texture.target, internal, shape)
+      : undefined;
     const made: WebGLTexture[] = [];
-    for (let layer = 0; layer < layers; layer++) {
-      const texture = take(ctx, internal, width, height);
+    for (let first = 0; first < layers; first += perDraw) {
       state.drawFramebuffer(ctx.scratch.draw);
-      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-      state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      const buffers: number[] = [];
+      for (let slot = 0; slot < perDraw; slot++) {
+        const point = gl.COLOR_ATTACHMENT0 + slot;
+        const layer = first + slot;
+        if (layer >= layers) {
+          gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, point, gl.TEXTURE_2D, null, 0);
+          buffers.push(gl.NONE);
+        } else if (storage) {
+          gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, point, storage, 0, layer);
+          buffers.push(point);
+        } else {
+          const texture = take(ctx, internal, width, height);
+          gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, point, gl.TEXTURE_2D, texture, 0);
+          buffers.push(point);
+          made.push(texture);
+        }
+      }
+      state.drawBuffers(buffers);
       state.program(pass.program.program);
-      setInt(gl, pass.layer, layer);
+      setInt(gl, pass.layer, first);
       state.vertexArray(null);
       state.viewport(0, 0, width, height);
       writeEverything(ctx);
@@ -302,19 +379,32 @@ export function runGpu(
       }
       // Through `blend`: disabling BLEND as a cap turns off every draw buffer's blending behind
       // the per-buffer cache that render passes rely on
-      state.blend(0, NO_BLEND);
+      for (let slot = 0; slot < perDraw; slot++) state.blend(slot, NO_BLEND);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-      made.push(texture);
+      for (let slot = 0; slot < perDraw; slot++) {
+        gl.framebufferTexture2D(
+          gl.DRAW_FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT0 + slot,
+          gl.TEXTURE_2D,
+          null,
+          0,
+        );
+      }
     }
 
     if (resource.kind === 'buffer') {
       const size = [internal, width, height] as const;
       outputs.push(() => give(ctx, ...size, replaceData(resource.buffer, made[0]!)));
+    } else if (storage) {
+      const { texture } = resource.view;
+      const target = texture.target;
+      outputs.push(() =>
+        giveLayered(ctx, target, internal, shape, replaceStorage(ctx, texture, storage)),
+      );
     } else {
-      const { view } = resource;
+      const { view: stored } = resource;
       outputs.push(() => {
-        const texture = view.texture;
+        const texture = stored.texture;
         made.forEach((value, layer) => {
           const source: TextureImpl = {
             ...texture,
@@ -327,8 +417,8 @@ export function runGpu(
             { texture: source, level: 0, layer: 0, x: 0, y: 0 },
             {
               texture,
-              level: view.baseMipLevel,
-              layer: view.dimension === '3d' ? layer : view.baseArrayLayer + layer,
+              level: stored.baseMipLevel,
+              layer: stored.dimension === '3d' ? layer : stored.baseArrayLayer + layer,
               x: 0,
               y: 0,
             },

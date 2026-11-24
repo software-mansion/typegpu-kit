@@ -38,11 +38,13 @@
  *    (`uvec3`, `x`, `y` and `z`) in every pass.
  * 4. Runs each pass into a new texture of the target's size and format: for a buffer target, a
  *    copy of the shape of the buffer's data texture (`RGBA32UI`, same width and height); for a
- *    texture target, the view's mip level, once per layer or slice of a 2d-array or 3d target with
- *    `kit_layer` (`int`) set to its index, and 0 otherwise. It draws `PASS_VERTEX` as three
- *    vertices with the viewport covering the whole target, no blending, no depth or stencil and no
- *    flip: `gl_FragCoord.xy` is the cell's column and row in memory, row 0 first. Every fragment
- *    is written, so the new texture needs no initial contents.
+ *    texture target, the view's mip level. A 2d-array or 3d target's pass has `LAYERS_PER_DRAW`
+ *    outputs, at locations 0 and up, which hold layers or slices `kit_layer` (`int`) and up; the
+ *    device draws it once per that many layers with `kit_layer` set to the first, and leaves the
+ *    outputs past the last layer unattached. Any other pass has one output, with `kit_layer` 0.
+ *    It draws `PASS_VERTEX` as three vertices with the viewport covering the whole target, no
+ *    blending, no depth or stencil and no flip: `gl_FragCoord.xy` is the cell's column and row in
+ *    memory, row 0 first. Every fragment is written, so the new texture needs no initial contents.
  * 5. After the last pass, replaces each target's contents with its new texture, and treats the
  *    CPU copies of those resources as stale.
  *
@@ -76,6 +78,8 @@ export const TARGET = '//#target';
 export const INVOCATIONS = 'kit_invocations';
 export const WORKGROUPS = 'kit_workgroups';
 export const LAYER = 'kit_layer';
+/** Layers of a 2d-array or 3d target that one draw of its pass writes, as step 4 says. */
+export const LAYERS_PER_DRAW = 4;
 
 /** The vertex stage of every pass: a triangle that covers the viewport, without varyings. */
 export const PASS_VERTEX = `#version 300 es
