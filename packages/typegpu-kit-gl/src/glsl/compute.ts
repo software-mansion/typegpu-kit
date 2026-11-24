@@ -422,6 +422,20 @@ function splitTop(text: string, separator: string): string[] {
   return parts;
 }
 
+/** The terms of a GLSL disjunction, however its `||`s are grouped. */
+function disjuncts(text: string): string[] {
+  const parts = splitTop(unwrap(text), '||');
+  return parts.length === 1 ? parts : parts.flatMap(disjuncts);
+}
+
+/** Whether a statement is a `return`, alone or as a block's only statement. */
+function returns(statement: Statement): boolean {
+  if (!Array.isArray(statement)) return false;
+  if (statement[0] === NODE.return) return true;
+  const body = statement[1] as readonly Statement[];
+  return statement[0] === NODE.block && body.length === 1 && returns(body[0] as Statement);
+}
+
 /** The terms of a GLSL conjunction, however its `&&`s are grouped. */
 function conjuncts(text: string): string[] {
   const parts = splitTop(unwrap(text), '&&');
@@ -673,6 +687,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #captured = new Map<string, string>();
   /** Runtime loops around the statement being generated. */
   #loops = 0;
+  /** `if` statements around the statement being generated. */
+  #branches = 0;
+  /** The condition of an early `return` the entry starts with, before it writes anything. */
+  #exit: Expression | undefined;
+  /** Bounds such returns put on the invocation, by axis: invocations at or past them return. */
+  readonly #bounds = new Map<number, number>();
   /** Whether the write being checked assigns a whole value with `=`. */
   #plain = false;
   readonly #functions = new Set<string>();
@@ -980,11 +1000,25 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       if (statement[0] === NODE.if && statement[3] === undefined) {
         const depth = this.#chosen.length;
         this.#condition = statement[1] as Expression;
+        if (returns(statement[2] as Statement) && this.#beforeWrites()) {
+          this.#exit = statement[1] as Expression;
+        }
+        this.#branches++;
         try {
           return super._statement(statement);
         } finally {
+          this.#branches--;
           this.#condition = undefined;
+          this.#exit = undefined;
           this.#chosen.length = depth;
+        }
+      }
+      if (statement[0] === NODE.if) {
+        this.#branches++;
+        try {
+          return super._statement(statement);
+        } finally {
+          this.#branches--;
         }
       }
     }
@@ -997,6 +1031,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   ): Snippet {
     const result = super._expressionWithTypeConversion(expression, expectedType);
     const frame = this.#frame;
+    if (expression === this.#exit && frame && typeof result.value === 'string') {
+      this.#exit = undefined;
+      this.#boundBy(result.value, frame);
+    }
     if (expression === this.#condition && frame) {
       this.#condition = undefined;
       const choice =
@@ -1102,6 +1140,47 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     this.#recordPlace(place, 'writes');
     return place;
+  }
+
+  /**
+   * Whether the entry returns early for every invocation past a layout's width and height, so
+   * invocations the layout would alias write nothing, and the dispatch may be wider.
+   */
+  #guarded(layout: Layout): boolean {
+    if (layout.width === undefined) return false;
+    const x = this.#bounds.get(0);
+    const y = this.#bounds.get(1);
+    return (
+      x !== undefined &&
+      x <= layout.width &&
+      (layout.height === undefined || (y !== undefined && y <= layout.height))
+    );
+  }
+
+  /** Whether the statement being generated is at the top of the entry, before any write. */
+  #beforeWrites(): boolean {
+    return (
+      this.#frame?.entry === true &&
+      this.#loops === 0 &&
+      this.#branches === 0 &&
+      this.#buffers.size + this.#textures.size + this.#scatters.size === 0
+    );
+  }
+
+  /** Reads an early return's condition for `gid.<axis> >= constant` disjuncts. */
+  #boundBy(condition: string, frame: Frame): void {
+    for (const disjunct of disjuncts(condition.replace(/\s+/g, ''))) {
+      const sides = /^(.*?)(>=|>)(.*)$/.exec(unwrap(disjunct));
+      if (!sides) continue;
+      const [, left, op, right] = sides as unknown as [string, string, string, string];
+      const own = new Arithmetic(left, frame.names).read();
+      const bound = new Arithmetic(right, frame.names).read();
+      const named = Array.isArray(own) ? axesOf(own) : undefined;
+      if (named?.length !== 1 || typeof bound !== 'number') continue;
+      const axis = AXES.indexOf(named);
+      const limit = op === '>' ? bound + 1 : bound;
+      this.#bounds.set(axis, Math.min(this.#bounds.get(axis) ?? limit, limit));
+    }
   }
 
   /**
@@ -1713,8 +1792,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       offset * 4,
       stride * 4,
       d.sizeOf(value as d.AnyData),
-      ...(layout.width === undefined ? [] : [layout.width]),
-      ...(layout.height === undefined ? [] : [layout.height]),
+      ...(this.#guarded(layout) || layout.width === undefined ? [] : [layout.width]),
+      ...(this.#guarded(layout) || layout.height === undefined ? [] : [layout.height]),
     ].join(' ');
     const { chosen } = written;
     const gid = chosen

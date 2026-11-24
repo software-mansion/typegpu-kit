@@ -622,6 +622,24 @@ it('stores a checkerboard a uniform turns', async () => {
   });
 });
 
+it('writes a grid from a dispatch wider than it, past a guard that returns', async () => {
+  const layout = tgpu
+    .bindGroupLayout({ out: { storage: d.arrayOf(d.f32, 40), access: 'mutable' } })
+    .$idx(0);
+  await expectSame({
+    layout,
+    kernel: tgpu.computeFn({ workgroupSize: [4, 2], in: gid })(({ gid: id }) => {
+      'use gpu';
+      if (id.x >= 6 || id.y >= 5) return;
+      layout.$.out[id.y * 6 + id.x] = d.f32(id.x * 10 + id.y);
+    }),
+    workgroups: [2, 3, 1],
+    inputs: {
+      out: { kind: 'buffer', schema: d.arrayOf(d.f32, 40), value: range(40, (i) => -i) },
+    },
+  });
+});
+
 describe('GPU forms with one chosen writer run as WebGPU runs them', () => {
   const Pick = d.struct({ hit: d.u32, at: d.vec2f, count: d.atomic(d.u32) });
   const View = d.struct({ cursor: d.vec2f, size: d.vec2u });
