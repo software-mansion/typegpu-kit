@@ -54,7 +54,9 @@ the target after every pass ran. `device.stats.kernels` names GPU dispatches `<l
 `device.stats.fallbacks` holds why a pipeline runs on the CPU, including the generator's `cpu-only`
 reason. In jump-flood every kernel stays on the CPU: `pipeline` and `clearPipeline` write cells
 other than their own, `placePipeline` and `neighboursPipeline` use atomics, and `computePipeline`
-writes from a helper function.
+writes from a helper function. In classroom `scattering` runs as fragment passes in 1 ms, but
+`summing` stays on the CPU (930 ms a frame; it stores to texels other than its own) and reads the 3D
+texture `scattering` wrote, a 64-slice readback of 60 ms each frame.
 
 ## Contract notes
 
