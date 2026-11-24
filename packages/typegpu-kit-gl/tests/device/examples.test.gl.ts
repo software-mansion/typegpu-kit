@@ -7,7 +7,7 @@ import { runScene } from './scenes.ts';
  * Examples that ship no files and run quickly with CPU compute, as a smoke test of the device under
  * whole scenes. `scripts/examples.ts` runs every example in its page.
  */
-const EXAMPLES = ['blockfall', 'lattice', 'raymarch', 'robot-arm'];
+const EXAMPLES = ['blockfall', 'lattice', 'raymarch', 'robot-arm', 'slime-mould'];
 
 let gpu: TgpuRoot;
 beforeAll(async () => {
