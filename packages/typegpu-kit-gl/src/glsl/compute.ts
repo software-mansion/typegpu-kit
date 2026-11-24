@@ -1177,9 +1177,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       const bound = new Arithmetic(right, frame.names).read();
       const named = Array.isArray(own) ? axesOf(own) : undefined;
       if (named?.length !== 1 || typeof bound !== 'number') continue;
-      const axis = AXES.indexOf(named);
+      const index = AXES.indexOf(named);
       const limit = op === '>' ? bound + 1 : bound;
-      this.#bounds.set(axis, Math.min(this.#bounds.get(axis) ?? limit, limit));
+      this.#bounds.set(index, Math.min(this.#bounds.get(index) ?? limit, limit));
     }
   }
 
