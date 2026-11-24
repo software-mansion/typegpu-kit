@@ -201,6 +201,10 @@ async function visit(browser: Browser, example: string, backend: string): Promis
       });
       // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
       ink = shot.byteLength;
+      // A dev server that reloaded the page after it was ready leaves the cover in the shot
+      if (state === 'ready' && (await page.locator('#cover').count()) > 0) {
+        throw new Error('navigation: the page reloaded after it was ready');
+      }
       break;
     } catch (error) {
       if (attempt < 2 && String(error).includes('navigation')) {

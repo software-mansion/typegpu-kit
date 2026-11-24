@@ -78,6 +78,11 @@ export interface Meta {
   readonly order: number;
   /** Scene option overrides for gallery cards, such as fewer particles. Default none. */
   readonly card?: Readonly<Record<string, unknown>>;
+  /**
+   * Scene option overrides where compute runs on the CPU, as on the WebGL fallback: fewer rows or a
+   * smaller grid for a simulation whose kernels cannot move to fragment passes. Default none.
+   */
+  readonly fallback?: Readonly<Record<string, unknown>>;
   /** Device features the scene uses when the adapter has them, such as `timestamp-query`. Default none. */
   readonly features?: readonly string[];
   /** The page's line of keys and gestures, split at `·`, shown to fine pointers. Default none. */

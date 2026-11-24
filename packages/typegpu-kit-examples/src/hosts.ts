@@ -1,7 +1,7 @@
 // What every host of the examples shares: creating a scene with its files, reading its shape and
 // readings as copyable data, and the warm-up under the loading cover
 
-import type { Surface } from '@typegpu/kit';
+import { backends, type Surface } from '@typegpu/kit';
 import type { Stage } from '@typegpu/kit/hosting';
 import type { TgpuRoot } from 'typegpu';
 import { resolve } from './assets.ts';
@@ -28,7 +28,8 @@ export async function filesOf(key: string, loading: Loading): Promise<object> {
 
 /**
  * Loads the example's files and creates its scene, passing `onProgress` and saying `compiling`
- * through `loading.say`. `options`, such as a card's, override both.
+ * through `loading.say`. Where compute runs on the CPU, the example's `fallback` options size the
+ * scene for it. `options`, such as a card's, override all of these.
  */
 export async function create(
   key: string,
@@ -46,7 +47,9 @@ export async function create(
   say?.('compiling');
   const progress = say ? { onProgress: (done: number) => say(compiling(done)) } : {};
 
-  return begin(await createScene(root, surface, { ...files, ...progress, ...options }));
+  const sized = backends.of(root).compute === 'cpu' ? exampleOf(key).fallback : undefined;
+
+  return begin(await createScene(root, surface, { ...files, ...progress, ...sized, ...options }));
 }
 
 /**
