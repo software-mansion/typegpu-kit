@@ -1,5 +1,6 @@
 import { expandBarrierHelpers, type BarrierHelper } from './phase-helpers.ts';
 import { splitPhases } from './phases.ts';
+import { prunePureLocals } from './dead-locals.ts';
 import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
 import { addressParts, callArguments, lowerReferences } from './references.ts';
 import { layoutOf } from './memory.ts';
@@ -930,6 +931,7 @@ export class CpuGenerator extends WgslGenerator {
         const address = this.#addresses.get(name);
         return address ? readAddress(address) : name;
       });
+      body = prunePureLocals(body, this.#functionEffects);
       this.#functionEffects.set(options.name, this.#effects);
       this.#functionUsed.set(
         options.name,
