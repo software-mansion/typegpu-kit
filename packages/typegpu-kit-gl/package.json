@@ -1,0 +1,41 @@
+{
+  "name": "@typegpu/kit-gl",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A WebGL 2 fallback for TypeGPU Kit: hosts the same scene where WebGPU is missing.",
+  "homepage": "https://docs.swmansion.com/typegpu-kit/",
+  "bugs": "https://github.com/software-mansion/typegpu-kit/issues",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/software-mansion/typegpu-kit.git",
+    "directory": "packages/typegpu-kit-gl"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test:types": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@typegpu/gl": "workspace:*",
+    "tinyest": "0.3.4"
+  },
+  "devDependencies": {
+    "@typegpu/kit": "workspace:*",
+    "@types/node": "catalog:types",
+    "@webgpu/types": "catalog:types",
+    "typegpu": "catalog:",
+    "typescript": "catalog:types",
+    "unplugin-typegpu": "catalog:",
+    "vitest": "catalog:test",
+    "webgpu": "catalog:test"
+  },
+  "peerDependencies": {
+    "@typegpu/kit": "workspace:^",
+    "typegpu": "^0.12.11"
+  }
+}

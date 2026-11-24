@@ -290,7 +290,7 @@ function correspondingBooleanVectorSchema(dataType: d.BaseData) {
   );
 }
 
-function resolveArraySizeSuffix(ctx: ResolutionCtx, schema: d.BaseData | UnknownData) {
+function resolveArraySizeSuffix(_ctx: ResolutionCtx, schema: d.BaseData | UnknownData) {
   let suffix = '';
   let current = schema;
   while (typeof current !== 'symbol' && current.type === 'array') {

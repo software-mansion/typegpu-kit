@@ -42,6 +42,7 @@ export default defineConfig({
     'apps/typegpu-kit-native/vendor/**',
     'packages/typegpu-kit/src/geometry/**',
     'packages/typegpu-kit/src/sort/**',
+    'packages/typegpu-gl/src/**',
   ],
   overrides: [
     {

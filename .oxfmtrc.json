@@ -9,6 +9,7 @@
     "packages/typegpu-kit/api/**",
     "packages/typegpu-kit/fonts/**",
     "packages/typegpu-kit/src/geometry/**",
-    "packages/typegpu-kit/src/sort/**"
+    "packages/typegpu-kit/src/sort/**",
+    "packages/typegpu-gl/src/**"
   ]
 }

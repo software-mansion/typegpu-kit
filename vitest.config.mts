@@ -10,6 +10,8 @@ export default defineConfig({
     projects: (
       [
         ['packages/typegpu-kit', true],
+        ['packages/typegpu-gl', false],
+        ['packages/typegpu-kit-gl', true],
         ['packages/typegpu-kit-examples', true],
         ['packages/typegpu-kit-pull', true],
         ['packages/typegpu-create-kit', true],
