@@ -29,6 +29,10 @@ export interface GLState {
   drawFramebuffer(framebuffer: WebGLFramebuffer | null): void;
   readFramebuffer(framebuffer: WebGLFramebuffer | null): void;
   arrayBuffer(buffer: WebGLBuffer | null): void;
+  /** Binds the index buffer of the bound vertex array, which keeps it as its own state. */
+  elementBuffer(buffer: WebGLBuffer | null): void;
+  /** Binds a range of a uniform buffer to a uniform block binding point. */
+  uniformRange(point: number, buffer: WebGLBuffer, offset: number, size: number): void;
   texture(unit: number, target: number, texture: WebGLTexture | null): void;
   sampler(unit: number, sampler: WebGLSampler | null): void;
   /** Binds `texture` on the unit the device keeps for uploads and parameter changes. */
@@ -57,6 +61,16 @@ export interface GLState {
 
 const FULL_MASK = 0xf;
 
+/** Whether `cache` holds these four values already; stores them when it does not. */
+function same(cache: number[], a: number, b: number, c: number, d: number): boolean {
+  if (cache[0] === a && cache[1] === b && cache[2] === c && cache[3] === d) return true;
+  cache[0] = a;
+  cache[1] = b;
+  cache[2] = c;
+  cache[3] = d;
+  return false;
+}
+
 export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLState {
   const indexed = ext.drawBuffersIndexed;
   const maxDrawBuffers = gl.getParameter(gl.MAX_DRAW_BUFFERS) as number;
@@ -67,6 +81,8 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
   let drawFbo: WebGLFramebuffer | null | undefined;
   let readFbo: WebGLFramebuffer | null | undefined;
   let arrayBuffer: WebGLBuffer | null | undefined;
+  const elements = new Map<WebGLVertexArrayObject | null, WebGLBuffer | null>();
+  const ranges: ({ buffer: WebGLBuffer; offset: number; size: number } | undefined)[] = [];
   let activeUnit = -1;
   const textures = new Map<number, WebGLTexture | null>();
   const samplers = new Map<number, WebGLSampler | null>();
@@ -80,10 +96,11 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
   let cull: number | undefined;
   let front: number | undefined;
   let offset = '';
-  let viewport = '';
-  let scissor = '';
-  let range = '';
-  let constant = '';
+  // Last values of per-draw state, compared without building keys
+  const viewport = [NaN, NaN, NaN, NaN];
+  const scissor = [NaN, NaN, NaN, NaN];
+  const range = [NaN, NaN, NaN, NaN];
+  const constant = [NaN, NaN, NaN, NaN];
   let unpackKey = '';
 
   const reset = () => {
@@ -92,6 +109,8 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     drawFbo = undefined;
     readFbo = undefined;
     arrayBuffer = undefined;
+    elements.clear();
+    ranges.length = 0;
     activeUnit = -1;
     textures.clear();
     samplers.clear();
@@ -105,10 +124,7 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     cull = undefined;
     front = undefined;
     offset = '';
-    viewport = '';
-    scissor = '';
-    range = '';
-    constant = '';
+    for (const cache of [viewport, scissor, range, constant]) cache.fill(NaN);
     unpackKey = '';
   };
 
@@ -180,6 +196,20 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
       if (readFbo === value) return;
       readFbo = value;
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, value);
+    },
+
+    elementBuffer(value) {
+      const key = vao ?? null;
+      if (vao !== undefined && elements.get(key) === value) return;
+      elements.set(key, value);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, value);
+    },
+
+    uniformRange(point, buffer, start, size) {
+      const last = ranges[point];
+      if (last && last.buffer === buffer && last.offset === start && last.size === size) return;
+      ranges[point] = { buffer, offset: start, size };
+      gl.bindBufferRange(gl.UNIFORM_BUFFER, point, buffer, start, size);
     },
 
     arrayBuffer(value) {
@@ -294,30 +324,22 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     },
 
     viewport(x, y, width, height) {
-      const key = `${x},${y},${width},${height}`;
-      if (viewport === key) return;
-      viewport = key;
+      if (same(viewport, x, y, width, height)) return;
       gl.viewport(x, y, width, height);
     },
 
     scissor(x, y, width, height) {
-      const key = `${x},${y},${width},${height}`;
-      if (scissor === key) return;
-      scissor = key;
+      if (same(scissor, x, y, width, height)) return;
       gl.scissor(x, y, width, height);
     },
 
     depthRange(near, far) {
-      const key = `${near},${far}`;
-      if (range === key) return;
-      range = key;
+      if (same(range, near, far, 0, 0)) return;
       gl.depthRange(near, far);
     },
 
     blendColor(r, g, b, a) {
-      const key = `${r},${g},${b},${a}`;
-      if (constant === key) return;
-      constant = key;
+      if (same(constant, r, g, b, a)) return;
       gl.blendColor(r, g, b, a);
     },
 

@@ -95,12 +95,12 @@ export function indexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
   let copy = buffer.index;
   if (!copy) {
     const value = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, value);
+    ctx.state.elementBuffer(value);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, buffer.bytes, gl.DYNAMIC_DRAW);
     copy = buffer.index = { value, start: Infinity, end: 0 };
     return value;
   }
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, copy.value);
+  ctx.state.elementBuffer(copy.value);
   if (copy.start < copy.end) {
     gl.bufferSubData(
       gl.ELEMENT_ARRAY_BUFFER,
@@ -130,6 +130,7 @@ export function bindUniformRange(
   const { gl } = ctx;
   buffer.sync();
   const upload = (copy: Copy<WebGLBuffer>, base: number, length: number) => {
+    if (copy.start >= copy.end) return;
     gl.bindBuffer(gl.UNIFORM_BUFFER, copy.value);
     const start = Math.max(copy.start, base);
     const end = Math.min(copy.end, base + length, buffer.bytes.length);
@@ -148,7 +149,7 @@ export function bindUniformRange(
     } else {
       upload(copy, 0, buffer.bytes.length);
     }
-    gl.bindBufferRange(gl.UNIFORM_BUFFER, point, copy.value, offset, size);
+    ctx.state.uniformRange(point, copy.value, offset, size);
     return;
   }
   const key = `${offset}:${size}`;
@@ -161,7 +162,7 @@ export function bindUniformRange(
     buffer.slices.set(key, slice);
   }
   upload(slice, offset, size);
-  gl.bindBufferRange(gl.UNIFORM_BUFFER, point, slice.value, 0, size);
+  ctx.state.uniformRange(point, slice.value, 0, size);
 }
 
 /** The data texture a shader reads the buffer through, current. */
