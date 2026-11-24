@@ -10,6 +10,14 @@ afterEach(() => device?.destroy());
 const FULLSCREEN = `  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
   gl_Position = vec4(p, 0.0, 1.0);`;
 
+function pixels(canvas: HTMLCanvasElement) {
+  const copy = new OffscreenCanvas(canvas.width, canvas.height).getContext('2d', {
+    willReadFrequently: true,
+  })!;
+  copy.drawImage(canvas, 0, 0);
+  return Array.from(copy.getImageData(0, 0, 1, 1).data);
+}
+
 function target(size = 4) {
   return device.createTexture({
     size: [size, size],
@@ -248,13 +256,6 @@ describe('compute and passes', () => {
         })
         .end();
       device.queue.submit([encoder.finish()]);
-    };
-    const pixels = (canvas: HTMLCanvasElement) => {
-      const copy = new OffscreenCanvas(canvas.width, canvas.height).getContext('2d', {
-        willReadFrequently: true,
-      })!;
-      copy.drawImage(canvas, 0, 0);
-      return Array.from(copy.getImageData(0, 0, 1, 1).data);
     };
     clear(ownContext, [0, 1, 0, 1]);
     await Promise.resolve();
