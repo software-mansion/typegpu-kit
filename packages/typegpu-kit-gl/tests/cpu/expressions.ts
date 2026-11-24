@@ -107,7 +107,7 @@ export async function expressionValues(root: TgpuRoot): Promise<number[]> {
       'matrices',
       'output',
       `${transformed.code}\nreturn kernel;`,
-    )(d, std, input, matrices, output) as (input: { gid: d.v3u }) => void;
+    )(d, std, input, matrices, output) as (input: { gid: d.v3u }) => undefined;
     const kernel = tgpu.computeFn({
       workgroupSize: [4],
       in: { gid: d.builtin.globalInvocationId },

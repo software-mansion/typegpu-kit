@@ -32,6 +32,13 @@ function scalar(schema: d.BaseData | symbol): string {
 export class CpuGenerator extends WgslGenerator {
   override languageKey = 'javascript';
   #functions = new Set<string>();
+  #functionEffects = new Map<string, boolean>();
+  #vectorReturns = new Map<
+    string,
+    { schema: d.BaseData; parameters: string[]; components: string[] }
+  >();
+  #functionUsed = new Map<string, boolean[]>();
+  #effects = false;
   #functionVectors = new Map<string, (number | undefined)[]>();
   #functionArguments = new Map<string, d.BaseData[]>();
   #privateResets: string[] = [];
@@ -363,6 +370,7 @@ export class CpuGenerator extends WgslGenerator {
     const [callee, args] = parameters;
     const name = String(callee);
     if (name.startsWith('atomic')) {
+      this.#effects = true;
       const target = lowerReferences(this.#value(args[0]!));
       const parts = addressParts(target);
       const object =
@@ -415,6 +423,7 @@ export class CpuGenerator extends WgslGenerator {
       );
     }
     if (name === 'workgroupUniformLoad') {
+      this.#effects = true;
       let type = args[0]!.dataType as d.BaseData;
       if (d.isPtr(type)) type = type.inner;
       if (d.isAtomic(type)) type = type.inner;
@@ -462,7 +471,10 @@ export class CpuGenerator extends WgslGenerator {
     )
       return result;
     if (name === 'copy') return this.typeInstantiation(result.dataType as d.BaseData, args);
-    if (['workgroupBarrier', 'storageBarrier', 'textureBarrier'].includes(name)) return result;
+    if (['workgroupBarrier', 'storageBarrier', 'textureBarrier'].includes(name)) {
+      this.#effects = true;
+      return result;
+    }
     if (Object.values(std).includes(callee as never)) {
       return snip(
         this.emitCall(name, [], args),
@@ -488,7 +500,8 @@ export class CpuGenerator extends WgslGenerator {
         this.emitCall(resolvedName, [], converted),
         result.dataType,
         result.origin,
-        result.possibleSideEffects,
+        (this.#functionEffects.get(resolvedName) ?? true) ||
+          args.some((arg) => arg.possibleSideEffects),
       );
     }
     return result;
@@ -766,6 +779,8 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   override functionDefinition(options: FunctionDefinitionOptions): string {
+    const previousEffects = this.#effects;
+    this.#effects = false;
     const previousVectors = this.#vectors;
     const previousAddresses = this.#addresses;
     const previousOwnedLocals = this.#ownedLocals;
@@ -853,6 +868,11 @@ export class CpuGenerator extends WgslGenerator {
         const address = this.#addresses.get(name);
         return address ? readAddress(address) : name;
       });
+      this.#functionEffects.set(options.name, this.#effects);
+      this.#functionUsed.set(
+        options.name,
+        options.args.map((arg) => arg.used),
+      );
       const returnType = options.determineReturnType();
       if (
         generator &&
@@ -865,6 +885,16 @@ export class CpuGenerator extends WgslGenerator {
         });
       this.emitTypeAnnotation(returnType);
       const args = options.args.filter((arg) => arg.used || options.functionType === 'normal');
+      const vectorReturn = /^\{\s*return \$vector\(\[([\s\S]*)\]\);\s*}$/.exec(body);
+      if (!this.#effects && /^vec[234][fui]$/.test(scalar(returnType)) && vectorReturn) {
+        const components = callArguments(`value(${vectorReturn[1]})`);
+        if (components.length === Number(scalar(returnType)[3]))
+          this.#vectorReturns.set(options.name, {
+            schema: returnType,
+            parameters: args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]),
+            components,
+          });
+      }
       if (options.functionType === 'normal') {
         return `function${generator ? '*' : ''} ${options.name}(${args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]).join(',')}) ${body || '{}'}`;
       }
@@ -902,6 +932,7 @@ export class CpuGenerator extends WgslGenerator {
         : undefined;
       return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
     } finally {
+      this.#effects = previousEffects;
       this.#vectors = previousVectors;
       this.#addresses = previousAddresses;
       this.#ownedLocals = previousOwnedLocals;
@@ -910,6 +941,11 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
+    if (
+      (op === '=' || (op.endsWith('=') && !['==', '!=', '<=', '>='].includes(op))) &&
+      lhs.origin !== 'local-def'
+    )
+      this.#effects = true;
     const type = scalar(lhs.dataType);
     const rhsType = scalar(rhs.dataType);
     const leftParts = this.#parts(lhs),
@@ -1073,6 +1109,7 @@ export class CpuGenerator extends WgslGenerator {
       const match = /^bitcast(F32|I32|U32)to(F32|I32|U32)$/.exec(name)!;
       return `$bits.${match[1]!.toLowerCase()}_${match[2]!.toLowerCase()}(${this.#value(args[0]!)})`;
     }
+    if (name === 'textureStore') this.#effects = true;
     if (name.startsWith('texture')) {
       const supported = [
         'textureLoad',
@@ -1109,9 +1146,36 @@ export class CpuGenerator extends WgslGenerator {
     if (templates.length) unsupported(`template call ${name}`);
     const values = args.map((arg) => this.#value(arg));
     if (this.#functions.has(name)) {
+      if (this.#functionEffects.get(name) ?? true) this.#effects = true;
+      const used = this.#functionUsed.get(name);
+      const ignored = args.map((arg, i) => used?.[i] === false && !arg.possibleSideEffects);
       const widths = this.#functionVectors.get(name) ?? [];
       const parts = args.map((arg) => this.#parts(arg));
+      const inline = this.#vectorReturns.get(name);
+      if (inline && args.every((arg, i) => !arg.possibleSideEffects && (!widths[i] || parts[i]))) {
+        const expanded = args.flatMap((_arg, i) => (widths[i] ? parts[i]! : [values[i]!]));
+        if (
+          expanded.every(
+            (value) => /^[\w$.[\]()+\-*/%<>&|^ ]+$/.test(value) && !/[\w$]\(/.test(value),
+          )
+        ) {
+          const replacements = new Map(
+            inline.parameters.map((parameter, i) => [parameter, `(${expanded[i]})`]),
+          );
+          return this.#vector(
+            inline.schema,
+            inline.components.map((component) =>
+              component.replace(
+                /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_$][\w$]*/g,
+                (token, at: number) =>
+                  component[at - 1] === '.' ? token : (replacements.get(token) ?? token),
+              ),
+            ),
+          );
+        }
+      }
       const copied = args.map((arg, i) => {
+        if (ignored[i]) return 'undefined';
         const type = scalar(arg.dataType);
         const value = values[i]!;
         if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
@@ -1129,7 +1193,7 @@ export class CpuGenerator extends WgslGenerator {
         return value;
       });
       if (args.every((arg, i) => !widths[i] || (parts[i] && !arg.possibleSideEffects)))
-        return `${name}(${args.flatMap((_, i) => (widths[i] ? parts[i]! : [copied[i]!])).join(',')})`;
+        return `${name}(${args.flatMap((_, i) => (widths[i] ? (ignored[i] ? Array<string>(widths[i]!).fill('0') : parts[i]!) : [copied[i]!])).join(',')})`;
       // Evaluate all arguments in their original order before expanding vector components.
       const temporaries = args.map(() => this.ctx.makeUniqueIdentifier('cpuPassed', 'global'));
       const expanded = temporaries.flatMap((temporary, i) =>

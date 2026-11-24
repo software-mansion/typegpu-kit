@@ -138,3 +138,41 @@ export async function vectorPrecedence(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return (await output.read()).flatMap((v) => [v.x, v.y, v.z]);
 }
+
+export async function callEffects(root: TgpuRoot): Promise<number[]> {
+  const state = tgpu.privateVar(d.u32);
+  const source = root.createMutable(d.vec2u, d.vec2u(4, 5));
+  const output = root.createMutable(d.arrayOf(d.u32, 3));
+  const load = tgpu.fn(
+    [],
+    d.vec2u,
+  )(() => {
+    'use gpu';
+    return d.vec2u(source.$);
+  });
+  const change = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    state.$ += d.u32(1);
+    source.$ = d.vec2u(99);
+    return d.u32(0);
+  });
+  const take = tgpu.fn(
+    [d.vec2u, d.u32],
+    d.vec2u,
+  )((value, _unused) => {
+    'use gpu';
+    return d.vec2u(value);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const before = take(load(), change());
+    output.$[0] = before.x;
+    output.$[1] = before.y;
+    output.$[2] = state.$;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return output.read();
+}

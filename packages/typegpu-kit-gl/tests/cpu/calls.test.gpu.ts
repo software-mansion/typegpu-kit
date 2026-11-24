@@ -6,6 +6,7 @@ import {
   callValues,
   callLocalSnapshot,
   vectorPrecedence,
+  callEffects,
 } from './calls.ts';
 import { cpuRoot } from './device.ts';
 
@@ -19,6 +20,7 @@ it('matches dawn for helper argument order, composite snapshots and vector barri
       callSwizzles,
       callLocalSnapshot,
       vectorPrecedence,
+      callEffects,
     ]) {
       const expected = await run(gpu);
       const actual = await run(cpu);
