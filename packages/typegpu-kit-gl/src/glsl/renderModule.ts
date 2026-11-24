@@ -34,6 +34,19 @@ export interface TextureBinding {
   readonly multisampled: boolean;
 }
 
+/**
+ * A small uniform buffer a shader reads from a std140 uniform block: one `uvec4` array that holds
+ * the bound range's words, so the WGSL layout is the only layout.
+ */
+export interface BlockBinding {
+  readonly group: number;
+  readonly binding: number;
+  /** The uniform block's name. */
+  readonly block: string;
+  /** The block's size in bytes, the buffer's size rounded up to 16. The bound range covers it. */
+  readonly size: number;
+}
+
 /** An `int` uniform the device sets to the mip level count of the view bound at a binding. */
 export interface LevelCountBinding {
   readonly group: number;
@@ -47,7 +60,10 @@ export interface RenderModule {
   readonly vertex: string;
   /** Complete GLSL ES 3.00 fragment source. Absent for a depth-only pipeline's module. */
   readonly fragment: string | undefined;
+  /** Buffers read through data textures. */
   readonly buffers: readonly BufferBinding[];
+  /** Uniform buffers read through uniform blocks. `parse` always sets it. */
+  readonly blocks?: readonly BlockBinding[];
   readonly textures: readonly TextureBinding[];
   /** Views whose level count a shader reads with `textureNumLevels`. */
   readonly levels: readonly LevelCountBinding[];
@@ -67,6 +83,7 @@ export interface ParseOptions {
 export const HEADER = '//#kit-gl render';
 export const CHUNK = '//#chunk';
 export const BUFFER = '//#buffer';
+export const BLOCK = '//#block';
 export const TEXTURE = '//#texture';
 export const LEVELS = '//#levels';
 
@@ -108,7 +125,32 @@ interface Chunk {
   readonly uses: ReadonlySet<string>;
 }
 
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/g;
+/** Identifiers, without the member names that follow a `.`, which name no declaration. */
+const IDENTIFIER = /(?<![.\w])[A-Za-z_]\w*/g;
+
+const STRUCT = /^struct \w+ \{/;
+const MEMBER_TYPE = /^\s*(\w+)\s+\w+(?:\[\d+\])?;/gm;
+/** A type followed by a name it declares: a parameter, a local or a global. */
+const DECLARATION = /(?<![.\w])([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(?=[=;[,)])/g;
+const NOT_TYPES = new Set(['return', 'else', 'case', 'in', 'out', 'inout', 'flat', 'centroid']);
+
+/**
+ * The global names a chunk may refer to: its identifiers, less the members of a struct it declares
+ * and the parameters and locals of a function, whose names can repeat a global's.
+ */
+function usesOf(code: string): Set<string> {
+  if (STRUCT.test(code)) {
+    return new Set(Array.from(code.matchAll(MEMBER_TYPE), (match) => match[1] as string));
+  }
+  const uses = new Set(code.match(IDENTIFIER) ?? []);
+  const body = code.indexOf('{');
+  if (body >= 0) {
+    for (const [, type, name] of code.matchAll(DECLARATION)) {
+      if (!NOT_TYPES.has(type as string)) uses.delete(name as string);
+    }
+  }
+  return uses;
+}
 
 function chunksOf(code: string): Chunk[] {
   const chunks: Chunk[] = [];
@@ -119,7 +161,7 @@ function chunksOf(code: string): Chunk[] {
   const close = () => {
     if (!current) return;
     const text = current.lines.join('\n').trim();
-    const uses = new Set(text.replace(/\/\/.*$/gm, '').match(IDENTIFIER) ?? []);
+    const uses = usesOf(text.replace(/\/\/.*$/gm, ''));
     chunks.push({ ...current, code: text, uses });
   };
 
@@ -196,6 +238,7 @@ export function parse(code: string, options: ParseOptions = {}): RenderModule {
   const fragmentChunks = hasFragment ? reachable(chunks, 'fragment') : [];
 
   const buffers = new Map<string, BufferBinding>();
+  const blocks = new Map<string, BlockBinding>();
   const textures = new Map<string, TextureBinding>();
   const levels = new Map<string, LevelCountBinding>();
   for (const chunk of new Set([...vertexChunks, ...fragmentChunks])) {
@@ -209,6 +252,14 @@ export function parse(code: string, options: ParseOptions = {}): RenderModule {
           access: access as BufferBinding['access'],
           texture: texture as string,
           range: range as string,
+        });
+      } else if (kind === BLOCK) {
+        const [group, binding, block, size] = parts;
+        blocks.set(block as string, {
+          group: int(group, line),
+          binding: int(binding, line),
+          block: block as string,
+          size: int(size, line),
         });
       } else if (kind === TEXTURE) {
         const [group, binding, uniform, dimension, sampleType, comparison, multisampled, sg, sb] =
@@ -239,6 +290,7 @@ export function parse(code: string, options: ParseOptions = {}): RenderModule {
     vertex: source(vertexChunks, defines),
     fragment: hasFragment ? source(fragmentChunks, defines) : undefined,
     buffers: [...buffers.values()],
+    blocks: [...blocks.values()],
     textures: [...textures.values()],
     levels: [...levels.values()],
   };

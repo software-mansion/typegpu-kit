@@ -18,6 +18,7 @@ import {
 } from 'typegpu/~internal';
 import {
   BASE_VERTEX,
+  BLOCK,
   BUFFER,
   CHUNK,
   CLIP_ZERO_TO_ONE,
@@ -131,12 +132,36 @@ export function memberName(prop: string): string {
 const unsupported = (feature: string): Error =>
   new Error(`@typegpu/kit-gl: ${feature} is not available in WebGL 2 render stages.`);
 
+/** Reads a buffer's words, which come four to a `uvec4`. */
+interface Source {
+  /** Loaders are made once per key. */
+  readonly key: string;
+  /** The parameter loaders for this source take, if any, and what a caller passes for it. */
+  readonly parameter: string;
+  readonly argument: string;
+  /** The source as code inside a loader sees it. */
+  inLoader(): Source;
+  texel(index: string): string;
+  word(address: string): string;
+  word2(address: string): string;
+}
+
 interface BufferInfo {
   readonly id: string;
-  readonly range: string;
+  /** The `uvec2` range uniform of a buffer read from a data texture. */
+  readonly range?: string;
   readonly access: BufferAccess;
   readonly schema: d.BaseData;
+  readonly source: Source;
+  /** The first word of the bound range. */
+  readonly base: string;
 }
+
+/**
+ * The largest uniform buffer read from a uniform block, the size WebGL 2 guarantees. Blocks keep
+ * texture units free, of which WebGL 2 guarantees 16 to a stage.
+ */
+const MAX_BLOCK_SIZE = 16384;
 
 interface HandleInfo {
   readonly id: string;
@@ -281,7 +306,7 @@ export class KitGlslGenerator extends GlslGenerator {
   readonly #samplers = new Map<string, HandleInfo>();
   readonly #combined = new Map<string, string>();
   readonly #levels = new Map<string, string>();
-  readonly #loaders = new Map<d.BaseData, string>();
+  readonly #loaders = new Map<string, Map<d.BaseData, string>>();
   readonly #helpers = new Set<string>();
   readonly #variants = new Map<unknown, Map<string, unknown[]>>();
   readonly #tags = new Map<d.BaseData, Map<string, d.BaseData>>();
@@ -428,19 +453,41 @@ export class KitGlslGenerator extends GlslGenerator {
 
   #declareBuffer(options: VariableDefinitionOptions, access: BufferAccess): ResolvedSnippet {
     const { id, dataType } = options;
-    const range = this.ctx.makeUniqueIdentifier(`${id}_range`, 'global');
-    this.#chunk(
-      'shared',
-      [id, range],
-      `uniform highp usampler2D ${id};\nuniform highp uvec2 ${range};`,
-      [`${BUFFER} ${options.group} ${options.binding} ${access} ${id} ${range}`],
-    );
-    const buffer: BufferInfo = { id, range, access, schema: dataType };
-    const root = this.#placeSnippet({ buffer, address: `${range}.x`, schema: dataType });
+    const size = d.sizeOf(dataType as d.AnyData);
+    let buffer: BufferInfo;
+    if (access === 'uniform' && size > 0 && size <= MAX_BLOCK_SIZE) {
+      const block = this.ctx.makeUniqueIdentifier(`${id}_block`, 'global');
+      const vectors = Math.ceil(size / 16);
+      this.#chunk(
+        'shared',
+        [block, id],
+        `layout(std140) uniform ${block} {\n  uvec4 ${id}[${vectors}];\n};`,
+        [`${BLOCK} ${options.group} ${options.binding} ${block} ${vectors * 16}`],
+      );
+      buffer = { id, access, schema: dataType, source: this.#blockSource(id), base: '0u' };
+    } else {
+      const range = this.ctx.makeUniqueIdentifier(`${id}_range`, 'global');
+      this.#chunk(
+        'shared',
+        [id, range],
+        `uniform highp usampler2D ${id};\nuniform highp uvec2 ${range};`,
+        [`${BUFFER} ${options.group} ${options.binding} ${access} ${id} ${range}`],
+      );
+      buffer = {
+        id,
+        range,
+        access,
+        schema: dataType,
+        source: this.#textureSource(id),
+        base: `${range}.x`,
+      };
+    }
+    const root = this.#placeSnippet({ buffer, address: buffer.base, schema: dataType });
     return snip(root.value as string, dataType, access) as ResolvedSnippet;
   }
 
-  #texelHelpers() {
+  /** Words from a data texture: `texture` is the global, or a loader's `t` parameter. */
+  #textureSource(texture: string): Source {
     this.#helper(
       'kit_texel',
       `uvec4 kit_texel(highp usampler2D t, uint i) {
@@ -462,13 +509,41 @@ export class KitGlslGenerator extends GlslGenerator {
   return (a & 2u) == 0u ? texel.xy : texel.zw;
 }`,
     );
+    return {
+      key: 'texture',
+      parameter: 'highp usampler2D t',
+      argument: texture,
+      inLoader: () => this.#textureSource('t'),
+      texel: (i) => `kit_texel(${texture}, ${i})`,
+      word: (a) => `kit_word(${texture}, ${a})`,
+      word2: (a) => `kit_word2(${texture}, ${a})`,
+    };
   }
 
-  /** A GLSL expression that reads `schema` from data texture `t` at word `address`. */
-  #load(t: string, address: string, schema: d.BaseData, owner: string): string {
+  /** Words from the `uvec4` array of a uniform block, which loaders read by name. */
+  #blockSource(words: string): Source {
+    this.#helper('kit_pick', 'uint kit_pick(uvec4 v, uint a) {\n  return v[a & 3u];\n}');
+    this.#helper(
+      'kit_pick2',
+      'uvec2 kit_pick2(uvec4 v, uint a) {\n  return (a & 2u) == 0u ? v.xy : v.zw;\n}',
+    );
+    const source: Source = {
+      key: words,
+      parameter: '',
+      argument: '',
+      inLoader: () => source,
+      texel: (i) => `${words}[${i}]`,
+      word: (a) => `kit_pick(${words}[(${a}) >> 2u], ${a})`,
+      word2: (a) => `kit_pick2(${words}[(${a}) >> 2u], ${a})`,
+    };
+    return source;
+  }
+
+  /** A GLSL expression that reads `schema` from `source` at word `address`. */
+  #load(source: Source, address: string, schema: d.BaseData, owner: string): string {
     const data = undecorate(schema);
     const type = data.type as string;
-    if (d.isAtomic(data)) return this.#load(t, address, data.inner as d.BaseData, owner);
+    if (d.isAtomic(data)) return this.#load(source, address, data.inner as d.BaseData, owner);
     if (d.isWgslArray(data) && data.elementCount === 0) {
       return `${UNLOADABLE}${owner}_${this.#temporaries++}`;
     }
@@ -476,74 +551,78 @@ export class KitGlslGenerator extends GlslGenerator {
     if (type === 'bool' || (type.startsWith('vec') && type.endsWith('b'))) {
       throw unsupported('A bool in a buffer');
     }
-    this.#texelHelpers();
-    const a = `(${address})`;
     if (type === 'f32' || type === 'i32' || type === 'u32') {
-      return cast(`kit_word(${t}, ${address})`, type[0] as string, 1);
+      return cast(source.word(address), type[0] as string, 1);
     }
     const vec = /^vec([234])([fiu])$/.exec(type);
     if (vec) {
       const size = Number(vec[1]);
       const raw =
         size === 2
-          ? `kit_word2(${t}, ${address})`
-          : `kit_texel(${t}, ${a} >> 2u)${size === 3 ? '.xyz' : ''}`;
+          ? source.word2(address)
+          : `${source.texel(`(${address}) >> 2u`)}${size === 3 ? '.xyz' : ''}`;
       return cast(raw, vec[2] as string, size);
     }
-    return `${this.#loader(data)}(${t}, ${address})`;
+    const loader = this.#loader(data, source);
+    return `${loader}(${[source.argument, address].filter(Boolean).join(', ')})`;
   }
 
-  /** The name of a function that reads a matrix, struct or fixed-size array. */
-  #loader(data: d.BaseData): string {
-    const known = this.#loaders.get(data);
+  /** The name of a function that reads a matrix, struct or fixed-size array from a source. */
+  #loader(data: d.BaseData, outer: Source): string {
+    let byType = this.#loaders.get(outer.key);
+    if (!byType) {
+      byType = new Map();
+      this.#loaders.set(outer.key, byType);
+    }
+    const known = byType.get(data);
     if (known) return known;
 
+    const source = outer.inLoader();
     const type = this.ctx.resolve(data).value;
     const mat = /^mat([234])x([234])f$/.exec(data.type as string);
-    let name: string;
+    let suffix = '';
+    let base: string;
     let body: string;
     if (mat) {
       const columns = Number(mat[1]);
       const rows = Number(mat[2]);
       const stride = rows === 2 ? 2 : 4;
       const column = (i: number) =>
-        this.#load('t', plus('a', i * stride), d[`vec${rows}f` as 'vec4f'], '');
-      name = this.ctx.makeUniqueIdentifier(`kit_load_${data.type}`, 'global');
+        this.#load(source, plus('a', i * stride), d[`vec${rows}f` as 'vec4f'], '');
+      base = `kit_load_${data.type}`;
       body = `  return ${type}(${Array.from({ length: columns }, (_, i) => column(i)).join(', ')});`;
     } else if (d.isWgslStruct(data)) {
       const members = membersOf(data).map((member) =>
-        this.#load('t', plus('a', wordsOf(member.offset)), member.type, ''),
+        this.#load(source, plus('a', wordsOf(member.offset)), member.type, ''),
       );
-      name = this.ctx.makeUniqueIdentifier(`kit_load_${type}`, 'global');
+      base = `kit_load_${type}`;
       body = `  return ${type}(${members.join(', ')});`;
     } else if (d.isWgslArray(data)) {
       const element = data.elementType as d.BaseData;
       const stride = wordsOf(strideOf(element));
-      const load = this.#load('t', `a + i * ${stride}u`, element, '');
-      const suffix = this.#suffix(data);
-      name = this.ctx.makeUniqueIdentifier(`kit_load_array`, 'global');
+      const load = this.#load(source, `a + i * ${stride}u`, element, '');
+      suffix = this.#suffix(data);
+      base = 'kit_load_array';
       body = `  ${type} r${suffix};
   for (uint i = 0u; i < ${data.elementCount}u; i++) {
     r[i] = ${load};
   }
   return r;`;
-      this.#chunk(
-        'shared',
-        [name],
-        `${type}${suffix} ${name}(highp usampler2D t, uint a) {\n${body}\n}`,
-      );
-      this.#loaders.set(data, name);
-      return name;
     } else {
       throw unsupported(`Reading '${data.type}' from a buffer`);
     }
-    this.#chunk('shared', [name], `${type} ${name}(highp usampler2D t, uint a) {\n${body}\n}`);
-    this.#loaders.set(data, name);
+    const name = this.ctx.makeUniqueIdentifier(
+      source.parameter ? base : `${base}_${source.key}`,
+      'global',
+    );
+    const parameters = [source.parameter, 'uint a'].filter(Boolean).join(', ');
+    this.#chunk('shared', [name], `${type}${suffix} ${name}(${parameters}) {\n${body}\n}`);
+    byType.set(data, name);
     return name;
   }
 
   #placeSnippet(place: Place, sideEffects = false): Snippet {
-    const load = this.#load(place.buffer.id, place.address, place.schema, place.buffer.id);
+    const load = this.#load(place.buffer.source, place.address, place.schema, place.buffer.id);
     this.#places.set(load, place);
     return snip(load, undecorate(place.schema), place.buffer.access, sideEffects);
   }
@@ -568,7 +647,7 @@ export class KitGlslGenerator extends GlslGenerator {
     const array = undecorate(place.schema) as d.WgslArray;
     if (array.elementCount > 0) return snip(array.elementCount, abstractInt, 'constant', false);
     const stride = strideOf(array.elementType as d.BaseData);
-    const range = place.buffer.range;
+    const range = place.buffer.range as string;
     return snip(
       `((${range}.y - 4u * ((${place.address}) - ${range}.x)) / ${stride}u)`,
       d.u32,
@@ -666,7 +745,7 @@ export class KitGlslGenerator extends GlslGenerator {
       if ((callee as unknown) === std.arrayLength) return this.#arrayLength(place);
       const inner = (undecorate(place.schema) as d.Atomic).inner as d.BaseData;
       return snip(
-        this.#load(place.buffer.id, place.address, inner, place.buffer.id),
+        this.#load(place.buffer.source, place.address, inner, place.buffer.id),
         inner,
         'runtime',
         false,

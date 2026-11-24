@@ -49,7 +49,8 @@ describe('buffers', () => {
     root.unwrap(pipeline);
     const [module] = modules();
     if (process.env.SHOW) console.log(module?.vertex);
-    expect(module?.buffers.map((b) => b.access)).toEqual(['readonly', 'uniform']);
+    expect(module?.buffers.map((b) => [b.texture, b.access])).toEqual([['pool', 'readonly']]);
+    expect(module?.blocks?.map((b) => [b.block, b.size])).toEqual([['params_block', 96]]);
     const reports = await gl.check(modules());
     expect(problems(reports[0]!)).toEqual([]);
   });
