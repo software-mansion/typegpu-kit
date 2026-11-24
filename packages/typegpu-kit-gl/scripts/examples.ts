@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -32,8 +32,11 @@ const timeout = Number(values.timeout) * 1000;
 interface Result {
   readonly example: string;
   readonly backend: string;
-  /** `ready` once the cover lifted, `failed` when the page showed an error, else `timeout`. */
-  readonly state: 'ready' | 'failed' | 'timeout';
+  /**
+   * `ready` once the cover lifted, `failed` when the page showed an error, `timeout` when neither
+   * happened, and `hung` when the page stopped answering, as in a frame that never returns.
+   */
+  readonly state: 'ready' | 'failed' | 'timeout' | 'hung';
   /** The page's notice, or the first console error. */
   readonly error?: string;
   /** Animation frames per second over two seconds once ready. */
@@ -105,104 +108,146 @@ const fpsOf = (page: Page) =>
       }),
   );
 
+/** One line of an error: a resolution error's last line names the cause, others their first. */
+function summary(error: string): string {
+  const lines = error.split('\n').filter((line) => line.trim() !== '');
+  const line = error.startsWith('Resolution of the following tree failed')
+    ? lines.at(-1)
+    : lines[0];
+  return (line ?? '').trim().slice(0, 200);
+}
+
 mkdirSync(values.out, { recursive: true });
-const browser = await chromium.launch({
-  channel: 'chromium',
-  args: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist'],
-});
 const results: Result[] = [];
+const args = ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist'];
+
+/** Opens one example on one backend in `browser` and reports what it did. */
+async function visit(browser: Browser, example: string, backend: string): Promise<Result> {
+  const context = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+    deviceScaleFactor: 1,
+  });
+  if (backend === 'nogpu') {
+    await context.addInitScript(() => {
+      delete (Navigator.prototype as { gpu?: unknown }).gpu;
+      for (const name of Object.getOwnPropertyNames(globalThis)) {
+        if (name.startsWith('GPU')) delete (globalThis as Record<string, unknown>)[name];
+      }
+    });
+  }
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text().slice(0, 4000));
+  });
+  page.on('pageerror', (error) => errors.push(String(error.stack ?? error).slice(0, 4000)));
+
+  const started = Date.now();
+  const query = backend === 'webgl' ? '?backend=webgl' : '';
+  let state: Result['state'] = 'timeout';
+  let notice = '';
+  let fps: number | undefined;
+  let ink: number | undefined;
+  // The dev server reloads a page when it optimises a dependency it had not seen: try again
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
+      state = await settle(page);
+      notice = (await page.locator('#notice').textContent()) ?? '';
+      if (state === 'ready') {
+        fps = await fpsOf(page);
+        await page.waitForTimeout(500);
+      }
+      const shot = await page.locator('#example canvas').screenshot({
+        path: join(values.out, `${example}.${backend}.png`),
+        timeout: 20_000,
+      });
+      // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
+      ink = shot.byteLength;
+      break;
+    } catch (error) {
+      if (attempt < 2 && String(error).includes('navigation')) {
+        errors.length = 0;
+        continue;
+      }
+      errors.push(String(error).slice(0, 2000));
+      break;
+    }
+  }
+
+  let difference: number | undefined;
+  const reference = values.reference && join(values.reference, `${example}.webgpu.png`);
+  const own = join(values.out, `${example}.${backend}.png`);
+  if (reference && existsSync(reference) && existsSync(own) && state === 'ready') {
+    try {
+      const blank = await context.newPage();
+      difference = await differenceOf(
+        blank,
+        readFileSync(own).toString('base64'),
+        readFileSync(reference).toString('base64'),
+      );
+    } catch (error) {
+      errors.push(String(error).slice(0, 2000));
+    }
+  }
+
+  return {
+    example,
+    backend,
+    state,
+    ...(difference === undefined ? {} : { difference: Math.round(difference * 10) / 10 }),
+    ...(notice || errors[0] ? { error: (notice || errors[0]!).slice(0, 3000) } : {}),
+    ...(fps === undefined ? {} : { fps: Math.round(fps * 10) / 10 }),
+    ...(ink === undefined ? {} : { ink }),
+    errors,
+    seconds: Math.round((Date.now() - started) / 100) / 10,
+  };
+}
 
 for (const example of keys) {
   for (const backend of backends) {
-    const context = await browser.newContext({
-      viewport: { width: 800, height: 600 },
-      deviceScaleFactor: 1,
-    });
-    if (backend === 'nogpu') {
-      await context.addInitScript(() => {
-        delete (Navigator.prototype as { gpu?: unknown }).gpu;
-        for (const name of Object.getOwnPropertyNames(globalThis)) {
-          if (name.startsWith('GPU')) delete (globalThis as Record<string, unknown>)[name];
-        }
-      });
-    }
-    const page = await context.newPage();
-    const errors: string[] = [];
-    page.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text().slice(0, 4000));
-    });
-    page.on('pageerror', (error) => errors.push(String(error.stack ?? error).slice(0, 4000)));
-
+    // A page whose frame never returns answers nothing, not even a close: give each visit a
+    // browser of its own and kill it at the deadline
+    const server = await chromium.launchServer({ channel: 'chromium', args });
+    const browser = await chromium.connect(server.wsEndpoint());
     const started = Date.now();
-    const query = backend === 'webgl' ? '?backend=webgl' : '';
-    let state: Result['state'] = 'timeout';
-    let notice = '';
-    let fps: number | undefined;
-    let ink: number | undefined;
-    // The dev server reloads a page when it optimises a dependency it had not seen: try again
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
-        state = await settle(page);
-        notice = (await page.locator('#notice').textContent()) ?? '';
-        if (state === 'ready') {
-          fps = await fpsOf(page);
-          await page.waitForTimeout(500);
-        }
-        const shot = await page.locator('#example canvas').screenshot({
-          path: join(values.out, `${example}.${backend}.png`),
-          timeout: 20_000,
-        });
-        // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
-        ink = shot.byteLength;
-        break;
-      } catch (error) {
-        if (attempt < 2 && String(error).includes('navigation')) {
-          errors.length = 0;
-          continue;
-        }
-        errors.push(String(error).slice(0, 2000));
-        break;
-      }
-    }
+    let alarm: NodeJS.Timeout | undefined;
+    const deadline = new Promise<Result>((resolve) => {
+      alarm = setTimeout(
+        () =>
+          resolve({
+            example,
+            backend,
+            state: 'hung',
+            error: 'The page stopped answering.',
+            errors: [],
+            seconds: Math.round((Date.now() - started) / 100) / 10,
+          }),
+        timeout + 60_000,
+      );
+    });
+    const result = await Promise.race([
+      visit(browser, example, backend).catch((error): Result => ({
+        example,
+        backend,
+        state: 'hung',
+        error: String(error).slice(0, 2000),
+        errors: [String(error)],
+        seconds: Math.round((Date.now() - started) / 100) / 10,
+      })),
+      deadline,
+    ]);
+    clearTimeout(alarm);
+    await server.kill();
 
-    let difference: number | undefined;
-    const reference = values.reference && join(values.reference, `${example}.webgpu.png`);
-    const own = join(values.out, `${example}.${backend}.png`);
-    if (reference && existsSync(reference) && existsSync(own) && state === 'ready') {
-      try {
-        const blank = await context.newPage();
-        difference = await differenceOf(
-          blank,
-          readFileSync(own).toString('base64'),
-          readFileSync(reference).toString('base64'),
-        );
-      } catch (error) {
-        errors.push(String(error).slice(0, 2000));
-      }
-    }
-
-    const result: Result = {
-      example,
-      backend,
-      state,
-      ...(difference === undefined ? {} : { difference: Math.round(difference * 10) / 10 }),
-      ...(notice || errors[0] ? { error: (notice || errors[0]!).slice(0, 600) } : {}),
-      ...(fps === undefined ? {} : { fps: Math.round(fps * 10) / 10 }),
-      ...(ink === undefined ? {} : { ink }),
-      errors,
-      seconds: Math.round((Date.now() - started) / 100) / 10,
-    };
     results.push(result);
     process.stdout.write(
-      `${example.padEnd(16)} ${backend.padEnd(7)} ${state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(ink ?? '-').padStart(8)} B ${String(result.difference ?? '-').padStart(6)} diff  ${(result.error ?? '').split('\n')[0]!.slice(0, 140)}\n`,
+      `${example.padEnd(16)} ${backend.padEnd(7)} ${result.state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(result.ink ?? '-').padStart(8)} B ${String(result.difference ?? '-').padStart(6)} diff  ${summary(result.error ?? '')}\n`,
     );
-    await context.close();
+    writeFileSync(join(values.out, 'report.json'), JSON.stringify(results, null, 2));
   }
 }
 
-await browser.close();
-writeFileSync(join(values.out, 'report.json'), JSON.stringify(results, null, 2));
 const ready = results.filter((result) => result.state === 'ready').length;
 process.stdout.write(
   `\n${ready}/${results.length} ready. Report and screenshots in ${values.out}\n`,
