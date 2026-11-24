@@ -1,4 +1,4 @@
-import { pipelines } from '@typegpu/kit';
+import { backends, pipelines } from '@typegpu/kit';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 import { dispatch, groups, inside, kernel, volume, WORKGROUP } from './cells.ts';
 import { ALL_SOLID, createPressure, STEPS } from './pressure.ts';
@@ -270,6 +270,9 @@ export function createSmoke(root: TgpuRoot, options: SmokeOptions) {
     std.textureStore(advected.write.$, id, d.vec4f(moved * spongeAt(at), 0));
   });
 
+  // Kernels that run on the CPU have no workgroup memory, so there a cell kernel averages the
+  // carried smoke from the texture instead
+  const shared = backends.of(root).compute === 'gpu';
   const carried = tgpu.workgroupVar(d.arrayOf(d.vec2f, WORKGROUP[0] * WORKGROUP[1] * WORKGROUP[2]));
 
   /**
@@ -303,24 +306,42 @@ export function createSmoke(root: TgpuRoot, options: SmokeOptions) {
       }
     }
     if (inBox) std.textureStore(stepLayout.$.to, id, stored);
-    // As the texture holds it, in half precision
-    carried.$[slotOf(local)] = std.quantizeToF16(stored.xy);
-    std.workgroupBarrier();
-    const corner = d.vec3u(
-      std.intdiv(id.x, DETAIL),
-      std.intdiv(id.y, DETAIL),
-      std.intdiv(id.z, DETAIL),
-    );
-    const first = local.x % DETAIL === 0 && local.y % DETAIL === 0 && local.z % DETAIL === 0;
-    if (first && corner.x < nx && corner.y < ny && corner.z < nz) {
-      let sum = d.vec2f();
-      for (const z of tgpu.unroll([0, 1])) {
-        for (const y of tgpu.unroll([0, 1])) {
-          for (const x of tgpu.unroll([0, 1])) sum += carried.$[slotOf(local + d.vec3u(x, y, z))];
+    if (shared) {
+      // As the texture holds it, in half precision
+      carried.$[slotOf(local)] = std.quantizeToF16(stored.xy);
+      std.workgroupBarrier();
+      const corner = d.vec3u(
+        std.intdiv(id.x, DETAIL),
+        std.intdiv(id.y, DETAIL),
+        std.intdiv(id.z, DETAIL),
+      );
+      const first = local.x % DETAIL === 0 && local.y % DETAIL === 0 && local.z % DETAIL === 0;
+      if (first && corner.x < nx && corner.y < ny && corner.z < nz) {
+        let sum = d.vec2f();
+        for (const z of tgpu.unroll([0, 1])) {
+          for (const y of tgpu.unroll([0, 1])) {
+            for (const x of tgpu.unroll([0, 1])) sum += carried.$[slotOf(local + d.vec3u(x, y, z))];
+          }
+        }
+        std.textureStore(averaged.write.$, corner, d.vec4f(sum / DETAIL ** 3, 0, 0));
+      }
+    }
+  });
+
+  /** The smoke and heat `matter` holds, averaged over each of the air's cells. */
+  const averageMatter = kernel(({ id }) => {
+    'use gpu';
+    if (id.x >= nx || id.y >= ny || id.z >= nz) return;
+    const fine = d.vec3i(id) * DETAIL;
+    let sum = d.vec2f();
+    for (const z of tgpu.unroll([0, 1])) {
+      for (const y of tgpu.unroll([0, 1])) {
+        for (const x of tgpu.unroll([0, 1])) {
+          sum += std.textureLoad(matterLayout.$.matter, fine + d.vec3i(x, y, z), 0).xy;
         }
       }
-      std.textureStore(averaged.write.$, corner, d.vec4f(sum / DETAIL ** 3, 0, 0));
     }
+    std.textureStore(averaged.write.$, id, d.vec4f(sum / DETAIL ** 3, 0, 0));
   });
 
   /** A neighbour's velocity, and whether it is solid. Outside the box is open. */
@@ -408,6 +429,8 @@ export function createSmoke(root: TgpuRoot, options: SmokeOptions) {
   };
   const cellGroups = groups(options.cells);
   const fineGroups = groups([fx, fy, fz]);
+  const average = shared ? undefined : root.createComputePipeline({ compute: averageMatter });
+  const averaging = reading.map((group) => average?.with(group));
   const advecting = reading.map((group) => kernels.advect.with(group));
   const carrying = stepping.map((group) => kernels.matter.with(group));
   const low: Vec3 = options.origin;
@@ -434,7 +457,8 @@ export function createSmoke(root: TgpuRoot, options: SmokeOptions) {
     },
     /** The smoke and heat averaged over each of the air's cells, as the last step left them. */
     averaged: averaged.read,
-    initAsync: () => pipelines.compile([...Object.values(kernels), solver]),
+    initAsync: () =>
+      pipelines.compile([...Object.values(kernels), ...(average ? [average] : []), solver]),
     /**
      * Records the first half of a step into a compute pass: finds the solids, then moves the air
      * and the smoke and measures how much the moved air spreads. `matter` changes here.
@@ -449,6 +473,11 @@ export function createSmoke(root: TgpuRoot, options: SmokeOptions) {
       pass.setPipeline(carrying[current]);
       dispatch(pass, fineGroups);
       current = 1 - current;
+      const averagingNow = averaging[current];
+      if (averagingNow) {
+        pass.setPipeline(averagingNow);
+        dispatch(pass, cellGroups);
+      }
       pass.setPipeline(kernels.divergence);
       dispatch(pass, cellGroups);
     },
