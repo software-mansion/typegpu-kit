@@ -4,6 +4,12 @@
 /** The site's base, ending in a slash; `/` in Node, where the kit's guide is generated. */
 export const BASE = (import.meta.env?.BASE_URL ?? '/').replace(/\/?$/, '/');
 
+/** The kit's repository on GitHub. */
+export const REPO = 'https://github.com/software-mansion/typegpu-kit';
+
+/** TypeGPU's Discord, where the kit is discussed too. */
+export const DISCORD = 'https://discord.gg/8jpfgDqPcM';
+
 /** The id of the page's title, which Starlight's table of contents links as its first entry. */
 export const PAGE_TITLE_ID = '_top';
 
