@@ -1,3 +1,4 @@
+import * as backends from '../backends.ts';
 import * as pipelines from '../pipelines.ts';
 import type * as profiler from '../profiler.ts';
 import { unfilled, type Inject } from '../inject.ts';
@@ -108,7 +109,9 @@ const Step = d.struct({ region: d.vec2f, dt: d.f32 });
  * Creates an exposure that adapts to the picture on the GPU. Each `record`
  * averages the log luminance of 4096 filtered samples over the source in one workgroup. It then
  * eases the exposure towards `key` divided by that average, within `lowest` and `highest`. The
- * exposure stays in a GPU buffer, and nothing is read back.
+ * exposure stays in a GPU buffer, and nothing is read back. On a backend that runs compute on
+ * the CPU, one invocation per sample writes its log luminance to a fourth buffer and one more
+ * averages them, so the fallback runs both on its GPU too.
  *
  * @allocates on resize: a bind group for a new source
  * @owns 3 buffers, a sampler, a pipeline and a bind group: the settings, the frame's region and
@@ -177,7 +180,55 @@ export function create(root: TgpuRoot, options: Options): Exposure {
     }
   });
 
-  const pipeline = root.createComputePipeline({ compute: meter }).$name('exposure');
+  // Where compute runs on the CPU, the shared sum would run there and read the whole source back.
+  // Kernels that each write their own element instead run as fragment passes on the fallback
+  const cpu = backends.of(root).compute === 'cpu';
+  const logs = cpu ? root.createBuffer(d.arrayOf(d.f32, GRID * GRID)).$usage('storage') : undefined;
+  const sampled = logs?.as('mutable');
+  const gathered = logs?.as('readonly');
+
+  const sample = tgpu.computeFn({
+    workgroupSize: [GRID],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const size = d.vec2f(std.textureDimensions(sourceLayout.$.source));
+    const spacing = pace.$.region / size / GRID;
+    const at = within((d.vec2f(gid.xy) + 0.5) * spacing, pace.$.region, size);
+    const color = std.textureSampleLevel(sourceLayout.$.source, sampler.$, at, 0).xyz;
+    sampled!.$[gid.y * GRID + gid.x] = std.log2(std.max(luminance(color), DARKEST));
+  });
+
+  const adapt = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    let total = d.f32(0);
+    for (let i = d.u32(0); i < GRID * GRID; i++) total += gathered!.$[i] as number;
+    // As `meter` eases, from the same average
+    const average = total / (GRID * GRID);
+    const target = std.clamp(
+      std.log2(settings.$.key) - average,
+      std.log2(settings.$.lowest),
+      std.log2(settings.$.highest),
+    );
+    let next = target;
+    const was = adapted.$;
+    if (was > 0) {
+      const from = std.log2(was);
+      const rate = std.select(settings.$.fall, settings.$.rise, target > from);
+      next = from + (target - from) * (1 - std.exp(-pace.$.dt * rate));
+    }
+    adapted.$ = std.exp2(next);
+  });
+
+  const pipeline = cpu
+    ? undefined
+    : root.createComputePipeline({ compute: meter }).$name('exposure');
+  const sampling = cpu
+    ? root.createComputePipeline({ compute: sample }).$name('exposure')
+    : undefined;
+  const adapting = cpu
+    ? root.createComputePipeline({ compute: adapt }).$name('adapting')
+    : undefined;
   const sourceGroup = memo((texture: FloatTexture) =>
     root.createBindGroup(sourceLayout, { source: texture }),
   );
@@ -185,14 +236,17 @@ export function create(root: TgpuRoot, options: Options): Exposure {
   const stepped = { region: [0, 0] as [number, number], dt: 0 };
   const described: { timestampWrites?: profiler.Timed['timestampWrites'] } = {};
 
-  const destroy = () => state.destroy();
+  const destroy = () => {
+    state.destroy();
+    logs?.destroy();
+  };
 
   return {
     settings,
 
     inject: () => (cfg) => cfg.with(current, readable),
 
-    initAsync: () => pipelines.compile([pipeline]),
+    initAsync: () => pipelines.compile(pipeline ? [pipeline] : [sampling!, adapting!]),
 
     record(target, recording) {
       const texture = source.output;
@@ -202,9 +256,17 @@ export function create(root: TgpuRoot, options: Options): Exposure {
 
       described.timestampWrites = recording?.timestampWrites;
       const pass = encoderOf(target).beginComputePass(described);
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(sourceGroup(texture));
-      pass.dispatchWorkgroups(1);
+      if (pipeline) {
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(sourceGroup(texture));
+        pass.dispatchWorkgroups(1);
+      } else {
+        pass.setPipeline(sampling!);
+        pass.setBindGroup(sourceGroup(texture));
+        pass.dispatchWorkgroups(1, GRID);
+        pass.setPipeline(adapting!);
+        pass.dispatchWorkgroups(1);
+      }
       pass.end();
     },
 

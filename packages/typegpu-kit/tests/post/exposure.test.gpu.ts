@@ -1,14 +1,20 @@
 import { targets } from '@typegpu/kit';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { common, d, tgpu, type TgpuCommandEncoder, type TgpuRoot } from 'typegpu';
-import { expect, it } from 'vitest';
-import { exposure, finish } from '../../src/index.ts';
+import { describe, expect, it } from 'vitest';
+import { backends, exposure, finish } from '../../src/index.ts';
 
 const size = { width: 64, height: 32 };
 
 /** A grey source the exposure meters, and a probe that reads `exposure.current` back. */
-async function setup(region?: { width: number; height: number }) {
+async function setup(region?: { width: number; height: number }, compute: 'gpu' | 'cpu' = 'gpu') {
   const root = await gpuRoot();
+  // A device that says its compute runs on the CPU gets the sampling kernels, which a GPU runs too
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
   const screen = targets.create(root, size, {
     hdr: { format: 'rgba16float', sampled: true },
     adapted: { format: 'rgba8unorm' },
@@ -94,9 +100,10 @@ it('takes the target at once, eases at its rise and fall rates and stays within 
   root.destroy();
 });
 
-it('meters the region alone, however bright the texture beyond it', async () => {
+/** Fills the region with a dark grey and the rest with a bright one, and meters once. */
+async function meterRegion(compute: 'gpu' | 'cpu') {
   const region = { width: 32, height: 16 };
-  const { root, screen, meter } = await setup(region);
+  const { root, screen, meter } = await setup(region, compute);
   const fill = root.createRenderPipeline({
     vertex: common.fullScreenTriangle,
     fragment: tgpu.fragmentFn({ out: d.vec4f })(() => {
@@ -115,9 +122,13 @@ it('meters the region alone, however bright the texture beyond it', async () => 
   pass.draw(3);
   pass.end();
 
-  expect(await meter(encoder, 0)).toBeCloseTo(exposure.defaults.key / 0.0625, 3);
-
+  const metered = await meter(encoder, 0);
   root.destroy();
+  return metered;
+}
+
+it('meters the region alone, however bright the texture beyond it', async () => {
+  expect(await meterRegion('gpu')).toBeCloseTo(exposure.defaults.key / 0.0625, 3);
 });
 
 it('exposes the final pass as much as a manual exposure of the same value', async () => {
@@ -155,4 +166,28 @@ it('rejects settings that leave no range to adapt within', async () => {
     RangeError,
   );
   root.destroy();
+});
+
+describe('exposure where compute runs on the CPU', () => {
+  it('adapts as the workgroup meter does, step by step', async () => {
+    const shared = await setup();
+    const sampled = await setup(undefined, 'cpu');
+    for (const [grey, dt] of [
+      [2, 0.5],
+      [0.0625, 0.5],
+      [0.0625, 0.5],
+      [0.3, 0.1],
+      [8, 0.25],
+      [0.001, 0.5],
+    ] as const) {
+      const expected = await shared.adapt(grey, dt);
+      expect(await sampled.adapt(grey, dt)).toBeCloseTo(expected, 4);
+    }
+    shared.root.destroy();
+    sampled.root.destroy();
+  });
+
+  it('meters the region alone', async () => {
+    expect(await meterRegion('cpu')).toBeCloseTo(exposure.defaults.key / 0.0625, 3);
+  });
 });
