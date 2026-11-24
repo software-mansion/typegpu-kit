@@ -1,5 +1,69 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 
+export async function recordFields(root: TgpuRoot): Promise<number[]> {
+  const Row = d.struct({ position: d.vec3f, member: d.u32, unused: d.vec4f });
+  const source = root.createMutable(d.arrayOf(Row, 2), [
+    { position: d.vec3f(1, 2, 3), member: 7, unused: d.vec4f(11) },
+    { position: d.vec3f(4, 5, 6), member: 8, unused: d.vec4f(12) },
+  ]);
+  const count = tgpu.privateVar(d.u32);
+  const next = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    const index = count.$;
+    count.$ += d.u32(1);
+    return index;
+  });
+  const make = tgpu.fn(
+    [d.u32],
+    Row,
+  )((index) => {
+    'use gpu';
+    let result = Row();
+    result.position = d.vec3f(source.$[index].position);
+    result.member = source.$[index].member;
+    result.unused = d.vec4f(source.$[index].unused);
+    return result;
+  });
+  const forwarded = tgpu.fn(
+    [d.u32],
+    Row,
+  )((index) => {
+    'use gpu';
+    return make(index);
+  });
+  const effectful = tgpu.fn(
+    [d.f32],
+    Row,
+  )((value) => {
+    'use gpu';
+    return Row({ position: d.vec3f(value), member: next(), unused: d.vec4f(100) });
+  });
+  const consume = tgpu.fn(
+    [Row],
+    d.vec4f,
+  )((row) => {
+    'use gpu';
+    return d.vec4f(row.position.x, d.f32(row.member), row.position.yz);
+  });
+  const output = root.createMutable(d.arrayOf(d.vec4f, 4));
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const before = make(next());
+    source.$[0].position.x = 90;
+    output.$[0] = consume(before);
+    const selected = forwarded(next()).position;
+    output.$[1] = d.vec4f(selected, d.f32(count.$));
+    const affected = effectful(2).position;
+    output.$[2] = d.vec4f(affected, d.f32(count.$));
+    output.$[3] = consume(make(0));
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return (await output.read()).flatMap((value) => [value.x, value.y, value.z, value.w]);
+}
+
 export async function matrixLocals(root: TgpuRoot): Promise<number[]> {
   const source = root.createMutable(d.mat2x2f, d.mat2x2f(d.vec2f(1, 2), d.vec2f(3, 4)));
   const output = root.createMutable(d.arrayOf(d.vec4f, 2));

@@ -11,6 +11,7 @@ import {
   recordValues,
   uniformArguments,
   matrixLocals,
+  recordFields,
   workgroupReturns,
 } from './calls.ts';
 import { cpuRoot } from './device.ts';
@@ -30,6 +31,7 @@ it('matches dawn for helper argument order, composite snapshots and vector barri
       recordValues,
       uniformArguments,
       matrixLocals,
+      recordFields,
       workgroupReturns,
     ]) {
       const expected = await run(gpu);

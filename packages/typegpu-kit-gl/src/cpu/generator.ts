@@ -1,6 +1,7 @@
 import { expandBarrierHelpers, type BarrierHelper } from './phase-helpers.ts';
 import { splitPhases } from './phases.ts';
-import { prunePureLocals } from './dead-locals.ts';
+import { isPureExpression, prunePureLocals } from './dead-locals.ts';
+import { completeCall, projectRecordBody, usedRecordFields } from './record-fields.ts';
 import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
 import { addressParts, callArguments, lowerReferences } from './references.ts';
 import { layoutOf } from './memory.ts';
@@ -38,6 +39,65 @@ export class CpuGenerator extends WgslGenerator {
   #globalScopes = new Map<string, { scope: string; type: string }>();
   #uniformCaches = new Map<string, string>();
   #uniformValues = new Set<string>();
+  #recordFunctions = new Map<string, { schema: d.WgslStruct; parameters: string[] }>();
+  #recordProjections = new Map<string, string>();
+  #recordArguments = new Map<string, (string[] | undefined)[]>();
+  #parameterUse = new Map<string, boolean[]>();
+  #projectArguments(name: string, values: string[]): string[] {
+    const used = this.#parameterUse.get(name);
+    const fields = this.#recordArguments.get(name);
+    return values.map((value, i) => {
+      if (used?.[i] === false && isPureExpression(value, this.#functionEffects)) return 'undefined';
+      const wanted = fields?.[i];
+      return wanted?.length ? (this.#projectRecord(value, wanted, false) ?? value) : value;
+    });
+  }
+  #projectRecord(value: string, fields: readonly string[], unwrap: boolean): string | undefined {
+    const call = completeCall(value);
+    const definition = call && this.#recordFunctions.get(call.name);
+    if (!call || !definition || this.#functionEffects.get(call.name) !== false) return undefined;
+    if (fields.some((field) => !Object.hasOwn(definition.schema.propTypes, field)))
+      return undefined;
+    if (!unwrap && fields.length === Object.keys(definition.schema.propTypes).length)
+      return undefined;
+    const key = `${call.name}:${unwrap}:${fields.join(',')}`;
+    let name = this.#recordProjections.get(key);
+    if (!name) {
+      const body = this.#functionBodies.get(call.name)!;
+      const projected = projectRecordBody(
+        body,
+        fields,
+        unwrap,
+        (field) => {
+          const type = this.emitTypeAnnotation(definition.schema.propTypes[field]!);
+          return type.startsWith('cpuType') ? `${type}()` : type === 'bool' ? 'false' : '0';
+        },
+        (expression) => this.#projectRecord(expression, fields, unwrap),
+      );
+      if (!projected) return undefined;
+      const simplified = prunePureLocals(projected, this.#functionEffects);
+      name = this.ctx.makeUniqueIdentifier('cpuRecordFields', 'global');
+      this.#recordProjections.set(key, name);
+      this.#functions.add(name);
+      this.#functionEffects.set(name, false);
+      this.#functionBodies.set(name, simplified);
+      this.#parameterUse.set(
+        name,
+        definition.parameters.map((parameter) =>
+          new Set(simplified.match(/[A-Za-z_$][\w$]*/g)).has(parameter),
+        ),
+      );
+      this.#recordArguments.set(
+        name,
+        definition.parameters.map((parameter) => usedRecordFields(simplified, parameter)),
+      );
+      this.ctx.addDeclaration(
+        `function ${name}(${definition.parameters.join(',')}) ${simplified}`,
+        name,
+      );
+    }
+    return `${name}(${this.#projectArguments(name, call.arguments).join(',')})`;
+  }
   #uniformDependencies(name: string, seen = new Set<string>()): Set<string> | undefined {
     if (seen.has(name) || this.#functionEffects.get(name) !== false) return undefined;
     const body = this.#functionBodies.get(name);
@@ -220,7 +280,19 @@ export class CpuGenerator extends WgslGenerator {
   protected override _expression(expression: Expression): Snippet {
     // Preserve integer overflow for unary negation before subsequent conversions.
     // eslint-disable-next-line no-underscore-dangle
-    const result = super._expression(expression);
+    let result = super._expression(expression);
+    if (
+      Array.isArray(expression) &&
+      expression[0] === NODE.memberAccess &&
+      typeof result.dataType !== 'symbol' &&
+      result.origin !== 'constant'
+    ) {
+      const code = this.ctx.resolveSnippet(result).value;
+      const property = /^(.*)\.([A-Za-z_$][\w$]*)$/.exec(code);
+      const projected = property && this.#projectRecord(property[1]!, [property[2]!], true);
+      if (projected)
+        result = snip(projected, result.dataType, result.origin, result.possibleSideEffects);
+    }
     if (
       typeof result.dataType !== 'symbol' &&
       result.dataType.type !== 'ptr' &&
@@ -1041,6 +1113,24 @@ export class CpuGenerator extends WgslGenerator {
           });
       }
       if (options.functionType === 'normal') {
+        const flattened = args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]);
+        this.#recordArguments.set(
+          options.name,
+          args.flatMap((arg) =>
+            parameters.has(arg.name)
+              ? parameters.get(arg.name)!.map(() => undefined)
+              : [
+                  arg.decoratedType.type === 'struct'
+                    ? usedRecordFields(body, arg.name)
+                    : undefined,
+                ],
+          ),
+        );
+        if (!this.#effects && returnType.type === 'struct')
+          this.#recordFunctions.set(options.name, {
+            schema: returnType as d.WgslStruct,
+            parameters: flattened,
+          });
         const record = /^\{\s*return ([\s\S]*);\s*}$/.exec(body);
         if (!this.#effects && returnType.type === 'struct' && record) {
           const expression = record[1]!;
@@ -1374,7 +1464,11 @@ export class CpuGenerator extends WgslGenerator {
       const copied = args.map((arg, i) => {
         if (ignored[i]) return 'undefined';
         const type = scalar(arg.dataType);
-        const value = values[i]!;
+        let value = values[i]!;
+        const parameter = widths.slice(0, i).reduce<number>((sum, width) => sum + (width ?? 1), 0);
+        const fields = this.#recordArguments.get(name)?.[parameter];
+        if (fields?.length && type === 'struct')
+          value = this.#projectRecord(value, fields, false) ?? value;
         if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
           // Parameters are immutable values; only this borrowed-argument path can reuse a record.
           if (type === 'struct' || type.startsWith('mat')) {
