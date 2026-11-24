@@ -175,6 +175,61 @@ if (second) {
 
 **Workaround.** Compiler-owned address/vector/argument temporaries in `src/cpu/generator.ts` use `ctx.makeUniqueIdentifier(..., 'global')`, with maps saved and restored per function. User-local names are never substituted throughout the whole function body.
 
+The GLSL compute generator hits the same limit with facts rather than caches: "this local holds `gid.x`" keyed by the emitted name would carry into a sibling block's `const i = gid.x + 1` and prove a write own that is not. `KitGlslComputeGenerator._emitVarDecl` in `src/glsl/compute.ts` forgets a name whenever any declaration reuses it. `ctx.getById` cannot help: it takes the JavaScript identifier, not the emitted one.
+
+### 15. A function is generated once per argument type, never per argument value
+
+The shellless repository keys variants by argument types, and a `tgpu.fn` with a shell is generated once for all callers. GLSL needs a body per call site in two cases: a texture or sampler argument, because GLSL samples through one combined uniform, so `blurred(a, s, uv)` and `blurred(b, s, uv)` need two bodies; and an argument that is the invocation's own index, because a helper writing `buf[i]` runs as a fragment pass only for calls that pass the own index. Tagging the argument's schema does not make a variant: textures compare equal by sample type, samplers entirely.
+
+```ts
+const blurred = (map: d.texture2d<d.F32>, s: d.sampler, uv: d.v2f) => {
+  'use gpu';
+  return std.textureSample(map, s, uv);
+};
+blurred(layout.$.a, layout.$.s, uv);
+blurred(layout.$.b, layout.$.s, uv); // reuses the body generated for `a`
+```
+
+**Upstream.** A generator hook that adds a key per argument to the variant lookup, such as `variantKey(arg: Snippet): string | undefined`, used by `ShelllessRepository.get` in `tgsl/shellless.ts` and by shelled function resolution in `core/function/fnCore.ts`.
+
+**Workaround.** For shellless functions, `KitGlslGenerator._callShellless` in `src/glsl/generator.ts` swaps `ctx.shelllessRepo.cache` while the lookup runs. For shelled functions, such as a guarded pipeline's callback, there is no seam: `KitGlslComputeGenerator` in `src/glsl/compute.ts` generates the function for its first call's own arguments and rejects the kernel when a later call passes others to a function that depends on them.
+
+### 16. Buffer access becomes text before a generator sees what it reads
+
+`layout.$.items[i].position.x` resolves the binding to its identifier and `accessProp`/`accessIndex` stitch the access together. A backend that reads buffers another way (the fallback reads words from a data texture, and must not load a whole element to read one field) gets no structured place. Overriding `_expression` catches access in the AST, but access through a value proxy at the JavaScript level is stitched at once. A generator cannot hold its own object as a snippet's value either: an object without `$comptimeValueOf` counts as known at compile time, so `place < 1` throws "requires numeric operands", and the symbol is not exported.
+
+**Upstream.** Represent buffer, member and index access as a place the generator turns into code (`emitLoad(place)`), and export `$comptimeValueOf` or `runtimeOnly` from `typegpu/~internal`. In `tgsl/accessProp.ts`, `tgsl/accessIndex.ts` and `types.ts`.
+
+**Workaround.** `KitGlslGenerator._expression` in `src/glsl/generator.ts` narrows places itself and keeps each place's load expression as the snippet's value, with a map from that text back to the place.
+
+### 17. A ternary is written as WGSL's `select`
+
+`_expressionImpl` emits a JavaScript ternary as `select(f, t, c)` through `stitch`, past `emitCall`. GLSL has no `select`.
+
+```ts
+const y = x < 0.5 ? 1 : 2; // select(2, 1, (x < 0.5)) in every target language
+```
+
+**Upstream.** Emit the conditional through `emitCall('select', …)` or an `emitConditional` hook, in `tgsl/wgslGenerator.ts`.
+
+**Workaround.** `SELECT_OVERLOADS` in `packages/typegpu-gl/src/glslGenerator.ts`, declared when a ternary's output starts with `select(`.
+
+### 18. `functionDefinition` must call `determineReturnType`, which nothing says
+
+A generator that builds an entry function itself and never calls `options.determineReturnType()` fails with `Failed to determine return type` from `resolveFunction`, far from the cause.
+
+**Upstream.** Document it on `FunctionDefinitionOptions`, or call it in `resolveFunction` when the generator did not. In `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`.
+
+**Workaround.** `KitGlslComputeGenerator.computeEntry` in `src/glsl/compute.ts` calls it.
+
+### 19. Generators reach into `ResolutionCtx` members its type does not promise
+
+The GLSL generators use `ctx.topFunctionScope` (which function is being generated), `ctx.shelllessRepo.cache` (entry 15), `ctx.setBlockExternals` to bind an already generated snippet to a temporary name, because `defineVariable` rejects snippets of unknown type such as a namespace or a comptime object, and replacements of `ctx.resolve` (entry 5) and `ctx.addDeclaration` (to translate `common.fullScreenTriangle`, entry 6) on the context instance. Each can break in a patch release.
+
+**Upstream.** Add what a generator needs to the public `ResolutionCtx` type, and let `_expression` continue from a snippet instead of an AST node, such as `_access(target: Snippet, node)`. In `types.ts` and `tgsl/wgslGenerator.ts`.
+
+**Workaround.** `src/glsl/generator.ts`, `src/glsl/compute.ts` and `src/generator.ts`.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
