@@ -1,3 +1,4 @@
+import { cpuRoot } from './device.ts';
 import { writeFile } from 'node:fs/promises';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
@@ -7,7 +8,7 @@ import {
   type FunctionDefinitionOptions,
   type ResolutionCtx,
 } from 'typegpu/~internal';
-import { it } from 'vitest';
+import { expect, it } from 'vitest';
 import { examples } from '../../../typegpu-kit-examples/src/index.ts';
 import { filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
 import { fromDisk, driven } from '../../../typegpu-kit-examples/tests/utils/examples.ts';
@@ -54,12 +55,21 @@ it.runIf(process.env.CPU_SWEEP === '1')(
   'records per-example CPU compilation coverage',
   async () => {
     const results: { example: string; status: string; modules: number; error?: string }[] = [];
-    for (const example of examples) {
+    for (const example of examples.filter(
+      (candidate) =>
+        !process.env.CPU_EXAMPLES || process.env.CPU_EXAMPLES.split(',').includes(candidate.key),
+    )) {
       const recording = recordingRoot();
-      const root = tgpu.initFromDevice({
-        device: recording.root.device,
-        unstable_shaderGeneratorClass: SweepGenerator,
-      });
+      const root =
+        process.env.CPU_EXECUTE === '1'
+          ? cpuRoot({
+              generator: SweepGenerator,
+              onModule: (code) => recording.log.shaders.push(code),
+            })
+          : tgpu.initFromDevice({
+              device: recording.root.device,
+              unstable_shaderGeneratorClass: SweepGenerator,
+            });
       const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });
       let scene:
         | Awaited<ReturnType<Awaited<ReturnType<typeof example.scene>>['createScene']>>
@@ -67,13 +77,36 @@ it.runIf(process.env.CPU_SWEEP === '1')(
       let loop: ReturnType<typeof frames.create> | undefined;
       try {
         const { createScene } = await example.scene();
-        scene = await createScene(root, surface, await filesOf(example.key, fromDisk));
+        const reduced: Record<string, object> = {
+          'slime-mould': { grid: 64, count: 50_000 },
+          stampede: { count: 256 },
+          forest: { trees: 40 },
+          'star-map': { count: 256 },
+          'quiver-trees': { count: 60 },
+          skeletons: { count: 8 },
+        };
+        scene = await createScene(root, surface, {
+          ...(await filesOf(example.key, fromDisk)),
+          ...(process.env.CPU_EXECUTE === '1' ? reduced[example.key] : {}),
+        });
         loop = frames.create(root, scene.frame);
         const driver = driven(loop, scene.ready);
         await driver.warmUp();
         await driver.run(2);
+        const rawCompute = recording.log.shaders.find(
+          (code) => !isCpuModule(code) && /@compute\b/.test(code),
+        );
+        if (rawCompute) throw new Error('Compute module bypassed CpuGenerator: raw WGSL');
         const modules = recording.log.shaders.filter(isCpuModule);
-        modules.forEach(compile);
+        for (const code of modules) {
+          try {
+            compile(code);
+          } catch (error) {
+            if (process.env.CPU_DIAGNOSTICS === '1')
+              await writeFile(new URL('./failure.generated.js', import.meta.url), code);
+            throw error;
+          }
+        }
         results.push({ example: example.key, status: 'pass', modules: modules.length });
       } catch (error) {
         results.push({
@@ -81,18 +114,37 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           status: 'fail',
           modules: recording.log.shaders.filter(isCpuModule).length,
           error: String(error),
+          ...(process.env.CPU_EXAMPLES
+            ? {
+                stack:
+                  error instanceof AggregateError
+                    ? error.errors.map((item) => ({ stack: item.stack, cause: item.cause?.stack }))
+                    : error instanceof Error
+                      ? error.stack
+                      : undefined,
+              }
+            : {}),
         });
       } finally {
         loop?.destroy();
         scene?.destroy?.();
         surface.destroy();
         root.destroy();
+        if (process.env.CPU_EXECUTE === '1')
+          await writeFile(
+            new URL('./execution-results.json', import.meta.url),
+            JSON.stringify(results, null, 2),
+          );
       }
     }
     await writeFile(
-      new URL('./sweep-results.json', import.meta.url),
+      new URL(
+        process.env.CPU_EXECUTE === '1' ? './execution-results.json' : './sweep-results.json',
+        import.meta.url,
+      ),
       `${JSON.stringify(results, null, 2)}\n`,
     );
+    expect(results.filter((result) => result.status === 'fail')).toEqual([]);
   },
-  120000,
+  600000,
 );

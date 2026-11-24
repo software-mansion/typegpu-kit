@@ -1,3 +1,4 @@
+import { compileJavascript } from './javascript.ts';
 import { pack, unpack } from './packing.ts';
 import { textureOps } from './textures.ts';
 import { ref } from './references.ts';
@@ -37,18 +38,20 @@ export function compile(code: string): CpuModule {
       const value = JSON.parse(line.slice(11)) as CpuBindingUse;
       return { ...value, group: Number(value.group) };
     });
-  const makeKernel = new Function(
-    '$buffer',
-    '$construct',
-    '$ref',
-    '$shared',
-    '$bits',
-    '$vector',
-    '$resources',
-    '$textures',
-    '$pack',
-    '$unpack',
-    `const arrayLength = (value) => value.$.length;\n${code}\nreturn ${entry.name};`,
+  const makeKernel = compileJavascript(
+    [
+      '$buffer',
+      '$construct',
+      '$ref',
+      '$shared',
+      '$bits',
+      '$vector',
+      '$resources',
+      '$textures',
+      '$pack',
+      '$unpack',
+    ],
+    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn ${entry.name};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
     constructValue: typeof construct,
@@ -133,7 +136,7 @@ export function compile(code: string): CpuModule {
                       entry.generator && Array.isArray(builtins[entry.inputs[i]!])
                         ? vector([...(builtins[entry.inputs[i]!] as number[])])
                         : builtins[entry.inputs[i]!];
-                  if (code.includes('//#scope private')) kernel = instantiate();
+                  if (entry.generator && code.includes('//#scope private')) kernel = instantiate();
                   const invocation = kernel(...args);
                   if (invocation) invocations.push(invocation);
                 }

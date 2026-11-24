@@ -59,6 +59,12 @@ export function construct(layout: Layout, ...args: Value[]): Value {
       ),
     );
   }
+  if (layout.type.startsWith('mat') && typeof args[0] === 'number') {
+    const rows = layout.element!.count!;
+    return Array.from({ length: layout.count! }, (_, column) =>
+      vector(Array.from({ length: rows }, (_row, row) => Number(args[column * rows + row] ?? 0))),
+    );
+  }
   const result: Value[] = [];
   for (let i = 0; i < layout.count!; i++) {
     const input = args.length === 1 ? (args[0] as Value[])[i] : args[i];

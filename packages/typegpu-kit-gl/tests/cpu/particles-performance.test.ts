@@ -1,12 +1,17 @@
 import { writeFile } from 'node:fs/promises';
 import { d, tgpu } from 'typegpu';
-import { it } from 'vitest';
+import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 
 it.runIf(process.env.CPU_BENCH === '1')(
   'measures 100k composite particle rows with thirty vector operations',
   async () => {
-    const root = cpuRoot();
+    let generated = '';
+    const root = cpuRoot({
+      onModule: (code) => {
+        generated = code;
+      },
+    });
     const count = 100_000;
     const Particle = d.struct({ position: d.vec3f, velocity: d.vec3f, life: d.f32, mass: d.f32 });
     const data = root.createMutable(d.arrayOf(Particle, count));
@@ -31,6 +36,7 @@ it.runIf(process.env.CPU_BENCH === '1')(
       new URL('./particles-performance-results.json', import.meta.url),
       `${JSON.stringify({ rows: count, iterations: 3, vectorOperationsPerInvocation: 30, milliseconds, invocationsPerSecond: ((count * 3) / milliseconds) * 1000 }, null, 2)}\n`,
     );
+    expect(generated.slice(generated.indexOf('function kernel'))).not.toContain('$vector');
     root.destroy();
   },
 );

@@ -2,6 +2,6 @@
   "rows": 100000,
   "iterations": 3,
   "vectorOperationsPerInvocation": 30,
-  "milliseconds": 773.4038750000001,
-  "invocationsPerSecond": 387895.6515442853
+  "milliseconds": 40.040666999999985,
+  "invocationsPerSecond": 7492382.681836946
 }

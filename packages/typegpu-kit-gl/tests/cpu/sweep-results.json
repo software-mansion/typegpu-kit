@@ -2,19 +2,17 @@
   {
     "example": "jelly-world",
     "status": "pass",
-    "modules": 3
+    "modules": 4
   },
   {
     "example": "classroom",
-    "status": "fail",
-    "modules": 5,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:scatter\n- fn*:sunlitAt(vec3f)\n- fn*:sunShare(struct:Point)\n- fn*:sunShadowed(struct:Point)\n- fn*:cascadeOf(struct:Point): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 6
   },
   {
     "example": "night-market",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:vertexAt(u32)\n- fn*:vertexAt(u32): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 11
   },
   {
     "example": "afterimage",
@@ -28,80 +26,68 @@
   },
   {
     "example": "fireworks",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 25
   },
   {
     "example": "hex-isle",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:move\n- fn*:distanceAt(vec2f)\n- fn*:distanceOf(struct:Camera, f32): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 1
   },
   {
     "example": "forest",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 8
   },
   {
     "example": "quiver-trees",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 42
   },
   {
     "example": "kinetic",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 9
   },
   {
     "example": "falling-sand",
-    "status": "fail",
-    "modules": 16,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:pack(struct:Interval): @typegpu/kit-gl CPU: unsupported builtin pack2x16float"
+    "status": "pass",
+    "modules": 61
   },
   {
     "example": "ocean",
-    "status": "fail",
-    "modules": 15,
-    "error": "AggregateError: 4 of 9 items failed to compile: 5 of 5 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:initialSpectrum\n- fn*:waveVariance(vec2f, struct:Cascade, struct:SpectrumParams)\n- fn*:spreading(f32, f32, struct:SpectrumParams)\n- fn*:donelanBanner(f32, f32, f32): @typegpu/kit-gl CPU: unsupported builtin cosh; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:evolve\n- fn*:pack(vec2f, vec2f): Invalid string length; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:transformRows\n- fn*:reversedOf(u32): @typegpu/kit-gl CPU: unsupported builtin reverseBits; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:transformColumns\n- fn*:reversedOf(u32): @typegpu/kit-gl CPU: unsupported builtin reverseBits; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:fillThree\n- fn*:asStored(vec4f)\n- fn*:towardZero(f32): @typegpu/kit-gl CPU: unsupported builtin bitcastF32toU32; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:kernel\n- fn*:centred(vec2u, u32)\n- fn*:texel(vec2f, u32): @typegpu/kit-gl CPU: unsupported builtin tanh; 2 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:fromCube(vec3f)\n- textureView:source.$\n- textureView:source: @typegpu/kit-gl CPU: unsupported texture dimension cube; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:prefilter: @typegpu/kit-gl CPU: unsupported builtin reverseBits; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:vanishing(vec3f): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 26
   },
   {
     "example": "censer",
-    "status": "fail",
-    "modules": 11,
-    "error": "AggregateError: 2 of 4 items failed to compile: 4 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:solid(vec3f)\n- fn*:bodyOf(vec3f): @typegpu/kit-gl CPU: unsupported transpose argument mat3x3f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:load([object Object], vec3i): @typegpu/kit-gl CPU: unsupported buffer element texture_3d; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:trace(vec3f, f32)\n- fn*:sampled([object Object], vec3f): @typegpu/kit-gl CPU: unsupported buffer element texture_3d; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:advectMatter\n- fn*:trace(vec3f, f32)\n- fn*:sampled([object Object], vec3f): @typegpu/kit-gl CPU: unsupported buffer element texture_3d; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:turn(vec3f): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 16
   },
   {
     "example": "slime-mould",
-    "status": "fail",
-    "modules": 3,
-    "error": "AggregateError: 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:scatter: Invalid string length; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:move\n- fn:randSeed2\n- fn:seed2\n- fn:scrambleSeed2\n- fn:hash: Invalid string length"
+    "status": "pass",
+    "modules": 5
   },
   {
     "example": "dominoes",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 12
   },
   {
     "example": "sph-sculpt",
-    "status": "fail",
-    "modules": 26,
-    "error": "AggregateError: 2 of 5 items failed to compile: 4 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:density: @typegpu/kit-gl CPU: unsupported builtin pack2x16float; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:reserve: @typegpu/kit-gl CPU: unsupported builtin workgroupUniformLoad; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:relax: @typegpu/kit-gl CPU: unsupported builtin unpack2x16float; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:surfaceKernel: @typegpu/kit-gl CPU: unsupported atomic reference tally; 2 of 7 items failed to compile: 2 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:fromCube(vec3f)\n- textureView:source.$\n- textureView:source: @typegpu/kit-gl CPU: unsupported texture dimension cube; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:prefilter: @typegpu/kit-gl CPU: unsupported builtin reverseBits; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:paintKernel\n- fn*:skyOf(vec3f)\n- fn*:hazeOf(vec3f)\n- fn*:backdrop(vec3f)\n- fn*:reflection(vec3f, f32)\n- textureView:reflectionView.$\n- textureView:reflectionView: @typegpu/kit-gl CPU: unsupported texture dimension cube"
+    "status": "pass",
+    "modules": 34
   },
   {
     "example": "fishtank",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 24
   },
   {
     "example": "benthos",
     "status": "pass",
-    "modules": 4
+    "modules": 5
   },
   {
     "example": "ember-mirror",
@@ -110,51 +96,43 @@
   },
   {
     "example": "stampede",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 35
   },
   {
     "example": "skeletons",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 28
   },
   {
     "example": "jellies",
-    "status": "fail",
-    "modules": 6,
-    "error": "AggregateError: 2 of 4 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:pickKernel: @typegpu/kit-gl CPU: unsupported matrix arithmetic; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:trail\n- fn*:placed(struct:Jelly, vec3f): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 9
   },
   {
     "example": "spider",
-    "status": "fail",
-    "modules": 1,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 8
   },
   {
     "example": "robot-arm",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- fn*:vertexAt(u32)\n- fn*:vertexAt(u32): @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 15
   },
   {
     "example": "solar-system",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 5
   },
   {
     "example": "star-map",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:pickKernel: @typegpu/kit-gl CPU: unsupported matrix arithmetic"
+    "status": "pass",
+    "modules": 1
   },
   {
     "example": "survey-model",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 6
   },
   {
     "example": "platformer",
@@ -163,9 +141,8 @@
   },
   {
     "example": "blockfall",
-    "status": "fail",
-    "modules": 0,
-    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>: @typegpu/kit-gl CPU: unsupported builtin pack2x16snorm"
+    "status": "pass",
+    "modules": 11
   },
   {
     "example": "lattice",
@@ -185,6 +162,6 @@
   {
     "example": "jump-flood",
     "status": "pass",
-    "modules": 4
+    "modules": 5
   }
 ]

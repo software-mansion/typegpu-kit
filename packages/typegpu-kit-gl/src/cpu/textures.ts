@@ -33,6 +33,8 @@ export function encodeHalf(value: number): number {
 }
 
 function formatOf(format: string) {
+  if (format.startsWith('depth'))
+    return { channels: 1, bits: 32, kind: 'float', bgra: false, srgb: false };
   const match = /^(r|rg|rgba|bgra)(8|16|32)(uint|sint|float|unorm|snorm)(-srgb)?$/.exec(format);
   if (!match) throw new Error(`@typegpu/kit-gl CPU: unsupported texture format ${format}`);
   return {
@@ -85,7 +87,55 @@ function wrap(value: number, size: number, mode: GPUAddressMode = 'clamp-to-edge
   return Math.min(Math.max(value, 0), size - 1);
 }
 
+function cubeFace(direction: number[]): [number, number, number] {
+  const [x, y, z] = direction as [number, number, number],
+    ax = Math.abs(x),
+    ay = Math.abs(y),
+    az = Math.abs(z);
+  if (ax >= ay && ax >= az)
+    return x >= 0
+      ? [0, (-z / ax + 1) / 2, (-y / ax + 1) / 2]
+      : [1, (z / ax + 1) / 2, (-y / ax + 1) / 2];
+  if (ay >= az)
+    return y >= 0
+      ? [2, (x / ay + 1) / 2, (z / ay + 1) / 2]
+      : [3, (x / ay + 1) / 2, (-z / ay + 1) / 2];
+  return z >= 0
+    ? [4, (x / az + 1) / 2, (-y / az + 1) / 2]
+    : [5, (-x / az + 1) / 2, (-y / az + 1) / 2];
+}
+
+function cubeDirection(face: number, u: number, v: number): number[] {
+  const a = u * 2 - 1,
+    b = v * 2 - 1;
+  return [
+    [1, -b, -a],
+    [-1, -b, a],
+    [a, 1, b],
+    [a, -1, -b],
+    [a, -b, 1],
+    [-a, -b, -1],
+  ][face]!;
+}
+
 export const textureOps = {
+  textureSampleCompareLevel(
+    texture: CpuTexture,
+    sampler: GPUSamplerDescriptor,
+    coords: number[],
+    layerOrReference: number,
+    reference?: number,
+  ): number {
+    const array = texture.dimension === '2d-array' || texture.dimension === 'cube-array';
+    return textureOps.textureSampleLevel(
+      texture,
+      sampler,
+      coords,
+      array ? layerOrReference : 0,
+      array ? 0 : undefined,
+      array ? reference : layerOrReference,
+    ) as number;
+  },
   textureDimensions(texture: CpuTexture, lod = 0) {
     const level = texture.levels[lod]!;
     return vector(
@@ -104,7 +154,8 @@ export const textureOps = {
     const array = texture.dimension === '2d-array';
     const level = texture.levels[array ? lod : index];
     if (!level) return vector([0, 0, 0, 0]);
-    return texel(texture, level, coords[0]!, coords[1]!, array ? index : (coords[2] ?? 0));
+    const result = texel(texture, level, coords[0]!, coords[1]!, array ? index : (coords[2] ?? 0));
+    return texture.format.startsWith('depth') ? result[0]! : result;
   },
   textureStore(
     texture: CpuTexture,
@@ -148,11 +199,15 @@ export const textureOps = {
     coords: number[],
     layerOrLod: number,
     arrayLod?: number,
-  ) {
-    if (!['2d', '2d-array', '3d'].includes(texture.dimension))
+    compare?: number,
+  ): number[] | number {
+    if (!['2d', '2d-array', '3d', 'cube', 'cube-array'].includes(texture.dimension))
       throw new Error(`@typegpu/kit-gl CPU: unsupported sampled dimension ${texture.dimension}`);
-    const array = texture.dimension === '2d-array';
-    const layer = array ? Math.round(layerOrLod) : 0;
+    const cube = texture.dimension.startsWith('cube');
+    const array = texture.dimension === '2d-array' || texture.dimension === 'cube-array';
+    const face = cube ? cubeFace(coords) : undefined;
+    const layer = (array ? Math.round(layerOrLod) : 0) * (cube ? 6 : 1) + (face?.[0] ?? 0);
+    if (face) coords = [face[1], face[2]];
     const requested = array ? arrayLod! : layerOrLod;
     const lod = Math.min(
       Math.max(requested, sampler.lodMinClamp ?? 0),
@@ -167,18 +222,50 @@ export const textureOps = {
         coords[1]! * level.height,
         (coords[2] ?? 0) * level.depthOrArrayLayers,
       ];
-      const at = (x: number, y: number, z: number) =>
-        texel(
-          texture,
-          level,
-          wrap(x, level.width, sampler.addressModeU),
-          wrap(y, level.height, sampler.addressModeV),
-          array
+      const at = (x: number, y: number, z: number) => {
+        let texelLayer =
+          array || cube
             ? layer
             : texture.dimension === '3d'
               ? wrap(z, level.depthOrArrayLayers, sampler.addressModeW)
-              : 0,
+              : 0;
+        if (cube && (x < 0 || y < 0 || x >= level.width || y >= level.height)) {
+          const next = cubeFace(
+            cubeDirection(face![0], (x + 0.5) / level.width, (y + 0.5) / level.height),
+          );
+          texelLayer = layer - face![0] + next[0];
+          x = Math.floor(next[1] * level.width);
+          y = Math.floor(next[2] * level.height);
+        }
+        const result = texel(
+          texture,
+          level,
+          wrap(x, level.width, cube ? 'clamp-to-edge' : sampler.addressModeU),
+          wrap(y, level.height, cube ? 'clamp-to-edge' : sampler.addressModeV),
+          texelLayer,
         );
+        if (compare !== undefined) {
+          const value = result[0]!;
+          const success =
+            sampler.compare === 'always'
+              ? true
+              : sampler.compare === 'never'
+                ? false
+                : sampler.compare === 'less'
+                  ? compare < value
+                  : sampler.compare === 'less-equal'
+                    ? compare <= value
+                    : sampler.compare === 'greater'
+                      ? compare > value
+                      : sampler.compare === 'greater-equal'
+                        ? compare >= value
+                        : sampler.compare === 'equal'
+                          ? compare === value
+                          : compare !== value;
+          return [Number(success), 0, 0, 1];
+        }
+        return result;
+      };
       if (!linear) return at(Math.floor(p[0]!), Math.floor(p[1]!), Math.floor(p[2]!));
       const base = p.map((v) => Math.floor(v - 0.5));
       const fraction = p.map((v, i) => v - 0.5 - base[i]!);
@@ -196,12 +283,13 @@ export const textureOps = {
           }
       return vector(result);
     };
-    if (sampler.mipmapFilter !== 'linear') return sample(Math.round(lod));
+    const finish = (value: number[]) => (texture.format.startsWith('depth') ? value[0]! : value);
+    if (sampler.mipmapFilter !== 'linear') return finish(sample(Math.round(lod)));
     const low = Math.floor(lod),
       high = Math.min(low + 1, texture.levels.length - 1),
       fraction = lod - low;
     const a = sample(low),
       b = sample(high);
-    return vector(a.map((value, i) => value * (1 - fraction) + b[i]! * fraction));
+    return finish(vector(a.map((value, i) => value * (1 - fraction) + b[i]! * fraction)));
   },
 };

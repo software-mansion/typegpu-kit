@@ -72,3 +72,36 @@ it('loads and stores array layers and samples 3d slices', () => {
     textureOps.textureSampleLevel(volume, { magFilter: 'linear' }, [0.5, 0.5, 0.5], 0),
   ).toEqual([4, 0, 0, 1]);
 });
+
+it('samples cube faces and compares depth before filtering', () => {
+  const cube: CpuTexture = {
+    format: 'r32float',
+    dimension: 'cube',
+    levels: [
+      { width: 1, height: 1, depthOrArrayLayers: 6, data: new Float32Array([1, 2, 3, 4, 5, 6]) },
+    ],
+  };
+  for (const [direction, expected] of [
+    [[1, 0, 0], 1],
+    [[-1, 0, 0], 2],
+    [[0, 1, 0], 3],
+    [[0, -1, 0], 4],
+    [[0, 0, 1], 5],
+    [[0, 0, -1], 6],
+  ] as const)
+    expect(textureOps.textureSampleLevel(cube, {}, [...direction], 0)).toEqual([expected, 0, 0, 1]);
+  const depth: CpuTexture = {
+    format: 'depth32float',
+    dimension: '2d',
+    levels: [{ width: 2, height: 1, depthOrArrayLayers: 1, data: new Float32Array([0.25, 0.75]) }],
+  };
+  expect(
+    textureOps.textureSampleCompareLevel(
+      depth,
+      { compare: 'less', magFilter: 'linear' },
+      [0.5, 0.5],
+      0.5,
+    ),
+  ).toBe(0.5);
+  expect(textureOps.textureLoad(depth, [0, 0], 0)).toBe(0.25);
+});

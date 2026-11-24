@@ -1,3 +1,16 @@
+export function addressParts(expression: string): { object: string; key: string } | undefined {
+  if (expression.endsWith(']')) {
+    let depth = 0;
+    for (let i = expression.length - 1; i >= 0; i--) {
+      if (expression[i] === ']') depth++;
+      if (expression[i] === '[' && --depth === 0)
+        return { object: expression.slice(0, i), key: expression.slice(i + 1, -1) };
+    }
+  }
+  const field = /^(.*)\.([A-Za-z_]\w*)$/.exec(expression);
+  return field ? { object: field[1]!, key: JSON.stringify(field[2]) } : undefined;
+}
+
 export function reference(expression: string): string {
   if (expression.endsWith(']')) {
     let depth = 0;

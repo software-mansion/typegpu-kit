@@ -130,3 +130,11 @@ it('passes scalar function references without copying their storage', () => {
   expect(new Uint32Array(bytes)[0]).toBe(11);
   root.destroy();
 });
+
+it('reports an offending generated line for syntax errors', () => {
+  expect(() =>
+    compile(
+      '//#kit-gl compute\n//#entry {"name":"kernel","size":[1,1,1],"inputs":[]}\nfunction kernel(){\nconst broken = );\n}',
+    ),
+  ).toThrow('Generated line 4: const broken = );');
+});

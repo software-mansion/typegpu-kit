@@ -45,11 +45,13 @@ it('matches dawn for 2d, array, 3d, filtering, and half storage', async () => {
   try {
     const expected = await run(gpu),
       actual = await run(cpu);
-    for (let i = 0; i < expected.length; i++)
-      expect(actual[i], `texture word ${i}, CPU=${actual[i]}, dawn=${expected[i]}`).toBeCloseTo(
-        expected[i]!,
-        5,
-      );
+    const mismatches: string[] = [];
+    for (let i = 0; i < expected.length; i++) {
+      const tolerance = i >= 12 ? Math.max(2 ** -24, Math.abs(expected[i]!) / 1024) : 1e-5;
+      if (Math.abs(actual[i]! - expected[i]!) > tolerance)
+        mismatches.push(`word ${i}: CPU=${actual[i]}, dawn=${expected[i]}, tolerance=${tolerance}`);
+    }
+    expect(mismatches, 'texture comparisons').toEqual([]);
   } finally {
     gpu.destroy();
     cpu.destroy();

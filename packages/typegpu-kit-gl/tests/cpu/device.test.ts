@@ -15,3 +15,41 @@ it('runs ordinary TypeGPU compute pipelines and reads their output', async () =>
   expect(await output.read()).toEqual(Array.from({ length: 16 }, (_, i) => i * 7));
   root.destroy();
 });
+
+it('multiplies matrix columns with a vector', async () => {
+  const root = cpuRoot();
+  const output = root.createMutable(d.vec2f);
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const matrix = d.mat2x2f(d.vec2f(1, 2), d.vec2f(3, 4));
+    output.$ = matrix * d.vec2f(2, 3);
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  const result = await output.read();
+  expect([result.x, result.y]).toEqual([11, 16]);
+  root.destroy();
+});
+
+it('keeps scalarized vector locals scoped to their shader function', async () => {
+  const root = cpuRoot();
+  const source = root.createUniform(d.vec2f, d.vec2f(3.5, -2.5));
+  const output = root.createMutable(d.vec2f);
+  const twice = tgpu.fn(
+    [d.vec2f],
+    d.vec2f,
+  )((value) => {
+    'use gpu';
+    const copy = d.vec2f(value);
+    return copy * 2;
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const value = d.vec2f(source.$);
+    const changed = twice(value);
+    output.$ = changed + value;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  const value = await output.read();
+  expect([value.x, value.y]).toEqual([10.5, -7.5]);
+  root.destroy();
+});

@@ -2,14 +2,23 @@ import { textureDevice } from './texture-device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
 import { CpuGenerator } from '../../src/cpu/generator.ts';
-import { compile, type CpuModule } from '../../src/cpu/index.ts';
+import { compile, isCpuModule, type CpuModule } from '../../src/cpu/index.ts';
+
+const noop = () => {};
 
 type Command = () => void;
 interface Pipeline {
   compute: { module: CpuModule };
 }
 
-export function cpuRoot() {
+export function cpuRoot(
+  options: {
+    generator?: NonNullable<
+      Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
+    >;
+    onModule?: (code: string) => void;
+  } = {},
+) {
   const recording = recordingRoot();
   const original = recording.root.device;
   const texture = textureDevice(original);
@@ -30,10 +39,12 @@ export function cpuRoot() {
       if (key === 'createTexture') return texture.createTexture;
       if (key === 'createSampler') return texture.createSampler;
       if (key === 'createShaderModule')
-        return ({ code }: GPUShaderModuleDescriptor) => ({
-          ...compile(code),
-          getCompilationInfo: async () => ({ messages: [] }),
-        });
+        return (descriptor: GPUShaderModuleDescriptor) => {
+          options.onModule?.(descriptor.code);
+          return isCpuModule(descriptor.code)
+            ? { ...compile(descriptor.code), getCompilationInfo: async () => ({ messages: [] }) }
+            : { ...original.createShaderModule(descriptor), code: descriptor.code };
+        };
       if (key === 'createComputePipeline')
         return (descriptor: GPUComputePipelineDescriptor) => descriptor;
       if (key === 'createComputePipelineAsync')
@@ -42,11 +53,36 @@ export function cpuRoot() {
         return () => {
           const commands: Command[] = [];
           return {
+            beginRenderPass() {
+              return {
+                setPipeline: noop,
+                setBindGroup: noop,
+                setVertexBuffer: noop,
+                setIndexBuffer: noop,
+                draw: noop,
+                drawIndexed: noop,
+                drawIndirect: noop,
+                drawIndexedIndirect: noop,
+                executeBundles: noop,
+                setViewport: noop,
+                setScissorRect: noop,
+                setBlendConstant: noop,
+                setStencilReference: noop,
+                pushDebugGroup: noop,
+                popDebugGroup: noop,
+                insertDebugMarker: noop,
+                end: noop,
+              };
+            },
             beginComputePass() {
               let pipeline: Pipeline;
               const groups = new Map<number, GPUBindGroupDescriptor>();
               const dispatch = (x: number, y: number, z: number) => {
                 const module = pipeline.compute.module;
+                if (!module.dispatch)
+                  throw new Error(
+                    `CPU test device: raw compute shader ${(module as unknown as { code: string }).code}`,
+                  );
                 const bindings = new Map(groups);
                 commands.push(() =>
                   module.dispatch(x, y, z, {
@@ -142,8 +178,10 @@ export function cpuRoot() {
   });
   return tgpu.initFromDevice({
     device,
-    unstable_shaderGeneratorClass: CpuGenerator as unknown as NonNullable<
-      Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
-    >,
+    unstable_shaderGeneratorClass:
+      options.generator ??
+      (CpuGenerator as unknown as NonNullable<
+        Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
+      >),
   });
 }
