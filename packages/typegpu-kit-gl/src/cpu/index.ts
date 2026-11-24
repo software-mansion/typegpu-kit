@@ -1,6 +1,5 @@
 import { ref } from './references.ts';
 import { construct, vector } from './values.ts';
-import { bufferValue, type Layout } from './memory.ts';
 import type { CpuBindingUse, CpuModule, CpuResources } from './types.ts';
 export type * from './types.ts';
 
@@ -38,19 +37,19 @@ export function compile(code: string): CpuModule {
     });
   const makeKernel = new Function(
     '$buffer',
-    '$memory',
     '$construct',
     '$ref',
     '$shared',
     '$bits',
+    '$vector',
     `const arrayLength = (value) => value.$.length;\n${code}\nreturn ${entry.name};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
-    memory: (group: number, binding: number, layout: Layout) => unknown,
     constructValue: typeof construct,
     referenceValue: typeof ref,
     sharedValue: (name: string, make: () => unknown) => unknown,
     bits: Record<string, (value: number) => number>,
+    vectorValue: typeof vector,
   ) => Kernel;
   return {
     kind: 'compute',
@@ -80,7 +79,6 @@ export function compile(code: string): CpuModule {
             const buffer = resources.buffer(group, binding);
             return new ctor(buffer.bytes, buffer.offset, buffer.size / 4);
           },
-          (group, binding, layout) => bufferValue(resources.buffer(group, binding), layout),
           construct,
           ref,
           (name, make) => {
@@ -88,6 +86,7 @@ export function compile(code: string): CpuModule {
             return shared.get(name);
           },
           bits,
+          vector,
         );
       let kernel = instantiate();
       const global = vector([0, 0, 0]) as unknown as { x: number; y: number; z: number };
