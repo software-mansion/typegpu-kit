@@ -1,4 +1,4 @@
-import { pipelines } from '@typegpu/kit';
+import { backends, pipelines } from '@typegpu/kit';
 import { randf } from '@typegpu/noise';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 import { createWaveMips } from './wave-mips.ts';
@@ -142,6 +142,59 @@ const transformRows = tgpu.computeFn({
 });
 
 const columns = tgpu.workgroupVar(d.arrayOf(d.vec2f, SIGNALS * N));
+
+/**
+ * One radix-2 Stockham step of an inverse transform, from `from` into `into`, for backends where
+ * workgroups share nothing. Each invocation gathers its own output element from two inputs, half
+ * the line apart, so the steps read and write natural order.
+ */
+const stageLayout = tgpu.bindGroupLayout({
+  from: { storage: d.arrayOf(d.vec2f), access: 'readonly' },
+  into: { storage: d.arrayOf(d.vec2f), access: 'mutable' },
+  span: { uniform: d.u32 },
+});
+
+/** The butterfly output at `o` of a step whose pairs lie `span` apart, from inputs `a` and `b`. */
+const butterfly = (o: number, span: number, a: d.v2f, b: d.v2f) => {
+  'use gpu';
+  const angle = (Math.PI * d.f32(o % span)) / d.f32(span);
+  const w = cmul(b, d.vec2f(std.cos(angle), std.sin(angle)));
+  return std.select(a - w, a + w, o % (span * 2) < span);
+};
+
+/** The input pair's first element for output `o` of a step whose pairs lie `span` apart. */
+const pairOf = (o: number, span: number) => {
+  'use gpu';
+  return std.intdiv(o, span * 2) * span + (o % span);
+};
+
+/** Steps every row of every signal, `gid` being (x, row, signal of a cascade). */
+const rowStage = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const span = stageLayout.$.span;
+  const line = (gid.z * N + gid.y) * N;
+  const j = pairOf(gid.x, span);
+  const a = d.vec2f(stageLayout.$.from[line + j]);
+  const b = d.vec2f(stageLayout.$.from[line + j + HALF_N]);
+  stageLayout.$.into[line + gid.x] = butterfly(gid.x, span, a, b);
+});
+
+/** Steps every column of every signal, `gid` being (column, y, signal of a cascade). */
+const columnStage = tgpu.computeFn({
+  workgroupSize: [64],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  const span = stageLayout.$.span;
+  const plane = gid.z * N * N;
+  const j = pairOf(gid.y, span);
+  const a = d.vec2f(stageLayout.$.from[plane + j * N + gid.x]);
+  const b = d.vec2f(stageLayout.$.from[plane + (j + HALF_N) * N + gid.x]);
+  stageLayout.$.into[plane + gid.y * N + gid.x] = butterfly(gid.y, span, a, b);
+});
 const columnButterflies = butterfliesOf(columns, SIGNALS);
 
 export type Waves = ReturnType<typeof createWaves>;
@@ -236,14 +289,25 @@ export function createWaves(root: TgpuRoot) {
     signals.$[base + 3 * N * N] = pack(h * ((k.y * k.y) / kLen), h * ((k.x * k.y) / kLen));
   });
 
-  /** Packs a transformed texel's displacement, slopes and moments, and carries its foam. */
-  const packTexel = (texel: d.v2u, c: number) => {
+  /**
+   * Packs a transformed texel's displacement, slopes and moments from its four signals, and
+   * carries its foam in `cell`.
+   */
+  const packSignals = (
+    texel: d.v2u,
+    c: number,
+    cell: number,
+    signal0: d.v2f,
+    signal1: d.v2f,
+    signal2: d.v2f,
+    signal3: d.v2f,
+  ) => {
     'use gpu';
     const sign = std.select(d.f32(1), d.f32(-1), ((texel.x + texel.y) & 1) === 1);
-    const s0 = d.vec2f(columns.$[texel.y]) * sign;
-    const s1 = d.vec2f(columns.$[N + texel.y]) * sign;
-    const s2 = d.vec2f(columns.$[2 * N + texel.y]) * sign;
-    const s3 = d.vec2f(columns.$[3 * N + texel.y]) * sign;
+    const s0 = signal0 * sign;
+    const s1 = signal1 * sign;
+    const s2 = signal2 * sign;
+    const s3 = signal3 * sign;
     // With -i·k/|k|, a negative gain compresses the crests; a positive one sharpens the troughs
     const lambda = -CHOPPINESS * cascades.$[c].chop;
     const gradient = d.vec2f(s1.y, s2.x);
@@ -252,7 +316,6 @@ export function createWaves(root: TgpuRoot) {
     const xz = lambda * s3.y;
     const jacobian = surfaceJacobian(d.vec3f(xx, zz, xz));
     const rule = Foaming(foaming.$[c]);
-    const cell = (c * N + texel.x) * N + texel.y;
     const foamed = std.saturate(
       foam.$[cell] * std.exp(-rule.decay * step.$.dt) +
         std.max(rule.whitecap - jacobian, 0) * rule.grow * step.$.dt,
@@ -270,6 +333,20 @@ export function createWaves(root: TgpuRoot) {
       texel,
       c,
       d.vec4f(gradient.x * gradient.x, gradient.y * gradient.y, gradient.x * gradient.y, foamed),
+    );
+  };
+
+  /** Packs a texel of the column the workgroup transformed. */
+  const packTexel = (texel: d.v2u, c: number) => {
+    'use gpu';
+    packSignals(
+      texel,
+      c,
+      (c * N + texel.x) * N + texel.y,
+      d.vec2f(columns.$[texel.y]),
+      d.vec2f(columns.$[N + texel.y]),
+      d.vec2f(columns.$[2 * N + texel.y]),
+      d.vec2f(columns.$[3 * N + texel.y]),
     );
   };
 
@@ -303,10 +380,96 @@ export function createWaves(root: TgpuRoot) {
     }
   });
 
+  // Where compute runs on the CPU, the WebGL fallback can run kernels that each write their own
+  // element on its GPU, but not workgroups that share memory: there the transforms step through
+  // Stockham stages over a second lattice instead, with the evolve and the packing per element
+  const cpu = backends.of(root).compute === 'cpu';
+
+  /** Evolves one signal of one cell, `gid` being (x, y, signal of a cascade), zero beyond reach. */
+  const evolveSignal = tgpu.computeFn({
+    workgroupSize: [64],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const at = (gid.z * N + gid.y) * N + gid.x;
+    const c = std.intdiv(gid.z, d.u32(SIGNALS));
+    const signal = gid.z % SIGNALS;
+    const reach = reachOf.$[c];
+    if (
+      gid.x + reach < HALF_N ||
+      gid.x > HALF_N + reach ||
+      gid.y + reach < HALF_N ||
+      gid.y > HALF_N + reach
+    ) {
+      signals.$[at] = d.vec2f();
+      return;
+    }
+    // As `evolve` does for the cell, keeping one of its four signals
+    const idx = (c * N + gid.y) * N + gid.x;
+    const h0 = amplitudes.$[idx];
+    const phase = omegas.$[idx] * step.$.time;
+    const rotation = d.vec2f(std.cos(phase), std.sin(phase));
+    const h = cmul(h0.xy, rotation) + cmul(h0.zw, d.vec2f(rotation.x, -rotation.y));
+    const dk = (2 * Math.PI) / cascades.$[c].patchSize;
+    const k = (d.vec2f(gid.xy) - N / 2) * dk;
+    const kLen = std.max(std.length(k), 1e-6);
+    const ih = d.vec2f(-h.y, h.x);
+    let value = pack(h * ((k.y * k.y) / kLen), h * ((k.x * k.y) / kLen));
+    if (signal === 0) value = pack(ih * (-k.x / kLen), h);
+    if (signal === 1) value = pack(ih * (-k.y / kLen), ih * k.x);
+    if (signal === 2) value = pack(ih * k.y, h * ((k.x * k.x) / kLen));
+    signals.$[at] = d.vec2f(value);
+  });
+
+  /** Packs one texel of one cascade, `gid` being (x, y, cascade), from the transformed lattice. */
+  const packDense = tgpu.computeFn({
+    workgroupSize: [8, 8],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const at = (gid.z * SIGNALS * N + gid.y) * N + gid.x;
+    packSignals(
+      gid.xy,
+      gid.z,
+      (gid.z * N + gid.y) * N + gid.x,
+      d.vec2f(columnsLayout.$.rows[at]),
+      d.vec2f(columnsLayout.$.rows[at + N * N]),
+      d.vec2f(columnsLayout.$.rows[at + 2 * N * N]),
+      d.vec2f(columnsLayout.$.rows[at + 3 * N * N]),
+    );
+  });
+
+  const spare = cpu
+    ? root.createBuffer(d.arrayOf(d.vec2f, CASCADES * SIGNALS * N * N)).$usage('storage')
+    : undefined;
+  const spans = cpu ? STRIDES.map((span) => root.createUniform(d.u32, span)) : [];
+  // Rows step from the lattice and end in the spare one, columns step back
+  const stagesOf = (start: 'lattice' | 'spare') =>
+    spans.map((span, s) => {
+      const fromLattice = (s % 2 === 0) === (start === 'lattice');
+      return root.createBindGroup(stageLayout, {
+        from: fromLattice ? lattice : (spare as typeof lattice),
+        into: fromLattice ? (spare as typeof lattice) : lattice,
+        span,
+      });
+    });
+  const rowStages = stagesOf('lattice');
+  const columnStages = stagesOf('spare');
+  const evolveSignalPipeline = cpu
+    ? root.createComputePipeline({ compute: evolveSignal })
+    : undefined;
+  const rowStagePipeline = cpu ? root.createComputePipeline({ compute: rowStage }) : undefined;
+  const columnStagePipeline = cpu
+    ? root.createComputePipeline({ compute: columnStage })
+    : undefined;
+  const packPipeline = cpu ? root.createComputePipeline({ compute: packDense }) : undefined;
+
   const initialPipeline = root.createComputePipeline({ compute: initialSpectrum });
-  const evolvePipeline = root.createComputePipeline({ compute: evolve });
-  const rowsPipeline = root.createComputePipeline({ compute: transformRows });
-  const columnsPipeline = root.createComputePipeline({ compute: transformColumns });
+  const evolvePipeline = cpu ? undefined : root.createComputePipeline({ compute: evolve });
+  const rowsPipeline = cpu ? undefined : root.createComputePipeline({ compute: transformRows });
+  const columnsPipeline = cpu
+    ? undefined
+    : root.createComputePipeline({ compute: transformColumns });
 
   const rowsGroup = root.createBindGroup(rowsLayout, { data: lattice });
   const columnsGroup = root.createBindGroup(columnsLayout, {
@@ -364,13 +527,18 @@ export function createWaves(root: TgpuRoot) {
 
   return {
     initAsync: () =>
-      pipelines.compile([
-        initialPipeline,
-        evolvePipeline,
-        rowsPipeline,
-        columnsPipeline,
-        mips.pipeline,
-      ]),
+      pipelines.compile(
+        cpu
+          ? [
+              initialPipeline,
+              evolveSignalPipeline!,
+              rowStagePipeline!,
+              columnStagePipeline!,
+              packPipeline!,
+              mips.pipeline,
+            ]
+          : [initialPipeline, evolvePipeline!, rowsPipeline!, columnsPipeline!, mips.pipeline],
+      ),
     spectrum,
     cascades,
     step,
@@ -412,15 +580,37 @@ export function createWaves(root: TgpuRoot) {
       initialPipeline.with(pass).dispatchWorkgroups(N / TILE, N / TILE, CASCADES);
     },
     record(pass: TgpuComputePass) {
-      evolvePipeline.with(pass).dispatchWorkgroups(Math.ceil(CELLS / EVOLVE_GROUP));
-      rowsPipeline.with(pass).with(rowsGroup).dispatchWorkgroups(ROWS, SIGNALS);
-      columnsPipeline.with(pass).with(columnsGroup).dispatchWorkgroups(N, CASCADES);
+      if (cpu) {
+        const lines = [N / 64, N, CASCADES * SIGNALS] as const;
+        evolveSignalPipeline!.with(pass).dispatchWorkgroups(...lines);
+        for (const group of rowStages) {
+          rowStagePipeline!
+            .with(pass)
+            .with(group)
+            .dispatchWorkgroups(...lines);
+        }
+        for (const group of columnStages) {
+          columnStagePipeline!
+            .with(pass)
+            .with(group)
+            .dispatchWorkgroups(...lines);
+        }
+        packPipeline!
+          .with(pass)
+          .with(columnsGroup)
+          .dispatchWorkgroups(N / 8, N / 8, CASCADES);
+      } else {
+        evolvePipeline!.with(pass).dispatchWorkgroups(Math.ceil(CELLS / EVOLVE_GROUP));
+        rowsPipeline!.with(pass).with(rowsGroup).dispatchWorkgroups(ROWS, SIGNALS);
+        columnsPipeline!.with(pass).with(columnsGroup).dispatchWorkgroups(N, CASCADES);
+      }
       mips.record(pass);
     },
     destroy() {
       for (const resource of [foam.buffer, amplitudes.buffer, omegas.buffer, lattice, ...maps]) {
         resource.destroy();
       }
+      spare?.destroy();
     },
   };
 }

@@ -1,3 +1,4 @@
+import { backends } from '@typegpu/kit';
 import {
   d,
   std,
@@ -84,6 +85,27 @@ const fillThree = tgpu.computeFn({
   }
 });
 
+const oneLayout = tgpu.bindGroupLayout({
+  src: { texture: d.texture2dArray(d.f32) },
+  into: { storageTexture: storage },
+});
+
+/** Each thread averages a texel of one level, for backends where workgroups share nothing. */
+const fillOne = tgpu.computeFn({
+  workgroupSize: [GROUP, GROUP],
+  in: { gid: d.builtin.globalInvocationId },
+})(({ gid }) => {
+  'use gpu';
+  if (!std.all(std.lt(gid.xy, std.textureDimensions(oneLayout.$.into)))) return;
+  const at = gid.xy * 2;
+  const sum =
+    std.textureLoad(oneLayout.$.src, at, gid.z, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 0), gid.z, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(0, 1), gid.z, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 1), gid.z, 0);
+  std.textureStore(oneLayout.$.into, gid.xy, gid.z, asStored(sum * 0.25));
+});
+
 type WaveMap = TgpuTexture<{
   size: readonly number[];
   format: 'rgba16float';
@@ -96,9 +118,11 @@ const only = (baseMipLevel: number) => ({ baseMipLevel, mipLevelCount: 1 });
 
 /**
  * Box-filtered mips of the wave maps, three levels a dispatch. The maps refill every frame, and the
- * kit's `mipmaps`, a level a dispatch, waits between three times as many.
+ * kit's `mipmaps`, a level a dispatch, waits between three times as many. Where compute runs on
+ * the CPU, a level a dispatch lets the WebGL fallback run each on its GPU, with the same texels.
  */
 export function createWaveMips(root: TgpuRoot, maps: readonly WaveMap[]) {
+  if (backends.of(root).compute === 'cpu') return levelByLevel(root, maps);
   const pipeline = root.createComputePipeline({ compute: fillThree });
   const dispatches = maps.flatMap((map) => {
     const { size, mipLevelCount = 1 } = map.props;
@@ -112,6 +136,29 @@ export function createWaveMips(root: TgpuRoot, maps: readonly WaveMap[]) {
       });
       const x = Math.ceil(Math.max(size[0] >> (top + 1), 1) / GROUP);
       const y = Math.ceil(Math.max(size[1] >> (top + 1), 1) / GROUP);
+      return (pass: TgpuComputePass) =>
+        pipeline.with(pass).with(group).dispatchWorkgroups(x, y, size[2]);
+    });
+  });
+  return {
+    pipeline,
+    record(pass: TgpuComputePass) {
+      for (const dispatch of dispatches) dispatch(pass);
+    },
+  };
+}
+
+function levelByLevel(root: TgpuRoot, maps: readonly WaveMap[]) {
+  const pipeline = root.createComputePipeline({ compute: fillOne });
+  const dispatches = maps.flatMap((map) => {
+    const { size, mipLevelCount = 1 } = map.props;
+    return Array.from({ length: mipLevelCount - 1 }, (_, i) => {
+      const group = root.createBindGroup(oneLayout, {
+        src: map.createView(d.texture2dArray(d.f32), only(i)),
+        into: map.createView(storage, only(i + 1)),
+      });
+      const x = Math.ceil(Math.max(size[0] >> (i + 1), 1) / GROUP);
+      const y = Math.ceil(Math.max(size[1] >> (i + 1), 1) / GROUP);
       return (pass: TgpuComputePass) =>
         pipeline.with(pass).with(group).dispatchWorkgroups(x, y, size[2]);
     });
