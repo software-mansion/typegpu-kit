@@ -82,7 +82,12 @@ export interface GlslRoot {
 }
 
 export type ComputeVerdict = { readonly name: string } & (
-  | { readonly code: string; readonly module: NonNullable<ReturnType<typeof parseCompute>> }
+  | {
+      readonly code: string;
+      readonly module: NonNullable<ReturnType<typeof parseCompute>>;
+      /** The pipeline's code from the resolution the form is attached to. */
+      readonly wgsl: string;
+    }
   | { readonly reason: string }
 );
 
@@ -111,7 +116,7 @@ export function glslRoot(options: GlslRootOptions = {}): GlslRoot {
         const module = parseCompute(code, { conditions: ['limits', 'single'] }) as NonNullable<
           ReturnType<typeof parseCompute>
         >;
-        return { name, code: form, module };
+        return { name, code: form, module, wgsl: code };
       });
   return { root, recording, codes, modules: () => codes().map((code) => parse(code)), computes };
 }

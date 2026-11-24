@@ -22,6 +22,32 @@ afterAll(async () => {
   if (report) writeFileSync(report, `${JSON.stringify(verdicts, null, 2)}\n`);
 });
 
+/**
+ * The GPU form's bindings that the pipeline's WGSL declares differently: missing, of another kind,
+ * or written by the form but not writable in WGSL.
+ */
+function misnumbered(verdict: ComputeVerdict): string[] {
+  if (!('module' in verdict)) return [];
+  const declared = new Map<string, string>();
+  for (const [, group, binding, rest] of verdict.wgsl.matchAll(
+    /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(.*?);/g,
+  )) {
+    declared.set(`${group}:${binding}`, rest ?? '');
+  }
+  return verdict.module.bindings.flatMap(({ group, binding, kind, writes }) => {
+    const wgsl = declared.get(`${group}:${binding}`);
+    const right =
+      wgsl !== undefined &&
+      (kind === 'buffer'
+        ? /^<(uniform|storage)/.test(wgsl) && (!writes || /read_write/.test(wgsl))
+        : kind === 'texture'
+          ? /:\s*texture_/.test(wgsl) &&
+            (!writes || /texture_storage_.*(write|read_write)>/.test(wgsl))
+          : /:\s*sampler/.test(wgsl));
+    return right ? [] : [`${verdict.name} @group(${group}) @binding(${binding}) ${kind}: ${wgsl}`];
+  });
+}
+
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
@@ -58,6 +84,8 @@ it.each(examples.map((example) => example.key))('%s', async (key) => {
       ? { name: verdict.name, grid: verdict.module.grid }
       : { name: verdict.name, reason: verdict.reason },
   );
+
+  expect(unique.flatMap(misnumbered)).toEqual([]);
 
   const passes = unique.flatMap((verdict) =>
     'module' in verdict
