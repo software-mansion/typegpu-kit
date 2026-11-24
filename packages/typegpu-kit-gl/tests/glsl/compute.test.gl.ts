@@ -18,10 +18,41 @@ type Input =
 
 interface Scenario {
   readonly layout: TgpuBindGroupLayout;
-  readonly kernel: Kernel;
-  readonly workgroups: readonly [number, number, number];
+  /** A compute entry, dispatched as `workgroups`. */
+  readonly kernel?: Kernel;
+  readonly workgroups?: readonly [number, number, number];
+  /** Or a guarded pipeline's callback, dispatched as `threads`. */
+  readonly guarded?: (...ids: number[]) => void;
+  readonly threads?: readonly [number, number, number];
   /** In the layout's order, so each one's binding is its index. */
   readonly inputs: Record<string, Input>;
+}
+
+/** The workgroup size TypeGPU gives a guarded pipeline with `count` dimensions. */
+const GUARDED_SIZE = [
+  [1, 1, 1],
+  [256, 1, 1],
+  [16, 16, 1],
+  [8, 8, 4],
+] as const;
+
+function workgroupsOf(scenario: Scenario): [number, number, number] {
+  if (scenario.workgroups) return [...scenario.workgroups];
+  const size = GUARDED_SIZE[scenario.guarded?.length ?? 0] as readonly number[];
+  const threads = scenario.threads as readonly number[];
+  return [0, 1, 2].map((i) => Math.ceil((threads[i] as number) / (size[i] as number))) as [
+    number,
+    number,
+    number,
+  ];
+}
+
+/** The compute pipeline inside a guarded one, which TypeGPU keeps behind a symbol. */
+function innerPipeline(guarded: object): object {
+  const state = Object.getOwnPropertySymbols(guarded)
+    .map((key) => (guarded as Record<symbol, { pipeline?: object }>)[key])
+    .find((value) => value?.pipeline);
+  return state?.pipeline as object;
 }
 
 let gpu: TgpuRoot;
@@ -106,10 +137,17 @@ async function onWebGpu(scenario: Scenario): Promise<Record<string, Uint8Array>>
     };
   }
   const group = gpu.createBindGroup(scenario.layout, entries as never);
-  gpu
-    .createComputePipeline({ compute: scenario.kernel as never })
-    .with(group)
-    .dispatchWorkgroups(...scenario.workgroups);
+  if (scenario.guarded) {
+    gpu
+      .createGuardedComputePipeline(scenario.guarded as never)
+      .with(group)
+      .dispatchThreads(...(scenario.threads as [number, number, number]));
+  } else {
+    gpu
+      .createComputePipeline({ compute: scenario.kernel as never })
+      .with(group)
+      .dispatchWorkgroups(...workgroupsOf(scenario));
+  }
   const result: Record<string, Uint8Array> = {};
   for (const [key, read] of Object.entries(reads)) result[key] = await read();
   return result;
@@ -118,7 +156,12 @@ async function onWebGpu(scenario: Scenario): Promise<Record<string, Uint8Array>>
 /** The kernel's GPU form, resolved with the fallback's generator. */
 function gpuForm(scenario: Scenario): ComputeModule {
   const { root, computes } = glslRoot({ compute: true });
-  root.unwrap(root.createComputePipeline({ compute: scenario.kernel as never }));
+  if (scenario.guarded) {
+    const guarded = root.createGuardedComputePipeline(scenario.guarded as never);
+    root.unwrap(innerPipeline(guarded) as never);
+  } else {
+    root.unwrap(root.createComputePipeline({ compute: scenario.kernel as never }));
+  }
   const [verdict] = computes();
   if (!verdict || !('module' in verdict)) {
     throw new Error(`No GPU form: ${verdict && 'reason' in verdict ? verdict.reason : 'none'}`);
@@ -141,8 +184,19 @@ function onWebGl(scenario: Scenario): Record<string, Uint8Array> {
       resources.set(`0:${index}`, { ...input, data: input.data.slice() });
     }
   }
+  if (scenario.threads) {
+    // A guarded pipeline's own uniform holds the thread counts
+    const size = module.blocks.find((block) => block.block.startsWith('sizeUniform'));
+    if (size) {
+      const words = new Uint32Array([...scenario.threads, 0]);
+      resources.set(`${size.group}:${size.binding}`, {
+        kind: 'buffer',
+        bytes: new Uint8Array(words.buffer),
+      });
+    }
+  }
   const gl = document.createElement('canvas').getContext('webgl2') as WebGL2RenderingContext;
-  dispatch(gl, module, resources, scenario.workgroups);
+  dispatch(gl, module, resources, workgroupsOf(scenario));
   return Object.fromEntries(
     keys.map((key, index) => {
       const each = resources.get(`0:${index}`) as Resource;
@@ -380,6 +434,118 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
           data: new Float32Array(range(64, (i) => i)),
           storage: true,
         },
+      },
+    });
+  });
+});
+
+describe('GPU forms of wider kernels run as WebGPU runs them', () => {
+  it('runs a guarded pipeline that writes a buffer at its linear index', async () => {
+    const layout = tgpu
+      .bindGroupLayout({ out: { storage: d.arrayOf(d.f32, 256), access: 'mutable' } })
+      .$idx(0);
+    await expectSame({
+      layout,
+      guarded: (x: number, y: number) => {
+        'use gpu';
+        const index = x + y * 16;
+        layout.$.out[index] = d.f32(x * 100 + y) + (layout.$.out[index] as number);
+      },
+      threads: [16, 12, 1],
+      inputs: {
+        out: { kind: 'buffer', schema: d.arrayOf(d.f32, 256), value: range(256, (i) => -i) },
+      },
+    });
+  });
+
+  it('runs a guarded pipeline that stores a 2d texture', async () => {
+    const layout = tgpu
+      .bindGroupLayout({
+        target: { storageTexture: d.textureStorage2d('rgba32float', 'write-only') },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      guarded: (x: number, y: number) => {
+        'use gpu';
+        std.textureStore(layout.$.target, d.vec2u(x, y), d.vec4f(d.f32(x), d.f32(y), 1, 0.5));
+      },
+      threads: [20, 9, 1],
+      inputs: {
+        target: {
+          kind: 'texture',
+          format: 'rgba32float',
+          dimension: '2d',
+          size: [24, 12, 1],
+          data: new Float32Array(24 * 12 * 4).fill(-1),
+          storage: true,
+        },
+      },
+    });
+  });
+
+  it('writes a 3d grid at its Horner index, through a helper', async () => {
+    const Cell = d.struct({ value: d.f32, hits: d.u32, tag: d.vec2u });
+    const layout = tgpu
+      .bindGroupLayout({ cells: { storage: d.arrayOf(Cell, 8 * 4 * 2), access: 'mutable' } })
+      .$idx(0);
+    const visit = (x: number, y: number, z: number) => {
+      'use gpu';
+      const cell = layout.$.cells[(z * 4 + y) * 8 + x] as d.Infer<typeof Cell>;
+      cell.hits += 1;
+      cell.tag = d.vec2u(x, y * 10 + z);
+    };
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({
+        workgroupSize: [4, 4, 2],
+        in: { gid: d.builtin.globalInvocationId },
+      })(({ gid: id }) => {
+        'use gpu';
+        if (id.x >= 7) return;
+        visit(id.x, id.y, id.z);
+      }),
+      workgroups: [2, 1, 1],
+      inputs: {
+        cells: {
+          kind: 'buffer',
+          schema: d.arrayOf(Cell, 64),
+          value: range(64, (i) => ({ value: i, hits: i % 5, tag: d.vec2u(9, 9) })),
+        },
+      },
+    });
+  });
+
+  it('writes state and a history entry from a single invocation', async () => {
+    const State = d.struct({ count: d.u32, total: d.f32, last: d.vec2f });
+    const layout = tgpu
+      .bindGroupLayout({
+        state: { storage: State, access: 'mutable' },
+        history: { storage: d.arrayOf(d.f32, 8), access: 'mutable' },
+        input: { storage: d.arrayOf(d.f32, 4), access: 'readonly' },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        const state = layout.$.state;
+        state.count += 1;
+        let sum = d.f32(0);
+        for (let i = 0; i < 4; i++) sum += layout.$.input[i] as number;
+        state.total += sum;
+        state.last = d.vec2f(sum, state.total);
+        layout.$.history[state.count % 8] = state.total;
+      }),
+      workgroups: [1, 1, 1],
+      inputs: {
+        state: {
+          kind: 'buffer',
+          schema: State,
+          value: { count: 6, total: 1.5, last: d.vec2f(0, 0) },
+        },
+        history: { kind: 'buffer', schema: d.arrayOf(d.f32, 8), value: range(8, (i) => i) },
+        input: { kind: 'buffer', schema: d.arrayOf(d.f32, 4), value: [1, 2, 3, 4.5] },
       },
     });
   });

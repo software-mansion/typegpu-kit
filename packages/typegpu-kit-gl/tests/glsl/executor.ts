@@ -189,6 +189,21 @@ export function dispatch(
     }
   }
   const invocations = workgroups.map((count, i) => count * (module.workgroupSize[i] as number));
+  // The conditions a device checks before it may use the form
+  const [x, y, z] = invocations as [number, number, number];
+  if ((module.grid < 3 && z !== 1) || (module.grid < 2 && y !== 1)) {
+    throw new Error('The dispatch covers axes the passes do not');
+  }
+  if (module.single && x * y * z !== 1) throw new Error('The form needs a single invocation');
+  for (const { target } of module.passes) {
+    if (target.kind !== 'buffer') continue;
+    if (
+      (target.width !== undefined && x > target.width) ||
+      (target.height !== undefined && y > target.height)
+    ) {
+      throw new Error('The dispatch is wider than the linear indices');
+    }
+  }
 
   const results = new Map<string, Uploaded>();
   for (const pass of module.passes) {
