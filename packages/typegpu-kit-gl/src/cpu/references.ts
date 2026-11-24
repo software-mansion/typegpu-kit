@@ -1,3 +1,26 @@
+export function callArguments(code: string): string[] {
+  const result: string[] = [];
+  let start = code.indexOf('(') + 1;
+  let depth = 0;
+  let quote = '';
+  for (let i = start; i < code.length - 1; i++) {
+    const char = code[i]!;
+    if (quote) {
+      if (char === '\\') i++;
+      else if (char === quote) quote = '';
+    } else if (char === '"' || char === "'") quote = char;
+    else if ('([{'.includes(char)) depth++;
+    else if (')]}'.includes(char)) depth--;
+    else if (char === ',' && depth === 0) {
+      result.push(code.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = code.slice(start, -1).trim();
+  if (last) result.push(last);
+  return result;
+}
+
 export function addressParts(expression: string): { object: string; key: string } | undefined {
   if (expression.endsWith(']')) {
     let depth = 0;

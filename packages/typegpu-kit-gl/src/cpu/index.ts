@@ -20,8 +20,9 @@ interface Entry {
 type Kernel = (...args: unknown[]) => void | Generator<unknown, void>;
 interface Execution {
   kernel: Kernel;
-  capture(): unknown[];
+  capture(values?: unknown[]): unknown[];
   restore(values: unknown[]): void;
+  resetWorkgroup(): void;
 }
 type ViewConstructor = typeof Uint32Array | typeof Int32Array | typeof Float32Array;
 
@@ -45,6 +46,9 @@ export function compile(code: string): CpuModule {
     });
   const privateNames = [...code.matchAll(/^\/\/#private (\w+)$/gm)].map((match) => match[1]!);
   const workgroupState = code.includes('//#scope workgroup');
+  const workgroupVariables = [...code.matchAll(/^\/\/#workgroup (.*)$/gm)].map(
+    (match) => JSON.parse(match[1]!) as { name: string; initial: string },
+  );
   const makeKernel = compileJavascript(
     [
       '$buffer',
@@ -58,7 +62,7 @@ export function compile(code: string): CpuModule {
       '$pack',
       '$unpack',
     ],
-    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},capture:()=>[${privateNames.join(',')}],restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}}};`,
+    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial }) => `${name}=${initial};`).join('')}}};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
     constructValue: typeof construct,
@@ -113,9 +117,9 @@ export function compile(code: string): CpuModule {
           unpack,
         );
       let execution = instantiate();
-      const global = vector([0, 0, 0]) as unknown as { x: number; y: number; z: number };
-      const local = vector([0, 0, 0]) as unknown as { x: number; y: number; z: number };
-      const workgroup = vector([0, 0, 0]) as unknown as { x: number; y: number; z: number };
+      const global = [0, 0, 0] as [number, number, number];
+      const local = [0, 0, 0] as [number, number, number];
+      const workgroup = [0, 0, 0] as [number, number, number];
       const builtins: Record<string, unknown> = {
         global_invocation_id: global,
         local_invocation_id: local,
@@ -124,20 +128,21 @@ export function compile(code: string): CpuModule {
         local_invocation_index: 0,
       };
       const args: unknown[] = [];
-      for (workgroup.z = 0; workgroup.z < z; workgroup.z++)
-        for (workgroup.y = 0; workgroup.y < y; workgroup.y++)
-          for (workgroup.x = 0; workgroup.x < x; workgroup.x++) {
+      for (workgroup[2] = 0; workgroup[2] < z; workgroup[2]++)
+        for (workgroup[1] = 0; workgroup[1] < y; workgroup[1]++)
+          for (workgroup[0] = 0; workgroup[0] < x; workgroup[0]++) {
             shared.clear();
-            if (workgroupState) execution = instantiate();
+            if (workgroupVariables.length) execution.resetWorkgroup();
+            else if (workgroupState) execution = instantiate();
             const invocations: { iterator: Generator<unknown, void>; privateValues?: unknown[] }[] =
               [];
             let index = 0;
-            for (local.z = 0; local.z < entry.size[2]; local.z++)
-              for (local.y = 0; local.y < entry.size[1]; local.y++)
-                for (local.x = 0; local.x < entry.size[0]; local.x++) {
-                  global.x = workgroup.x * entry.size[0] + local.x;
-                  global.y = workgroup.y * entry.size[1] + local.y;
-                  global.z = workgroup.z * entry.size[2] + local.z;
+            for (local[2] = 0; local[2] < entry.size[2]; local[2]++)
+              for (local[1] = 0; local[1] < entry.size[1]; local[1]++)
+                for (local[0] = 0; local[0] < entry.size[0]; local[0]++) {
+                  global[0] = workgroup[0] * entry.size[0] + local[0];
+                  global[1] = workgroup[1] * entry.size[1] + local[1];
+                  global[2] = workgroup[2] * entry.size[2] + local[2];
                   builtins.local_invocation_index = index++;
                   for (let i = 0; i < entry.inputs.length; i++)
                     args[i] =
@@ -149,15 +154,16 @@ export function compile(code: string): CpuModule {
                 }
             if (invocations.length) {
               for (;;) {
-                const states = invocations.map((invocation) => {
+                let finished = 0;
+                for (const invocation of invocations) {
                   if (invocation.privateValues) execution.restore(invocation.privateValues);
                   const state = invocation.iterator.next();
-                  if (privateNames.length) invocation.privateValues = execution.capture();
-                  return state;
-                });
-                if (states.every((state) => state.done)) break;
-                if (states.some((state) => state.done))
-                  throw new Error('@typegpu/kit-gl CPU: divergent workgroup barrier');
+                  if (privateNames.length)
+                    invocation.privateValues = execution.capture(invocation.privateValues);
+                  if (state.done) finished++;
+                }
+                if (finished === invocations.length) break;
+                if (finished) throw new Error('@typegpu/kit-gl CPU: divergent workgroup barrier');
               }
             }
           }

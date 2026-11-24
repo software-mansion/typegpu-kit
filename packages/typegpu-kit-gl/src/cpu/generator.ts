@@ -1,10 +1,11 @@
-import { readAddress, writeAddress, type Address } from './address.ts';
-import { addressParts, lowerReferences } from './references.ts';
+import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
+import { addressParts, callArguments, lowerReferences } from './references.ts';
 import { layoutOf } from './memory.ts';
 import { NodeTypeCatalog as NODE, type Expression, type Statement, type Return } from 'tinyest';
 import { d, std } from 'typegpu';
 import {
   WgslGenerator,
+  makeResolvable,
   snip,
   type BinaryOperator,
   type ShaderGenerator,
@@ -29,10 +30,27 @@ function scalar(schema: d.BaseData | symbol): string {
 export class CpuGenerator extends WgslGenerator {
   override languageKey = 'javascript';
   #functions = new Set<string>();
+  #functionVectors = new Map<string, (number | undefined)[]>();
+  #functionArguments = new Map<string, d.BaseData[]>();
   #privateResets: string[] = [];
   #addresses = new Map<string, Address>();
   #globalAddresses = new Map<string, Address>();
   #vectors = new Map<string, string[]>();
+  #ownedLocals = new Set<string>();
+  #lowerSwizzle(original: Snippet, code: string): Snippet {
+    if (typeof original.value !== 'object' || !original.value)
+      return snip(code, original.dataType, original.origin, original.possibleSideEffects);
+    // Keep the Swizzle identity that the base generator's mutation validation inspects.
+    const value = Object.assign(
+      Object.create(Object.getPrototypeOf(original.value)) as object,
+      original.value,
+    );
+    makeResolvable(value, {
+      asString: () => 'CPU swizzle',
+      resolve: () => snip(code, original.dataType, original.origin, original.possibleSideEffects),
+    });
+    return snip(value, original.dataType, original.origin, original.possibleSideEffects);
+  }
   #components(code: string): string[] | undefined {
     return this.#vectors.get(code.replace(/^\((\w+)\)$/, '$1'));
   }
@@ -58,6 +76,15 @@ export class CpuGenerator extends WgslGenerator {
       );
     if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(code))
       return Array.from({ length: Number(scalar(snippet.dataType)[3]) }, (_, i) => `${code}[${i}]`);
+    if (
+      !snippet.possibleSideEffects &&
+      /^[\w$.[\]()+\-*/%<>&|^ ]+$/.test(code) &&
+      !/[\w$]\(/.test(code)
+    )
+      return Array.from(
+        { length: Number(scalar(snippet.dataType)[3]) },
+        (_, i) => `(${code})[${i}]`,
+      );
     return undefined;
   }
 
@@ -70,6 +97,7 @@ export class CpuGenerator extends WgslGenerator {
     return address && address.layout.type === type ? readAddress(address) : code;
   }
   #fresh(code: string): boolean {
+    if (code.startsWith('({')) return true;
     if (
       /^(?:cpuVector(?:_\d+)?$|cpuType(?:_\d+)?(?:\.fields)?\(|\$vector\(|\(\([^)]*\)=>)/.test(code)
     )
@@ -127,13 +155,23 @@ export class CpuGenerator extends WgslGenerator {
           const selected = [...swizzle[1]!].map(
             (c) => parts['xyzw'.includes(c) ? 'xyzw'.indexOf(c) : 'rgba'.indexOf(c)]!,
           );
-          return snip(
+          return this.#lowerSwizzle(
+            result,
             selected.length === 1
               ? selected[0]!
               : this.#vector(result.dataType as d.BaseData, selected),
-            result.dataType as d.BaseData,
-            result.origin,
-            result.possibleSideEffects,
+          );
+        }
+        if (typeof target.dataType !== 'symbol' && scalar(target.dataType).startsWith('vec')) {
+          const indices = [...swizzle[1]!].map((c) =>
+            'xyzw'.includes(c) ? 'xyzw'.indexOf(c) : 'rgba'.indexOf(c),
+          );
+          const value = this.#value(target);
+          return this.#lowerSwizzle(
+            result,
+            indices.length === 1
+              ? `(${value})[${indices[0]}]`
+              : `((v)=>$vector([${indices.map((i) => `v[${i}]`).join(',')}]))(${value})`,
           );
         }
       }
@@ -142,7 +180,17 @@ export class CpuGenerator extends WgslGenerator {
       let code = this.ctx.resolveSnippet(result).value;
       if (typeof result.dataType !== 'symbol' && result.dataType.type === 'struct') {
         const type = this.emitTypeAnnotation(result.dataType);
-        code = code.replace(`${type}(`, `${type}.fields(`);
+        if (code.startsWith(`${type}(`)) {
+          const values = callArguments(code);
+          const fields = Object.entries((result.dataType as d.WgslStruct).propTypes);
+          code = `({${fields
+            .map(([key, schema], i) => {
+              const value = values[i]!;
+              const ctor = this.emitTypeAnnotation(schema);
+              return `${JSON.stringify(key)}:${ctor.startsWith('cpuType') && !this.#fresh(value) ? `${ctor}(${value})` : value}`;
+            })
+            .join(',')}})`;
+        }
       }
       code = code.replace(/\bcpuVector(?:_\d+)?\b/g, (name) => {
         const parts = this.#components(name);
@@ -252,11 +300,14 @@ export class CpuGenerator extends WgslGenerator {
     const ctor = this.emitTypeAnnotation(type);
     const address = this.#addresses.get(match[2]!);
     const value = address ? readAddress(address) : match[2]!;
-    return `${match[1]}${ctor.startsWith('cpuType') && !this.#fresh(value) ? `${ctor}(${value})` : value};`;
+    return `${match[1]}${ctor.startsWith('cpuType') && !address && !this.#ownedLocals.has(value) && !this.#fresh(value) ? `${ctor}(${value})` : value};`;
   }
 
   protected override _statement(statement: Statement): ResolvedStatement {
     if (Array.isArray(statement) && statement[0] === NODE.postUpdate) {
+      // Preserve the base generator's mutability checks and variable tracking.
+      // eslint-disable-next-line no-underscore-dangle
+      super._statement(statement);
       // eslint-disable-next-line no-underscore-dangle
       const value = this._expression(statement[2]);
       return {
@@ -373,7 +424,7 @@ export class CpuGenerator extends WgslGenerator {
         : args.map((arg) => {
             if (typeof arg.dataType !== 'symbol' && arg.dataType.type !== 'ptr') {
               const code = this.ctx.resolveSnippet(arg).value;
-              if (this.#addresses.has(code) || this.#components(code))
+              if (this.#addresses.has(code))
                 return snip(this.#value(arg), arg.dataType, 'runtime', arg.possibleSideEffects);
             }
             return arg;
@@ -408,6 +459,21 @@ export class CpuGenerator extends WgslGenerator {
       return snip(
         this.emitCall(name, [], args),
         result.dataType as d.BaseData,
+        result.origin,
+        result.possibleSideEffects,
+      );
+    }
+    if (typeof result.dataType === 'symbol' || result.dataType.type === 'ptr') return result;
+    const code = this.ctx.resolveSnippet(result).value;
+    const resolvedName = /^(\w+)\(/.exec(code)?.[1];
+    const argumentTypes = resolvedName && this.#functionArguments.get(resolvedName);
+    if (resolvedName && argumentTypes) {
+      const converted = callArguments(code).map((value, i) =>
+        snip(value, argumentTypes[i]!, 'runtime', args[i]?.possibleSideEffects ?? true),
+      );
+      return snip(
+        this.emitCall(resolvedName, [], converted),
+        result.dataType,
         result.origin,
         result.possibleSideEffects,
       );
@@ -546,6 +612,8 @@ export class CpuGenerator extends WgslGenerator {
     const type = this.emitTypeAnnotation(schema);
     const value = args.length ? this.#value(args[0]!) : '0';
     if (schema.type === 'struct' && args.length) {
+      if (args.length === 1 && scalar(args[0]!.dataType) === 'struct')
+        return snip(`${type}(${value})`, schema, 'runtime', args[0]!.possibleSideEffects);
       const keys = Object.keys((schema as d.WgslStruct).propTypes);
       return snip(
         `${type}({${args.map((arg, i) => `${JSON.stringify(keys[i])}:${this.#value(arg)}`).join(',')}})`,
@@ -603,7 +671,8 @@ export class CpuGenerator extends WgslGenerator {
     const type = this.emitTypeAnnotation(schema);
     const address = this.#addresses.get(rhs);
     if (address) rhs = readAddress(address);
-    return `let ${name} = ${type.startsWith('cpuType') && !this.#fresh(rhs) ? `${type}(${rhs})` : rhs};`;
+    this.#ownedLocals.add(name);
+    return `let ${name} = ${type.startsWith('cpuType') && !address && !this.#fresh(rhs) ? `${type}(${rhs})` : rhs};`;
   }
 
   override declareGlobalConst(options: ConstantDefinitionOptions): ResolvedSnippet {
@@ -648,7 +717,7 @@ export class CpuGenerator extends WgslGenerator {
           ? initial
           : `$shared(${JSON.stringify(id)},()=>(${scalarType ? `{value:${initial}}` : initial}))`;
       this.ctx.addDeclaration(
-        `//#scope ${scope}\n${scope === 'private' ? `//#private ${id}\n` : ''}let ${id} = ${expression};`,
+        `//#scope ${scope}\n${scope === 'private' ? `//#private ${id}\n` : `//#workgroup ${JSON.stringify({ name: id, initial: expression })}\n`}let ${id} = ${expression};`,
         id,
       );
       return snip(scope === 'workgroup' && scalarType ? `${id}.value` : id, dataType, scope);
@@ -679,13 +748,19 @@ export class CpuGenerator extends WgslGenerator {
   override functionDefinition(options: FunctionDefinitionOptions): string {
     const previousVectors = this.#vectors;
     const previousAddresses = this.#addresses;
+    const previousOwnedLocals = this.#ownedLocals;
+    this.#ownedLocals = new Set();
     this.#vectors = new Map();
     this.#addresses = new Map(this.#globalAddresses);
     try {
       if (options.functionType !== 'normal' && options.functionType !== 'compute')
         unsupported(`${options.functionType} entry point`);
       this.#functions.add(options.name);
-      const argumentCopies = new Map<string, string>();
+      const parameters = new Map<string, string[]>();
+      this.#functionArguments.set(
+        options.name,
+        options.args.map((arg) => arg.decoratedType),
+      );
       if (options.functionType === 'normal')
         for (const arg of options.args) {
           const type = scalar(arg.decoratedType);
@@ -694,12 +769,14 @@ export class CpuGenerator extends WgslGenerator {
               this.ctx.makeUniqueIdentifier('cpuArgument', 'global'),
             );
             this.#vectors.set(arg.name, parts);
-            argumentCopies.set(
-              arg.name,
-              parts.map((part, i) => `let ${part}=${arg.name}[${i}];`).join(''),
-            );
+            parameters.set(arg.name, parts);
           }
         }
+      if (options.functionType === 'normal')
+        this.#functionVectors.set(
+          options.name,
+          options.args.map((arg) => parameters.get(arg.name)?.length),
+        );
       // The protected AST emitter is the extension hook TypeGPU exposes.
       // eslint-disable-next-line no-underscore-dangle
       let body = this._block(options.body, false).code;
@@ -712,14 +789,22 @@ export class CpuGenerator extends WgslGenerator {
             .replaceAll(`arrayLength((&${name}))`, String(length))
             .replaceAll(`arrayLength(&${name})`, String(length));
         }
-        const local = { ...address, offset: 'offset' };
         if (body.includes(`(&${name})`))
-          body = body.replaceAll(
-            `(&${name})`,
-            `((offset)=>({get $(){return ${readAddress(local)}},set $(value){${writeAddress(local, 'value')}}}))(${address.offset})`,
-          );
+          body = body.replaceAll(`(&${name})`, referenceAddress(address));
         if (body.includes(`return ${name};`))
           body = body.replaceAll(`return ${name};`, `return ${readAddress(address)};`);
+      }
+      for (const [name, parts] of this.#vectors) {
+        if (body.includes(`(&${name})`)) {
+          const writes = parts.map((part, i) => `${part}=value[${i}];`).join('');
+          const properties = parts
+            .map((part, i) => `get ${i}(){return ${part}},set ${i}(value){${part}=value}`)
+            .join(',');
+          body = body.replaceAll(
+            `(&${name})`,
+            `((view)=>({get $(){return view},set $(value){${writes}}}))({length:${parts.length},${properties}})`,
+          );
+        }
       }
       body = lowerReferences(body);
       body = body.replace(/\b(?:workgroupBarrier|storageBarrier|textureBarrier)\(\)/g, '(yield)');
@@ -752,15 +837,7 @@ export class CpuGenerator extends WgslGenerator {
       this.emitTypeAnnotation(returnType);
       const args = options.args.filter((arg) => arg.used || options.functionType === 'normal');
       if (options.functionType === 'normal') {
-        const copies = args
-          .map((arg) => {
-            if (argumentCopies.has(arg.name)) return argumentCopies.get(arg.name)!;
-            const type = this.emitTypeAnnotation(arg.decoratedType);
-            return type.startsWith('cpuType') ? `${arg.name} = ${type}(${arg.name});` : '';
-          })
-          .join('');
-        body = body.replace('{', `{${copies}`);
-        return `function${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}`;
+        return `function${generator ? '*' : ''} ${options.name}(${args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]).join(',')}) ${body || '{}'}`;
       }
       const inputs = args.map((arg) => {
         const schema = arg.decoratedType as d.Decorated;
@@ -789,6 +866,7 @@ export class CpuGenerator extends WgslGenerator {
     } finally {
       this.#vectors = previousVectors;
       this.#addresses = previousAddresses;
+      this.#ownedLocals = previousOwnedLocals;
       for (const [id, address] of this.#globalAddresses) this.#addresses.set(id, address);
     }
   }
@@ -992,6 +1070,33 @@ export class CpuGenerator extends WgslGenerator {
     }
     if (templates.length) unsupported(`template call ${name}`);
     const values = args.map((arg) => this.#value(arg));
+    if (this.#functions.has(name)) {
+      const widths = this.#functionVectors.get(name) ?? [];
+      const parts = args.map((arg) => this.#parts(arg));
+      const copied = args.map((arg, i) => {
+        const type = scalar(arg.dataType);
+        const value = values[i]!;
+        if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
+          // Buffer reads and expression results already own their composite storage.
+          if (this.#fresh(value) || value.startsWith('({') || value.startsWith('[')) return value;
+          return `${this.emitTypeAnnotation(arg.dataType as d.BaseData)}(${value})`;
+        }
+        return value;
+      });
+      if (args.every((arg, i) => !widths[i] || (parts[i] && !arg.possibleSideEffects)))
+        return `${name}(${args.flatMap((_, i) => (widths[i] ? parts[i]! : [copied[i]!])).join(',')})`;
+      // Evaluate all arguments in their original order before expanding vector components.
+      const temporaries = args.map(() => this.ctx.makeUniqueIdentifier('cpuPassed', 'global'));
+      const expanded = temporaries.flatMap((temporary, i) =>
+        widths[i]
+          ? Array.from({ length: widths[i]! }, (_, c) => `${temporary}[${c}]`)
+          : [temporary],
+      );
+      const call = `${name}(${expanded.join(',')})`;
+      return this.#generators.has(name)
+        ? `(yield* (function*(${temporaries.join(',')}){return ${call};})(${copied.join(',')}))`
+        : `((${temporaries.join(',')})=>${call})(${copied.join(',')})`;
+    }
 
     if (name === 'all' || name === 'any') {
       const parts = this.#parts(args[0]!);
@@ -1117,7 +1222,7 @@ export class CpuGenerator extends WgslGenerator {
       )
         unsupported(`${name} argument ${scalar(arg.dataType)}`);
     }
-    if (this.#functions.has(name)) return `${name}(${values.join(',')})`;
+
     if (
       [
         'abs',
