@@ -1,6 +1,6 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { compareRoots, roots } from './compare.ts';
+import { compareRoots, pixel, roots } from './compare.ts';
 
 let gpu: TgpuRoot;
 let gl: TgpuRoot;
@@ -246,7 +246,45 @@ function computeThenDraw(root: TgpuRoot) {
   return color;
 }
 
+function pulledWithBaseVertex(root: TgpuRoot) {
+  // Two meshes in one pool: a left triangle, then a right one the draws reach by base vertex
+  const corners = root.createReadonly(d.arrayOf(d.vec2f, 6), [
+    d.vec2f(-0.9, -0.9),
+    d.vec2f(-0.1, -0.9),
+    d.vec2f(-0.5, 0.9),
+    d.vec2f(0.1, -0.9),
+    d.vec2f(0.9, -0.9),
+    d.vec2f(0.5, 0.9),
+  ]);
+  const indices = root.createBuffer(d.arrayOf(d.u16, 4), [0, 1, 2, 0]).$usage('index');
+  const args = root.createBuffer(d.arrayOf(d.u32, 5), [3, 1, 0, 3, 0]).$usage('indirect');
+  const vertex = tgpu.vertexFn({
+    in: { index: d.builtin.vertexIndex, instance: d.builtin.instanceIndex },
+    out: { position: d.builtin.position, tint: d.f32 },
+  })(({ index, instance }) => {
+    'use gpu';
+    return { position: d.vec4f(corners.$[index]!, 0, 1), tint: d.f32(instance) };
+  });
+  const fragment = tgpu.fragmentFn({ in: { tint: d.f32 }, out: d.vec4f })(({ tint }) => {
+    'use gpu';
+    return d.vec4f(1, tint, 0.5, 1);
+  });
+  const color = colorTarget(root);
+  const pipeline = root
+    .createRenderPipeline({ vertex, fragment, targets: { format: 'rgba8unorm' } })
+    .withIndexBuffer(indices);
+  pipeline.withColorAttachment({ view: color }).drawIndexed(3, 1, 0, 0, 0);
+  pipeline.withColorAttachment({ view: color, loadOp: 'load' }).drawIndexedIndirect(args, 0);
+  return color;
+}
+
 describe('roots on the WebGL device match WebGPU', () => {
+  test('vertices pulled by index with a base vertex, direct and indirect', async () => {
+    const result = await compareRoots(gpu, gl, pulledWithBaseVertex);
+    expect(result.first).toBeUndefined();
+    expect(pixel(result.actual, 24, 20)).toEqual([255, 0, 128, 255]);
+  });
+
   test('a lit mesh with a uniform camera and a depth test', async () => {
     const result = await compareRoots(gpu, gl, litMesh);
     expect(result.first).toBeUndefined();
