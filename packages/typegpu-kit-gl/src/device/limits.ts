@@ -23,13 +23,19 @@ export function limitsOf(gl: WebGL2RenderingContext): GPUSupportedLimits {
     maxDynamicStorageBuffersPerPipelineLayout: 4,
     maxSampledTexturesPerShaderStage: units,
     maxSamplersPerShaderStage: units,
-    maxStorageBuffersPerShaderStage: 8,
-    maxStorageBuffersInVertexStage: 8,
-    maxStorageBuffersInFragmentStage: 8,
-    maxStorageTexturesPerShaderStage: 4,
+    // Kernels run on the CPU or as fragment passes, so storage bindings cost no WebGPU slots: a
+    // program that needs more texture units or uniform blocks than the context has fails to link
+    // with a message naming the counts, and a GPU form that does not fit runs on the CPU
+    maxStorageBuffersPerShaderStage: 16,
+    maxStorageBuffersInVertexStage: 16,
+    maxStorageBuffersInFragmentStage: 16,
+    maxStorageTexturesPerShaderStage: 8,
     maxStorageTexturesInVertexStage: 0,
     maxStorageTexturesInFragmentStage: 0,
-    maxUniformBuffersPerShaderStage: 12,
+    maxUniformBuffersPerShaderStage: Math.max(
+      12,
+      Math.min(get(gl.MAX_VERTEX_UNIFORM_BLOCKS), get(gl.MAX_FRAGMENT_UNIFORM_BLOCKS)),
+    ),
     maxUniformBufferBindingSize: 65536,
     maxStorageBufferBindingSize: bufferSize,
     minUniformBufferOffsetAlignment: 256,
