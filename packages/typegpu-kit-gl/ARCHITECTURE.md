@@ -38,6 +38,10 @@ TypeGPU replaces bind group placeholders in the whole string after generation, s
 
 WebGL 2 has no compute stage. A compute pipeline's module is JavaScript: `CpuGenerator` emits one function per shader function over typed-array views of the bound buffers, and the device runs it on dispatch, invocation by invocation. Buffers and textures then have two homes. The device tracks which copy is current, reads back from GL when a kernel needs data a draw produced, and uploads before a draw reads what a kernel wrote.
 
+A kernel in which each invocation writes only cells it provably owns also runs on the GPU. `KitGenerator` resolves such a pipeline twice more with `KitGlslComputeGenerator`, which emits the kernel as fragment passes, one per written buffer array or storage texture, and the CPU module carries them on a `//#kit-gl gpu` line; `parseCompute` in `src/glsl/computeModule.ts` reads it and states when the device may use it. A fragment runs the whole kernel for the invocation that owns its cell. Writes go to copies of the owned cells, reads of them check at run time whether they are the invocation's own, and every other read sees the contents from before the dispatch, so each pass renders into a new texture and the device swaps it in afterwards.
+
+An invocation owns element `gid.x` of an array, or `gid.x + gid.y * width + gid.z * width * height` for constant sizes, texel `gid.xy` (`.xyz`) of a storage texture, and in a dispatch of one invocation, whole small bindings. Ownership passes into helpers through their arguments. Atomics other than loads of unwritten buffers, barriers, workgroup variables and writes the generator cannot prove own keep a kernel on the CPU; the CPU module then says why on a `//#kit-gl cpu-only` line.
+
 ## What modules see
 
 `backends.of(root)` in `@typegpu/kit` reports `'webgpu'` or `'webgl'` from a brand on the device, so a module can pick another kernel, capacity or technique where the automatic path is too slow or cannot work. `LIMITATIONS.md` lists what the fallback cannot do.
