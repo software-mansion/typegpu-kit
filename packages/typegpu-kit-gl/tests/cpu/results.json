@@ -70,7 +70,7 @@
     {
       "example": "censer",
       "status": "pass",
-      "modules": 16
+      "modules": 17
     },
     {
       "example": "slime-mould",
@@ -1541,6 +1541,340 @@
       "historical": false
     },
     {
+      "example": "sph-sculpt",
+      "status": "pass",
+      "modules": 35,
+      "executedModules": 29,
+      "timingSamples": 9,
+      "steadyPipelines": [
+        {
+          "entry": "traceWorld",
+          "pipeline": "tracing",
+          "calls": 1,
+          "milliseconds": 61.00714550000066,
+          "invocations": 2560
+        },
+        {
+          "entry": "paintKernel",
+          "pipeline": "painting",
+          "calls": 1,
+          "milliseconds": 53.61704149999969,
+          "invocations": 2560
+        },
+        {
+          "entry": "coarseKernel",
+          "pipeline": "coarsening",
+          "calls": 1,
+          "milliseconds": 7.017271000000619,
+          "invocations": 16384
+        },
+        {
+          "entry": "shadowKernel",
+          "pipeline": "shadowing",
+          "calls": 1,
+          "milliseconds": 4.159542000000329,
+          "invocations": 768
+        },
+        {
+          "entry": "integrate",
+          "pipeline": "integrating",
+          "calls": 2,
+          "milliseconds": 3.0302294999992228,
+          "invocations": 131072
+        },
+        {
+          "entry": "count",
+          "pipeline": "counter",
+          "calls": 2,
+          "milliseconds": 2.944311999999627,
+          "invocations": 131072
+        },
+        {
+          "entry": "scatter",
+          "pipeline": "scatterer",
+          "calls": 2,
+          "milliseconds": 2.390437500000189,
+          "invocations": 131072
+        },
+        {
+          "entry": "boundKernel",
+          "pipeline": "boundPipeline",
+          "calls": 2,
+          "milliseconds": 2.3569380000008096,
+          "invocations": 131072
+        },
+        {
+          "entry": "relax",
+          "pipeline": "relaxing",
+          "calls": 2,
+          "milliseconds": 2.350749499999438,
+          "invocations": 384
+        },
+        {
+          "entry": "traceFluid",
+          "pipeline": "watering",
+          "calls": 1,
+          "milliseconds": 2.265666500000407,
+          "invocations": 2560
+        },
+        {
+          "entry": "surfaceKernel",
+          "pipeline": "surfacing",
+          "calls": 1,
+          "milliseconds": 1.8620420000006561,
+          "invocations": 13760
+        },
+        {
+          "entry": "reserve",
+          "pipeline": "reserver",
+          "calls": 2,
+          "milliseconds": 1.5399789999992208,
+          "invocations": 1536
+        },
+        {
+          "entry": "density",
+          "pipeline": "densities",
+          "calls": 2,
+          "milliseconds": 0.32472949999919365,
+          "invocations": 384
+        },
+        {
+          "entry": "cone",
+          "pipeline": "coning",
+          "calls": 1,
+          "milliseconds": 0.24795799999992596,
+          "invocations": 64
+        },
+        {
+          "entry": "copyKernel",
+          "pipeline": "copyPipeline",
+          "calls": 2,
+          "milliseconds": 0.06416650000028312,
+          "invocations": 384
+        },
+        {
+          "entry": "nearKernel",
+          "pipeline": "nearPipeline",
+          "calls": 2,
+          "milliseconds": 0.0387284999997064,
+          "invocations": 896
+        },
+        {
+          "entry": "clearKernel",
+          "pipeline": "clearPipeline",
+          "calls": 2,
+          "milliseconds": 0.03231200000118406,
+          "invocations": 384
+        },
+        {
+          "entry": "size",
+          "pipeline": "sizer",
+          "calls": 2,
+          "milliseconds": 0.020187500000247383,
+          "invocations": 2
+        },
+        {
+          "entry": "recount",
+          "pipeline": "recounting",
+          "calls": 2,
+          "milliseconds": 0.008832999998958257,
+          "invocations": 2
+        }
+      ],
+      "unexecutedEntries": [
+        "editKernel",
+        "storeKernel",
+        "mapKernel",
+        "aimKernel",
+        "compute",
+        "compute"
+      ],
+      "perFrame": {
+        "dispatches": 31,
+        "invocations": 566916,
+        "milliseconds": 148.2275215000027
+      },
+      "dispatches": [
+        {
+          "entry": "mainCompute",
+          "calls": 1,
+          "milliseconds": 6.030750000000012,
+          "invocations": 32768
+        },
+        {
+          "entry": "bakeNoise",
+          "calls": 1,
+          "milliseconds": 271.35295800000006,
+          "invocations": 2097152
+        },
+        {
+          "entry": "compute",
+          "calls": 1,
+          "milliseconds": 1010.1759999999999,
+          "invocations": 393216
+        },
+        {
+          "entry": "halve",
+          "calls": 8,
+          "milliseconds": 50.41520899999978,
+          "invocations": 132096
+        },
+        {
+          "entry": "prefilter",
+          "calls": 5,
+          "milliseconds": 5978.200542,
+          "invocations": 130944
+        },
+        {
+          "entry": "projectRow",
+          "calls": 1,
+          "milliseconds": 4.164040999999997,
+          "invocations": 192
+        },
+        {
+          "entry": "projectRows",
+          "calls": 1,
+          "milliseconds": 0.47762500000135333,
+          "invocations": 1
+        },
+        {
+          "entry": "clearKernel",
+          "calls": 39,
+          "milliseconds": 0.8038699999979144,
+          "invocations": 6720
+        },
+        {
+          "entry": "count",
+          "calls": 39,
+          "milliseconds": 64.61383199999909,
+          "invocations": 2555904
+        },
+        {
+          "entry": "size",
+          "calls": 39,
+          "milliseconds": 0.5684580000015558,
+          "invocations": 39
+        },
+        {
+          "entry": "reserve",
+          "calls": 39,
+          "milliseconds": 35.724292000004425,
+          "invocations": 29568
+        },
+        {
+          "entry": "scatter",
+          "calls": 39,
+          "milliseconds": 57.748290000005,
+          "invocations": 2555904
+        },
+        {
+          "entry": "boundKernel",
+          "calls": 39,
+          "milliseconds": 50.22379200001524,
+          "invocations": 2555904
+        },
+        {
+          "entry": "copyKernel",
+          "calls": 39,
+          "milliseconds": 1.648960000002262,
+          "invocations": 6976
+        },
+        {
+          "entry": "nearKernel",
+          "calls": 39,
+          "milliseconds": 1.0605809999869962,
+          "invocations": 14656
+        },
+        {
+          "entry": "heightKernel",
+          "calls": 1,
+          "milliseconds": 37.89308400000118,
+          "invocations": 65536
+        },
+        {
+          "entry": "originKernel",
+          "calls": 1,
+          "milliseconds": 617.6277500000015,
+          "invocations": 1048576
+        },
+        {
+          "entry": "generateKernel",
+          "calls": 7,
+          "milliseconds": 5041.837706999999,
+          "invocations": 9587008
+        },
+        {
+          "entry": "surfaceKernel",
+          "calls": 20,
+          "milliseconds": 50.265165000004345,
+          "invocations": 243968
+        },
+        {
+          "entry": "coarseKernel",
+          "calls": 20,
+          "milliseconds": 156.69729200000438,
+          "invocations": 327680
+        },
+        {
+          "entry": "cone",
+          "calls": 20,
+          "milliseconds": 6.521042000000307,
+          "invocations": 1280
+        },
+        {
+          "entry": "traceWorld",
+          "calls": 20,
+          "milliseconds": 1234.5158310000024,
+          "invocations": 51200
+        },
+        {
+          "entry": "traceFluid",
+          "calls": 20,
+          "milliseconds": 55.90941400000338,
+          "invocations": 51200
+        },
+        {
+          "entry": "shadowKernel",
+          "calls": 20,
+          "milliseconds": 89.09225199999673,
+          "invocations": 15360
+        },
+        {
+          "entry": "paintKernel",
+          "calls": 20,
+          "milliseconds": 1097.3367919999946,
+          "invocations": 51200
+        },
+        {
+          "entry": "integrate",
+          "calls": 38,
+          "milliseconds": 63.59358499999871,
+          "invocations": 2490368
+        },
+        {
+          "entry": "recount",
+          "calls": 38,
+          "milliseconds": 0.21820899999329413,
+          "invocations": 38
+        },
+        {
+          "entry": "density",
+          "calls": 38,
+          "milliseconds": 14.297499999993306,
+          "invocations": 6912
+        },
+        {
+          "entry": "relax",
+          "calls": 38,
+          "milliseconds": 69.15962399999444,
+          "invocations": 6912
+        }
+      ],
+      "executionRevision": "a4cf5089",
+      "cpuBackendBrand": true,
+      "historical": false
+    },
+    {
       "example": "jelly-world",
       "status": "pass",
       "modules": 4,
@@ -1592,340 +1926,6 @@
           "calls": 8,
           "milliseconds": 2.4717109999998,
           "invocations": 512
-        }
-      ],
-      "executionRevision": "490def9b",
-      "cpuBackendBrand": true,
-      "historical": false
-    },
-    {
-      "example": "sph-sculpt",
-      "status": "pass",
-      "modules": 35,
-      "executedModules": 29,
-      "timingSamples": 3,
-      "steadyPipelines": [
-        {
-          "entry": "traceWorld",
-          "pipeline": "tracing",
-          "calls": 1,
-          "milliseconds": 53.71418700000504,
-          "invocations": 2560
-        },
-        {
-          "entry": "paintKernel",
-          "pipeline": "painting",
-          "calls": 1,
-          "milliseconds": 47.8494165000011,
-          "invocations": 2560
-        },
-        {
-          "entry": "coarseKernel",
-          "pipeline": "coarsening",
-          "calls": 1,
-          "milliseconds": 6.6902084999965155,
-          "invocations": 16384
-        },
-        {
-          "entry": "shadowKernel",
-          "pipeline": "shadowing",
-          "calls": 1,
-          "milliseconds": 3.537854000001971,
-          "invocations": 768
-        },
-        {
-          "entry": "integrate",
-          "pipeline": "integrating",
-          "calls": 2,
-          "milliseconds": 3.2189795000085724,
-          "invocations": 131072
-        },
-        {
-          "entry": "count",
-          "pipeline": "counter",
-          "calls": 2,
-          "milliseconds": 2.776083500000823,
-          "invocations": 131072
-        },
-        {
-          "entry": "scatter",
-          "pipeline": "scatterer",
-          "calls": 2,
-          "milliseconds": 2.321562499993888,
-          "invocations": 131072
-        },
-        {
-          "entry": "boundKernel",
-          "pipeline": "boundPipeline",
-          "calls": 2,
-          "milliseconds": 2.2646249999961583,
-          "invocations": 131072
-        },
-        {
-          "entry": "traceFluid",
-          "pipeline": "watering",
-          "calls": 1,
-          "milliseconds": 1.9975835000004736,
-          "invocations": 2560
-        },
-        {
-          "entry": "surfaceKernel",
-          "pipeline": "surfacing",
-          "calls": 1,
-          "milliseconds": 1.481187500001397,
-          "invocations": 11520
-        },
-        {
-          "entry": "relax",
-          "pipeline": "relaxing",
-          "calls": 2,
-          "milliseconds": 1.1119165000054636,
-          "invocations": 192
-        },
-        {
-          "entry": "reserve",
-          "pipeline": "reserver",
-          "calls": 2,
-          "milliseconds": 0.9263124999924912,
-          "invocations": 768
-        },
-        {
-          "entry": "cone",
-          "pipeline": "coning",
-          "calls": 1,
-          "milliseconds": 0.23110450000240235,
-          "invocations": 64
-        },
-        {
-          "entry": "density",
-          "pipeline": "densities",
-          "calls": 2,
-          "milliseconds": 0.22752050000417512,
-          "invocations": 192
-        },
-        {
-          "entry": "copyKernel",
-          "pipeline": "copyPipeline",
-          "calls": 2,
-          "milliseconds": 0.040749500003585126,
-          "invocations": 192
-        },
-        {
-          "entry": "nearKernel",
-          "pipeline": "nearPipeline",
-          "calls": 2,
-          "milliseconds": 0.034938000004331116,
-          "invocations": 512
-        },
-        {
-          "entry": "clearKernel",
-          "pipeline": "clearPipeline",
-          "calls": 2,
-          "milliseconds": 0.03097900000284426,
-          "invocations": 160
-        },
-        {
-          "entry": "size",
-          "pipeline": "sizer",
-          "calls": 2,
-          "milliseconds": 0.011166500014951453,
-          "invocations": 2
-        },
-        {
-          "entry": "recount",
-          "pipeline": "recounting",
-          "calls": 2,
-          "milliseconds": 0.008166500010702293,
-          "invocations": 2
-        }
-      ],
-      "unexecutedEntries": [
-        "editKernel",
-        "storeKernel",
-        "mapKernel",
-        "aimKernel",
-        "compute",
-        "compute"
-      ],
-      "perFrame": {
-        "dispatches": 31,
-        "invocations": 562724,
-        "milliseconds": 129.10866750005516
-      },
-      "dispatches": [
-        {
-          "entry": "mainCompute",
-          "calls": 1,
-          "milliseconds": 6.7595409999921685,
-          "invocations": 32768
-        },
-        {
-          "entry": "bakeNoise",
-          "calls": 1,
-          "milliseconds": 275.5929579999938,
-          "invocations": 2097152
-        },
-        {
-          "entry": "compute",
-          "calls": 1,
-          "milliseconds": 1021.1628749999945,
-          "invocations": 393216
-        },
-        {
-          "entry": "halve",
-          "calls": 8,
-          "milliseconds": 54.113959000009345,
-          "invocations": 132096
-        },
-        {
-          "entry": "prefilter",
-          "calls": 5,
-          "milliseconds": 6389.802540000004,
-          "invocations": 130944
-        },
-        {
-          "entry": "projectRow",
-          "calls": 1,
-          "milliseconds": 3.8009580000070855,
-          "invocations": 192
-        },
-        {
-          "entry": "projectRows",
-          "calls": 1,
-          "milliseconds": 0.31979200000932906,
-          "invocations": 1
-        },
-        {
-          "entry": "clearKernel",
-          "calls": 15,
-          "milliseconds": 0.2692920000117738,
-          "invocations": 1280
-        },
-        {
-          "entry": "count",
-          "calls": 15,
-          "milliseconds": 22.61812500000815,
-          "invocations": 983040
-        },
-        {
-          "entry": "size",
-          "calls": 15,
-          "milliseconds": 0.16779000000678934,
-          "invocations": 15
-        },
-        {
-          "entry": "reserve",
-          "calls": 15,
-          "milliseconds": 6.377667999986443,
-          "invocations": 4672
-        },
-        {
-          "entry": "scatter",
-          "calls": 15,
-          "milliseconds": 19.872789999993984,
-          "invocations": 983040
-        },
-        {
-          "entry": "boundKernel",
-          "calls": 15,
-          "milliseconds": 18.457542999982252,
-          "invocations": 983040
-        },
-        {
-          "entry": "copyKernel",
-          "calls": 15,
-          "milliseconds": 0.49829099999624304,
-          "invocations": 1344
-        },
-        {
-          "entry": "nearKernel",
-          "calls": 15,
-          "milliseconds": 0.40341799998714123,
-          "invocations": 3328
-        },
-        {
-          "entry": "heightKernel",
-          "calls": 1,
-          "milliseconds": 37.2022910000087,
-          "invocations": 65536
-        },
-        {
-          "entry": "originKernel",
-          "calls": 1,
-          "milliseconds": 600.3112499999988,
-          "invocations": 1048576
-        },
-        {
-          "entry": "generateKernel",
-          "calls": 7,
-          "milliseconds": 5046.211208000022,
-          "invocations": 9587008
-        },
-        {
-          "entry": "surfaceKernel",
-          "calls": 8,
-          "milliseconds": 16.711042000024463,
-          "invocations": 78720
-        },
-        {
-          "entry": "coarseKernel",
-          "calls": 8,
-          "milliseconds": 62.48416699997324,
-          "invocations": 131072
-        },
-        {
-          "entry": "cone",
-          "calls": 8,
-          "milliseconds": 2.841334000011557,
-          "invocations": 512
-        },
-        {
-          "entry": "traceWorld",
-          "calls": 8,
-          "milliseconds": 440.56212600000435,
-          "invocations": 20480
-        },
-        {
-          "entry": "traceFluid",
-          "calls": 8,
-          "milliseconds": 17.623627000008128,
-          "invocations": 20480
-        },
-        {
-          "entry": "shadowKernel",
-          "calls": 8,
-          "milliseconds": 29.84574999999313,
-          "invocations": 6144
-        },
-        {
-          "entry": "paintKernel",
-          "calls": 8,
-          "milliseconds": 398.0802510000067,
-          "invocations": 20480
-        },
-        {
-          "entry": "integrate",
-          "calls": 14,
-          "milliseconds": 23.302251000044635,
-          "invocations": 917504
-        },
-        {
-          "entry": "recount",
-          "calls": 14,
-          "milliseconds": 0.06891500002529938,
-          "invocations": 14
-        },
-        {
-          "entry": "density",
-          "calls": 14,
-          "milliseconds": 2.042124000014155,
-          "invocations": 1280
-        },
-        {
-          "entry": "relax",
-          "calls": 14,
-          "milliseconds": 7.929500000012922,
-          "invocations": 1280
         }
       ],
       "executionRevision": "490def9b",
@@ -2125,334 +2125,334 @@
       "status": "pass",
       "modules": 29,
       "executedModules": 27,
-      "timingSamples": 5,
+      "timingSamples": 9,
       "steadyPipelines": [
         {
           "entry": "step_1",
           "pipeline": "stepping",
           "calls": 2.5,
-          "milliseconds": 13.956437000000278,
+          "milliseconds": 13.72833349999928,
           "invocations": 10240
-        },
-        {
-          "entry": "walk",
-          "pipeline": "<unnamed>",
-          "calls": 1,
-          "milliseconds": 9.937562500000013,
-          "invocations": 3
         },
         {
           "entry": "findJoints",
           "pipeline": "finding",
           "calls": 1,
-          "milliseconds": 8.725291499999912,
+          "milliseconds": 9.380999999999403,
           "invocations": 11856
         },
         {
           "entry": "walk",
           "pipeline": "<unnamed>",
           "calls": 1,
-          "milliseconds": 3.988458000000037,
-          "invocations": 1
+          "milliseconds": 3.6485830000001442,
+          "invocations": 3
         },
         {
           "entry": "reserve",
           "pipeline": "reserver",
           "calls": 2.5,
-          "milliseconds": 3.2277290000004086,
+          "milliseconds": 3.394874500001606,
           "invocations": 4000
         },
         {
           "entry": "walk",
           "pipeline": "<unnamed>",
           "calls": 1,
-          "milliseconds": 2.7487079999998514,
-          "invocations": 3
+          "milliseconds": 2.321875000001455,
+          "invocations": 1
         },
         {
           "entry": "walk",
           "pipeline": "<unnamed>",
           "calls": 1,
-          "milliseconds": 1.1059999999997672,
-          "invocations": 1
+          "milliseconds": 2.068270499998107,
+          "invocations": 3
         },
         {
           "entry": "stepKernel",
           "pipeline": "stepPipeline",
           "calls": 2.5,
-          "milliseconds": 1.0287920000002941,
+          "milliseconds": 1.283416499998566,
           "invocations": 20480
+        },
+        {
+          "entry": "walk",
+          "pipeline": "<unnamed>",
+          "calls": 1,
+          "milliseconds": 1.091374999998152,
+          "invocations": 1
         },
         {
           "entry": "kick",
           "pipeline": "kicking",
           "calls": 2.5,
-          "milliseconds": 1.0007074999996348,
+          "milliseconds": 1.0628335000001243,
           "invocations": 10240
         },
         {
           "entry": "compact",
           "pipeline": "live_compact",
           "calls": 1,
-          "milliseconds": 0.9822289999997338,
+          "milliseconds": 1.0545000000020082,
           "invocations": 8192
         },
         {
           "entry": "walk",
           "pipeline": "<unnamed>",
           "calls": 1,
-          "milliseconds": 0.5001454999999169,
-          "invocations": 3
-        },
-        {
-          "entry": "count",
-          "pipeline": "counter",
-          "calls": 2.5,
-          "milliseconds": 0.4986870000000181,
-          "invocations": 20480
+          "milliseconds": 0.9934164999995119,
+          "invocations": 1
         },
         {
           "entry": "Gait_step",
           "pipeline": "Gait_stepping",
           "calls": 2.5,
-          "milliseconds": 0.48775000000000546,
+          "milliseconds": 0.5647714999995515,
           "invocations": 20480
         },
         {
-          "entry": "boundKernel",
-          "pipeline": "boundPipeline",
+          "entry": "count",
+          "pipeline": "counter",
           "calls": 2.5,
-          "milliseconds": 0.3749584999995932,
+          "milliseconds": 0.5059999999994034,
           "invocations": 20480
         },
         {
           "entry": "scatter",
           "pipeline": "scatterer",
           "calls": 2.5,
-          "milliseconds": 0.37479250000023967,
+          "milliseconds": 0.3773120000005292,
+          "invocations": 20480
+        },
+        {
+          "entry": "boundKernel",
+          "pipeline": "boundPipeline",
+          "calls": 2.5,
+          "milliseconds": 0.37447900000188383,
           "invocations": 20480
         },
         {
           "entry": "copyKernel",
           "pipeline": "copyPipeline",
           "calls": 2.5,
-          "milliseconds": 0.2953754999998637,
+          "milliseconds": 0.32833300000311283,
           "invocations": 10240
         },
         {
           "entry": "walk",
           "pipeline": "<unnamed>",
           "calls": 1,
-          "milliseconds": 0.2227500000001328,
-          "invocations": 1
-        },
-        {
-          "entry": "clearKernel",
-          "pipeline": "clearPipeline",
-          "calls": 2.5,
-          "milliseconds": 0.1987500000000182,
-          "invocations": 10240
+          "milliseconds": 0.3238539999983914,
+          "invocations": 3
         },
         {
           "entry": "phaseCards",
           "pipeline": "phasing",
           "calls": 1,
-          "milliseconds": 0.12658350000015162,
+          "milliseconds": 0.2351875000022119,
           "invocations": 4096
+        },
+        {
+          "entry": "clearKernel",
+          "pipeline": "clearPipeline",
+          "calls": 2.5,
+          "milliseconds": 0.20202049999898009,
+          "invocations": 10240
         },
         {
           "entry": "writeName",
           "pipeline": "writing",
           "calls": 1,
-          "milliseconds": 0.02758300000004965,
+          "milliseconds": 0.03741699999955017,
           "invocations": 1
-        },
-        {
-          "entry": "size",
-          "pipeline": "sizer",
-          "calls": 2.5,
-          "milliseconds": 0.006687500000452928,
-          "invocations": 2.5
         },
         {
           "entry": "finishing",
           "pipeline": "live_finish",
           "calls": 1,
-          "milliseconds": 0.005437499999970896,
+          "milliseconds": 0.00989550000122108,
           "invocations": 64
+        },
+        {
+          "entry": "size",
+          "pipeline": "sizer",
+          "calls": 2.5,
+          "milliseconds": 0.008791499998551444,
+          "invocations": 2.5
         }
       ],
       "unexecutedEntries": ["pickKernel", "spawnKernel"],
       "perFrame": {
         "dispatches": 38.5,
         "invocations": 171583.5,
-        "milliseconds": 49.19947950000051
+        "milliseconds": 43.08043600000565
       },
       "dispatches": [
         {
           "entry": "item",
           "calls": 1,
-          "milliseconds": 156.04712499999994,
+          "milliseconds": 169.97191699999894,
           "invocations": 384000
         },
         {
           "entry": "findJoints",
-          "calls": 13,
-          "milliseconds": 191.09195800000055,
-          "invocations": 154128
+          "calls": 21,
+          "milliseconds": 351.5054989999953,
+          "invocations": 248976
         },
         {
           "entry": "empty",
           "calls": 1,
-          "milliseconds": 0.09945800000002691,
+          "milliseconds": 0.07608299999992596,
           "invocations": 1
         },
         {
           "entry": "box",
           "calls": 1,
-          "milliseconds": 38.228875000000016,
+          "milliseconds": 22.61554199999955,
           "invocations": 250880
         },
         {
           "entry": "sphere",
           "calls": 1,
-          "milliseconds": 36.90258300000005,
+          "milliseconds": 22.692832999997336,
           "invocations": 250880
         },
         {
           "entry": "enclose",
           "calls": 1,
-          "milliseconds": 0.2395840000000362,
+          "milliseconds": 0.1492500000022119,
           "invocations": 1
         },
         {
           "entry": "clearKernel",
-          "calls": 266,
-          "milliseconds": 21.5503370000024,
-          "invocations": 1085504
+          "calls": 285,
+          "milliseconds": 24.300663000001805,
+          "invocations": 1163328
         },
         {
           "entry": "count",
-          "calls": 266,
-          "milliseconds": 57.36654999999837,
-          "invocations": 2179072
+          "calls": 285,
+          "milliseconds": 65.79658599998947,
+          "invocations": 2334720
         },
         {
           "entry": "size",
-          "calls": 266,
-          "milliseconds": 0.7584569999976338,
-          "invocations": 266
+          "calls": 285,
+          "milliseconds": 1.177153000011458,
+          "invocations": 285
         },
         {
           "entry": "reserve",
-          "calls": 266,
-          "milliseconds": 349.2950080000044,
-          "invocations": 426880
+          "calls": 285,
+          "milliseconds": 418.21030499999324,
+          "invocations": 472576
         },
         {
           "entry": "scatter",
-          "calls": 266,
-          "milliseconds": 40.80820399999902,
-          "invocations": 2179072
+          "calls": 285,
+          "milliseconds": 46.61116500000571,
+          "invocations": 2334720
         },
         {
           "entry": "boundKernel",
-          "calls": 266,
-          "milliseconds": 40.59480100000064,
-          "invocations": 2179072
+          "calls": 285,
+          "milliseconds": 45.52653499997177,
+          "invocations": 2334720
         },
         {
           "entry": "copyKernel",
-          "calls": 266,
-          "milliseconds": 33.2390510000032,
-          "invocations": 1089536
+          "calls": 285,
+          "milliseconds": 40.84753700001602,
+          "invocations": 1167360
         },
         {
           "entry": "step_1",
-          "calls": 266,
-          "milliseconds": 1525.578081999999,
-          "invocations": 1089536
+          "calls": 285,
+          "milliseconds": 1721.7460490000049,
+          "invocations": 1167360
         },
         {
           "entry": "Gait_step",
-          "calls": 266,
-          "milliseconds": 55.305999999997994,
-          "invocations": 2179072
+          "calls": 285,
+          "milliseconds": 68.96396199996525,
+          "invocations": 2334720
         },
         {
           "entry": "stepKernel",
-          "calls": 266,
-          "milliseconds": 86.25674800000024,
-          "invocations": 2179072
+          "calls": 285,
+          "milliseconds": 118.62766700002248,
+          "invocations": 2334720
         },
         {
           "entry": "kick",
-          "calls": 266,
-          "milliseconds": 119.54037300000118,
-          "invocations": 1089536
+          "calls": 285,
+          "milliseconds": 136.79376099997899,
+          "invocations": 1167360
         },
         {
           "entry": "compact",
-          "calls": 28,
-          "milliseconds": 30.41783299999838,
-          "invocations": 229376
+          "calls": 36,
+          "milliseconds": 48.254205999979604,
+          "invocations": 294912
         },
         {
           "entry": "finishing",
-          "calls": 28,
-          "milliseconds": 0.2662939999993341,
-          "invocations": 1792
+          "calls": 36,
+          "milliseconds": 0.40262300000176765,
+          "invocations": 2304
         },
         {
           "entry": "writeName",
-          "calls": 12,
-          "milliseconds": 0.4629580000000715,
-          "invocations": 12
+          "calls": 20,
+          "milliseconds": 0.9670849999929487,
+          "invocations": 20
         },
         {
           "entry": "phaseCards",
-          "calls": 12,
-          "milliseconds": 2.4540820000001986,
-          "invocations": 49152
+          "calls": 20,
+          "milliseconds": 6.866293999988557,
+          "invocations": 81920
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 58.70262599999978,
-          "invocations": 12
+          "calls": 20,
+          "milliseconds": 62.510504000001674,
+          "invocations": 20
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 133.79304000000002,
-          "invocations": 36
+          "calls": 20,
+          "milliseconds": 99.08924800001114,
+          "invocations": 60
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 19.283416999999645,
-          "invocations": 12
+          "calls": 20,
+          "milliseconds": 47.91533399999389,
+          "invocations": 20
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 41.71720800000003,
-          "invocations": 36
+          "calls": 20,
+          "milliseconds": 74.13649899999655,
+          "invocations": 60
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 4.654001999999309,
-          "invocations": 12
+          "calls": 20,
+          "milliseconds": 16.97921100000167,
+          "invocations": 20
         },
         {
           "entry": "walk",
-          "calls": 12,
-          "milliseconds": 8.808415999999397,
-          "invocations": 36
+          "calls": 20,
+          "milliseconds": 10.111207999994804,
+          "invocations": 60
         }
       ],
-      "executionRevision": "fdf555b5",
+      "executionRevision": "a4cf5089",
       "cpuBackendBrand": true,
       "historical": false
     },
@@ -2461,97 +2461,97 @@
       "status": "pass",
       "modules": 24,
       "executedModules": 19,
-      "timingSamples": 3,
+      "timingSamples": 9,
       "steadyPipelines": [
         {
           "entry": "steerKernel",
           "pipeline": "steerPipeline",
           "calls": 2.5,
-          "milliseconds": 18.410082999987935,
+          "milliseconds": 15.515833000001294,
           "invocations": 8480
         },
         {
           "entry": "reserve",
           "pipeline": "reserver",
           "calls": 2.5,
-          "milliseconds": 8.116145499996492,
-          "invocations": 9920
-        },
-        {
-          "entry": "compact",
-          "pipeline": "live_compact",
-          "calls": 1,
-          "milliseconds": 0.3343329999988782,
-          "invocations": 2048
+          "milliseconds": 9.25604150000072,
+          "invocations": 10240
         },
         {
           "entry": "copyKernel",
           "pipeline": "copyPipeline",
           "calls": 2.5,
-          "milliseconds": 0.2983539999986533,
+          "milliseconds": 0.37974899999971967,
           "invocations": 8480
+        },
+        {
+          "entry": "compact",
+          "pipeline": "live_compact",
+          "calls": 1,
+          "milliseconds": 0.35418750000098953,
+          "invocations": 2048
         },
         {
           "entry": "count",
           "pipeline": "counter",
           "calls": 2.5,
-          "milliseconds": 0.24620850000792416,
+          "milliseconds": 0.25600050000139163,
+          "invocations": 8480
+        },
+        {
+          "entry": "stepKernel",
+          "pipeline": "stepPipeline",
+          "calls": 2.5,
+          "milliseconds": 0.20031249999919964,
+          "invocations": 5120
+        },
+        {
+          "entry": "compact",
+          "pipeline": "live_compact",
+          "calls": 1,
+          "milliseconds": 0.19677049999882001,
+          "invocations": 1024
+        },
+        {
+          "entry": "scatter",
+          "pipeline": "scatterer",
+          "calls": 2.5,
+          "milliseconds": 0.19566699999813864,
           "invocations": 8480
         },
         {
           "entry": "boundKernel",
           "pipeline": "boundPipeline",
           "calls": 2.5,
-          "milliseconds": 0.17604200001369463,
-          "invocations": 8480
-        },
-        {
-          "entry": "scatter",
-          "pipeline": "scatterer",
-          "calls": 2.5,
-          "milliseconds": 0.17579100000148173,
+          "milliseconds": 0.19383400000151596,
           "invocations": 8480
         },
         {
           "entry": "clearKernel",
           "pipeline": "clearPipeline",
           "calls": 2.5,
-          "milliseconds": 0.17125000000669388,
+          "milliseconds": 0.1929374999999709,
           "invocations": 8480
         },
         {
-          "entry": "compact",
-          "pipeline": "live_compact",
-          "calls": 1,
-          "milliseconds": 0.16881200000352692,
-          "invocations": 1024
-        },
-        {
           "entry": "stepKernel",
           "pipeline": "stepPipeline",
           "calls": 2.5,
-          "milliseconds": 0.12333249999937834,
-          "invocations": 5120
-        },
-        {
-          "entry": "stepKernel",
-          "pipeline": "stepPipeline",
-          "calls": 2.5,
-          "milliseconds": 0.10429200000362471,
+          "milliseconds": 0.09239599999818893,
           "invocations": 2560
         },
         {
           "entry": "finishing",
           "pipeline": "live_finish",
           "calls": 3,
-          "milliseconds": 0.0110835000014049,
+          "milliseconds": 0.01866649999828951,
           "invocations": 192
         },
         {
           "entry": "size",
           "pipeline": "sizer",
           "calls": 2.5,
-          "milliseconds": 0.007146500000089873,
+          "milliseconds": 0.00991700000304263,
           "invocations": 2.5
         },
         {
@@ -2565,196 +2565,126 @@
       "unexecutedEntries": ["spawnKernel", "compact", "crumbleKernel"],
       "perFrame": {
         "dispatches": 30,
-        "invocations": 71778.5,
-        "milliseconds": 28.162226000029477
+        "invocations": 72066.5,
+        "milliseconds": 27.870875000002343
       },
       "dispatches": [
         {
           "entry": "mainCompute",
           "calls": 1,
-          "milliseconds": 2.6650829999998678,
+          "milliseconds": 2.8479580000021087,
           "invocations": 8192
         },
         {
           "entry": "item",
           "calls": 1,
-          "milliseconds": 0.8419169999979204,
+          "milliseconds": 0.9063329999989946,
           "invocations": 320
         },
         {
           "entry": "item",
           "calls": 1,
-          "milliseconds": 0.9124999999912689,
+          "milliseconds": 0.9984169999988808,
           "invocations": 384
         },
         {
           "entry": "item",
           "calls": 1,
-          "milliseconds": 1.7964999999967404,
+          "milliseconds": 1.3533339999994496,
           "invocations": 768
         },
         {
           "entry": "item",
           "calls": 1,
-          "milliseconds": 0.3723750000062864,
+          "milliseconds": 0.39187500000116415,
           "invocations": 64
         },
         {
           "entry": "spawnKernel",
-          "calls": 2,
-          "milliseconds": 0.3110000000015134,
-          "invocations": 128
-        },
-        {
-          "entry": "clearKernel",
-          "calls": 19,
-          "milliseconds": 1.655129000035231,
-          "invocations": 61120
-        },
-        {
-          "entry": "count",
-          "calls": 19,
-          "milliseconds": 3.7554580000432907,
-          "invocations": 65152
-        },
-        {
-          "entry": "size",
-          "calls": 19,
-          "milliseconds": 0.07812900001590606,
-          "invocations": 19
-        },
-        {
-          "entry": "reserve",
-          "calls": 19,
-          "milliseconds": 63.133915999991586,
-          "invocations": 72256
-        },
-        {
-          "entry": "scatter",
-          "calls": 19,
-          "milliseconds": 1.7895820000267122,
-          "invocations": 65152
-        },
-        {
-          "entry": "boundKernel",
-          "calls": 19,
-          "milliseconds": 1.7867900000419468,
-          "invocations": 64448
-        },
-        {
-          "entry": "copyKernel",
-          "calls": 19,
-          "milliseconds": 3.507251000017277,
-          "invocations": 64448
-        },
-        {
-          "entry": "steerKernel",
-          "calls": 19,
-          "milliseconds": 161.22708399995463,
-          "invocations": 64448
-        },
-        {
-          "entry": "stepKernel",
-          "calls": 19,
-          "milliseconds": 1.4980400000349618,
-          "invocations": 38912
-        },
-        {
-          "entry": "stepKernel",
-          "calls": 19,
-          "milliseconds": 1.1294169999746373,
-          "invocations": 19456
-        },
-        {
-          "entry": "finishing",
-          "calls": 24,
-          "milliseconds": 0.11333500003092922,
-          "invocations": 1536
-        },
-        {
-          "entry": "compact",
-          "calls": 8,
-          "milliseconds": 2.7372059999761404,
-          "invocations": 16384
-        },
-        {
-          "entry": "compact",
-          "calls": 8,
-          "milliseconds": 1.6687070000189124,
-          "invocations": 8192
-        }
-      ],
-      "executionRevision": "490def9b",
-      "cpuBackendBrand": true,
-      "historical": false
-    },
-    {
-      "example": "forest",
-      "status": "pass",
-      "modules": 6,
-      "executedModules": 6,
-      "timingSamples": 5,
-      "steadyPipelines": [
-        {
-          "entry": "walk",
-          "pipeline": "<unnamed>",
-          "calls": 1,
-          "milliseconds": 5.857291499999974,
-          "invocations": 1
-        },
-        {
-          "entry": "walk",
-          "pipeline": "<unnamed>",
-          "calls": 1,
-          "milliseconds": 5.7197295,
-          "invocations": 1
-        }
-      ],
-      "unexecutedEntries": [],
-      "perFrame": {
-        "dispatches": 2,
-        "invocations": 2,
-        "milliseconds": 11.473812999999979
-      },
-      "dispatches": [
-        {
-          "entry": "item",
-          "calls": 1,
-          "milliseconds": 0.6335840000000132,
-          "invocations": 64
-        },
-        {
-          "entry": "item",
-          "calls": 1,
-          "milliseconds": 0.9130419999999901,
-          "invocations": 128
-        },
-        {
-          "entry": "item",
-          "calls": 1,
-          "milliseconds": 2.900624999999991,
-          "invocations": 2048
-        },
-        {
-          "entry": "item",
-          "calls": 1,
-          "milliseconds": 1.270750000000021,
+          "calls": 4,
+          "milliseconds": 0.4494579999955022,
           "invocations": 256
         },
         {
-          "entry": "walk",
-          "calls": 12,
-          "milliseconds": 78.35841699999992,
-          "invocations": 12
+          "entry": "clearKernel",
+          "calls": 48,
+          "milliseconds": 4.10133300000598,
+          "invocations": 159488
         },
         {
-          "entry": "walk",
-          "calls": 12,
-          "milliseconds": 75.89175200000011,
-          "invocations": 12
+          "entry": "count",
+          "calls": 48,
+          "milliseconds": 6.729584000000614,
+          "invocations": 163520
+        },
+        {
+          "entry": "size",
+          "calls": 48,
+          "milliseconds": 0.20670400000744849,
+          "invocations": 48
+        },
+        {
+          "entry": "reserve",
+          "calls": 48,
+          "milliseconds": 180.26070499999332,
+          "invocations": 209472
+        },
+        {
+          "entry": "scatter",
+          "calls": 48,
+          "milliseconds": 4.039003999983834,
+          "invocations": 163520
+        },
+        {
+          "entry": "boundKernel",
+          "calls": 48,
+          "milliseconds": 4.125252999991062,
+          "invocations": 162816
+        },
+        {
+          "entry": "copyKernel",
+          "calls": 48,
+          "milliseconds": 8.256540999984281,
+          "invocations": 162816
+        },
+        {
+          "entry": "steerKernel",
+          "calls": 48,
+          "milliseconds": 350.78691700000854,
+          "invocations": 162816
+        },
+        {
+          "entry": "stepKernel",
+          "calls": 48,
+          "milliseconds": 4.033664000002318,
+          "invocations": 98304
+        },
+        {
+          "entry": "stepKernel",
+          "calls": 48,
+          "milliseconds": 2.1176699999923585,
+          "invocations": 49152
+        },
+        {
+          "entry": "finishing",
+          "calls": 60,
+          "milliseconds": 0.4743810000036319,
+          "invocations": 3840
+        },
+        {
+          "entry": "compact",
+          "calls": 20,
+          "milliseconds": 7.475209999996878,
+          "invocations": 40960
+        },
+        {
+          "entry": "compact",
+          "calls": 20,
+          "milliseconds": 4.517292000000452,
+          "invocations": 20480
         }
       ],
-      "executionRevision": "fdf555b5",
+      "executionRevision": "a4cf5089",
       "cpuBackendBrand": true,
       "historical": false
     },
@@ -2924,6 +2854,76 @@
         }
       ],
       "executionRevision": "490def9b",
+      "cpuBackendBrand": true,
+      "historical": false
+    },
+    {
+      "example": "forest",
+      "status": "pass",
+      "modules": 6,
+      "executedModules": 6,
+      "timingSamples": 9,
+      "steadyPipelines": [
+        {
+          "entry": "walk",
+          "pipeline": "<unnamed>",
+          "calls": 1,
+          "milliseconds": 4.837291999999991,
+          "invocations": 1
+        },
+        {
+          "entry": "walk",
+          "pipeline": "<unnamed>",
+          "calls": 1,
+          "milliseconds": 4.277104500000007,
+          "invocations": 1
+        }
+      ],
+      "unexecutedEntries": [],
+      "perFrame": {
+        "dispatches": 2,
+        "invocations": 2,
+        "milliseconds": 9.114396499999998
+      },
+      "dispatches": [
+        {
+          "entry": "item",
+          "calls": 1,
+          "milliseconds": 0.7030829999999924,
+          "invocations": 64
+        },
+        {
+          "entry": "item",
+          "calls": 1,
+          "milliseconds": 1.0752499999999827,
+          "invocations": 128
+        },
+        {
+          "entry": "item",
+          "calls": 1,
+          "milliseconds": 3.0316250000000196,
+          "invocations": 2048
+        },
+        {
+          "entry": "item",
+          "calls": 1,
+          "milliseconds": 1.557374999999979,
+          "invocations": 256
+        },
+        {
+          "entry": "walk",
+          "calls": 20,
+          "milliseconds": 110.22133300000013,
+          "invocations": 20
+        },
+        {
+          "entry": "walk",
+          "calls": 20,
+          "milliseconds": 89.52625400000016,
+          "invocations": 20
+        }
+      ],
+      "executionRevision": "a4cf5089",
       "cpuBackendBrand": true,
       "historical": false
     },
@@ -4677,17 +4677,19 @@
     "rows": 100000,
     "iterations": 3,
     "measurements": [
-      18.746291000000014, 16.582832999999994, 16.08824999999996, 15.74408299999999,
-      15.817624999999964
+      19.70045799999997, 17.620416000000034, 16.660000000000025, 16.627583000000016,
+      17.266291999999964
     ],
     "vectorOperationsPerInvocation": 30,
-    "milliseconds": 16.08824999999996,
-    "invocationsPerSecond": 18647149.317048203
+    "milliseconds": 17.266291999999964,
+    "invocationsPerSecond": 17374894.389600303,
+    "executionRevision": "a4cf5089"
   },
   "scalarBenchmark": {
     "kernel": "scalar hash, eight multiply/add/xor/shift rounds per invocation",
     "invocations": 5242880,
-    "milliseconds": 69.20904200000001,
-    "invocationsPerSecond": 75754263.43858363
+    "milliseconds": 77.61462500000002,
+    "invocationsPerSecond": 67550155.65687521,
+    "executionRevision": "a4cf5089"
   }
 }
