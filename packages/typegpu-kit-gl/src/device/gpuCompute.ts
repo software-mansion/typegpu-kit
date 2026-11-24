@@ -94,7 +94,10 @@ const NO_BLEND: BlendState = {
 };
 
 const pools = new WeakMap<Ctx, Map<string, WebGLTexture[]>>();
-/** Textures a pass may render into are kept for the next dispatch, up to this many per size. */
+/**
+ * Textures a pass may render into are kept for the next dispatch, up to this many per size, or
+ * one per layer of the largest layered target of that size.
+ */
 const POOLED = 4;
 
 function poolOf(ctx: Ctx): Map<string, WebGLTexture[]> {
@@ -121,12 +124,19 @@ function take(ctx: Ctx, internal: number, width: number, height: number): WebGLT
   return texture;
 }
 
-function give(ctx: Ctx, internal: number, width: number, height: number, texture: WebGLTexture) {
+function give(
+  ctx: Ctx,
+  internal: number,
+  width: number,
+  height: number,
+  texture: WebGLTexture,
+  keep = POOLED,
+) {
   const key = `${internal}:${width}:${height}`;
   const pool = poolOf(ctx);
   const list = pool.get(key) ?? [];
   pool.set(key, list);
-  if (list.length < POOLED) list.push(texture);
+  if (list.length < Math.max(keep, POOLED)) list.push(texture);
   else ctx.gl.deleteTexture(texture);
 }
 
@@ -325,7 +335,7 @@ export function runGpu(
             width,
             height,
           );
-          give(ctx, internal, width, height, value);
+          give(ctx, internal, width, height, value, made.length);
         });
         glWritten(texture);
       });
