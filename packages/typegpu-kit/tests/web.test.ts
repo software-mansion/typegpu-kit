@@ -1,5 +1,6 @@
 import type { TgpuRoot } from 'typegpu';
 import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
+import * as backends from '../src/backends.ts';
 import { frames, type Frame, type Surface } from '../src/index.ts';
 import * as native from '../src/native.ts';
 import { recordingRoot, steppedSchedule } from '../src/testing.ts';
@@ -471,6 +472,85 @@ it('runs on a root it is given, without frames of its own, and leaves the root a
 
   expect(order).toEqual(['attach reef', 'detach']);
   expect(destroyRoot).not.toHaveBeenCalled();
+});
+
+/** Brands a recording device as a fallback's, which configures canvases itself. */
+function fallbackRoot() {
+  const { root } = recordingRoot();
+  const context = {
+    configure: vi.fn(),
+    unconfigure: vi.fn(),
+    getCurrentTexture: vi.fn(() => ({ createView: () => ({}) })),
+  };
+  const configure = vi.fn(() => context as unknown as GPUCanvasContext);
+  Object.assign(root.device, {
+    [backends.brand]: {
+      kind: 'webgl',
+      compute: 'cpu',
+      preferredCanvasFormat: 'rgba8unorm',
+      configure,
+    } satisfies backends.Backend,
+  });
+  return { root, context, configure };
+}
+
+it('asks a fallback device for the canvas context and its format', () => {
+  const { root, context, configure } = fallbackRoot();
+  const { canvas } = fakePage();
+  vi.stubGlobal('navigator', {});
+
+  const surface = web.surface(root, canvas, { alphaMode: 'premultiplied' });
+
+  expect(surface.format).toBe('rgba8unorm');
+  expect(surface.context).toBe(context);
+  expect(configure).toHaveBeenCalledWith(
+    canvas,
+    expect.objectContaining({ format: 'rgba8unorm', alphaMode: 'premultiplied' }),
+  );
+  surface.destroy();
+  expect(context.unconfigure).toHaveBeenCalledOnce();
+});
+
+it('hosts on the fallback where the browser has no WebGPU, and destroys its root', async () => {
+  const { root } = fallbackRoot();
+  const { canvas } = fakePage();
+  vi.stubGlobal('navigator', {});
+  const destroyRoot = vi.spyOn(root, 'destroy');
+  const init = vi.fn(async () => root);
+
+  const hosted = web.host(empty, { canvas, schedule: false, fallback: { init } });
+  expect(await hosted.run(({ root: hostedRoot }) => hostedRoot)).toBe(root);
+  expect(init).toHaveBeenCalledWith(canvas);
+
+  hosted.destroy();
+  await settle();
+  expect(destroyRoot).toHaveBeenCalledOnce();
+});
+
+it('hosts on the fallback when WebGPU gives no adapter, or when forced', async () => {
+  const { root } = fallbackRoot();
+  const requestAdapter = vi.fn(async () => null);
+  vi.stubGlobal('navigator', { gpu: { requestAdapter } });
+
+  const refused = web.host(empty, {
+    canvas: fakePage().canvas,
+    schedule: false,
+    fallback: { init: async () => root },
+  });
+  expect(await refused.run(({ root: hostedRoot }) => hostedRoot)).toBe(root);
+  expect(requestAdapter).toHaveBeenCalledOnce();
+  refused.destroy();
+  await settle();
+
+  const other = fallbackRoot().root;
+  const forced = web.host(empty, {
+    canvas: fakePage().canvas,
+    schedule: false,
+    fallback: { force: true, init: async () => other },
+  });
+  expect(await forced.run(({ root: hostedRoot }) => hostedRoot)).toBe(other);
+  expect(requestAdapter).toHaveBeenCalledOnce();
+  forced.destroy();
 });
 
 /** A scene whose options may be left out. */
