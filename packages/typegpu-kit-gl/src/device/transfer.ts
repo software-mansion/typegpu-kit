@@ -295,6 +295,14 @@ function readThroughShader(
   return { values: out, stride };
 }
 
+/** Whether the bound read framebuffer reads back as RGBA half floats, which need no conversion. */
+function readsHalves(gl: WebGL2RenderingContext): boolean {
+  return (
+    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RGBA &&
+    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.HALF_FLOAT
+  );
+}
+
 /** Reads a region of one level and layer from GL in the format's own layout. */
 function readFromGl(
   ctx: Ctx,
@@ -328,6 +336,14 @@ function readFromGl(
     const rgba = new Uint8Array(count);
     gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     packTexels(info, rgba, out);
+  } else if (info.array === 'f16' && readsHalves(gl)) {
+    const rgba = new Uint16Array(count);
+    gl.readPixels(x, y, width, height, gl.RGBA, gl.HALF_FLOAT, rgba);
+    const n = info.components;
+    if (n === 4) out.set(rgba);
+    else
+      for (let i = 0; i < width * height; i++)
+        for (let c = 0; c < n; c++) out[i * n + c] = rgba[i * 4 + c]!;
   } else if (info.kind === 'float') {
     const rgba = new Float32Array(count);
     gl.readPixels(x, y, width, height, gl.RGBA, gl.FLOAT, rgba);
@@ -368,25 +384,47 @@ export function readTexels(
 }
 
 /** The texture's CPU copy, current: every level, rows top to bottom, layers in order. */
+/**
+ * One level of a texture's CPU copy, read back from GL only when a kernel first touches its
+ * `data`: kernels often read one small level of a mipmapped target.
+ */
+function lazyLevel(ctx: Ctx, texture: TextureImpl, level: number): CpuLevelCopy {
+  const [width, height, layers] = mipSize(texture, level);
+  const stored = texture.written;
+  let data: TexelArray | undefined;
+  return {
+    width,
+    height,
+    depthOrArrayLayers: layers,
+    get loaded() {
+      return data !== undefined;
+    },
+    get data() {
+      if (data) return data;
+      const start = performance.now();
+      const made = texelArray(texture.info, width * height * layers);
+      if (stored) {
+        const layerSize = width * height * texture.info.components;
+        for (let layer = 0; layer < layers; layer++) {
+          made.set(readFromGl(ctx, texture, level, layer, 0, 0, width, height), layer * layerSize);
+        }
+      }
+      data = made;
+      ctx.stats.readback.ms += performance.now() - start;
+      ctx.stats.readback.textures++;
+      return made;
+    },
+  };
+}
+
+/** The texture's CPU copy, current: every level, rows top to bottom, layers in order. */
 export function cpuLevels(ctx: Ctx, texture: TextureImpl): CpuLevelCopy[] {
   if (texture.cpu && texture.home !== 'gl') return texture.cpu;
-  const start = performance.now();
-  const levels: CpuLevelCopy[] = [];
-  for (let level = 0; level < texture.mipLevelCount; level++) {
-    const [width, height, layers] = mipSize(texture, level);
-    const data = texelArray(texture.info, width * height * layers);
-    if (texture.written) {
-      const layerSize = width * height * texture.info.components;
-      for (let layer = 0; layer < layers; layer++) {
-        data.set(readFromGl(ctx, texture, level, layer, 0, 0, width, height), layer * layerSize);
-      }
-    }
-    levels.push({ width, height, depthOrArrayLayers: layers, data });
-  }
+  const levels = Array.from({ length: texture.mipLevelCount }, (_, level) =>
+    lazyLevel(ctx, texture, level),
+  );
   texture.cpu = levels;
   texture.home = 'both';
-  ctx.stats.readback.ms += performance.now() - start;
-  ctx.stats.readback.textures++;
   return levels;
 }
 
@@ -396,6 +434,8 @@ installCpuUpload((ctx, texture) => {
   const start = performance.now();
   texture.home = 'both';
   levels.forEach((copy, level) => {
+    // A level no kernel touched holds on GL what it held before
+    if (!copy.loaded) return;
     const bytes = new Uint8Array(copy.data.buffer, copy.data.byteOffset, copy.data.byteLength);
     upload(
       ctx,

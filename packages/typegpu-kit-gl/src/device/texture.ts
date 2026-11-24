@@ -12,7 +12,10 @@ export interface CpuLevelCopy {
   readonly width: number;
   readonly height: number;
   readonly depthOrArrayLayers: number;
+  /** The level's texels, read back from GL when first touched. */
   readonly data: TexelArray;
+  /** Whether `data` exists yet; a level never touched is still current on GL alone. */
+  readonly loaded: boolean;
 }
 
 interface Derived {

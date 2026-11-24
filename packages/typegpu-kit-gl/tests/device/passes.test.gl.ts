@@ -327,4 +327,61 @@ describe('compute and passes', () => {
     device.destroy();
     expect((await device.lost).reason).toBe('destroyed');
   });
+
+  test('reads back only the level a kernel touches, half floats as they are', async () => {
+    device = glDevice();
+    const texture = device.createTexture({
+      size: [8, 8],
+      format: 'rgba16float',
+      mipLevelCount: 3,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.STORAGE_BINDING,
+    });
+    const clear = device.createCommandEncoder();
+    clear
+      .beginRenderPass({
+        colorAttachments: [
+          {
+            view: texture.createView({ baseMipLevel: 2, mipLevelCount: 1 }),
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearValue: [0.5, 1.5, -2, 1],
+          },
+        ],
+      })
+      .end();
+    device.queue.submit([clear.finish()]);
+    let seen: number[] = [];
+    const reader: CpuModule = {
+      kind: 'compute',
+      workgroupSize: [1, 1, 1],
+      bindings: [{ group: 0, binding: 0, kind: 'texture', reads: true, writes: false }],
+      dispatch(_x, _y, _z, resources) {
+        const level = resources.texture(0, 0).levels[2]!;
+        seen = Array.from((level.data as Uint16Array).subarray(0, 4));
+      },
+    };
+    const kernel = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: shaderModuleFrom(device, reader) },
+    });
+    device.stats.reset();
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(kernel);
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: kernel.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: texture.createView() }],
+      }),
+    );
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    expect(seen).toEqual([0x3800, 0x3e00, 0xc000, 0x3c00]);
+    expect(device.stats.readback.textures).toBe(1);
+  });
 });
