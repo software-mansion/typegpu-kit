@@ -82,6 +82,43 @@ export function prepareGpu(
   return { module, passes };
 }
 
+const pools = new WeakMap<Ctx, Map<string, WebGLTexture[]>>();
+/** Textures a pass may render into are kept for the next dispatch, up to this many per size. */
+const POOLED = 4;
+
+function poolOf(ctx: Ctx): Map<string, WebGLTexture[]> {
+  let pool = pools.get(ctx);
+  if (!pool) {
+    const made = new Map<string, WebGLTexture[]>();
+    pool = made;
+    pools.set(ctx, made);
+    ctx.track(() => {
+      for (const list of made.values()) for (const texture of list) ctx.gl.deleteTexture(texture);
+      made.clear();
+    });
+  }
+  return pool;
+}
+
+function take(ctx: Ctx, internal: number, width: number, height: number): WebGLTexture {
+  const reused = poolOf(ctx).get(`${internal}:${width}:${height}`)?.pop();
+  if (reused) return reused;
+  const { gl, state } = ctx;
+  const texture = gl.createTexture();
+  state.scratchTexture(gl.TEXTURE_2D, texture);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, internal, width, height);
+  return texture;
+}
+
+function give(ctx: Ctx, internal: number, width: number, height: number, texture: WebGLTexture) {
+  const key = `${internal}:${width}:${height}`;
+  const pool = poolOf(ctx);
+  const list = pool.get(key) ?? [];
+  pool.set(key, list);
+  if (list.length < POOLED) list.push(texture);
+  else ctx.gl.deleteTexture(texture);
+}
+
 type Resolved =
   | { readonly kind: 'buffer'; readonly buffer: BufferImpl }
   | { readonly kind: 'texture'; readonly view: ViewImpl };
@@ -175,9 +212,7 @@ export function runGpu(
 
     const made: WebGLTexture[] = [];
     for (let layer = 0; layer < layers; layer++) {
-      const texture = gl.createTexture();
-      state.scratchTexture(gl.TEXTURE_2D, texture);
-      gl.texStorage2D(gl.TEXTURE_2D, 1, internal, width, height);
+      const texture = take(ctx, internal, width, height);
       state.drawFramebuffer(ctx.scratch.draw);
       gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
       gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
@@ -202,7 +237,8 @@ export function runGpu(
     }
 
     if (resource.kind === 'buffer') {
-      outputs.push(() => replaceData(ctx, resource.buffer, made[0]!));
+      const size = [internal, width, height] as const;
+      outputs.push(() => give(ctx, ...size, replaceData(resource.buffer, made[0]!)));
     } else {
       const { view } = resource;
       outputs.push(() => {
@@ -227,7 +263,7 @@ export function runGpu(
             width,
             height,
           );
-          gl.deleteTexture(value);
+          give(ctx, internal, width, height, value);
         });
         glWritten(texture);
       });

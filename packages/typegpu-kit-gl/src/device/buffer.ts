@@ -245,15 +245,16 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
 
 /**
  * Replaces the data texture with one a fragment pass wrote, of the same size, which leaves every
- * other copy stale.
+ * other copy stale. Returns the texture it replaced, for the caller to reuse or delete.
  */
-export function replaceData(ctx: Ctx, buffer: BufferImpl, texture: WebGLTexture): void {
+export function replaceData(buffer: BufferImpl, texture: WebGLTexture): WebGLTexture {
   const copy = buffer.data!;
-  ctx.gl.deleteTexture(copy.value.texture);
+  const old = copy.value.texture;
   copy.value = { ...copy.value, texture };
   copy.start = Infinity;
   copy.end = 0;
   buffer.gpuNewer = true;
+  return old;
 }
 
 export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuffer {

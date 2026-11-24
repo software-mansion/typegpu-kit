@@ -38,6 +38,23 @@ From `scripts/examples.ts --backend webgl` at device commit 3c4aa4c1:
   in CPU kernels; the others are compute-heavy simulations of the same kind.
 - forest, quiver-trees, night-market, ember-mirror: ready but slow, as profiled above, so the
   screenshot shows the loading cover.
+- solar-system: Saturn's ring is missing (the WebGPU reference shows it). The ring is the second
+  mesh of a pool, drawn by instance records; vertex pulling with a base vertex, direct and indirect,
+  matches WebGPU on the device (`roots.test.gl.ts`), so the records the CPU kernels write are the
+  likelier cause.
+
+## Compute as fragment passes
+
+The device runs a compute pipeline's GPU form (`src/glsl/computeModule.ts`) when its module carries
+one and the dispatch fits, and the CPU module otherwise. A buffer target's pass renders a new data
+texture that replaces the old one; the buffer's CPU copy is then stale and `sync()` reads it back
+before any CPU use (mapping, `writeBuffer`, copies, indirect arguments, CPU kernels, vertex, index
+and uniform copies). A texture target's pass renders each layer into a new texture, blitted into
+the target after every pass ran. `device.stats.kernels` names GPU dispatches `<label> (gpu)`, and
+`device.stats.fallbacks` holds why a pipeline runs on the CPU, including the generator's `cpu-only`
+reason. In jump-flood every kernel stays on the CPU: `pipeline` and `clearPipeline` write cells
+other than their own, `placePipeline` and `neighboursPipeline` use atomics, and `computePipeline`
+writes from a helper function.
 
 ## Contract notes
 
