@@ -1246,6 +1246,8 @@ export class KitGlslGenerator extends GlslGenerator {
       const builtin = attributeOf(type, '@builtin')?.[0] as string | undefined;
       if (builtin === 'position' || (stage === 'vertex' && !builtin && prop === '')) {
         outputs.set(prop, 'gl_Position');
+        // Passes that test depth with `equal` after a depth prepass rely on identical positions.
+        if (attributeOf(type, '@invariant')) declarations.push('invariant gl_Position;');
         return;
       }
       if (builtin === 'frag_depth') {

@@ -150,6 +150,33 @@ describe('stage IO', () => {
     await expectValid([module]);
   });
 
+  it('declares an invariant position invariant', async () => {
+    const { root, modules } = glslRoot();
+    const vertex = tgpu.vertexFn({
+      in: { position: d.vec3f },
+      out: { position: d.invariant(d.builtin.position), shade: d.vec3f },
+    })(({ position }) => {
+      'use gpu';
+      return { position: d.vec4f(position, 1), shade: halved(position) };
+    });
+    const fragment = tgpu.fragmentFn({ in: { shade: d.vec3f }, out: d.vec4f })(({ shade }) => {
+      'use gpu';
+      return d.vec4f(shade, 1);
+    });
+    root.unwrap(
+      root.createRenderPipeline({
+        attribs: { position: vertices.attrib },
+        vertex,
+        fragment,
+        targets: { format: 'rgba8unorm' },
+      }),
+    );
+    const [module] = modules();
+    expect(module?.vertex).toContain('invariant gl_Position;');
+    expect(module?.fragment).not.toContain('invariant');
+    await expectValid(module ? [module] : []);
+  });
+
   it('draws a full-screen triangle written in WGSL', async () => {
     const { root, modules } = glslRoot();
     const pipeline = root.createRenderPipeline({
