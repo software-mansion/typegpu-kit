@@ -97,7 +97,14 @@ it.runIf(process.env.CPU_SWEEP === '1')(
               },
             })
           : tgpu.initFromDevice({
-              device: Object.assign(recording.root.device, { [backends.brand]: cpuBackend }),
+              device: new Proxy(recording.root.device, {
+                get(target, key) {
+                  if (key === backends.brand) return cpuBackend;
+                  if (key === 'limits')
+                    return { ...target.limits, maxStorageBuffersPerShaderStage: 16 };
+                  return Reflect.get(target, key);
+                },
+              }),
               unstable_shaderGeneratorClass: SweepGenerator,
             });
       const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });

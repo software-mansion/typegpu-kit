@@ -45,6 +45,7 @@ export class CpuGenerator extends WgslGenerator {
   #addresses = new Map<string, Address>();
   #globalAddresses = new Map<string, Address>();
   #vectors = new Map<string, string[]>();
+  #constantVectors = new Map<string, string[]>();
   #ownedLocals = new Set<string>();
   #lowerSwizzle(original: Snippet, code: string): Snippet {
     if (typeof original.value !== 'object' || !original.value)
@@ -61,7 +62,8 @@ export class CpuGenerator extends WgslGenerator {
     return snip(value, original.dataType, original.origin, original.possibleSideEffects);
   }
   #components(code: string): string[] | undefined {
-    return this.#vectors.get(code.replace(/^\((\w+)\)$/, '$1'));
+    const name = code.replace(/^\((\w+)\)$/, '$1');
+    return this.#vectors.get(name) ?? this.#constantVectors.get(name);
   }
   #vector(_schema: d.BaseData, components: string[]): string {
     const name = this.ctx.makeUniqueIdentifier('cpuVector', 'global');
@@ -527,8 +529,9 @@ export class CpuGenerator extends WgslGenerator {
       const count = Number(type[3]);
       const convert = (value: string) =>
         type.endsWith('u') ? `((${value})>>>0)` : type.endsWith('i') ? `((${value})|0)` : value;
+      const components = Array.from({ length: count }, (_, i) => `v${i}`);
       this.ctx.addDeclaration(
-        `function ${name}(...args) { const value = args.length === 1 && typeof args[0] !== 'number' ? (args[0] ?? []) : args; return $vector([${Array.from({ length: count }, (_, i) => convert(`(value[${i}] ?? (value.length===1 ? value[0] : 0))`)).join(',')}]); }`,
+        `function ${name}(${components.map((component, i) => `${component}=${i === 0 ? '0' : 'v0'}`).join(',')}) { return typeof v0==='number' ? $vector([${components.map(convert).join(',')}]) : $vector([${components.map((_component, i) => convert(`(v0[${i}]??0)`)).join(',')}]); }`,
         name,
       );
       return name;
@@ -592,7 +595,6 @@ export class CpuGenerator extends WgslGenerator {
   override typeInstantiation(schema: d.BaseData, args: readonly Snippet[]): ResolvedSnippet {
     if (
       /^vec[234][fui]$/.test(schema.type) &&
-      args.some((arg) => arg.origin !== 'constant') &&
       args.every(
         (arg) =>
           !arg.possibleSideEffects &&
@@ -609,7 +611,10 @@ export class CpuGenerator extends WgslGenerator {
             ? `((${value})|0)`
             : value;
       });
-      return snip(this.#vector(schema, components), schema, 'runtime', false);
+      const name = this.#vector(schema, components);
+      if (args.every((arg) => arg.origin === 'constant'))
+        this.#constantVectors.set(name, components);
+      return snip(name, schema, 'runtime', false);
     }
     const vectorType = /^vec([234])([fui])$/.exec(schema.type);
     if (vectorType) {

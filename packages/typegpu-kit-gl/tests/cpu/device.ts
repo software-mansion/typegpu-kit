@@ -34,6 +34,7 @@ export function cpuRoot(
   const original = recording.root.device;
   const sources = new WeakMap<CpuModule, string>();
   const texture = textureDevice(original);
+  const limits = { ...original.limits, maxStorageBuffersPerShaderStage: 16 };
   const queue = new Proxy(original.queue, {
     get(target, key) {
       if (key === 'writeTexture') return texture.writeTexture;
@@ -48,6 +49,7 @@ export function cpuRoot(
   const device = new Proxy(original, {
     get(target, key) {
       if (key === backends.brand) return cpuBackend;
+      if (key === 'limits') return limits;
       if (key === 'queue') return queue;
       if (key === 'createTexture') return texture.createTexture;
       if (key === 'createSampler') return texture.createSampler;
