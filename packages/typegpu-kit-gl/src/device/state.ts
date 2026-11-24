@@ -28,6 +28,10 @@ export interface GLState {
   vertexArray(vao: WebGLVertexArrayObject | null): void;
   drawFramebuffer(framebuffer: WebGLFramebuffer | null): void;
   readFramebuffer(framebuffer: WebGLFramebuffer | null): void;
+  /** Sets the bound draw framebuffer's draw buffers, which each framebuffer keeps as its own. */
+  drawBuffers(buffers: readonly number[]): void;
+  /** Sets the bound read framebuffer's read buffer, which each framebuffer keeps as its own. */
+  readBuffer(buffer: number): void;
   arrayBuffer(buffer: WebGLBuffer | null): void;
   /** Binds the index buffer of the bound vertex array, which keeps it as its own state. */
   elementBuffer(buffer: WebGLBuffer | null): void;
@@ -61,6 +65,8 @@ export interface GLState {
 }
 
 const FULL_MASK = 0xf;
+/** Stands for the default framebuffer in caches keyed by framebuffer. */
+const DEFAULT = {};
 
 /** Whether `cache` holds these four values already; stores them when it does not. */
 function same(cache: number[], a: number, b: number, c: number, d: number): boolean {
@@ -81,6 +87,9 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
   let vao: WebGLVertexArrayObject | null | undefined;
   let drawFbo: WebGLFramebuffer | null | undefined;
   let readFbo: WebGLFramebuffer | null | undefined;
+  // Per framebuffer, with the default framebuffer under `DEFAULT`
+  let drawn = new WeakMap<object, string>();
+  let read = new WeakMap<object, number>();
   let arrayBuffer: WebGLBuffer | null | undefined;
   const elements = new Map<WebGLVertexArrayObject | null, WebGLBuffer | null>();
   const ranges: ({ buffer: WebGLBuffer; offset: number; size: number } | undefined)[] = [];
@@ -109,6 +118,8 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     vao = undefined;
     drawFbo = undefined;
     readFbo = undefined;
+    drawn = new WeakMap();
+    read = new WeakMap();
     arrayBuffer = undefined;
     elements.clear();
     ranges.length = 0;
@@ -199,6 +210,25 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, value);
     },
 
+    drawBuffers(buffers) {
+      const key = buffers.join();
+      if (drawFbo !== undefined) {
+        const framebuffer = drawFbo ?? DEFAULT;
+        if (drawn.get(framebuffer) === key) return;
+        drawn.set(framebuffer, key);
+      }
+      gl.drawBuffers(buffers);
+    },
+
+    readBuffer(buffer) {
+      if (readFbo !== undefined) {
+        const framebuffer = readFbo ?? DEFAULT;
+        if (read.get(framebuffer) === buffer) return;
+        read.set(framebuffer, buffer);
+      }
+      gl.readBuffer(buffer);
+    },
+
     elementBuffer(value) {
       const key = vao ?? null;
       if (vao !== undefined && elements.get(key) === value) return;
@@ -275,6 +305,7 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     colorMask,
 
     colorMaskAll(mask) {
+      if (masks.length === maxDrawBuffers && masks.every((each) => each === mask)) return;
       gl.colorMask((mask & 1) !== 0, (mask & 2) !== 0, (mask & 4) !== 0, (mask & 8) !== 0);
       masks = Array.from({ length: maxDrawBuffers }, () => mask);
     },

@@ -60,7 +60,7 @@ export function createPresenter(
     const texture = textureImpl(record.texture!);
     state.readFramebuffer(ctx.scratch.read);
     attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, 0, 0);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    state.readBuffer(gl.COLOR_ATTACHMENT0);
     state.drawFramebuffer(null);
     writeEverything(ctx);
     // A fresh drawing buffer is cleared lazily by the next clear or draw, not by a blit, so clear

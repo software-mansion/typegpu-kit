@@ -273,7 +273,7 @@ export function runGpu(
       const texture = take(ctx, internal, width, height);
       state.drawFramebuffer(ctx.scratch.draw);
       gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      state.drawBuffers([gl.COLOR_ATTACHMENT0]);
       state.program(pass.program.program);
       setInt(gl, pass.layer, layer);
       state.vertexArray(null);

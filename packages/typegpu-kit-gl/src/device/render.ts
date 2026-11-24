@@ -172,7 +172,7 @@ export function endRender(pass: RenderPass): void {
     if (target.resolve) {
       const resolve = framebuffer(ctx, [target.resolve], null);
       state.readFramebuffer(pass.fbo);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
+      state.readBuffer(gl.COLOR_ATTACHMENT0 + i);
       state.drawFramebuffer(resolve);
       writeEverything(ctx);
       gl.blitFramebuffer(

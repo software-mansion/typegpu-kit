@@ -312,7 +312,7 @@ export function framebuffer(
       depth.layer,
     );
   }
-  gl.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
+  state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
   const status = gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
     ctx.errors.report(
@@ -366,8 +366,8 @@ export function blitLevel(
     destination.layer,
   );
   if (point === gl.COLOR_ATTACHMENT0) {
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    state.readBuffer(gl.COLOR_ATTACHMENT0);
+    state.drawBuffers([gl.COLOR_ATTACHMENT0]);
   }
   writeEverything(ctx);
   gl.blitFramebuffer(

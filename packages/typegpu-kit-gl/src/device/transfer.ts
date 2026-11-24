@@ -251,7 +251,7 @@ function readThroughShader(
 
   state.drawFramebuffer(ctx.scratch.draw);
   gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
-  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  state.drawBuffers([gl.COLOR_ATTACHMENT0]);
   state.program(program);
   gl.uniform1i(uniforms.get('source')!, state.scratchUnit);
   gl.uniform2i(uniforms.get('origin')!, x, y);
@@ -280,7 +280,7 @@ function readThroughShader(
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   state.readFramebuffer(ctx.scratch.draw);
-  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
   const red =
     single &&
     gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RED &&
@@ -327,7 +327,7 @@ function readFromGl(
   }
   state.readFramebuffer(ctx.scratch.read);
   attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, level, layer);
-  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
   const count = width * height * 4;
   if (info.format === 'rgb10a2unorm') {
     gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_INT_2_10_10_10_REV, out);

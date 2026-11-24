@@ -234,7 +234,7 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
     data.texture,
     0,
   );
-  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
   gl.readPixels(0, 0, data.width, data.height, gl.RGBA_INTEGER, gl.UNSIGNED_INT, all);
   gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
   buffer.words.set(all.subarray(0, buffer.words.length));
