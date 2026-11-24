@@ -34,6 +34,51 @@ export class CpuGenerator extends WgslGenerator {
   override languageKey = 'javascript';
   #functions = new Set<string>();
   #functionEffects = new Map<string, boolean>();
+  #functionBodies = new Map<string, string>();
+  #globalScopes = new Map<string, { scope: string; type: string }>();
+  #uniformCaches = new Map<string, string>();
+  #uniformDependencies(name: string, seen = new Set<string>()): Set<string> | undefined {
+    if (seen.has(name) || this.#functionEffects.get(name) !== false) return undefined;
+    const body = this.#functionBodies.get(name);
+    if (!body) return undefined;
+    seen.add(name);
+    const tokens = new Set(body.match(/[A-Za-z_$][\w$]*/g));
+    const dependencies = new Set<string>();
+    for (const [id, global] of this.#globalScopes) {
+      if (!tokens.has(id)) continue;
+      if (global.scope === 'uniform') continue;
+      if (global.scope === 'private' && ['u32', 'i32', 'f32', 'bool'].includes(global.type))
+        dependencies.add(id);
+      else return undefined;
+    }
+    for (const call of body.matchAll(/\b([A-Za-z_$][\w$]*)\(/g)) {
+      if (!this.#functions.has(call[1]!)) continue;
+      const nested = this.#uniformDependencies(call[1]!, new Set(seen));
+      if (!nested) return undefined;
+      for (const dependency of nested) dependencies.add(dependency);
+    }
+    return dependencies;
+  }
+  #cachedUniformArgument(value: string): string {
+    const call = /^([A-Za-z_$][\w$]*)\(\)$/.exec(value);
+    if (!call) return value;
+    const name = call[1]!;
+    const known = this.#uniformCaches.get(name);
+    if (known) return `${known}()`;
+    const dependencies = this.#uniformDependencies(name);
+    if (!dependencies) return value;
+    const cached = this.ctx.makeUniqueIdentifier('cpuUniformValue', 'global');
+    const getter = this.ctx.makeUniqueIdentifier('cpuUniformRead', 'global');
+    const keys = [...dependencies].map(() =>
+      this.ctx.makeUniqueIdentifier('cpuUniformKey', 'global'),
+    );
+    this.ctx.addDeclaration(
+      `let ${[cached, ...keys].join(',')};\nfunction ${getter}(){if(${cached}===undefined${[...dependencies].map((dependency, i) => `||${keys[i]}!==${dependency}`).join('')}){${keys.map((key, i) => `${key}=${[...dependencies][i]};`).join('')}${cached}=${value};}return ${cached};}`,
+      getter,
+    );
+    this.#uniformCaches.set(name, getter);
+    return `${getter}()`;
+  }
   #vectorReturns = new Map<
     string,
     { schema: d.BaseData; parameters: string[]; components: string[] }
@@ -792,6 +837,8 @@ export class CpuGenerator extends WgslGenerator {
 
   override declareGlobalVar(options: VariableDefinitionOptions): ResolvedSnippet {
     const { dataType, id, scope, group, binding } = options;
+    for (const name of [id, `${id}_u32`, `${id}_i32`, `${id}_f32`])
+      this.#globalScopes.set(name, { scope, type: scalar(dataType) });
     if (scope === 'handle') {
       const kind = dataType.type.startsWith('sampler')
         ? 'sampler'
@@ -956,6 +1003,7 @@ export class CpuGenerator extends WgslGenerator {
       });
       body = prunePureLocals(body, this.#functionEffects);
       this.#functionEffects.set(options.name, this.#effects);
+      this.#functionBodies.set(options.name, body);
       this.#functionUsed.set(
         options.name,
         options.args.map((arg) => arg.used),
@@ -1318,6 +1366,11 @@ export class CpuGenerator extends WgslGenerator {
         const type = scalar(arg.dataType);
         const value = values[i]!;
         if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
+          // Parameters are immutable values; only this borrowed-argument path can reuse a record.
+          if (type === 'struct' || type.startsWith('mat')) {
+            const cached = this.#cachedUniformArgument(value);
+            if (cached !== value) return cached;
+          }
           // Non-pointer arguments are immutable; a callee cannot reach an owned caller local.
           if (
             !args.some((passed) => scalar(passed.dataType) === 'ptr') &&

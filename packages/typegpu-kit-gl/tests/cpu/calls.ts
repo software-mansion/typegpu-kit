@@ -285,3 +285,52 @@ export async function recordValues(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return output.read();
 }
+
+export async function uniformArguments(root: TgpuRoot): Promise<number[]> {
+  const View = d.struct({ value: d.vec4u });
+  const views = root.createUniform(d.arrayOf(View, 2), [
+    { value: d.vec4u(2, 3, 4, 5) },
+    { value: d.vec4u(7, 8, 9, 10) },
+  ]);
+  const layer = tgpu.privateVar(d.u32);
+  const output = root.createMutable(d.arrayOf(d.vec2u, 4));
+  const index = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    return layer.$;
+  });
+  const view = tgpu.fn(
+    [],
+    View,
+  )(() => {
+    'use gpu';
+    return View(views.$[index()]);
+  });
+  const consume = tgpu.fn(
+    [View],
+    d.vec2u,
+  )((camera) => {
+    'use gpu';
+    return d.vec2u(camera.value.xy);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    layer.$ = 0;
+    output.$[0] = consume(view());
+    layer.$ = 1;
+    output.$[1] = consume(view());
+    const local = view();
+    local.value.x = 99;
+    output.$[2] = consume(view());
+    layer.$ = 0;
+    output.$[3] = consume(view());
+  });
+  const pipeline = root.createComputePipeline({ compute: kernel });
+  pipeline.dispatchWorkgroups(1);
+  const first = (await output.read()).flatMap((v) => [v.x, v.y]);
+  views.write([{ value: d.vec4u(12, 13, 14, 15) }, { value: d.vec4u(17, 18, 19, 20) }]);
+  pipeline.dispatchWorkgroups(1);
+  return [...first, ...(await output.read()).flatMap((v) => [v.x, v.y])];
+}

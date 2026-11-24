@@ -8,6 +8,7 @@ import {
   callEffects,
   vectorResults,
   recordValues,
+  uniformArguments,
 } from './calls.ts';
 import { cpuRoot } from './device.ts';
 
@@ -17,6 +18,9 @@ it('preserves argument evaluation order and vector arguments across a helper bar
     expect(await callValues(root)).toEqual(Array.from({ length: 8 }, () => [1, 2, 3, 80]).flat());
     expect(await callSnapshot(root)).toEqual([4, 5]);
     expect(await callLocalSnapshot(root)).toEqual([4, 5]);
+    expect(await uniformArguments(root)).toEqual([
+      2, 3, 7, 8, 7, 8, 2, 3, 12, 13, 17, 18, 17, 18, 12, 13,
+    ]);
     expect(await recordValues(root)).toEqual([103, 4, 8, 9, 0, 1, 2]);
     expect(await callEffects(root)).toEqual([4, 5, 1]);
     expect(await vectorResults(root)).toEqual(
