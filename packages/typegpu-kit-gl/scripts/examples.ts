@@ -1,14 +1,15 @@
 // Opens every example page of a running docs server on the WebGL fallback and on WebGPU, and
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
-// [--out dir] [--backend webgl|webgpu|both|nogpu] [--timeout seconds] [--reference dir]
-// [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
+// [--out dir] [--backend webgl|webgpu|both|nogpu] [--browser chromium|firefox|webkit]
+// [--timeout seconds] [--reference dir] [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
 // the page first, as a browser without it, so the page must fall back by itself.
 // With `--reference`, it also scores each screenshot against the one of the same name there.
+// Screenshots outside Chromium carry the browser in their name, `forest.nogpu.webkit.png`.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, firefox, webkit, type Browser, type Page } from 'playwright';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -16,6 +17,7 @@ const { values, positionals } = parseArgs({
     base: { type: 'string', default: 'http://localhost:4321' },
     out: { type: 'string', default: 'packages/typegpu-kit-gl/.examples' },
     backend: { type: 'string', default: 'webgl' },
+    browser: { type: 'string', default: 'chromium' },
     timeout: { type: 'string', default: '90' },
     reference: { type: 'string' },
   },
@@ -29,9 +31,18 @@ const keys = positionals.length > 0 ? positionals : all;
 const backends = values.backend === 'both' ? ['webgpu', 'webgl'] : [values.backend];
 const timeout = Number(values.timeout) * 1000;
 
+const engines = { chromium, firefox, webkit } as const;
+const engineName = values.browser as keyof typeof engines;
+if (!(engineName in engines)) throw new Error(`Unknown browser '${values.browser}'`);
+const engine = engines[engineName];
+const suffix = engineName === 'chromium' ? '' : `.${engineName}`;
+
 interface Result {
   readonly example: string;
   readonly backend: string;
+  readonly browser: string;
+  /** Whether the page had `navigator.gpu` when it loaded. */
+  readonly webgpu?: boolean;
   /**
    * `ready` once the cover lifted, `failed` when the page showed an error, `timeout` when neither
    * happened, and `hung` when the page stopped answering, as in a frame that never returns.
@@ -120,6 +131,13 @@ function summary(error: string): string {
 mkdirSync(values.out, { recursive: true });
 const results: Result[] = [];
 const args = ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist'];
+// Headless Firefox disables WebGL unless forced
+const launchOptions =
+  engineName === 'chromium'
+    ? { channel: 'chromium', args }
+    : engineName === 'firefox'
+      ? { firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.disabled': false } }
+      : {};
 
 /** Opens one example on one backend in `browser` and reports what it did. */
 async function visit(browser: Browser, example: string, backend: string): Promise<Result> {
@@ -148,10 +166,12 @@ async function visit(browser: Browser, example: string, backend: string): Promis
   let notice = '';
   let fps: number | undefined;
   let ink: number | undefined;
+  let webgpu: boolean | undefined;
   // The dev server reloads a page when it optimises a dependency it had not seen: try again
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
+      webgpu = await page.evaluate(() => 'gpu' in navigator && !!navigator.gpu);
       state = await settle(page);
       notice = (await page.locator('#notice').textContent()) ?? '';
       if (state === 'ready') {
@@ -159,7 +179,7 @@ async function visit(browser: Browser, example: string, backend: string): Promis
         await page.waitForTimeout(500);
       }
       const shot = await page.locator('#example canvas').screenshot({
-        path: join(values.out, `${example}.${backend}.png`),
+        path: join(values.out, `${example}.${backend}${suffix}.png`),
         timeout: 20_000,
       });
       // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
@@ -177,7 +197,7 @@ async function visit(browser: Browser, example: string, backend: string): Promis
 
   let difference: number | undefined;
   const reference = values.reference && join(values.reference, `${example}.webgpu.png`);
-  const own = join(values.out, `${example}.${backend}.png`);
+  const own = join(values.out, `${example}.${backend}${suffix}.png`);
   if (reference && existsSync(reference) && existsSync(own) && state === 'ready') {
     try {
       const blank = await context.newPage();
@@ -194,6 +214,8 @@ async function visit(browser: Browser, example: string, backend: string): Promis
   return {
     example,
     backend,
+    browser: engineName,
+    ...(webgpu === undefined ? {} : { webgpu }),
     state,
     ...(difference === undefined ? {} : { difference: Math.round(difference * 10) / 10 }),
     ...(notice || errors[0] ? { error: (notice || errors[0]!).slice(0, 3000) } : {}),
@@ -208,8 +230,8 @@ for (const example of keys) {
   for (const backend of backends) {
     // A page whose frame never returns answers nothing, not even a close: give each visit a
     // browser of its own and kill it at the deadline
-    const server = await chromium.launchServer({ channel: 'chromium', args });
-    const browser = await chromium.connect(server.wsEndpoint());
+    const server = await engine.launchServer(launchOptions);
+    const browser = await engine.connect(server.wsEndpoint());
     const started = Date.now();
     let alarm: NodeJS.Timeout | undefined;
     const deadline = new Promise<Result>((resolve) => {
@@ -218,18 +240,20 @@ for (const example of keys) {
           resolve({
             example,
             backend,
+            browser: engineName,
             state: 'hung',
             error: 'The page stopped answering.',
             errors: [],
             seconds: Math.round((Date.now() - started) / 100) / 10,
           }),
-        timeout + 60_000,
+        timeout + 30_000,
       );
     });
     const result = await Promise.race([
       visit(browser, example, backend).catch((error): Result => ({
         example,
         backend,
+        browser: engineName,
         state: 'hung',
         error: String(error).slice(0, 2000),
         errors: [String(error)],
@@ -242,9 +266,9 @@ for (const example of keys) {
 
     results.push(result);
     process.stdout.write(
-      `${example.padEnd(16)} ${backend.padEnd(7)} ${result.state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(result.ink ?? '-').padStart(8)} B ${String(result.difference ?? '-').padStart(6)} diff  ${summary(result.error ?? '')}\n`,
+      `${example.padEnd(16)} ${backend.padEnd(7)} ${engineName.padEnd(8)} ${result.webgpu ? 'gpu' : '   '} ${result.state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(result.ink ?? '-').padStart(8)} B ${String(result.difference ?? '-').padStart(6)} diff  ${summary(result.error ?? '')}\n`,
     );
-    writeFileSync(join(values.out, 'report.json'), JSON.stringify(results, null, 2));
+    writeFileSync(join(values.out, `report${suffix}.json`), JSON.stringify(results, null, 2));
   }
 }
 
