@@ -284,4 +284,47 @@ describe('compute and passes', () => {
     second.width = 6;
     expect(b.getCurrentTexture().width).toBe(6);
   });
+
+  test('samples an imported external image and reports loss on destroy', async () => {
+    device = glDevice();
+    const canvas = new OffscreenCanvas(2, 2);
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#00ff00';
+    context.fillRect(0, 0, 2, 2);
+    const external = device.importExternalTexture({
+      source: canvas as unknown as HTMLVideoElement,
+    });
+    const shader = module(device, {
+      vertex: '',
+      vertexMain: FULLSCREEN,
+      fragment: 'uniform sampler2D frame;\nlayout(location = 0) out vec4 color;',
+      fragmentMain: '  color = texelFetch(frame, ivec2(0), 0);',
+      textures: [textureBinding('frame', 0, 0)],
+    });
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: shader },
+      fragment: { module: shader, targets: [{ format: 'rgba8unorm' }] },
+    });
+    const out = target();
+    const encoder = device.createCommandEncoder();
+    const render = encoder.beginRenderPass({
+      colorAttachments: [{ view: out.createView(), loadOp: 'clear', storeOp: 'store' }],
+    });
+    render.setPipeline(pipeline);
+    render.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: external }],
+      }),
+    );
+    render.draw(3);
+    render.end();
+    device.queue.submit([encoder.finish()]);
+    expect(pixel(await readTexture(device, out), 0, 0)).toEqual([0, 255, 0, 255]);
+
+    device.destroy();
+    expect((await device.lost).reason).toBe('destroyed');
+  });
 });
