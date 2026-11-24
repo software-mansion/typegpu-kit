@@ -208,6 +208,19 @@ export function glWritten(texture: TextureImpl): void {
   texture.home = 'gl';
 }
 
+/**
+ * Gives a single-level texture `value` as its GL storage, one made with the same target, format
+ * and size and rendered elsewhere, and returns the storage it held.
+ */
+export function replaceStorage(ctx: Ctx, texture: TextureImpl, value: WebGLTexture): WebGLTexture {
+  freeFramebuffers(ctx, texture);
+  const old = texture.texture as WebGLTexture;
+  texture.texture = value;
+  texture.levelRange = -1;
+  glWritten(texture);
+  return old;
+}
+
 /** Records a compute kernel's write to the CPU copy. */
 export function cpuWritten(texture: TextureImpl): void {
   texture.written = true;
