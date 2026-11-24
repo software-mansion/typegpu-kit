@@ -154,7 +154,11 @@ describe('stage IO', () => {
     const { root, modules } = glslRoot();
     const vertex = tgpu.vertexFn({
       in: { position: d.vec3f },
-      out: { position: d.invariant(d.builtin.position), shade: d.vec3f },
+      // TypeGPU types a vertex output position without its `@invariant`.
+      out: {
+        position: d.invariant(d.builtin.position) as unknown as typeof d.builtin.position,
+        shade: d.vec3f,
+      },
     })(({ position }) => {
       'use gpu';
       return { position: d.vec4f(position, 1), shade: halved(position) };

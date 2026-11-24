@@ -123,12 +123,45 @@ type Resolved =
   | { readonly kind: 'buffer'; readonly buffer: BufferImpl }
   | { readonly kind: 'texture'; readonly view: ViewImpl };
 
-/** What a binding of the dispatch holds, by identity: a buffer or a texture. */
-function resourceAt(groups: readonly (Bound | undefined)[], group: number, binding: number) {
+type Memory =
+  | {
+      readonly kind: 'buffer';
+      readonly buffer: BufferImpl;
+      readonly from: number;
+      readonly to: number;
+    }
+  | { readonly kind: 'texture'; readonly view: ViewImpl };
+
+/** The memory a binding of the dispatch holds: a buffer's byte range or a view's subresources. */
+function memoryAt(
+  groups: readonly (Bound | undefined)[],
+  group: number,
+  binding: number,
+): Memory | undefined {
+  const buffer = bufferEntry(groups[group], binding);
+  if (buffer) {
+    const from = buffer.offset;
+    return { kind: 'buffer', buffer: buffer.buffer, from, to: from + buffer.size };
+  }
   const entry = groups[group]?.group.entries.get(binding);
-  if (entry?.kind === 'buffer') return entry.buffer;
-  if (entry?.kind === 'texture') return entry.view.texture;
-  return undefined;
+  return entry?.kind === 'texture' ? { kind: 'texture', view: entry.view } : undefined;
+}
+
+function overlaps(a: Memory, b: Memory): boolean {
+  if (a.kind === 'buffer') {
+    return b.kind === 'buffer' && a.buffer === b.buffer && a.from < b.to && b.from < a.to;
+  }
+  if (b.kind === 'buffer') return false;
+  const [x, y] = [a.view, b.view];
+  if (x.texture !== y.texture) return false;
+  const levels =
+    x.baseMipLevel < y.baseMipLevel + y.mipLevelCount &&
+    y.baseMipLevel < x.baseMipLevel + x.mipLevelCount;
+  const layers =
+    x.texture.dimension === '3d' ||
+    (x.baseArrayLayer < y.baseArrayLayer + y.arrayLayerCount &&
+      y.baseArrayLayer < x.baseArrayLayer + x.arrayLayerCount);
+  return levels && layers;
 }
 
 /**
@@ -163,13 +196,15 @@ export function runGpu(
   }
 
   const resolved: Resolved[] = [];
-  const targets = new Set<BufferImpl | TextureImpl>();
+  const written = new Set<BufferImpl>();
   for (const { target } of gpu.passes) {
     if (target.kind === 'buffer') {
       const entry = bufferEntry(groups[target.group], target.binding);
       if (!entry) return `no buffer at @group(${target.group}) @binding(${target.binding})`;
+      // A buffer target's pass replaces the whole buffer.
+      if (written.has(entry.buffer)) return 'two targets share their memory';
+      written.add(entry.buffer);
       resolved.push({ kind: 'buffer', buffer: entry.buffer });
-      targets.add(entry.buffer);
     } else {
       const entry = groups[target.group]?.group.entries.get(target.binding);
       if (entry?.kind !== 'texture') {
@@ -180,15 +215,15 @@ export function runGpu(
         return `'${texture.format}' is not color-renderable here`;
       }
       resolved.push({ kind: 'texture', view: entry.view });
-      targets.add(texture);
     }
   }
-  if (targets.size !== gpu.passes.length) return 'two targets share their memory';
-  for (const target of targets) {
-    const bound = module.bindings.filter(
-      (binding) => resourceAt(groups, binding.group, binding.binding) === target,
-    );
-    if (bound.length > 1) return 'a target is bound twice';
+  for (const { target } of gpu.passes) {
+    const memory = memoryAt(groups, target.group, target.binding) as Memory;
+    for (const other of module.bindings) {
+      if (other.group === target.group && other.binding === target.binding) continue;
+      const elsewhere = memoryAt(groups, other.group, other.binding);
+      if (elsewhere && overlaps(memory, elsewhere)) return 'a target is bound twice';
+    }
   }
 
   const outputs: (() => void)[] = [];
