@@ -9,7 +9,7 @@ import { glRoot } from '../device/compare.ts';
 
 /**
  * Where an example's frames go on the WebGL device, kernel by kernel: which run on the GPU, which
- * on the CPU and why, and what readback and uploads cost. Set `PROFILE` to examples, comma
+ * on the CPU and why, and what readback and uploads cost. Set `VITE_PROFILE` to examples, comma
  * separated; the test prints one JSON line per example.
  */
 const keys = (import.meta.env.VITE_PROFILE ?? '').split(',').filter(Boolean);
@@ -17,9 +17,10 @@ const keys = (import.meta.env.VITE_PROFILE ?? '').split(',').filter(Boolean);
 /** Seconds an example may spend getting ready before it is measured anyway. */
 const WARM_UP = 25;
 
-it.skipIf(keys.length === 0).each(keys)(
-  'profiles %s',
-  async (key) => {
+if (keys.length === 0) it.skip('profiles the examples VITE_PROFILE names', () => {});
+
+for (const key of keys) {
+  it(`profiles ${key}`, async () => {
     const root = glRoot();
     const device = root.device as unknown as GLDevice;
     const surface = offscreenSurface(root, { width: 320, height: 180, format: 'rgba8unorm' });
@@ -76,6 +77,5 @@ it.skipIf(keys.length === 0).each(keys)(
     loop.destroy();
     scene.destroy?.();
     surface.destroy();
-  },
-  600_000,
-);
+  }, 600_000);
+}

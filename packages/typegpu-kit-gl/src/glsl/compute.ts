@@ -2,6 +2,8 @@
 import { NodeTypeCatalog as NODE, type Const, type Expression, type Statement } from 'tinyest';
 import { d, tgpu } from 'typegpu';
 import {
+  getName,
+  snip,
   UnknownData,
   withValue,
   type FunctionDefinitionOptions,
@@ -101,6 +103,18 @@ const RENDERABLE: ReadonlySet<string> = new Set([
 ]);
 
 const AXES = 'xyz';
+
+/** Atomic read-modify-writes, as the new value from the old one `o` and the operand `v`. */
+const ATOMICS: Record<string, string> = {
+  atomicAdd: 'o + v',
+  atomicSub: 'o - v',
+  atomicMax: 'max(o, v)',
+  atomicMin: 'min(o, v)',
+  atomicAnd: 'o & v',
+  atomicOr: 'o | v',
+  atomicXor: 'o ^ v',
+  atomicExchange: 'v',
+};
 
 /** `x * gid.x + y * gid.y + z * gid.z + k`, in integers. */
 interface Affine {
@@ -430,7 +444,47 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   }
 
   override call(callee: AnyFn, args: readonly Snippet[], calleeSnippet?: Snippet): Snippet {
+    const name = getName(callee) ?? '';
+    if (name === 'atomicLoad' || name === 'atomicStore' || name in ATOMICS) {
+      return this.#atomic(name, args);
+    }
     return this.#calling(args, () => super.call(callee, args, calleeSnippet));
+  }
+
+  /**
+   * An atomic on a cell the invocation owns, or on a binding a single invocation owns whole, is
+   * sequential: a read, or a read-modify-write of what the invocation holds, returning the old
+   * value. Atomics on cells other invocations share stay on the CPU.
+   */
+  #atomic(name: string, args: readonly Snippet[]): Snippet {
+    const target = args[0];
+    const place = target && this.placeOf(target);
+    if (!target || !place) throw new Ineligible(`'${name}' outside a buffer`);
+    const inner = (undecorate(place.schema) as d.Atomic).inner as d.BaseData;
+    const value = this.ctx.resolveSnippet(target).value;
+    if (name === 'atomicLoad') return snip(value, inner, 'runtime', false);
+    this.#recordPlace(place, `'${name}' on`);
+    const operand = this.#valueAs(args[1], inner);
+    if (name === 'atomicStore') return snip(`${value} = ${operand}`, d.Void, 'runtime', true);
+    const helper = `kit_${name}`;
+    this.helper(
+      helper,
+      ['uint', 'int']
+        .map(
+          (type) =>
+            `${type} ${helper}(inout ${type} o, ${type} v) {\n  ${type} old = o;\n  o = ${(ATOMICS[name] as string).replaceAll('o', 'old')};\n  return old;\n}`,
+        )
+        .join('\n'),
+    );
+    return snip(`${helper}(${value}, ${operand})`, inner, 'runtime', true);
+  }
+
+  /** A snippet's value as GLSL of `type`, converting literals and other integer types. */
+  #valueAs(snippet: Snippet | undefined, type: d.BaseData): string {
+    if (!snippet) throw new Error('@typegpu/kit-gl: an atomic without an operand');
+    if (typeof snippet.value === 'number') return this.numericLiteral(snippet.value, type).value;
+    const value = this.ctx.resolveSnippet(snippet).value;
+    return snippet.dataType === type ? value : `${this.ctx.resolve(type).value}(${value})`;
   }
 
   protected override _callShellless(
@@ -464,7 +518,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       }
       return;
     }
+    this.#recordPlace(place, 'writes');
+  }
+
+  /** Records a write to a place, or rejects the kernel when the place is not provably owned. */
+  #recordPlace(place: Place, verb: string): void {
     const { buffer, element } = place;
+    const frame = this.#frame;
     this.#relyOnOwn();
     if (element?.own) {
       const layout = element.ownership as Layout;
@@ -475,11 +535,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#record(buffer, { whole: true, offset: 0, layout: {} });
       return;
     }
-    if (!element) throw new Ineligible(`writes '${buffer.id}' outside an array`);
+    if (!element) throw new Ineligible(`${verb} '${buffer.id}' outside an array`);
     if (!frame?.entry && !frame?.names.size) {
-      throw new Ineligible(`a helper function writes to '${buffer.id}'`);
+      throw new Ineligible(`a helper function ${verb} '${buffer.id}'`);
     }
-    throw new Ineligible(`writes an element of '${buffer.id}' that is not the invocation's own`);
+    throw new Ineligible(`${verb} an element of '${buffer.id}' that is not the invocation's own`);
   }
 
   #record(buffer: BufferInfo, written: WrittenPlan, array?: d.WgslArray): void {

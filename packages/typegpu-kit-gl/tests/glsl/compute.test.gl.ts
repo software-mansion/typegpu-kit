@@ -550,3 +550,59 @@ describe('GPU forms of wider kernels run as WebGPU runs them', () => {
     });
   });
 });
+
+describe('GPU forms of kernels with atomics on their own cells run as WebGPU runs them', () => {
+  it('takes and clears its own counters, as a drop-and-diffuse step does', async () => {
+    const layout = tgpu
+      .bindGroupLayout({
+        dropped: { storage: d.arrayOf(d.atomic(d.u32), 16 * 8), access: 'mutable' },
+        totals: { storage: d.arrayOf(d.u32, 16 * 8), access: 'mutable' },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [8, 8], in: { gid: d.builtin.globalInvocationId } })(
+        ({ gid: id }) => {
+          'use gpu';
+          if (id.x >= 16 || id.y >= 8) return;
+          const index = id.y * 16 + id.x;
+          const fresh = std.atomicLoad(layout.$.dropped[index] as d.atomicU32);
+          std.atomicStore(layout.$.dropped[index] as d.atomicU32, 0);
+          const before = std.atomicAdd(layout.$.dropped[index] as d.atomicU32, id.x);
+          std.atomicMax(layout.$.dropped[index] as d.atomicU32, 5);
+          layout.$.totals[index] = (layout.$.totals[index] as number) + fresh * 10 + before;
+        },
+      ),
+      workgroups: [2, 1, 1],
+      inputs: {
+        dropped: { kind: 'buffer', schema: d.arrayOf(d.u32, 128), value: range(128, (i) => i * 3) },
+        totals: { kind: 'buffer', schema: d.arrayOf(d.u32, 128), value: range(128, (i) => i) },
+      },
+    });
+  });
+
+  it('counts with atomics from a single invocation', async () => {
+    const Counters = d.struct({ alive: d.atomic(d.u32), spawned: d.atomic(d.i32), last: d.u32 });
+    const layout = tgpu
+      .bindGroupLayout({ counters: { storage: Counters, access: 'mutable' } })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        const previous = std.atomicExchange(layout.$.counters.alive, 7);
+        std.atomicSub(layout.$.counters.spawned, 3);
+        std.atomicOr(layout.$.counters.alive, 16);
+        layout.$.counters.last = previous + std.atomicLoad(layout.$.counters.alive);
+      }),
+      workgroups: [1, 1, 1],
+      inputs: {
+        counters: {
+          kind: 'buffer',
+          schema: Counters,
+          value: { alive: 40, spawned: -2, last: 0 },
+        },
+      },
+    });
+  });
+});
