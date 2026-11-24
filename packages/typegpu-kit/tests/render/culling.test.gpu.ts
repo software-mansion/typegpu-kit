@@ -1,7 +1,7 @@
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d } from 'typegpu';
 import { describe, expect, it } from 'vitest';
-import { passes } from '../../src/index.ts';
+import { backends, passes } from '../../src/index.ts';
 import { createCulling } from '../../src/render/culling.ts';
 
 const MESHES = 4;
@@ -20,8 +20,15 @@ async function setup(
     return row % 3 !== 0;
   },
   active = (_layer: number) => true,
+  compute: 'gpu' | 'cpu' = 'gpu',
 ) {
   const root = await gpuRoot({ features: firstInstance ? ['indirect-first-instance'] : [] });
+  // A device that says its compute runs on the CPU gets the walk, which a GPU runs just as well
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
   const first = Array.from({ length: 600 }, (_, i) => i);
   const second = Array.from({ length: 300 }, (_, i) => 899 - i);
   const header = [MESHES, MESHES + 600, MESHES + 600, 0];
@@ -153,4 +160,35 @@ describe('culling active layers', () => {
 
     root.destroy();
   });
+});
+
+describe('culling where compute runs on the CPU', () => {
+  it.each([true, false])(
+    'walks each layer into the lists and draws the scan writes (firstInstance %s)',
+    async (firstInstance) => {
+      let skipped = 1;
+      const active = (layer: number) => layer !== skipped;
+      const scanned = await setup(firstInstance, 3, layered, active);
+      const walked = await setup(firstInstance, 3, layered, active, 'cpu');
+      const span = MESHES + CAPACITY;
+
+      for (let i = 0; i < 3; i++) {
+        if (i === 2) skipped = -1;
+        const [expectedCulled, expectedDraws] = await scanned.frame();
+        const [culled, draws] = await walked.frame();
+
+        expect(draws).toEqual(expectedDraws);
+        for (let k = 0; k < 3; k++) {
+          if (!active(k)) continue;
+          const seenInLayer =
+            (expectedDraws[k * MESHES * 5 + 1] ?? 0) + (expectedDraws[k * MESHES * 5 + 11] ?? 0);
+          const end = k * span + MESHES + seenInLayer;
+          expect(culled.slice(k * span, end)).toEqual(expectedCulled.slice(k * span, end));
+        }
+      }
+
+      scanned.root.destroy();
+      walked.root.destroy();
+    },
+  );
 });
