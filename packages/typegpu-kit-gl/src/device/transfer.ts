@@ -259,7 +259,6 @@ function readThroughShader(
   state.viewport(0, 0, width, height);
   for (const cap of [
     gl.SCISSOR_TEST,
-    gl.BLEND,
     gl.DEPTH_TEST,
     gl.STENCIL_TEST,
     gl.CULL_FACE,

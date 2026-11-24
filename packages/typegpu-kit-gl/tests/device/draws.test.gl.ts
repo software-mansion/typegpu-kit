@@ -399,6 +399,69 @@ layout(location = 0) out vec4 color;`,
     expect(pixel(await readTexture(device, texture), 0, 0)).toEqual([0, 0, 255, 255]);
   });
 
+  test('keeps blending every target after a readback blits between additive draws', async () => {
+    device = glDevice();
+    const a = target('rgba16float', 2);
+    const b = target('rgba16float', 2);
+    const depth = device.createTexture({
+      size: [2, 2],
+      format: 'depth32float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    const shader = module(device, {
+      vertex: '',
+      vertexMain: `  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
+  gl_Position = vec4(p, 0.5, 1.0);`,
+      fragment: 'layout(location = 0) out vec4 first;\nlayout(location = 1) out vec4 second;',
+      fragmentMain: '  first = vec4(0.25);\n  second = vec4(0.25);',
+    });
+    const add: GPUBlendState = {
+      color: { srcFactor: 'one', dstFactor: 'one' },
+      alpha: { srcFactor: 'one', dstFactor: 'one' },
+    };
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: shader },
+      fragment: {
+        module: shader,
+        targets: [
+          { format: 'rgba16float', blend: add },
+          { format: 'rgba16float', blend: add },
+        ],
+      },
+    });
+    const draw = (loadOp: GPULoadOp) => {
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [a, b].map((texture) => ({
+          view: texture.createView(),
+          loadOp,
+          storeOp: 'store' as const,
+          clearValue: [0, 0, 0, 0],
+        })),
+        depthStencilAttachment: {
+          view: depth.createView(),
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+          depthClearValue: 1,
+        },
+      });
+      pass.setPipeline(pipeline);
+      pass.draw(3);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+    };
+    draw('clear');
+    // Reading depth draws it into a float target through the device's own program
+    await readTexture(device, depth);
+    draw('load');
+    const half = 0x3800;
+    for (const texture of [a, b]) {
+      const read = await readTexture(device, texture);
+      expect(new Uint16Array(read.bytes.buffer)[0]).toBe(half);
+    }
+  });
+
   test('captures errors in an error scope', async () => {
     device = glDevice();
     device.pushErrorScope('validation');

@@ -37,6 +37,7 @@ export interface GLState {
   sampler(unit: number, sampler: WebGLSampler | null): void;
   /** Binds `texture` on the unit the device keeps for uploads and parameter changes. */
   scratchTexture(target: number, texture: WebGLTexture | null): void;
+  /** Sets a capability. `BLEND` here switches every draw buffer; prefer `blend` for it. */
   enable(cap: number, on: boolean): void;
   blend(index: number, state: BlendState): void;
   colorMask(index: number, mask: number): void;
@@ -232,6 +233,8 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     },
 
     enable(cap, on) {
+      // BLEND as a capability switches every draw buffer, behind the per-buffer cache
+      if (cap === gl.BLEND) blends = [];
       if (caps.get(cap) === on) return;
       caps.set(cap, on);
       if (on) gl.enable(cap);
