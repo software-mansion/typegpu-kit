@@ -139,7 +139,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.y * 64 + id.x] = 1;
       });
     },
-    "writes an element of 'out",
+    2,
   ],
   [
     'writes the next element',
@@ -216,7 +216,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         write(id.x);
       });
     },
-    "a helper function writes to 'out",
+    1,
   ],
   [
     'writes nothing',
@@ -291,7 +291,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = 1;
       });
     },
-    'writes a buffer from a workgroup taller than 1 invocation',
+    'writes a buffer from a workgroup larger than its indices cover',
   ],
   [
     'reads the whole array it writes',
@@ -306,6 +306,100 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     },
     "reads all of 'out",
   ],
+  [
+    'writes a 3d index in Horner form',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 256));
+      return tgpu.computeFn({ workgroupSize: [4, 4, 4], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[(id.z * 4 + id.y) * 8 + id.x] = 1;
+      });
+    },
+    3,
+  ],
+  [
+    'writes through a helper at the indices it is given',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 256));
+      const put = (x: number, y: number) => {
+        'use gpu';
+        const index = x + y * 16;
+        out.$[index] = d.f32(x);
+      };
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        put(id.x, id.y);
+      });
+    },
+    2,
+  ],
+  [
+    'stores through a helper at the texel it is given',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        target: { storageTexture: d.textureStorage2d('rgba16float', 'write-only') },
+      });
+      const paint = (cell: d.v2u) => {
+        'use gpu';
+        std.textureStore(layout.$.target, cell, d.vec4f(1));
+      };
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        paint(id.xy);
+      });
+    },
+    2,
+  ],
+  [
+    'calls a writing helper with another index too',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 64));
+      const put = (i: number) => {
+        'use gpu';
+        out.$[i] = 1;
+      };
+      return line(({ gid: id }) => {
+        'use gpu';
+        put(id.x);
+        put(id.x + 1);
+      });
+    },
+    "calls 'put' with other invocation indices",
+  ],
+  [
+    'writes a strided index',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 192));
+      return line(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x * 3 + 1] = 1;
+      });
+    },
+    "writes an element of 'out",
+  ],
+  [
+    'writes a flattened index of a width it reads from a uniform',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 4096));
+      const width = root.createUniform(d.u32, 64);
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[id.y * width.$ + id.x] = 1;
+      });
+    },
+    "writes an element of 'out",
+  ],
+  [
+    'writes a large buffer from one invocation',
+    (root) => {
+      const big = root.createMutable(d.arrayOf(d.f32, 1024));
+      return tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        big.$[3] = 1;
+      });
+    },
+    "writes 'big' whole, which is larger than 1024 bytes",
+  ],
 ];
 
 function verdictOf(make: Make): ComputeVerdict {
@@ -318,6 +412,21 @@ function verdictOf(make: Make): ComputeVerdict {
 }
 
 describe('GPU forms of compute kernels', () => {
+  it('owns whole bindings in a dispatch of one invocation', () => {
+    const verdict = verdictOf((root) => {
+      const holder = root.createMutable(Holder);
+      const history = root.createMutable(d.arrayOf(d.f32, 8));
+      return tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        holder.$.count += 1;
+        history.$[holder.$.count % 8] = holder.$.total;
+      });
+    });
+    if (!('module' in verdict)) throw new Error(verdict.reason);
+    expect(verdict.module.single).toBe(true);
+    expect(verdict.module.passes.map((pass) => pass.target.kind)).toEqual(['buffer', 'buffer']);
+  });
+
   it.each(kernels)('%s', async (_, make, expected) => {
     const verdict = verdictOf(make);
     if (typeof expected === 'string') {

@@ -42,6 +42,9 @@
  * 5. After the last pass, replaces each target's contents with its new texture, and treats the
  *    CPU copies of those resources as stale.
  *
+ * Some forms need more of the dispatch, which only devices that check it see: see
+ * `ParseComputeOptions.conditions`.
+ *
  * A buffer target's pass covers the whole data texture. A word outside the target array, past the
  * bound range, in padding inside an element, or of an element at or past `kit_invocations.x`
  * keeps its old value, as does a cell outside the invocation counts in a texture target.
@@ -90,6 +93,13 @@ export interface BufferTarget {
   readonly stride: number;
   /** An element's size in bytes, without the padding up to `stride`. */
   readonly size: number;
+  /**
+   * Present when element `x + y * width + z * width * height` belongs to invocation `(x, y, z)`.
+   * The form may run only when the dispatch's x invocation count is at most `width`.
+   */
+  readonly width?: number;
+  /** Present with `width`: the form may run only when the y invocation count is at most this. */
+  readonly height?: number;
 }
 
 /** A storage texture, written texel by texel. */
@@ -126,11 +136,27 @@ export interface ComputeModule extends Bindings {
   readonly grid: 1 | 2 | 3;
   readonly passes: readonly ComputePass[];
   readonly bindings: readonly ComputeBinding[];
+  /**
+   * True when one invocation owns whole bindings: the form may run only when the dispatch is
+   * exactly one invocation, all three counts 1.
+   */
+  readonly single: boolean;
 }
+
+/**
+ * A condition on the dispatch, beyond those of step 1, that some GPU forms need the device to
+ * check: `limits`, a buffer target's `width` and `height`; `single`, the module's `single`.
+ */
+export type ComputeCondition = 'limits' | 'single';
 
 export interface ParseComputeOptions {
   /** Lines the device adds after `#version`. Default none. */
   readonly defines?: readonly string[];
+  /**
+   * The conditions the device checks. A form that needs another one parses as `undefined`, so
+   * the dispatch stays on the CPU. Default none.
+   */
+  readonly conditions?: readonly ComputeCondition[];
 }
 
 /** The code of the GPU form a CPU module carries, if it carries one. */
@@ -148,7 +174,7 @@ export function cpuOnlyReason(code: string): string | undefined {
 function targetOf(line: string): ComputeTarget {
   const [, kind, group, binding, uniform, ...rest] = line.trim().split(/\s+/);
   if (kind === 'buffer') {
-    const [offset, stride, size] = rest;
+    const [offset, stride, size, width, height] = rest;
     return {
       kind,
       group: int(group, line),
@@ -157,6 +183,8 @@ function targetOf(line: string): ComputeTarget {
       offset: int(offset, line),
       stride: int(stride, line),
       size: int(size, line),
+      ...(width !== undefined && { width: int(width, line) }),
+      ...(height !== undefined && { height: int(height, line) }),
     };
   }
   if (kind === 'texture') {
@@ -186,7 +214,9 @@ export function parseCompute(
   const lines = form.split('\n');
   if (lines[0] !== COMPUTE_HEADER) throw new Error('@typegpu/kit-gl: not a GPU compute form');
   const meta = lines.find((line) => line.startsWith(`${COMPUTE} `)) as string;
-  const [, wx, wy, wz, grid] = meta.split(/\s+/);
+  const [, wx, wy, wz, grid, single] = meta.split(/\s+/);
+  const conditions = new Set(options.conditions ?? []);
+  if (single === '1' && !conditions.has('single')) return undefined;
 
   const chunks = chunksOf(lines.slice(1).join('\n'));
   const passes: ComputePass[] = [];
@@ -197,7 +227,11 @@ export function parseCompute(
     if (!line) throw new Error('@typegpu/kit-gl: a pass without a target');
     const included = reachable(chunks, chunk.stage as ChunkStage);
     for (const each of included) used.add(each);
-    passes.push({ target: targetOf(line), fragment: source(included, options.defines ?? []) });
+    const target = targetOf(line);
+    if (target.kind === 'buffer' && target.width !== undefined && !conditions.has('limits')) {
+      return undefined;
+    }
+    passes.push({ target, fragment: source(included, options.defines ?? []) });
   }
 
   const bindings = bindingsOf(used);
@@ -223,5 +257,6 @@ export function parseCompute(
     passes,
     ...bindings,
     bindings: [...table.values()],
+    single: single === '1',
   };
 }

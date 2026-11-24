@@ -108,7 +108,9 @@ export function glslRoot(options: GlslRootOptions = {}): GlslRoot {
         const name = /@compute[^\n]*fn (\w+)/.exec(code)?.[1] ?? '<unnamed>';
         const form = gpuFormOf(code);
         if (form === undefined) return { name, reason: cpuOnlyReason(code) ?? 'no GPU form' };
-        const module = parseCompute(code) as NonNullable<ReturnType<typeof parseCompute>>;
+        const module = parseCompute(code, { conditions: ['limits', 'single'] }) as NonNullable<
+          ReturnType<typeof parseCompute>
+        >;
         return { name, code: form, module };
       });
   return { root, recording, codes, modules: () => codes().map((code) => parse(code)), computes };

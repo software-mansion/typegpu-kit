@@ -36,6 +36,8 @@ import {
 } from './generator.ts';
 import { CHUNK } from './renderModule.ts';
 
+type AnyFn = Parameters<KitGlslGenerator['call']>[0];
+
 /** Why a kernel cannot run as fragment passes. The pipeline then runs on the CPU. */
 export class Ineligible extends Error {
   constructor(reason: string) {
@@ -43,10 +45,28 @@ export class Ineligible extends Error {
   }
 }
 
+/**
+ * How the elements of a written array map to invocations: element
+ * `x + y * width + z * width * height` belongs to invocation `(x, y, z)`. Without a width, element
+ * `x` belongs to invocation `(x, 0, 0)`.
+ */
+export interface Layout {
+  readonly width?: number;
+  readonly height?: number;
+}
+
+/** A buffer a kernel writes. */
+export interface WrittenPlan {
+  /** The invocation owns the whole binding, as the dispatch's only one. */
+  readonly whole: boolean;
+  /** The written array's first word, for a buffer written element by element. */
+  readonly offset: number;
+  readonly layout: Layout;
+}
+
 /** What a kernel writes: found by a first resolution, used by the second. */
 export interface ComputePlan {
-  /** Each written buffer's id, with the first word of the array it writes. */
-  readonly buffers: ReadonlyMap<string, number>;
+  readonly buffers: ReadonlyMap<string, WrittenPlan>;
   /** Each written storage texture's id. */
   readonly textures: ReadonlySet<string>;
 }
@@ -57,6 +77,9 @@ const RESULT = 'kit_result';
 
 /** Stands in for a read of a whole written array, which would see none of the invocation's writes. */
 const STALE = 'kit_stale_';
+
+/** The largest binding a single invocation may own whole, so its packing stays small. */
+const MAX_WHOLE_BYTES = 1024;
 
 /** Storage texture formats WebGL 2 renders to, the float ones with `EXT_color_buffer_float`. */
 const RENDERABLE: ReadonlySet<string> = new Set([
@@ -79,28 +102,183 @@ const RENDERABLE: ReadonlySet<string> = new Set([
 
 const AXES = 'xyz';
 
-/** The arguments of a call's text, split at top-level commas. */
-function argumentsOf(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (char === '(' || char === '[') depth++;
-    else if (char === ')' || char === ']') depth--;
-    else if (char === ',' && depth === 0) {
-      parts.push(text.slice(start, i));
-      start = i + 1;
-    }
-  }
-  parts.push(text.slice(start));
-  return parts;
+/** `x * gid.x + y * gid.y + z * gid.z + k`, in integers. */
+interface Affine {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly k: number;
 }
 
-interface WrittenBuffer {
+/** A value that provably derives from `global_invocation_id`: one affine form per component. */
+type Own = readonly Affine[];
+
+const constant = (k: number): Affine => ({ x: 0, y: 0, z: 0, k });
+const axis = (name: 'x' | 'y' | 'z'): Affine => ({ ...constant(0), [name]: 1 });
+const ID: Own = [axis('x'), axis('y'), axis('z')];
+
+/** The axes an own value is, component by component, such as `xy`, when each is one plain axis. */
+function axesOf(own: Own | undefined): string | undefined {
+  if (!own) return undefined;
+  let axes = '';
+  for (const { x, y, z, k } of own) {
+    if (k !== 0 || x + y + z !== 1 || [x, y, z].some((c) => c !== 0 && c !== 1)) return undefined;
+    axes += x ? 'x' : y ? 'y' : 'z';
+  }
+  return axes;
+}
+
+/** The layout an own array index is, if it gives each invocation one element. */
+function layoutOf(own: Own | undefined): Layout | undefined {
+  if (own?.length !== 1) return undefined;
+  const { x, y, z, k } = own[0] as Affine;
+  if (x !== 1 || k !== 0 || y < 0 || z < 0) return undefined;
+  if (y === 0) return z === 0 ? {} : undefined;
+  if (z === 0) return { width: y };
+  return z % y === 0 ? { width: y, height: z / y } : undefined;
+}
+
+const sameLayout = (a: Layout, b: Layout) => a.width === b.width && a.height === b.height;
+
+/** The element index a layout gives the invocation `gid` stands for, as GLSL. */
+function linear(layout: Layout, gid: string): string {
+  if (layout.width === undefined) return `${gid}.x`;
+  const rows = `${gid}.y * ${layout.width}u`;
+  if (layout.height === undefined) return `(${gid}.x + ${rows})`;
+  return `(${gid}.x + ${rows} + ${gid}.z * ${layout.width * layout.height}u)`;
+}
+
+/** The invocation an element belongs to under a layout, as GLSL. */
+function invocationOf(layout: Layout, element: string): string {
+  const { width, height } = layout;
+  if (width === undefined) return `uvec3(${element}, 0u, 0u)`;
+  if (height === undefined) return `uvec3(${element} % ${width}u, ${element} / ${width}u, 0u)`;
+  return `uvec3(${element} % ${width}u, (${element} / ${width}u) % ${height}u, ${element} / ${width * height}u)`;
+}
+
+type Value = Own | number;
+
+function scale(value: Value, by: number): Value {
+  if (typeof value === 'number') return value * by;
+  return value.map(({ x, y, z, k }) => ({ x: x * by, y: y * by, z: z * by, k: k * by }));
+}
+
+function add(a: Value, b: Value): Value | undefined {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
+  const left = typeof a === 'number' ? undefined : a;
+  const right = typeof b === 'number' ? undefined : b;
+  if (left && right) {
+    if (left.length !== right.length) return undefined;
+    return left.map((each, i) => {
+      const other = right[i] as Affine;
+      return { x: each.x + other.x, y: each.y + other.y, z: each.z + other.z, k: each.k + other.k };
+    });
+  }
+  const own = (left ?? right) as Own;
+  const k = (typeof a === 'number' ? a : b) as number;
+  return own.length === 1 ? [{ ...(own[0] as Affine), k: (own[0] as Affine).k + k }] : undefined;
+}
+
+/**
+ * Reads GLSL integer arithmetic over `names` into affine forms: sums, differences, products with
+ * constants, casts and vector constructors. Anything else is not provably own.
+ */
+class Arithmetic {
+  readonly #text: string;
+  readonly #names: ReadonlyMap<string, Own>;
+  #at = 0;
+
+  constructor(text: string, names: ReadonlyMap<string, Own>) {
+    this.#text = text;
+    this.#names = names;
+  }
+
+  read(): Value | undefined {
+    const value = this.#sum();
+    return this.#at === this.#text.length ? value : undefined;
+  }
+
+  #peek(): string | undefined {
+    return this.#text[this.#at];
+  }
+
+  #sum(): Value | undefined {
+    let value = this.#product();
+    while (value !== undefined && (this.#peek() === '+' || this.#peek() === '-')) {
+      const sign = this.#text[this.#at++] === '+' ? 1 : -1;
+      const other = this.#product();
+      value = other === undefined ? undefined : add(value, scale(other, sign));
+    }
+    return value;
+  }
+
+  #product(): Value | undefined {
+    let value = this.#factor();
+    while (value !== undefined && this.#peek() === '*') {
+      this.#at++;
+      const other = this.#factor();
+      if (other === undefined) return undefined;
+      if (typeof value === 'number') value = scale(other, value);
+      else if (typeof other === 'number') value = scale(value, other);
+      else return undefined;
+    }
+    return value;
+  }
+
+  #factor(): Value | undefined {
+    const rest = this.#text.slice(this.#at);
+    const number = /^(\d+)u?(?![\w.])/.exec(rest);
+    if (number) {
+      this.#at += number[0].length;
+      return Number(number[1]);
+    }
+    if (rest.startsWith('(')) {
+      this.#at++;
+      const value = this.#sum();
+      if (this.#peek() !== ')') return undefined;
+      this.#at++;
+      return value;
+    }
+    const call = /^(uint|int|[iu]vec[23])\(/.exec(rest);
+    if (call) {
+      this.#at += call[0].length;
+      const parts: Value[] = [];
+      for (;;) {
+        const part = this.#sum();
+        if (part === undefined) return undefined;
+        parts.push(part);
+        if (this.#peek() === ',') this.#at++;
+        else break;
+      }
+      if (this.#peek() !== ')') return undefined;
+      this.#at++;
+      if (call[1] === 'uint' || call[1] === 'int') return parts.length === 1 ? parts[0] : undefined;
+      const own = parts.flatMap((part) => (typeof part === 'number' ? [constant(part)] : part));
+      return own.length === Number(call[1]?.at(-1)) ? own : undefined;
+    }
+    const name = /^([A-Za-z_]\w*)(?:\.([xyzw]+))?/.exec(rest);
+    if (name) {
+      const own = this.#names.get(name[1] as string);
+      if (!own) return undefined;
+      this.#at += name[0].length;
+      if (!name[2]) return own;
+      const picked = [...name[2]].map((c) => own['xyzw'.indexOf(c)]);
+      return picked.every(Boolean) ? (picked as Affine[]) : undefined;
+    }
+    return undefined;
+  }
+}
+
+interface WrittenBuffer extends WrittenPlan {
   readonly buffer: BufferInfo;
-  readonly offset: number;
-  readonly array: d.WgslArray;
+  /** The array written element by element, unless the binding is owned whole. */
+  readonly array?: d.WgslArray;
+}
+
+/** What one function knows: the names that hold own values, and whether it is the entry. */
+interface Frame {
+  readonly names: Map<string, Own>;
+  readonly entry: boolean;
 }
 
 /**
@@ -115,10 +293,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #textures = new Map<string, TextureInfo>();
   readonly #shadows = new Map<string, string>();
   readonly #privates: { id: string; dataType: d.BaseData; init: string | undefined }[] = [];
-  /** Names that hold `global_invocation_id` in the entry. */
-  readonly #ids = new Set<string>();
-  /** Locals of the entry that hold axes of `global_invocation_id`, with the axes they hold. */
-  readonly #ownLocals = new Map<string, string>();
+  readonly #frames: Frame[] = [];
+  /** The own arguments of the call being made, for the function it resolves. */
+  #pending: (Own | undefined)[] | undefined;
+  /** The own arguments each function was generated for. */
+  readonly #assumed = new Map<string, string>();
+  /** Whether the dispatch is one invocation, by the entry's workgroup size. */
+  #single = false;
   #packers = 0;
 
   constructor(plan?: ComputePlan) {
@@ -129,7 +310,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   /** What the kernel writes, once a resolution has run. */
   get plan(): ComputePlan {
     return {
-      buffers: new Map([...this.#buffers].map(([id, written]) => [id, written.offset])),
+      buffers: new Map(
+        [...this.#buffers].map(([id, { whole, offset, layout }]) => [
+          id,
+          { whole, offset, layout },
+        ]),
+      ),
       textures: new Set(this.#textures.keys()),
     };
   }
@@ -150,47 +336,37 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     );
   }
 
-  get #inEntry(): boolean {
-    return this.ctx.topFunctionScope?.functionType === 'compute';
+  get #frame(): Frame | undefined {
+    return this.#frames.at(-1);
   }
 
   // ---------------------------------------------------------------------------------------------
   // The invocation's own index
   // ---------------------------------------------------------------------------------------------
 
-  /** The axes of `global_invocation_id` a snippet provably is, in order, such as `xy`. */
-  #own(snippet: Snippet): string | undefined {
-    if (!this.#inEntry || snippet.dataType === UnknownData) return undefined;
-    return this.#ownText(this.ctx.resolveSnippet(snippet).value.replace(/\s+/g, ''));
-  }
-
-  #ownText(text: string): string | undefined {
-    const swizzle = /^(\w+)(?:\.([xyzw]+))?$/.exec(text);
-    if (swizzle) {
-      const [, name, components] = swizzle as unknown as [string, string, string | undefined];
-      const axes = this.#ids.has(name) ? AXES : this.#ownLocals.get(name);
-      if (!axes) return undefined;
-      if (!components) return axes;
-      const picked = [...components].map((c) => axes['xyzw'.indexOf(c)]);
-      return picked.every(Boolean) ? picked.join('') : undefined;
+  /** What a snippet provably is in terms of `global_invocation_id`, in the current function. */
+  #own(snippet: Snippet | undefined): Own | undefined {
+    const frame = this.#frame;
+    if (!snippet || !frame || frame.names.size === 0 || snippet.dataType === UnknownData) {
+      return undefined;
     }
-    const call = /^(uint|int|[iu]vec[234])\((.*)\)$/.exec(text);
-    if (call) {
-      const parts = argumentsOf(call[2] as string).map((part) => this.#ownText(part));
-      if (parts.some((part) => part === undefined)) return undefined;
-      const axes = parts.join('');
-      return AXES.includes(axes) ? axes : undefined;
+    let text: string;
+    try {
+      text = this.ctx.resolveSnippet(snippet).value;
+    } catch {
+      return undefined;
     }
-    return undefined;
+    const value = new Arithmetic(text.replace(/\s+/g, ''), frame.names).read();
+    return typeof value === 'object' ? value : undefined;
   }
 
   protected override ownIndex(index: Snippet): unknown {
-    return this.#own(index) === 'x' ? 'x' : undefined;
+    return layoutOf(this.#own(index));
   }
 
   /**
-   * TypeGPU reuses a local's name in a sibling block, so a declaration in the entry takes the name
-   * away from the invocation's own index until a `const` gives it back.
+   * TypeGPU reuses a local's name in a sibling block, so a declaration takes the name away from
+   * the own values until a `const` gives it back.
    */
   override _emitVarDecl(
     keyword: Parameters<KitGlslGenerator['_emitVarDecl']>[0],
@@ -198,20 +374,58 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     dataType: d.BaseData,
     rhs: string,
   ): string {
-    if (this.#inEntry) this.#ownLocals.delete(name);
+    this.#frame?.names.delete(name);
     return super._emitVarDecl(keyword, name, dataType, rhs);
   }
 
   protected override _constStatement(statement: Const): ResolvedStatement {
     const result = super._constStatement(statement);
     const [, idNode, eqNode] = statement;
-    if (eqNode !== undefined && this.#inEntry && this.#ids.size > 0) {
+    const frame = this.#frame;
+    if (eqNode !== undefined && frame && frame.names.size > 0) {
       const id = typeof idNode === 'string' ? idNode : (idNode as unknown as [number, string])[1];
       const defined = this.ctx.getById(id);
-      const axes = this.#own(this._expression(eqNode));
-      if (axes && typeof defined?.value === 'string') this.#ownLocals.set(defined.value, axes);
+      const own = this.#own(this._expression(eqNode));
+      if (own && typeof defined?.value === 'string') frame.names.set(defined.value, own);
     }
     return result;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Calls carry own values into helpers
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * TypeGPU generates a function once, for the call that resolves it first. Its parameters are own
+   * where that call passed own values, so every later call must pass the same.
+   */
+  #calling<T extends Snippet | undefined>(args: readonly Snippet[], call: () => T): T {
+    const owns = args.map((arg) => this.#own(arg));
+    const outer = this.#pending;
+    this.#pending = owns.some(Boolean) ? owns : undefined;
+    let result: T;
+    try {
+      result = call();
+    } finally {
+      this.#pending = outer;
+    }
+    const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
+    const assumed = name === undefined ? undefined : this.#assumed.get(name);
+    if (assumed !== undefined && assumed !== JSON.stringify(owns.some(Boolean) ? owns : [])) {
+      throw new Ineligible(`calls '${name}' with other invocation indices than it was made for`);
+    }
+    return result;
+  }
+
+  override call(callee: AnyFn, args: readonly Snippet[], calleeSnippet?: Snippet): Snippet {
+    return this.#calling(args, () => super.call(callee, args, calleeSnippet));
+  }
+
+  protected override _callShellless(
+    callee: AnyFn,
+    args: readonly Snippet[],
+  ): ResolvedSnippet | undefined {
+    return this.#calling(args, () => super._callShellless(callee, args));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -229,63 +443,102 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #checkWrite(node: Expression): void {
     const target = this._expression(node);
     const place = this.placeOf(target);
+    const frame = this.#frame;
     if (!place) {
       const text = target.dataType === UnknownData ? '' : this.ctx.resolveSnippet(target).value;
       const root = /^\s*([A-Za-z_]\w*)/.exec(text)?.[1];
-      if (root && this.#inEntry && (this.#ids.has(root) || this.#ownLocals.has(root))) {
+      if (root && frame?.names.has(root)) {
         throw new Ineligible(`modifies '${root}', which indices are derived from`);
       }
       return;
     }
-    const id = place.buffer.id;
-    if (!this.#inEntry) throw new Ineligible(`a helper function writes to '${id}'`);
-    if (!place.element) throw new Ineligible(`writes '${id}' outside an array`);
-    if (!place.element.own) {
-      throw new Ineligible(`writes an element of '${id}' that is not the invocation's own`);
+    const { buffer, element } = place;
+    if (element?.own) {
+      const layout = element.ownership as Layout;
+      this.#record(buffer, { whole: false, offset: element.offset, layout }, element.array);
+      return;
     }
-    const known = this.#buffers.get(id);
-    if (known && known.offset !== place.element.offset) {
-      throw new Ineligible(`writes two arrays of '${id}'`);
+    if (this.#single) {
+      this.#record(buffer, { whole: true, offset: 0, layout: {} });
+      return;
     }
-    if (this.#plan && this.#plan.buffers.get(id) !== place.element.offset) {
-      throw new Error(`@typegpu/kit-gl: the second resolution writes '${id}' differently`);
+    if (!element) throw new Ineligible(`writes '${buffer.id}' outside an array`);
+    if (!frame?.entry && !frame?.names.size) {
+      throw new Ineligible(`a helper function writes to '${buffer.id}'`);
     }
-    this.#buffers.set(id, {
-      buffer: place.buffer,
-      offset: place.element.offset,
-      array: place.element.array,
-    });
+    throw new Ineligible(`writes an element of '${buffer.id}' that is not the invocation's own`);
   }
 
-  /** The variable that holds the invocation's own element of a written array. */
-  #bufferShadow(buffer: BufferInfo, array: d.WgslArray): string {
+  #record(buffer: BufferInfo, written: WrittenPlan, array?: d.WgslArray): void {
+    const known = this.#buffers.get(buffer.id);
+    if (written.whole || known?.whole) {
+      const size = d.sizeOf(buffer.schema as d.AnyData);
+      if (size === 0 || size > MAX_WHOLE_BYTES) {
+        throw new Ineligible(
+          `writes '${buffer.id}' whole, which is larger than ${MAX_WHOLE_BYTES} bytes`,
+        );
+      }
+      this.#buffers.set(buffer.id, { buffer, whole: true, offset: 0, layout: {} });
+    } else if (known) {
+      if (known.offset !== written.offset) {
+        throw new Ineligible(`writes two arrays of '${buffer.id}'`);
+      }
+      if (!sameLayout(known.layout, written.layout)) {
+        throw new Ineligible(`writes '${buffer.id}' at indices of two shapes`);
+      }
+    } else {
+      this.#buffers.set(buffer.id, { buffer, ...written, ...(array && { array }) });
+    }
+    const planned = this.#plan?.buffers.get(buffer.id);
+    const recorded = this.#buffers.get(buffer.id) as WrittenBuffer;
+    if (
+      this.#plan &&
+      (!planned ||
+        planned.whole !== recorded.whole ||
+        planned.offset !== recorded.offset ||
+        !sameLayout(planned.layout, recorded.layout))
+    ) {
+      throw new Error(`@typegpu/kit-gl: the second resolution writes '${buffer.id}' differently`);
+    }
+  }
+
+  /** The variable that holds what the invocation owns of a written buffer. */
+  #bufferShadow(buffer: BufferInfo, written: WrittenPlan, array?: d.WgslArray): string {
     const known = this.#shadows.get(buffer.id);
     if (known) return known;
     const name = this.ctx.makeUniqueIdentifier(`kit_shadow_${buffer.id}`, 'global');
-    const element = array.elementType as d.BaseData;
+    const type = written.whole ? buffer.schema : ((array as d.WgslArray).elementType as d.BaseData);
     this.chunk(
       'shared',
       [name],
-      `${this.ctx.resolve(element).value} ${name}${this.arraySuffix(element)};`,
+      `${this.ctx.resolve(type).value} ${name}${this.arraySuffix(type)};`,
     );
     this.#shadows.set(buffer.id, name);
     return name;
   }
 
   protected override placeValue(place: Place, load: string): string {
-    const offset = this.#plan?.buffers.get(place.buffer.id);
-    if (offset === undefined) return load;
+    const written = this.#plan?.buffers.get(place.buffer.id);
+    if (!written) return load;
     const element = place.element;
+    if (written.whole) {
+      const path = element
+        ? `${element.arrayPath}[${element.index}]${element.path}`
+        : (place.path ?? '');
+      return `${this.#bufferShadow(place.buffer, written)}${path}`;
+    }
     if (!element) {
       const schema = undecorate(place.schema);
       const covers = d.isWgslArray(schema) || d.isWgslStruct(schema);
-      return covers && place.offset !== undefined && place.offset <= offset
+      return covers && place.offset !== undefined && place.offset <= written.offset
         ? `${STALE}${place.buffer.id}_${this.#packers++}`
         : load;
     }
-    if (element.offset !== offset) return load;
-    const shadow = `${this.#bufferShadow(place.buffer, element.array)}${element.path}`;
-    return element.own ? shadow : `((${element.index}) == ${GID}.x ? ${shadow} : ${load})`;
+    if (element.offset !== written.offset) return load;
+    const shadow = `${this.#bufferShadow(place.buffer, written, element.array)}${element.path}`;
+    const own = element.own && sameLayout(element.ownership as Layout, written.layout);
+    if (own) return shadow;
+    return `((${element.index}) == ${linear(written.layout, GID)} ? ${shadow} : ${load})`;
   }
 
   override declareGlobalVar(options: VariableDefinitionOptions): ResolvedSnippet {
@@ -341,18 +594,21 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   #store(args: readonly Snippet[]): string {
     const texture = this.textureOf(args[0]);
-    if (!this.#inEntry) throw new Ineligible(`a helper function stores to '${texture.id}'`);
     const { format } = texture.schema as unknown as { format: string };
     if (!RENDERABLE.has(format)) {
       throw new Ineligible(`stores to a '${format}' texture, which WebGL 2 cannot render to`);
     }
     const { dimension } = texture.kind;
-    const coords = args[1] && this.#own(args[1]);
+    const coords = axesOf(this.#own(args[1]));
     const owns =
       dimension === '2d-array'
-        ? coords === 'xy' && args[2] !== undefined && this.#own(args[2]) === 'z'
+        ? coords === 'xy' && axesOf(this.#own(args[2])) === 'z'
         : coords === { '1d': 'x', '2d': 'xy', '3d': 'xyz' }[dimension as string];
     if (!owns) {
+      const frame = this.#frame;
+      if (!frame?.entry && !frame?.names.size) {
+        throw new Ineligible(`a helper function stores to '${texture.id}'`);
+      }
       throw new Ineligible(`stores to a texel of '${texture.id}' that is not the invocation's own`);
     }
     if (this.#plan && !this.#plan.textures.has(texture.id)) {
@@ -386,11 +642,25 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   // ---------------------------------------------------------------------------------------------
 
   override functionDefinition(options: FunctionDefinitionOptions): string {
+    const frame: Frame = { names: new Map(), entry: options.functionType === 'compute' };
     if (options.functionType === 'normal') {
       const pointer = options.args.find((arg) => d.isPtr(arg.decoratedType));
       if (pointer) throw new Ineligible(`a helper function takes the pointer '${pointer.name}'`);
+      const owns = this.#pending;
+      this.#pending = undefined;
+      owns?.forEach((own, i) => {
+        const arg = options.args[i];
+        if (own && arg) frame.names.set(arg.name, own);
+      });
+      this.#assumed.set(options.name, JSON.stringify(owns ?? []));
     }
-    const code = super.functionDefinition(options);
+    this.#frames.push(frame);
+    let code: string;
+    try {
+      code = super.functionDefinition(options);
+    } finally {
+      this.#frames.pop();
+    }
     const stale = code.indexOf(STALE);
     if (stale >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(stale + STALE.length))?.[1];
@@ -405,9 +675,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       number,
       number,
     ];
+    this.#single = size.every((each) => each === 1);
     for (const arg of options.args) {
       if (attributeOf(arg.decoratedType, '@builtin')?.[0] === 'global_invocation_id') {
-        this.#ids.add(arg.name);
+        this.#frame?.names.set(arg.name, ID);
       }
     }
     const body = this._block(options.body, /* allowInlining */ false).code;
@@ -435,10 +706,15 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         : `void ${options.name}() ${body.slice(0, open + 1)}${prelude.map((line) => `${line}\n`).join('')}${body.slice(open + 1)}`;
     const kernelChunk = `${CHUNK} shared ${options.name}\n${kernel}`;
 
+    const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
-      if (this.#buffers.size + this.#textures.size === 0) throw new Ineligible('writes nothing');
-      if (this.#buffers.size > 0 && size[1] * size[2] !== 1) {
-        throw new Ineligible('writes a buffer from a workgroup taller than 1 invocation');
+      if (buffers.length + this.#textures.size === 0) throw new Ineligible('writes nothing');
+      for (const { layout, whole } of buffers) {
+        if (whole) continue;
+        const covered = layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3;
+        if (size.slice(covered).some((each) => each !== 1)) {
+          throw new Ineligible('writes a buffer from a workgroup larger than its indices cover');
+        }
       }
       return kernelChunk;
     }
@@ -448,19 +724,24 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       throw new Error('@typegpu/kit-gl: the second resolution writes other resources');
     }
 
-    const grid = Math.min(
-      ...[...this.#buffers.values()].map(() => 1),
-      ...[...this.#textures.values()].map(
-        (texture) => ({ '1d': 1, '2d': 2 })[texture.kind.dimension as string] ?? 3,
-      ),
-    );
+    const single = buffers.some((each) => each.whole);
+    const grid = single
+      ? 1
+      : Math.min(
+          ...buffers.map(({ layout }) =>
+            layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3,
+          ),
+          ...[...this.#textures.values()].map(
+            (texture) => ({ '1d': 1, '2d': 2 })[texture.kind.dimension as string] ?? 3,
+          ),
+        );
     return [
-      `${COMPUTE} ${size.join(' ')} ${grid}`,
+      `${COMPUTE} ${size.join(' ')} ${grid} ${single ? 1 : 0}`,
       kernelChunk,
       this.#begin(),
-      ...[...this.#buffers.values()].map((target, i) => this.#bufferPass(target, i, options.name)),
+      ...buffers.map((target, i) => this.#bufferPass(target, i, options.name)),
       ...[...this.#textures.values()].map((target, i) =>
-        this.#texturePass(target, this.#buffers.size + i, options.name),
+        this.#texturePass(target, buffers.length + i, options.name),
       ),
     ].join('\n\n');
   }
@@ -473,10 +754,17 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         `  ${id} = ${init ?? this.ctx.resolveSnippet(this.typeInstantiation(dataType, [])).value};`,
       );
     }
-    for (const { buffer, offset, array } of this.#buffers.values()) {
-      const element = array.elementType as d.BaseData;
-      const address = `${buffer.base} + ${offset}u + gid.x * ${wordsOf(strideOf(element))}u`;
-      const shadow = this.#bufferShadow(buffer, array);
+    for (const written of this.#buffers.values()) {
+      const { buffer, offset, array, layout } = written;
+      const shadow = this.#bufferShadow(buffer, written, array);
+      if (written.whole) {
+        const load = this.load(buffer.source, buffer.base, buffer.schema, buffer.id);
+        lines.push(`  ${shadow} = ${load};`);
+        continue;
+      }
+      const element = (array as d.WgslArray).elementType as d.BaseData;
+      const stride = wordsOf(strideOf(element));
+      const address = `${buffer.base} + ${offset}u + ${linear(layout, 'gid')} * ${stride}u`;
       lines.push(`  ${shadow} = ${this.load(buffer.source, address, element, buffer.id)};`);
     }
     for (const texture of this.#textures.values()) {
@@ -488,17 +776,22 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return `${CHUNK} shared ${BEGIN}\nvoid ${BEGIN}(uvec3 gid) {\n${lines.join('\n')}\n}`;
   }
 
-  #bufferPass({ buffer, offset, array }: WrittenBuffer, index: number, kernel: string): string {
-    const element = array.elementType as d.BaseData;
-    const stride = wordsOf(strideOf(element));
-    const size = Math.ceil(d.sizeOf(element as d.AnyData) / 4);
+  #bufferPass(written: WrittenBuffer, index: number, kernel: string): string {
+    const { buffer, offset, array, layout } = written;
     const range = buffer.range as string;
-    const count =
-      array.elementCount > 0
-        ? `${array.elementCount}u`
+    const value = written.whole
+      ? buffer.schema
+      : ((array as d.WgslArray).elementType as d.BaseData);
+    const size = Math.ceil(d.sizeOf(value as d.AnyData) / 4);
+    const stride = written.whole ? size : wordsOf(strideOf(value));
+    const elementCount = (array as d.WgslArray | undefined)?.elementCount ?? 0;
+    const count = written.whole
+      ? '1u'
+      : elementCount > 0
+        ? `${elementCount}u`
         : `(${range}.y / 4u > ${offset}u ? (${range}.y / 4u - ${offset}u) / ${stride}u : 0u)`;
-    const shadow = this.#bufferShadow(buffer, array);
-    const pack = this.#packer(element);
+    const shadow = this.#bufferShadow(buffer, written, array);
+    const pack = this.#packer(value);
     const target = [
       TARGET,
       'buffer',
@@ -507,8 +800,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       buffer.id,
       offset * 4,
       stride * 4,
-      d.sizeOf(element as d.AnyData),
+      d.sizeOf(value as d.AnyData),
+      ...(layout.width === undefined ? [] : [layout.width]),
+      ...(layout.height === undefined ? [] : [layout.height]),
     ].join(' ');
+    const gid = written.whole ? 'uvec3(0u)' : invocationOf(layout, 'element');
     return `${CHUNK} pass${index} main
 ${target}
 layout(location = 0) out uvec4 ${RESULT};
@@ -518,7 +814,7 @@ void main() {
   uvec4 result = old;
   uint first = ${range}.x + ${offset}u;
   uint end = ${range}.x + ${range}.y / 4u;
-  uint count = min(${count}, ${INVOCATIONS}.x);
+  uint count = ${count};
   uint base = (uint(texel.y) * uint(textureSize(${buffer.id}, 0).x) + uint(texel.x)) * 4u;
   uint current = 0xFFFFFFFFu;
   for (int k = 0; k < 4; k++) {
@@ -527,8 +823,10 @@ void main() {
     uint element = (word - first) / ${stride}u;
     uint inner = word - first - element * ${stride}u;
     if (element >= count || inner >= ${size}u) continue;
+    uvec3 gid = ${gid};
+    if (any(greaterThanEqual(gid, ${INVOCATIONS}))) continue;
     if (element != current) {
-      ${BEGIN}(uvec3(element, 0u, 0u));
+      ${BEGIN}(gid);
       ${kernel}();
       current = element;
     }
