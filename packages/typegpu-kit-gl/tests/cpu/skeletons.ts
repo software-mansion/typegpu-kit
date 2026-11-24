@@ -2,7 +2,10 @@ import { frames } from '@typegpu/kit';
 import { offscreenSurface } from '@typegpu/kit/testing';
 import type { TgpuRoot } from 'typegpu';
 import { begin, filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
-import { createScene } from '../../../typegpu-kit-examples/src/skeletons/scene.ts';
+import {
+  createScene,
+  type SceneOptions,
+} from '../../../typegpu-kit-examples/src/skeletons/scene.ts';
 import { fromDisk } from '../../../typegpu-kit-examples/tests/utils/examples.ts';
 import { Pose } from '../../../typegpu-kit/src/render/skinning.ts';
 import { layoutOf, type Layout } from '../../src/cpu/memory.ts';
@@ -34,7 +37,10 @@ export async function skeletons(root: TgpuRoot): Promise<CapturedBuffer[]> {
   let loop: ReturnType<typeof frames.create> | undefined;
   try {
     scene = await begin(
-      await createScene(root, surface, { ...(await filesOf('skeletons', fromDisk)), count: 32 }),
+      await createScene(root, surface, {
+        ...((await filesOf('skeletons', fromDisk)) as Pick<SceneOptions, 'models'>),
+        count: 32,
+      }),
     );
     loop = frames.create(root, scene.frame);
     for (let i = 0; i < 100; i++) {
@@ -73,7 +79,7 @@ function fieldAt(layout: Layout, offset: number): string {
       ([, field]) => offset >= field.offset && offset < field.offset + field.layout.size,
     );
     return member
-      ? `${member[0]}${fieldAt(member[1].layout, offset - member[1].offset)}`
+      ? `${member[0]}${fieldAt(member[1].layout, offset - member[1].offset) ? `.${fieldAt(member[1].layout, offset - member[1].offset)}` : ''}`
       : '<padding>';
   }
   if (layout.element)
@@ -89,4 +95,38 @@ export function poseField(label: string, word: number): string {
   if (label.startsWith('poses_joints'))
     return `jointRow[${Math.floor(word / 4)}].${'xyzw'[word % 4]}`;
   return `span[${Math.floor(word / 3)}].${['first', 'count', 'duration'][word % 3]}`;
+}
+
+export function poseContext(buffers: CapturedBuffer[], word: number): unknown {
+  const pose = buffers.find((buffer) => buffer.label.startsWith('Pose_device'))!;
+  const spans = buffers.find((buffer) => buffer.label.startsWith('poses_spans'))!;
+  const words = new Uint32Array(pose.bytes),
+    floats = new Float32Array(pose.bytes);
+  const stride = layoutOf(Pose['~parts'].device!).size / 4;
+  const at = Math.floor(word / stride) * stride;
+  const indices = new Uint32Array(spans.bytes),
+    durations = new Float32Array(spans.bytes);
+  const playing = words[at]!,
+    previous = words[at + 5]!;
+  return {
+    playing: {
+      clip: playing,
+      loops: words[at + 1],
+      offset: floats[at + 2],
+      speed: floats[at + 3],
+      mix: floats[at + 4],
+      duration: durations[indices[playing * 3]! * 3 + 2],
+    },
+    previous: {
+      clip: previous,
+      loops: words[at + 6],
+      offset: floats[at + 7],
+      speed: floats[at + 8],
+      mix: floats[at + 9],
+      duration: durations[indices[previous * 3]! * 3 + 2],
+    },
+    fadeStart: floats[at + 10],
+    fade: floats[at + 11],
+    weight: floats[at + 12],
+  };
 }

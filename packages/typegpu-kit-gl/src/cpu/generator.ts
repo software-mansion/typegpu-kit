@@ -47,7 +47,7 @@ export class CpuGenerator extends WgslGenerator {
     );
     makeResolvable(value, {
       asString: () => 'CPU swizzle',
-      resolve: () => snip(code, original.dataType, original.origin, original.possibleSideEffects),
+      resolve: () => ({ ...original, value: code }),
     });
     return snip(value, original.dataType, original.origin, original.possibleSideEffects);
   }

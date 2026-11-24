@@ -2,7 +2,7 @@ import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 import { SweepGenerator } from './scene-generator.ts';
-import { poseField, skeletons } from './skeletons.ts';
+import { poseContext, poseField, skeletons } from './skeletons.ts';
 
 it('matches dawn for seeded skeleton machines, pose tracks and joint rows after four seconds', async () => {
   const gpu = await gpuRoot();
@@ -32,6 +32,10 @@ it('matches dawn for seeded skeleton machines, pose tracks and joint rows after 
         differences.push(
           `${left.label} word ${i} ${poseField(left.label, i)}: CPU=${bf[i]} (u32 ${b[i]}), dawn=${af[i]} (u32 ${a[i]})`,
         );
+        if (left.label.startsWith('Pose_device'))
+          differences.push(
+            JSON.stringify({ CPU: poseContext(actual, i), dawn: poseContext(expected, i) }),
+          );
       }
     }
     expect(differences.slice(0, 20), `${differences.length} differing words`).toEqual([]);
