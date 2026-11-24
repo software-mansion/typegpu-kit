@@ -5,10 +5,28 @@
  * bindings, each with the byte range the CPU changed since its last upload.
  */
 
-import { type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
+import { type BufferStats, type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
 
 /** Bytes per data-texture row is `ROW_TEXELS * 16` unless the buffer needs wider rows. */
 const ROW_TEXELS = 1024;
+
+function statsOf(ctx: Ctx, buffer: BufferImpl): BufferStats {
+  const key = `${buffer.label} ${buffer.size}`;
+  let stats = ctx.stats.buffers.get(key);
+  if (!stats) {
+    stats = { readMs: 0, reads: 0, uploadMs: 0, uploads: 0, uploadBytes: 0 };
+    ctx.stats.buffers.set(key, stats);
+  }
+  return stats;
+}
+
+/** Counts an upload of `bytes` that began at `start`. */
+function uploaded(ctx: Ctx, buffer: BufferImpl, start: number, bytes: number): void {
+  const stats = statsOf(ctx, buffer);
+  stats.uploadMs += performance.now() - start;
+  stats.uploads++;
+  stats.uploadBytes += bytes;
+}
 
 interface Copy<T> {
   value: T;
@@ -24,6 +42,8 @@ export interface DataTexture {
 
 export interface BufferImpl {
   readonly id: number;
+  /** The descriptor's label, for device stats. */
+  readonly label: string;
   readonly size: number;
   readonly usage: number;
   /** The buffer's bytes, padded to whole 16-byte texels. */
@@ -78,7 +98,9 @@ export function vertexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
   }
   state.arrayBuffer(copy.value);
   if (copy.start < copy.end) {
+    const start = performance.now();
     gl.bufferSubData(gl.ARRAY_BUFFER, copy.start, buffer.bytes, copy.start, copy.end - copy.start);
+    uploaded(ctx, buffer, start, copy.end - copy.start);
     copy.start = Infinity;
     copy.end = 0;
   }
@@ -102,6 +124,7 @@ export function indexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
   }
   ctx.state.elementBuffer(copy.value);
   if (copy.start < copy.end) {
+    const start = performance.now();
     gl.bufferSubData(
       gl.ELEMENT_ARRAY_BUFFER,
       copy.start,
@@ -109,6 +132,7 @@ export function indexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
       copy.start,
       copy.end - copy.start,
     );
+    uploaded(ctx, buffer, start, copy.end - copy.start);
     copy.start = Infinity;
     copy.end = 0;
   }
@@ -134,8 +158,11 @@ export function bindUniformRange(
     gl.bindBuffer(gl.UNIFORM_BUFFER, copy.value);
     const start = Math.max(copy.start, base);
     const end = Math.min(copy.end, base + length, buffer.bytes.length);
-    if (start < end)
+    if (start < end) {
+      const began = performance.now();
       gl.bufferSubData(gl.UNIFORM_BUFFER, start - base, buffer.bytes, start, end - start);
+      uploaded(ctx, buffer, began, end - start);
+    }
     copy.start = Infinity;
     copy.end = 0;
   };
@@ -189,6 +216,8 @@ export function dataTexture(ctx: Ctx, buffer: BufferImpl): DataTexture {
     copy = buffer.data = { value: { texture, width, height }, start: 0, end: buffer.bytes.length };
   }
   if (copy.start < copy.end) {
+    const began = performance.now();
+    const bytes = Math.min(copy.end, buffer.bytes.length) - copy.start;
     const { texture, width } = copy.value;
     state.scratchTexture(gl.TEXTURE_2D, texture);
     state.unpack(false, false, 0, 0);
@@ -215,6 +244,7 @@ export function dataTexture(ctx: Ctx, buffer: BufferImpl): DataTexture {
       upload(0, firstRow, width, lastRow - firstRow);
       upload(0, lastRow, last - lastRow * width, 1);
     }
+    uploaded(ctx, buffer, began, bytes);
     copy.start = Infinity;
     copy.end = 0;
   }
@@ -224,6 +254,7 @@ export function dataTexture(ctx: Ctx, buffer: BufferImpl): DataTexture {
 /** Reads the data texture back into the CPU copy, which every other GL copy then uploads. */
 function readBack(ctx: Ctx, buffer: BufferImpl): void {
   const { gl, state } = ctx;
+  const began = performance.now();
   const data = buffer.data!.value;
   const all = new Uint32Array(data.width * data.height * 4);
   state.readFramebuffer(ctx.scratch.read);
@@ -242,6 +273,9 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
   written(buffer, 0, buffer.bytes.length);
   buffer.data!.start = Infinity;
   buffer.data!.end = 0;
+  const stats = statsOf(ctx, buffer);
+  stats.readMs += performance.now() - began;
+  stats.reads++;
 }
 
 /**
@@ -266,6 +300,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
 
   const impl: BufferImpl = {
     id: ctx.id(),
+    label: descriptor.label ?? '',
     size,
     usage,
     bytes: new Uint8Array(storage),

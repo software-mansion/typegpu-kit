@@ -13,6 +13,13 @@ export interface DeviceStats {
   readonly readback: { ms: number; textures: number };
   /** Readback per texture, by label with its format and size, for finding the costly ones. */
   readonly readbacks: Map<string, { ms: number; levels: number }>;
+  /**
+   * Per buffer, by label and size: reads of GL's copy back to the CPU after GPU forms wrote it, and
+   * uploads of CPU writes to the copies GL draws or samples from.
+   */
+  readonly buffers: Map<string, BufferStats>;
+  /** Draw calls, and the instances they drew. */
+  readonly draws: { count: number; instances: number };
   /** Uploads of the CPU copies kernels wrote, before GL uses them. */
   readonly upload: { ms: number; textures: number };
   /**
@@ -23,17 +30,29 @@ export interface DeviceStats {
   reset(): void;
 }
 
+export interface BufferStats {
+  readMs: number;
+  reads: number;
+  uploadMs: number;
+  uploads: number;
+  uploadBytes: number;
+}
+
 export function createStats(): DeviceStats {
   const stats: DeviceStats = {
     kernels: new Map(),
     readback: { ms: 0, textures: 0 },
     readbacks: new Map(),
+    buffers: new Map(),
+    draws: { count: 0, instances: 0 },
     upload: { ms: 0, textures: 0 },
     fallbacks: new Map(),
     reset() {
       stats.kernels.clear();
       Object.assign(stats.readback, { ms: 0, textures: 0 });
       stats.readbacks.clear();
+      stats.buffers.clear();
+      Object.assign(stats.draws, { count: 0, instances: 0 });
       Object.assign(stats.upload, { ms: 0, textures: 0 });
     },
   };

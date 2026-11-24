@@ -321,6 +321,12 @@ function prepare(
   return pipeline;
 }
 
+function counted(pass: RenderPass, instances: number): void {
+  const { draws } = pass.ctx.stats;
+  draws.count++;
+  draws.instances += instances;
+}
+
 export function draw(
   pass: RenderPass,
   vertexCount: number,
@@ -332,6 +338,7 @@ export function draw(
   const pipeline = prepare(pass, 0, firstInstance);
   if (!pipeline) return;
   setInt(pass.ctx.gl, pipeline.baseVertex, 0);
+  counted(pass, instanceCount);
   pass.ctx.gl.drawArraysInstanced(pipeline.state.mode, firstVertex, vertexCount, instanceCount);
 }
 
@@ -355,6 +362,7 @@ export function drawIndexed(
   setInt(gl, pipeline.baseVertex, baseVertex);
   indexBuffer(pass.ctx, index.buffer);
   const wide = index.format === 'uint32';
+  counted(pass, instanceCount);
   gl.drawElementsInstanced(
     pipeline.state.mode,
     indexCount,
