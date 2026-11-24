@@ -216,7 +216,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const target = this._expression(node);
     const place = this.placeOf(target);
     if (!place) {
-      const root = /^\s*([A-Za-z_]\w*)/.exec(String(target.value))?.[1];
+      const text = target.dataType === UnknownData ? '' : this.ctx.resolveSnippet(target).value;
+      const root = /^\s*([A-Za-z_]\w*)/.exec(text)?.[1];
       if (root && (this.#ids.has(root) || this.#ownLocals.has(root))) {
         throw new Ineligible(`modifies '${root}', which indices are derived from`);
       }
