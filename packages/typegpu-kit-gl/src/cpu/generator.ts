@@ -56,6 +56,8 @@ export class CpuGenerator extends WgslGenerator {
           offset: `(${address.offset})+${i * 4}`,
         }),
       );
+    if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(code))
+      return Array.from({ length: Number(scalar(snippet.dataType)[3]) }, (_, i) => `${code}[${i}]`);
     return undefined;
   }
 
@@ -107,6 +109,33 @@ export class CpuGenerator extends WgslGenerator {
         const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'global');
         this.#addresses.set(name, address);
         return snip(name, result.dataType, result.origin, result.possibleSideEffects);
+      }
+    }
+    if (
+      Array.isArray(expression) &&
+      expression[0] === NODE.memberAccess &&
+      typeof result.dataType !== 'symbol' &&
+      result.origin !== 'constant'
+    ) {
+      const code = this.ctx.resolveSnippet(result).value;
+      const swizzle = /\.([xyzwrgba]{1,4})$/.exec(code);
+      if (swizzle) {
+        // eslint-disable-next-line no-underscore-dangle
+        const target = this._expression(expression[1]);
+        const parts = this.#parts(target);
+        if (parts) {
+          const selected = [...swizzle[1]!].map(
+            (c) => parts['xyzw'.includes(c) ? 'xyzw'.indexOf(c) : 'rgba'.indexOf(c)]!,
+          );
+          return snip(
+            selected.length === 1
+              ? selected[0]!
+              : this.#vector(result.dataType as d.BaseData, selected),
+            result.dataType as d.BaseData,
+            result.origin,
+            result.possibleSideEffects,
+          );
+        }
       }
     }
     if (Array.isArray(expression) && expression[0] === NODE.objectExpr) {
@@ -408,6 +437,26 @@ export class CpuGenerator extends WgslGenerator {
         type.endsWith('u') ? `((${value})>>>0)` : type.endsWith('i') ? `((${value})|0)` : value;
       this.ctx.addDeclaration(
         `function ${name}(...args) { const value = args.length === 1 && typeof args[0] !== 'number' ? (args[0] ?? []) : args; return $vector([${Array.from({ length: count }, (_, i) => convert(`(value[${i}] ?? (value.length===1 ? value[0] : 0))`)).join(',')}]); }`,
+        name,
+      );
+      return name;
+    }
+    const matrix = /^mat([234])x([234])f$/.exec(type);
+    if (matrix) {
+      const columns = Number(matrix[1]),
+        rows = Number(matrix[2]);
+      const flat = Array.from(
+        { length: columns },
+        (_, c) =>
+          `$vector([${Array.from({ length: rows }, (_row, r) => `(args[${c * rows + r}]??0)`).join(',')}])`,
+      ).join(',');
+      const copied = Array.from(
+        { length: columns },
+        (_, c) =>
+          `$vector([${Array.from({ length: rows }, (_row, r) => `(columns[${c}]?.[${r}]??0)`).join(',')}])`,
+      ).join(',');
+      this.ctx.addDeclaration(
+        `function ${name}(...args) { if(typeof args[0]==='number') return [${flat}]; const columns=args.length===1 ? (args[0]??[]) : args; return [${copied}]; }`,
         name,
       );
       return name;

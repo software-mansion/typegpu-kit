@@ -69,6 +69,10 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         { calls: number; milliseconds: number; invocations: number }
       >();
       let steady = false;
+      const steadyPipelines = new Map<
+        string,
+        { pipeline: string; calls: number; milliseconds: number; invocations: number }
+      >();
       let profileDispatches = 0;
       const steadyDispatches: { calls: number; milliseconds: number; invocations: number } = {
         calls: 0,
@@ -76,22 +80,36 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         invocations: 0,
       };
       const session = process.env.CPU_PROFILE === '1' ? new Session() : undefined;
+      let profiling = false;
       session?.connect();
       if (session) {
         await session.post('Profiler.enable');
-        if (process.env.CPU_PROFILE_PHASE !== 'steady') await session.post('Profiler.start');
+        if (process.env.CPU_PROFILE_PHASE !== 'steady') {
+          await session.post('Profiler.start');
+          profiling = true;
+        }
       }
       const root =
         process.env.CPU_EXECUTE === '1'
           ? cpuRoot({
               generator: SweepGenerator,
-              onDispatch: (code, milliseconds, invocations) => {
+              onDispatch: (code, milliseconds, invocations, label) => {
                 if (
                   process.env.CPU_PROFILE_DISPATCHES &&
                   ++profileDispatches >= Number(process.env.CPU_PROFILE_DISPATCHES)
                 )
                   throw new Error('Profile dispatch limit reached');
                 if (steady) {
+                  const held = steadyPipelines.get(code) ?? {
+                    pipeline: label,
+                    calls: 0,
+                    milliseconds: 0,
+                    invocations: 0,
+                  };
+                  held.calls++;
+                  held.milliseconds += milliseconds;
+                  held.invocations += invocations;
+                  steadyPipelines.set(code, held);
                   steadyDispatches.calls++;
                   steadyDispatches.milliseconds += milliseconds;
                   steadyDispatches.invocations += invocations;
@@ -141,7 +159,9 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         scene = await begin(
           await createScene(root, surface, {
             ...(await filesOf(example.key, fromDisk)),
-            ...(process.env.CPU_EXECUTE === '1' ? reduced[example.key] : {}),
+            ...(process.env.CPU_EXECUTE === '1' && process.env.CPU_DEFAULTS !== '1'
+              ? reduced[example.key]
+              : {}),
           }),
         );
         loop = frames.create(root, scene.frame);
@@ -149,8 +169,10 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         await driver.warmUp();
         await driver.run(2);
         steady = true;
-        if (session && process.env.CPU_PROFILE_PHASE === 'steady')
+        if (session && process.env.CPU_PROFILE_PHASE === 'steady') {
           await session.post('Profiler.start');
+          profiling = true;
+        }
         await driver.run(2);
         steady = false;
         const rawCompute = recording.log.shaders.find(
@@ -179,6 +201,15 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
+                steadyPipelines: [...steadyPipelines]
+                  .map(([code, timing]) => ({
+                    entry: JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name,
+                    pipeline: timing.pipeline,
+                    calls: timing.calls / 2,
+                    milliseconds: timing.milliseconds / 2,
+                    invocations: timing.invocations / 2,
+                  }))
+                  .toSorted((a, b) => b.milliseconds - a.milliseconds),
                 unexecutedEntries: modules
                   .filter((code) => !dispatched.has(code))
                   .map((code) => JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name),
@@ -212,14 +243,14 @@ it.runIf(process.env.CPU_SWEEP === '1')(
             : {}),
         });
       } finally {
-        if (session) {
+        if (session && profiling) {
           const { profile } = await session.post('Profiler.stop');
           await writeFile(
             new URL(`./${example.key}.cpuprofile`, import.meta.url),
             JSON.stringify(profile),
           );
-          session.disconnect();
         }
+        session?.disconnect();
         loop?.destroy();
         scene?.destroy?.();
         surface.destroy();

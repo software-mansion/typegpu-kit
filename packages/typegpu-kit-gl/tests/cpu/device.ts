@@ -8,6 +8,7 @@ const noop = () => {};
 
 type Command = () => void;
 interface Pipeline {
+  label?: string;
   compute: { module: CpuModule };
 }
 
@@ -17,7 +18,7 @@ export function cpuRoot(
       Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
     >;
     onModule?: (code: string) => void;
-    onDispatch?: (code: string, milliseconds: number, invocations: number) => void;
+    onDispatch?: (code: string, milliseconds: number, invocations: number, label: string) => void;
   } = {},
 ) {
   const recording = recordingRoot();
@@ -86,6 +87,7 @@ export function cpuRoot(
               const groups = new Map<number, GPUBindGroupDescriptor>();
               const dispatch = (x: number, y: number, z: number) => {
                 const module = pipeline.compute.module;
+                const label = pipeline.label ?? '';
                 if (!module.dispatch)
                   throw new Error(
                     `CPU test device: raw compute shader ${(module as unknown as { code: string }).code}`,
@@ -122,6 +124,7 @@ export function cpuRoot(
                     sources.get(module)!,
                     performance.now() - start,
                     x * y * z * module.workgroupSize.reduce((a, b) => a * b, 1),
+                    label,
                   );
                 });
               };
