@@ -65,17 +65,17 @@ export function createPrint(root: TgpuRoot, target: Surface, cell = 1, colors: C
   });
   const size = root.createUniform(d.vec2f);
   const written = [0, 0];
-  const grade = plain
-    ? (color: d.v3f, _uv: d.v2f) => {
-        'use gpu';
-        return printColor(color, d.vec2u(), palette.$.ground);
-      }
-    : (_color: d.v3f, uv: d.v2f) => {
-        'use gpu';
-        const at = std.floor((uv * size.$) / cell);
-        const color = finish.picture(((at + 0.5) * cell) / size.$);
-        return printColor(color, d.vec2u(at), palette.$.ground);
-      };
+  const gradeCells = (_color: d.v3f, uv: d.v2f) => {
+    'use gpu';
+    const at = std.floor((uv * size.$) / cell);
+    const color = finish.picture(((at + 0.5) * cell) / size.$);
+    return printColor(color, d.vec2u(at), palette.$.ground);
+  };
+  const gradeSmooth = (color: d.v3f, _uv: d.v2f) => {
+    'use gpu';
+    return printColor(color, d.vec2u(), palette.$.ground);
+  };
+  const grade = plain ? gradeSmooth : gradeCells;
   const final = finish.create(root, {
     format: target.format,
     source: () => screen.textures.picture,

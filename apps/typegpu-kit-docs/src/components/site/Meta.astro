@@ -1,6 +1,6 @@
 ---
-// The browser's colour, the home-screen icon, the link card and the page's Markdown, for Starlight's
-// pages (Head.astro) and the examples' own. Starlight writes the card's title, description and
+// The browser's colour, the home-screen icon, the link card, the page's Markdown and the reader's
+// dither, for Starlight's pages (Head.astro) and the examples' own. Starlight writes the card's title, description and
 // address; other pages pass them.
 import { BASE } from './urls.ts';
 
@@ -51,3 +51,12 @@ const address = canonical && Astro.site ? new URL(canonical, Astro.site).href : 
     </>
   )
 }
+<script is:inline>
+  // Posters, figures, diagrams and the lights behind text show smooth where the reader turned the
+  // dither off; see site/dither.ts
+  try {
+    if (localStorage.getItem('typegpu-kit:dither') === 'off') {
+      document.documentElement.dataset.dither = 'off';
+    }
+  } catch {}
+</script>

@@ -2,16 +2,18 @@ import { perlin3d } from '@typegpu/noise';
 import { common, d, std, tgpu, type TgpuRenderCommands, type TgpuRoot } from 'typegpu';
 import { bayerCell, plain } from './dither.ts';
 
+const inkedDithered = (threshold: number, coverage: number) => {
+  'use gpu';
+  return std.step(threshold, coverage);
+};
+
+const inkedSmooth = (_threshold: number, coverage: number) => {
+  'use gpu';
+  return std.saturate(coverage);
+};
+
 /** How much of a cell `coverage` inks through `threshold`: all or none, or `coverage` with the dither off. */
-const inked = plain
-  ? (_threshold: number, coverage: number) => {
-      'use gpu';
-      return std.saturate(coverage);
-    }
-  : (threshold: number, coverage: number) => {
-      'use gpu';
-      return std.step(threshold, coverage);
-    };
+const inked = plain ? inkedSmooth : inkedDithered;
 
 /** One list's light: where it was, where it goes, and since when, in CSS pixels of the list. */
 export const Box = d.struct({

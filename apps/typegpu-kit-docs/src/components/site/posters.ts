@@ -20,5 +20,5 @@ const at = (key: string | undefined, name: string) =>
 export const posterOf = (key: string | undefined) =>
   at(key, plain ? 'poster.webp' : 'poster-small.webp');
 
-/** The address of the small still frame of the example `key`, which cards print in cells. */
+/** The address of the small still frame of the example `key`, for cells and thumbnails. */
 export const smallPosterOf = (key: string | undefined) => at(key, 'poster-small.webp');

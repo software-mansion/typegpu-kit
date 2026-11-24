@@ -60,7 +60,9 @@ const META: Readonly<Record<string, (value: unknown) => boolean>> = {
     optional(
       (quality) => Number.isInteger(quality) && Number(quality) >= 0 && Number(quality) <= 100,
     )(value.quality) &&
-    optional((width) => Number.isInteger(width) && Number(width) % 8 === 0)(value.width),
+    optional((width) => Number.isInteger(width) && Number(width) > 0 && Number(width) % 8 === 0)(
+      value.width,
+    ),
 };
 
 const REQUIRED = ['title', 'category', 'rarity', 'description', 'line', 'order'];

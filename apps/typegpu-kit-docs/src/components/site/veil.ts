@@ -169,7 +169,7 @@ export function veil(
         const threshold = bayer(i, j);
         const swept = (front - x * 0.85 - y * 0.15) * 9;
         const at = (j * columns + i) * 4;
-        gone[at + 3] = swept > threshold ? 255 : 0;
+        if (plate) gone[at + 3] = swept > threshold ? 255 : 0;
         if (swept > threshold + 0.6 || (plate && picture && swept <= threshold)) {
           data[at + 3] = 0;
           continue;

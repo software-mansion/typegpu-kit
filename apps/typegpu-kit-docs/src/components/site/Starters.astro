@@ -1,7 +1,7 @@
 ---
 import { getEntry } from 'astro:content';
 import { examples } from '../../examples/examples.ts';
-import { posterOf } from './posters.ts';
+import { smallPosterOf } from './posters.ts';
 import { exampleHref, pageHref, sourceHref } from './urls.ts';
 
 /**
@@ -55,7 +55,7 @@ const rows = await Promise.all(
   {
     rows.map(({ example, shows, file, page, guide }) => (
       <li>
-        <img src={posterOf(example.key)} alt="" width="96" height="60" loading="lazy" />
+        <img src={smallPosterOf(example.key)} alt="" width="96" height="60" loading="lazy" />
         <div class="what">
           <a class="title" href={exampleHref(example.key)}>
             {example.title}
