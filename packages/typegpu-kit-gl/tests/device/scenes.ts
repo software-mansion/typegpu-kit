@@ -19,7 +19,6 @@ export interface SceneRun {
   readonly frameTime: number;
 }
 
-
 /**
  * Creates the example's scene on an offscreen surface, runs frames 1/25 s apart until it is ready
  * and then `steady` more, and reads the surface.
