@@ -1001,6 +1001,7 @@ void main() {
   }
 
   #texturePass(texture: TextureInfo, index: number, kernel: string): string {
+    const column = this.#columns.has(texture.id);
     const { format } = texture.schema as unknown as { format: string };
     const old = this.samplerUniform(texture);
     const target = [
@@ -1016,9 +1017,9 @@ void main() {
 ${target}
 layout(location = 0) out ${this.#texelType(texture)} ${RESULT};
 void main() {
-  uvec3 gid = uvec3(uvec2(gl_FragCoord.xy), ${this.#columns.has(texture.id) ? '0u' : `uint(${LAYER})`});
+  uvec3 gid = uvec3(uvec2(gl_FragCoord.xy), ${column ? '0u' : `uint(${LAYER})`});
   if (any(greaterThanEqual(gid, ${INVOCATIONS}))) {
-    ${RESULT} = texelFetch(${old}, ${this.#cellOf(texture, 'gid')}, 0);
+    ${RESULT} = texelFetch(${old}, ${column ? `ivec3(ivec2(gid.xy), ${LAYER})` : this.#cellOf(texture, 'gid')}, 0);
     return;
   }
   ${BEGIN}(gid);

@@ -446,9 +446,9 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
       .$idx(0);
     await expectSame({
       layout,
-      kernel: tgpu.computeFn({ workgroupSize: [4, 2, 1], in: gid })(({ gid: id }) => {
+      kernel: tgpu.computeFn({ workgroupSize: [2, 2, 1], in: gid })(({ gid: id }) => {
         'use gpu';
-        if (id.x >= 3) return;
+        if (id.x >= 1 && id.y >= 3) return;
         let total = d.vec4f();
         for (let k = d.u32(0); k < 5; k++) {
           total += std.textureLoad(layout.$.source, d.vec3u(id.xy, k), 0);
