@@ -321,9 +321,36 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #single = false;
   #packers = 0;
 
-  constructor(plan?: ComputePlan) {
+  readonly #outer: Numbering | undefined;
+
+  /**
+   * `outer` is the resolution the form is attached to. Without it, the form numbers bindings as
+   * its own resolution does, which differs where a catch-all group's order or a layout's automatic
+   * index depends on the order of resolution.
+   */
+  constructor(plan?: ComputePlan, outer?: ResolutionCtx) {
     super();
     this.#plan = plan;
+    this.#outer = outer as Numbering | undefined;
+  }
+
+  /** The group and binding `outer` gives a resource, as placeholders its resolution replaces. */
+  #numbered(options: VariableDefinitionOptions): VariableDefinitionOptions {
+    const outer = this.#outer;
+    if (!outer || options.group === undefined || options.binding === undefined) return options;
+    const inner = this.ctx as unknown as Numbering;
+    if (options.group === CATCHALL) {
+      const resource = inner.fixedBindings[options.binding]?.resource;
+      const binding = outer.fixedBindings.findIndex((each) => each.resource === resource);
+      if (binding < 0) throw new Error(`@typegpu/kit-gl: '${options.id}' is not bound outside`);
+      return { ...options, group: `${OUTER}${CATCHALL.slice(1)}`, binding };
+    }
+    const layout = [...inner.bindGroupLayoutsToPlaceholderMap].find(
+      ([, placeholder]) => placeholder === options.group,
+    )?.[0];
+    const placeholder = layout && outer.bindGroupLayoutsToPlaceholderMap.get(layout);
+    if (!placeholder) throw new Error(`@typegpu/kit-gl: '${options.id}' is not bound outside`);
+    return { ...options, group: `${OUTER}${placeholder.slice(1)}` };
   }
 
   /** What the kernel writes, once a resolution has run. */
@@ -618,7 +645,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   }
 
   override declareGlobalVar(options: VariableDefinitionOptions): ResolvedSnippet {
-    const result = super.declareGlobalVar(options);
+    const result = super.declareGlobalVar(this.#numbered(options));
     if (options.scope === 'private') {
       this.#privates.push({
         id: options.id,
@@ -1003,6 +1030,20 @@ void main() {
   }
 }
 
+/**
+ * What numbers a resolution's bindings: its catch-all group's resources in binding order, and the
+ * placeholders it replaces with group indices once it is done.
+ */
+interface Numbering {
+  readonly fixedBindings: readonly { readonly resource: unknown }[];
+  readonly bindGroupLayoutsToPlaceholderMap: ReadonlyMap<object, string>;
+}
+
+/** TypeGPU's placeholder for the catch-all group's index, which a resolution replaces at its end. */
+const CATCHALL = '#CATCHALL#';
+/** Starts a placeholder of the outer resolution, which the inner one leaves alone. */
+const OUTER = '#KIT_OUTER_';
+
 /** The reason an error gives for a kernel's GPU form failing, with the function it is in. */
 function reasonOf(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -1013,17 +1054,23 @@ function reasonOf(error: unknown): string {
   return trace && !own ? `${reason} (in '${trace}')` : reason;
 }
 
-/** A compute pipeline's GPU form, or why it has none. */
-export function computeForm(item: object): { code: string } | { reason: string } {
+/**
+ * A compute pipeline's GPU form, or why it has none. With `outer`, the resolution the form is
+ * attached to, the form names groups with `outer`'s placeholders, which its resolution replaces.
+ */
+export function computeForm(
+  item: object,
+  outer?: ResolutionCtx,
+): { code: string } | { reason: string } {
   type Options = Parameters<typeof tgpu.resolveWithContext>[1];
   try {
-    const analysis = new KitGlslComputeGenerator();
+    const analysis = new KitGlslComputeGenerator(undefined, outer);
     tgpu.resolveWithContext([item as never], { unstable_shaderGenerator: analysis } as Options);
-    const generator = new KitGlslComputeGenerator(analysis.plan);
+    const generator = new KitGlslComputeGenerator(analysis.plan, outer);
     const { code } = tgpu.resolveWithContext([item as never], {
       unstable_shaderGenerator: generator,
     } as Options);
-    return { code };
+    return { code: code.replaceAll(OUTER, '#') };
   } catch (error) {
     return { reason: reasonOf(error) };
   }
@@ -1041,7 +1088,7 @@ export function attachComputeForm(ctx: ResolutionCtx, isCompute: () => boolean):
     first = false;
     const result = resolve(item, schema);
     if (!isCompute()) return result;
-    const form = computeForm(item as object);
+    const form = computeForm(item as object, ctx);
     const line =
       'code' in form
         ? `${GPU_FORM}${JSON.stringify(form.code)}`
