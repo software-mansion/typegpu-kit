@@ -89,13 +89,17 @@ it.each(examples.map((example) => example.key))('%s', async (key) => {
 
   const passes = unique.flatMap((verdict) =>
     'module' in verdict
-      ? verdict.module.passes.map((pass) => ({ name: verdict.name, fragment: pass.fragment }))
+      ? verdict.module.passes.map((pass) => ({
+          name: verdict.name,
+          fragment: pass.fragment,
+          vertex: pass.scatter?.vertex ?? PASS_VERTEX,
+        }))
       : [],
   );
   const reports = await gl.check(
-    passes.map(({ fragment }) => ({
+    passes.map(({ fragment, vertex }) => ({
       kind: 'render' as const,
-      vertex: PASS_VERTEX,
+      vertex,
       fragment,
       buffers: [],
       textures: [],

@@ -73,6 +73,8 @@ export const GPU_FORM = '//#kit-gl gpu ';
 export const CPU_ONLY = '//#kit-gl cpu-only ';
 export const COMPUTE = '//#compute';
 export const TARGET = '//#target';
+/** Marks a pass of points: `//#scatter <sites> <words>`. */
+export const SCATTER = '//#scatter';
 
 /** Uniforms every pass may declare, which the device sets as step 3 and 4 of a dispatch say. */
 export const INVOCATIONS = 'kit_invocations';
@@ -125,8 +127,32 @@ export type ComputeTarget = BufferTarget | TextureTarget;
 
 export interface ComputePass {
   readonly target: ComputeTarget;
-  /** Complete GLSL ES 3.00 fragment source. Its one output, location 0, is the target's cell. */
+  /**
+   * Complete GLSL ES 3.00 fragment source. Its outputs, from location 0, are the target's cells,
+   * as step 4 says; in a pass of points, the cell its point covers.
+   */
   readonly fragment: string;
+  /** Present for a pass of points, as `Scatter` describes. */
+  readonly scatter?: Scatter;
+}
+
+/**
+ * A pass of points, for a target the kernel writes at cells it computes: `vertex` runs the kernel
+ * for invocation `gl_VertexID` (`x` fastest, then `y`, then `z`) and puts one point on the cell
+ * the write site `kit_site` (`int`) wrote, or outside the clip volume where the invocation did
+ * not reach that site.
+ *
+ * For it, the device starts the target's new contents as a copy of the old ones, draws `vertex`
+ * with `fragment` as `POINTS`, one vertex per invocation, with the state of step 4, then replaces
+ * the target as step 5 says. It draws once per site from 0 to `sites - 1`. For a buffer target it
+ * also draws once per word of an element, `kit_part` (`int`) from 0 to `words - 1`, and per
+ * channel of a data texel, `kit_phase` (`int`) from 0 to 3, writing only that channel. For a
+ * 2d-array or 3d target it draws once per layer, `kit_layer` set to it, into that layer alone.
+ */
+export interface Scatter {
+  readonly vertex: string;
+  readonly sites: number;
+  readonly words: number;
 }
 
 /** A binding the GPU form uses, to compare with the CPU module's `bindings`. */
@@ -209,6 +235,26 @@ function targetOf(line: string): ComputeTarget {
   throw new Error(`@typegpu/kit-gl: malformed directive '${line}'`);
 }
 
+/** The fragment stage of a pass of points: it writes the value its point carries. */
+function pointFragment(target: ComputeTarget, defines: readonly string[]): string {
+  const type =
+    target.kind === 'buffer'
+      ? 'uvec4'
+      : /uint/.test(target.format)
+        ? 'uvec4'
+        : /sint/.test(target.format)
+          ? 'ivec4'
+          : 'vec4';
+  return [
+    '#version 300 es',
+    ...defines,
+    'precision highp float;\nprecision highp int;',
+    `flat in ${type} kit_value;`,
+    `layout(location = 0) out ${type} kit_result;`,
+    'void main() {\n  kit_result = kit_value;\n}',
+  ].join('\n');
+}
+
 /**
  * Reads the GPU form a CPU module carries: one fragment source per target and the bindings they
  * read. Returns `undefined` when the module carries none, and the dispatch runs on the CPU.
@@ -238,6 +284,20 @@ export function parseCompute(
     const target = targetOf(line);
     if (target.kind === 'buffer' && target.width !== undefined && !conditions.has('limits')) {
       return undefined;
+    }
+    const scatter = chunk.directives.find((each) => each.startsWith(`${SCATTER} `));
+    if (scatter) {
+      const [, sites, words] = scatter.trim().split(/\s+/);
+      passes.push({
+        target,
+        fragment: pointFragment(target, options.defines ?? []),
+        scatter: {
+          vertex: source(included, options.defines ?? []),
+          sites: int(sites, scatter),
+          words: int(words, scatter),
+        },
+      });
+      continue;
     }
     passes.push({ target, fragment: source(included, options.defines ?? []) });
   }

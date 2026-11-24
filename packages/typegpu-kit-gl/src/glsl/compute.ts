@@ -21,6 +21,7 @@ import {
   INVOCATIONS,
   LAYER,
   LAYERS_PER_DRAW,
+  SCATTER,
   TARGET,
   WORKGROUPS,
 } from './computeModule.ts';
@@ -88,7 +89,19 @@ export interface ComputePlan {
   readonly columns: ReadonlySet<string>;
   /** The written textures whose cells are not plainly the invocation's, by their texel maps. */
   readonly maps: ReadonlyMap<string, TexelMap>;
+  /** The buffers and textures written at cells the kernel computes, a pass of points each. */
+  readonly scatters: ReadonlySet<string>;
 }
+
+/** A resource written at computed cells: an array of a buffer, or a texture. */
+type Scatter =
+  | {
+      readonly kind: 'buffer';
+      readonly buffer: BufferInfo;
+      readonly array: d.WgslArray;
+      readonly offset: number;
+    }
+  | { readonly kind: 'texture'; readonly texture: TextureInfo };
 
 /**
  * How a texture's cells map to invocations, coordinate by coordinate: coordinate `i` of the cell
@@ -118,6 +131,15 @@ function texelMapOf(own: Own): TexelMap | undefined {
 const plainMap = (map: TexelMap) => map.every(({ step, r }) => step === 1 && !r);
 
 const GID = 'kit_gid';
+/** The write site a pass of points captures, and what the invocation wrote there. */
+const SITE = 'kit_site';
+const HIT = 'kit_hit';
+const AT = 'kit_at';
+const POINT = 'kit_point';
+/** Which resource written at computed cells the pass of points draws, by its index. */
+const AIM = 'kit_aim';
+/** Stands in for a read of a buffer the kernel writes at computed cells, which no pass can see. */
+const SCATTERED = 'kit_scattered_';
 /** The layer of a layered target the pass computes now, of the several one draw writes. */
 const Z = 'kit_z';
 const BEGIN = 'kit_begin';
@@ -360,6 +382,13 @@ function add(left: Own, right: Own): Own | undefined {
     });
   }
   return sum;
+}
+
+/** Whether a `for…of` iterates `tgpu.unroll(…)`, which TypeGPU unrolls as it generates. */
+function unrolled(iterable: Expression): boolean {
+  if (!Array.isArray(iterable) || iterable[0] !== NODE.call) return false;
+  const callee = iterable[1] as Expression;
+  return Array.isArray(callee) && callee[0] === NODE.memberAccess && callee[2] === 'unroll';
 }
 
 /** GLSL text with the settled variables of `frame` it names replaced by their values. */
@@ -637,6 +666,15 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #textures = new Map<string, TextureInfo>();
   readonly #columns = new Set<string>();
   readonly #maps = new Map<string, TexelMap>();
+  readonly #scatters = new Map<string, Scatter>();
+  /** Write sites emitted so far, per resource written at computed cells. */
+  readonly #sites = new Map<string, number>();
+  /** What each such resource's captured write holds. */
+  readonly #captured = new Map<string, string>();
+  /** Runtime loops around the statement being generated. */
+  #loops = 0;
+  /** Whether the write being checked assigns a whole value with `=`. */
+  #plain = false;
   readonly #functions = new Set<string>();
   /** Functions without parameters that read only what every invocation sees alike. */
   readonly #pure = new Set<string>();
@@ -708,6 +746,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       textures: new Set(this.#textures.keys()),
       columns: new Set(this.#columns),
       maps: new Map(this.#maps),
+      scatters: new Set(this.#scatters.keys()),
     };
   }
 
@@ -717,13 +756,26 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   override initGenerator(ctx: ResolutionCtx): void {
     super.initGenerator(ctx);
-    for (const name of [GID, BEGIN, RESULT, INVOCATIONS, WORKGROUPS, LAYER, Z]) {
+    for (const name of [
+      GID,
+      BEGIN,
+      RESULT,
+      INVOCATIONS,
+      WORKGROUPS,
+      LAYER,
+      Z,
+      SITE,
+      HIT,
+      AT,
+      POINT,
+      AIM,
+    ]) {
       ctx.reserveIdentifier(name, 'global');
     }
     this.chunk(
       'shared',
-      [GID, INVOCATIONS, WORKGROUPS, LAYER, Z],
-      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};\nint ${Z};`,
+      [GID, INVOCATIONS, WORKGROUPS, LAYER, Z, SITE, HIT, AT, POINT, AIM],
+      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};\nint ${Z};\nuniform int ${SITE};\nbool ${HIT};\nuint ${AT};\nivec3 ${POINT};\nint ${AIM} = -1;`,
     );
   }
 
@@ -899,8 +951,31 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   protected override _statement(statement: Statement): ResolvedStatement {
     if (Array.isArray(statement)) {
-      if (statement[0] === NODE.assignmentExpr) this.#checkWrite(statement[1] as Expression);
+      if (statement[0] === NODE.assignmentExpr) {
+        this.#plain = statement[2] === '=';
+        let place: Place | undefined;
+        try {
+          place = this.#checkWrite(statement[1] as Expression);
+        } finally {
+          this.#plain = false;
+        }
+        if (place && this.#plan?.scatters.has(place.buffer.id)) {
+          return this.#scatterWrite(place, statement[3] as Expression);
+        }
+      }
       if (statement[0] === NODE.postUpdate) this.#checkWrite(statement[2] as Expression);
+      if (
+        statement[0] === NODE.for ||
+        statement[0] === NODE.while ||
+        (statement[0] === NODE.forOf && !unrolled(statement[2] as Expression))
+      ) {
+        this.#loops++;
+        try {
+          return super._statement(statement);
+        } finally {
+          this.#loops--;
+        }
+      }
       // Without an `else`, the condition holds for everything the `if` generates
       if (statement[0] === NODE.if && statement[3] === undefined) {
         const depth = this.#chosen.length;
@@ -1012,7 +1087,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return chosen;
   }
 
-  #checkWrite(node: Expression): void {
+  #checkWrite(node: Expression): Place | undefined {
     const target = this._expression(node);
     const place = this.placeOf(target);
     const frame = this.#frame;
@@ -1023,15 +1098,78 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       if (root && frame?.names.has(root)) {
         throw new Ineligible(`modifies '${root}', which indices are derived from`);
       }
-      return;
+      return undefined;
     }
     this.#recordPlace(place, 'writes');
+    return place;
+  }
+
+  /**
+   * Whether a write the kernel makes may be a point of a scatter pass. The plan fixes which
+   * resources are, so the second resolution finds no new ones.
+   */
+  #scatterable(): boolean {
+    return this.#frame?.entry === true && this.#loops === 0 && !this.#plan;
+  }
+
+  /** A resource's index among those the kernel writes at computed cells, as `kit_aim` holds it. */
+  #aim(id: string): number {
+    return [...(this.#plan?.scatters ?? [])].toSorted().indexOf(id);
+  }
+
+  /** The next write site of a resource written at computed cells. */
+  #site(id: string): number {
+    const site = this.#sites.get(id) ?? 0;
+    this.#sites.set(id, site + 1);
+    return site;
+  }
+
+  /** The variable a pass of points reads a resource's captured write from. */
+  #capture(id: string, type: d.BaseData | string): string {
+    const known = this.#captured.get(id);
+    if (known) return known;
+    const name = this.ctx.makeUniqueIdentifier(`kit_scatter_${id}`, 'global');
+    const declared = typeof type === 'string' ? type : `${this.ctx.resolve(type).value}`;
+    const suffix = typeof type === 'string' ? '' : this.arraySuffix(type);
+    this.chunk('shared', [name], `${declared} ${name}${suffix};`);
+    this.#captured.set(id, name);
+    return name;
+  }
+
+  /** A whole element written at a computed index: captured when its site is the pass's. */
+  #scatterWrite(place: Place, value: Expression): ResolvedStatement {
+    const { buffer, element } = place;
+    if (!element?.array || element.path !== '') {
+      throw new Error(`@typegpu/kit-gl: the second resolution writes '${buffer.id}' anew`);
+    }
+    const type = element.array.elementType as d.BaseData;
+    const stride = wordsOf(strideOf(type));
+    this.#scatters.set(buffer.id, {
+      kind: 'buffer',
+      buffer,
+      array: element.array,
+      offset: element.offset,
+    });
+    const written = this.ctx.resolveSnippet(this._expressionWithTypeConversion(value, type)).value;
+    const site = this.#site(buffer.id);
+    const at = `${buffer.base} + ${element.offset}u + uint(${element.index}) * ${stride}u`;
+    const holder = this.#capture(buffer.id, type);
+    return {
+      code: `${this.ctx.pre}if (${AIM} == ${this.#aim(buffer.id)} && ${SITE} == ${site}) { ${HIT} = true; ${AT} = ${at}; ${holder} = ${written}; }`,
+      definesInNearestScope: false,
+    };
   }
 
   /** Records a write to a place, or rejects the kernel when the place is not provably owned. */
   #recordPlace(place: Place, verb: string): void {
     const { buffer, element } = place;
     const frame = this.#frame;
+    if (this.#plan?.scatters.has(buffer.id)) {
+      if (verb !== 'writes' || !this.#plain) {
+        throw new Ineligible(`${verb} '${buffer.id}', which it writes at computed cells`);
+      }
+      return;
+    }
     this.#relyOnOwn();
     if (element?.own) {
       const layout = element.ownership as Layout;
@@ -1048,6 +1186,15 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       return;
     }
     if (!element) throw new Ineligible(`${verb} '${buffer.id}' outside an array`);
+    if (verb === 'writes' && this.#plain && element.path === '' && this.#scatterable()) {
+      this.#scatters.set(buffer.id, {
+        kind: 'buffer',
+        buffer,
+        array: element.array as d.WgslArray,
+        offset: element.offset,
+      });
+      return;
+    }
     if (!frame?.entry && !frame?.names.size) {
       throw new Ineligible(`a helper function ${verb} '${buffer.id}'`);
     }
@@ -1118,6 +1265,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   }
 
   protected override placeValue(place: Place, load: string): string {
+    if (this.#plan?.scatters.has(place.buffer.id))
+      return `${SCATTERED}${place.buffer.id}_${this.#packers++}`;
     const written = this.#plan?.buffers.get(place.buffer.id);
     if (!written) return load;
     const element = place.element;
@@ -1213,7 +1362,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         ? coords === 'xy'
         : dimension === '3d' && this.#ownsColumn(args[1]));
     if (column) this.#columns.add(texture.id);
+    const scattered = this.#plan?.scatters.has(texture.id);
+    if (scattered) return this.#scatterStore(texture, args);
     const strided = !owns && !column && dimension !== '1d' && this.#strided(texture, args);
+    if (!owns && !column && !strided && this.#scatterable()) {
+      this.#scatters.set(texture.id, { kind: 'texture', texture });
+      return '';
+    }
     if (!owns && !column && !strided) {
       const frame = this.#frame;
       if (!frame?.entry && !frame?.names.size) {
@@ -1234,6 +1389,24 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (!this.#plan?.columns.has(texture.id)) return `${shadow} = ${value}`;
     const layer = dimension === '3d' ? `${this.ivecOf(args[1], 3)}.z` : this.intOf(args[2]);
     return `${shadow} = (${layer}) == ${Z} ? ${value} : ${shadow}`;
+  }
+
+  /** A texel stored at computed coordinates: captured when its site is the pass's. */
+  #scatterStore(texture: TextureInfo, args: readonly Snippet[]): string {
+    const { dimension } = texture.kind;
+    const point =
+      dimension === '2d-array'
+        ? `ivec3(${this.ivecOf(args[1], 2)}, ${this.intOf(args[2])})`
+        : dimension === '3d'
+          ? this.ivecOf(args[1], 3)
+          : dimension === '2d'
+            ? `ivec3(${this.ivecOf(args[1], 2)}, 0)`
+            : `ivec3(${this.intOf(args[1])}, 0, 0)`;
+    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    this.#scatters.set(texture.id, { kind: 'texture', texture });
+    const holder = this.#capture(texture.id, this.#texelType(texture));
+    const site = this.#site(texture.id);
+    return `if (${AIM} == ${this.#aim(texture.id)} && ${SITE} == ${site}) { ${HIT} = true; ${POINT} = ${point}; ${holder} = ${value}; }`;
   }
 
   /** Whether a store's coordinates own a cell through a texel map; records the map if so. */
@@ -1305,6 +1478,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (name === 'textureLoad' && args[0]) {
       const texture = this.textureOf(args[0]);
       if (this.#isStorage(texture)) this.#loaded.add(texture.id);
+      if (this.#plan?.scatters.has(texture.id)) {
+        throw new Ineligible(`reads '${texture.id}', which it writes at computed cells`);
+      }
       if (this.#isStorage(texture) && this.#plan?.textures.has(texture.id)) {
         const cell = this.#cellIn(texture, args);
         const own = this.#ownCell(texture, GID);
@@ -1359,6 +1535,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         throw new Ineligible(`finds its cells through '${name}', which it reassigns`);
       }
     }
+    const scattered = code.indexOf(SCATTERED);
+    if (scattered >= 0) {
+      const id = /^(\w+?)_\d+/.exec(code.slice(scattered + SCATTERED.length))?.[1];
+      throw new Ineligible(`reads '${id}', which it writes at computed cells`);
+    }
     const stale = code.indexOf(STALE);
     if (stale >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(stale + STALE.length))?.[1];
@@ -1404,9 +1585,20 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         : `void ${options.name}() ${body.slice(0, open + 1)}${prelude.map((line) => `${line}\n`).join('')}${body.slice(open + 1)}`;
     const kernelChunk = `${CHUNK} shared ${options.name}\n${kernel}`;
 
+    for (const id of this.#scatters.keys()) {
+      this.#buffers.delete(id);
+      this.#textures.delete(id);
+      this.#columns.delete(id);
+      this.#maps.delete(id);
+      if (this.#loaded.has(id)) {
+        throw new Ineligible(`reads '${id}', which it writes at computed cells`);
+      }
+    }
     const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
-      if (buffers.length + this.#textures.size === 0) throw new Ineligible('writes nothing');
+      if (buffers.length + this.#textures.size + this.#scatters.size === 0) {
+        throw new Ineligible('writes nothing');
+      }
       for (const id of this.#columns) {
         if (this.#loaded.has(id)) {
           throw new Ineligible(`loads from '${id}', of which an invocation writes a whole column`);
@@ -1431,9 +1623,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
 
     const single = buffers.some((each) => each.whole && !each.chosen);
+    // A pass of points covers every invocation, so it limits nothing
     const grid = single
       ? 1
       : Math.min(
+          3,
           ...buffers.map(({ layout, chosen }) =>
             chosen
               ? chosen.length
@@ -1456,6 +1650,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ...buffers.map((target, i) => this.#bufferPass(target, i, options.name)),
       ...[...this.#textures.values()].map((target, i) =>
         this.#texturePass(target, buffers.length + i, options.name),
+      ),
+      ...[...this.#scatters.values()].map((target, i) =>
+        this.#scatterPass(target, buffers.length + this.#textures.size + i, options.name),
       ),
     ].join('\n\n');
   }
@@ -1631,6 +1828,86 @@ ${owner.join('\n')}
 }
 void main() {
 ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n')}
+}`;
+  }
+
+  /**
+   * A pass of points, in a vertex stage: each vertex runs the kernel for one invocation and, where
+   * the invocation reached the write site `kit_site` captures, puts its point on the written cell.
+   */
+  #scatterPass(target: Scatter, index: number, kernel: string): string {
+    const sites =
+      this.#sites.get(target.kind === 'buffer' ? target.buffer.id : target.texture.id) ?? 0;
+    const start = [
+      `void main() {`,
+      `  uint kit_id = uint(gl_VertexID);`,
+      `  uvec3 kit_g = uvec3(kit_id % ${INVOCATIONS}.x, (kit_id / ${INVOCATIONS}.x) % ${INVOCATIONS}.y, kit_id / (${INVOCATIONS}.x * ${INVOCATIONS}.y));`,
+      `  ${HIT} = false;`,
+      `  ${AIM} = ${this.#aim(target.kind === 'buffer' ? target.buffer.id : target.texture.id)};`,
+      `  ${BEGIN}(kit_g);`,
+      `  ${kernel}();`,
+      `  gl_PointSize = 1.0;`,
+      `  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);`,
+      `  if (!${HIT}) return;`,
+    ];
+    if (target.kind === 'buffer') {
+      const { buffer, array, offset } = target;
+      const type = array.elementType as d.BaseData;
+      const stride = wordsOf(strideOf(type));
+      const words = Math.ceil(d.sizeOf(type as d.AnyData) / 4);
+      const range = buffer.range as string;
+      const holder = this.#capture(buffer.id, type);
+      const directive = [
+        TARGET,
+        'buffer',
+        buffer.group,
+        buffer.binding,
+        buffer.id,
+        offset * 4,
+        stride * 4,
+        d.sizeOf(type as d.AnyData),
+      ].join(' ');
+      return `${CHUNK} pass${index} main
+${directive}
+${SCATTER} ${sites} ${words}
+uniform int kit_part;
+uniform int kit_phase;
+flat out uvec4 kit_value;
+${start.join('\n')}
+  uint kit_w = ${AT} + uint(kit_part);
+  if (kit_w < ${range}.x || kit_w >= ${range}.x + ${range}.y / 4u || (kit_w & 3u) != uint(kit_phase)) return;
+  ivec2 kit_size = textureSize(${buffer.id}, 0);
+  uint kit_t = kit_w >> 2u;
+  vec2 kit_xy = vec2(float(kit_t % uint(kit_size.x)), float(kit_t / uint(kit_size.x)));
+  gl_Position = vec4((kit_xy + 0.5) / vec2(kit_size) * 2.0 - 1.0, 0.0, 1.0);
+  kit_value = uvec4(${this.#packer(type)}(${holder}, uint(kit_part), 0u));
+}`;
+    }
+    const { texture } = target;
+    const { format } = texture.schema as unknown as { format: string };
+    const old = this.samplerUniform(texture);
+    const type = this.#texelType(texture);
+    const holder = this.#capture(texture.id, type);
+    const { dimension } = texture.kind;
+    const layered = dimension === '2d-array' || dimension === '3d';
+    const size = layered
+      ? `textureSize(${old}, 0)`
+      : dimension === '1d'
+        ? `ivec3(textureSize(${old}, 0).x, 1, 1)`
+        : `ivec3(textureSize(${old}, 0), 1)`;
+    const directive = [TARGET, 'texture', texture.group, texture.binding, old, dimension, format];
+    return `${CHUNK} pass${index} main
+${directive.join(' ')}
+${SCATTER} ${sites} 1
+uniform int kit_part;
+uniform int kit_phase;
+flat out ${type} kit_value;
+${start.join('\n')}
+  ivec3 kit_size = ${size};
+  if (any(lessThan(${POINT}, ivec3(0))) || any(greaterThanEqual(${POINT}, kit_size))) return;
+  if (${POINT}.z != ${LAYER}) return;
+  gl_Position = vec4((vec2(${POINT}.xy) + 0.5) / vec2(kit_size.xy) * 2.0 - 1.0, 0.0, 1.0);
+  kit_value = ${holder};
 }`;
   }
 

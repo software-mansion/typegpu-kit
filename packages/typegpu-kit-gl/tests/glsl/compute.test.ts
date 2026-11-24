@@ -20,6 +20,7 @@ const gid = { gid: d.builtin.globalInvocationId };
 const line = tgpu.computeFn({ workgroupSize: [64], in: gid });
 
 /** Each kernel with what the GPU form must say about it: a grid, or the start of a reason. */
+/** A grid, a reason it has no form, or `scatter` for a form with a pass of points. */
 const kernels: [name: string, make: Make, verdict: number | string][] = [
   [
     'a particle step through an alias, with early returns',
@@ -166,7 +167,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         std.textureStore(layout.$.volume, d.vec3u(id.yx, 0), d.vec4f(1));
       });
     },
-    "stores to a texel of 'volume' that is not the invocation's own",
+    'scatter',
   ],
   [
     'writes a pick from the invocation a uniform chooses',
@@ -365,7 +366,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         std.textureStore(layout.$.target, id.yx, d.vec4f(1));
       });
     },
-    "stores to a texel of 'target",
+    'scatter',
   ],
   [
     'stores to a format WebGL 2 cannot render to',
@@ -499,7 +500,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x * 2 + 3] = 1;
       });
     },
-    "writes an element of 'out",
+    'scatter',
   ],
   [
     'writes its own element past an offset a uniform holds',
@@ -581,7 +582,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         std.textureStore(layout.$.target, d.vec2u(id.x * 3 + (id.y % 3), id.y), d.vec4f(1));
       });
     },
-    "stores to a texel of 'target",
+    'scatter',
   ],
   [
     'stores at a residue of its own axis',
@@ -594,7 +595,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         std.textureStore(layout.$.target, d.vec2u(id.x * 2 + (id.x & 1), id.y), d.vec4f(1));
       });
     },
-    "stores to a texel of 'target",
+    'scatter',
   ],
   [
     'writes a flattened index of a width it reads from a uniform',
@@ -606,7 +607,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.y * width.$ + id.x] = 1;
       });
     },
-    "writes an element of 'out",
+    'scatter',
   ],
   [
     'writes a large buffer from one invocation',
@@ -664,16 +665,19 @@ describe('GPU forms of compute kernels', () => {
 
   it.each(kernels)('%s', async (_, make, expected) => {
     const verdict = verdictOf(make);
-    if (typeof expected === 'string') {
+    if (expected === 'scatter') {
+      if ('reason' in verdict) throw new Error(`Ineligible: ${verdict.reason}`);
+      expect(verdict.module.passes.some((pass) => pass.scatter)).toBe(true);
+    } else if (typeof expected === 'string') {
       expect('reason' in verdict ? verdict.reason : 'eligible').toContain(expected);
       return;
     }
     if ('reason' in verdict) throw new Error(`Ineligible: ${verdict.reason}`);
-    expect(verdict.module.grid).toBe(expected);
+    if (expected !== 'scatter') expect(verdict.module.grid).toBe(expected);
     const reports = await gl.check(
       verdict.module.passes.map((pass) => ({
         kind: 'render' as const,
-        vertex: PASS_VERTEX,
+        vertex: pass.scatter?.vertex ?? PASS_VERTEX,
         fragment: pass.fragment,
         buffers: [],
         textures: [],

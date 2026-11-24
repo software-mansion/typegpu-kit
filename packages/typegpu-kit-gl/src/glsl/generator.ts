@@ -448,7 +448,8 @@ export class KitGlslGenerator extends GlslGenerator {
       this.#structs.set(id, data);
       return id;
     }
-    if (d.isWgslArray(data)) this.arraySuffix(data);
+    // A runtime-sized array is a buffer's, read through its data texture, never a GLSL type
+    if (d.isWgslArray(data) && data.elementCount > 0) this.arraySuffix(data);
     return super.emitTypeAnnotation(data);
   }
 

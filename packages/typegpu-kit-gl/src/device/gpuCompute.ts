@@ -39,6 +39,12 @@ interface GpuPass {
   readonly invocations: WebGLUniformLocation | null;
   readonly workgroups: WebGLUniformLocation | null;
   readonly layer: WebGLUniformLocation | null;
+  /** Present for a pass of points, with the write sites and words it draws. */
+  readonly scatter: { readonly sites: number; readonly words: number } | undefined;
+  /** For a pass of points, the uniforms that pick the write site, word and channel it draws. */
+  readonly site: WebGLUniformLocation | null;
+  readonly word: WebGLUniformLocation | null;
+  readonly phase: WebGLUniformLocation | null;
 }
 
 export interface GpuCompute {
@@ -68,7 +74,8 @@ export function prepareGpu(
   }
   const passes: GpuPass[] = [];
   for (const pass of module.passes) {
-    const linked = link(ctx, PASS_VERTEX, pass.fragment, `a pass of '${label}'`);
+    const vertex = pass.scatter?.vertex ?? PASS_VERTEX;
+    const linked = link(ctx, vertex, pass.fragment, `a pass of '${label}'`);
     if (!linked.ok) return linked.message;
     const { program } = linked;
     const uses = connectUses(ctx, label, module, program);
@@ -80,6 +87,10 @@ export function prepareGpu(
       invocations: program.uniforms.get(INVOCATIONS) ?? null,
       workgroups: program.uniforms.get(WORKGROUPS) ?? null,
       layer: program.uniforms.get(LAYER) ?? null,
+      scatter: pass.scatter && { sites: pass.scatter.sites, words: pass.scatter.words },
+      site: program.uniforms.get('kit_site') ?? null,
+      word: program.uniforms.get('kit_part') ?? null,
+      phase: program.uniforms.get('kit_phase') ?? null,
     });
   }
   return { module, passes };
@@ -190,6 +201,39 @@ function replaceable(gl: WebGL2RenderingContext, view: ViewImpl): boolean {
     (view.dimension === '3d' ||
       (view.baseArrayLayer === 0 && view.arrayLayerCount === texture.depthOrArrayLayers))
   );
+}
+
+/** Copies one level and layer of a texture into a 2d texture of its size, on the scratch unit. */
+function copyInto(
+  ctx: Ctx,
+  source: { texture: WebGLTexture; target: number; level: number; layer: number },
+  into: WebGLTexture,
+  width: number,
+  height: number,
+): void {
+  const { gl, state, scratch } = ctx;
+  state.readFramebuffer(scratch.read);
+  if (source.target === gl.TEXTURE_2D) {
+    gl.framebufferTexture2D(
+      gl.READ_FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      source.texture,
+      source.level,
+    );
+  } else {
+    gl.framebufferTextureLayer(
+      gl.READ_FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      source.texture,
+      source.level,
+      source.layer,
+    );
+  }
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
+  state.scratchTexture(gl.TEXTURE_2D, into);
+  gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
 }
 
 type Resolved =
@@ -328,6 +372,116 @@ export function runGpu(
       if (view.dimension === '2d-array') layers = view.arrayLayerCount;
       if (view.dimension === '3d') layers = depth;
       internal = view.texture.info.internal;
+    }
+
+    if (pass.scatter) {
+      const { sites, words } = pass.scatter;
+      const buffer = resource.kind === 'buffer';
+      const count = invocations[0] * invocations[1] * invocations[2];
+      const made: WebGLTexture[] = [];
+      for (let layer = 0; layer < layers; layer++) {
+        const texture = take(ctx, internal, width, height);
+        // Cells no point covers keep their old contents
+        if (resource.kind === 'buffer') {
+          const data = dataTexture(ctx, resource.buffer);
+          copyInto(
+            ctx,
+            { texture: data.texture, target: gl.TEXTURE_2D, level: 0, layer: 0 },
+            texture,
+            width,
+            height,
+          );
+        } else {
+          const { view: from } = resource;
+          const stored = onGl(ctx, from.texture);
+          copyInto(
+            ctx,
+            {
+              texture: stored.texture as WebGLTexture,
+              target: stored.target,
+              level: from.baseMipLevel,
+              layer: from.dimension === '3d' ? layer : from.baseArrayLayer + layer,
+            },
+            texture,
+            width,
+            height,
+          );
+        }
+        made.push(texture);
+        state.drawFramebuffer(ctx.scratch.draw);
+        gl.framebufferTexture2D(
+          gl.DRAW_FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT0,
+          gl.TEXTURE_2D,
+          texture,
+          0,
+        );
+        state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        state.program(pass.program.program);
+        setInt(gl, pass.layer, layer);
+        state.vertexArray(null);
+        state.viewport(0, 0, width, height);
+        writeEverything(ctx);
+        for (const cap of [
+          gl.SCISSOR_TEST,
+          gl.DEPTH_TEST,
+          gl.STENCIL_TEST,
+          gl.CULL_FACE,
+          gl.RASTERIZER_DISCARD,
+          gl.SAMPLE_ALPHA_TO_COVERAGE,
+          gl.POLYGON_OFFSET_FILL,
+        ]) {
+          state.enable(cap, false);
+        }
+        state.blend(0, NO_BLEND);
+        const drawn = count > 0 ? sites : 0;
+        for (let site = 0; site < drawn; site++) {
+          setInt(gl, pass.site, site);
+          for (let word = 0; word < (buffer ? words : 1); word++) {
+            setInt(gl, pass.word, word);
+            // A data texel holds four words; each draw writes the one channel its points carry
+            for (let phase = 0; phase < (buffer ? 4 : 1); phase++) {
+              setInt(gl, pass.phase, phase);
+              state.colorMask(0, buffer ? 1 << phase : 0xf);
+              gl.drawArrays(gl.POINTS, 0, count);
+            }
+          }
+        }
+        gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+      }
+      if (resource.kind === 'buffer') {
+        const size = [internal, width, height] as const;
+        outputs.push(() => give(ctx, ...size, replaceData(resource.buffer, made[0]!)));
+      } else {
+        const { view: stored } = resource;
+        outputs.push(() => {
+          const texture = stored.texture;
+          made.forEach((value, layer) => {
+            const source: TextureImpl = {
+              ...texture,
+              target: gl.TEXTURE_2D,
+              texture: value,
+              renderbuffer: null,
+            };
+            blitLevel(
+              ctx,
+              { texture: source, level: 0, layer: 0, x: 0, y: 0 },
+              {
+                texture,
+                level: stored.baseMipLevel,
+                layer: stored.dimension === '3d' ? layer : stored.baseArrayLayer + layer,
+                x: 0,
+                y: 0,
+              },
+              width,
+              height,
+            );
+            give(ctx, internal, width, height, value, made.length);
+          });
+          glWritten(texture);
+        });
+      }
+      continue;
     }
 
     // A layered target's pass writes several layers a draw; a whole single-level texture is
