@@ -15,10 +15,11 @@ A compute pipeline runs one of two ways. The fallback picks per pipeline, and fa
 
 **On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed indices, writes inside helper functions that are not handed the invocation's own index.
 
-- Invocations run one after another, in order. A kernel that is correct under any interleaving is correct here.
+- Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
 - A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame.
-- Arithmetic runs in 64-bit floats and rounds to 32 bits when a value is stored. A simulation follows a slightly different trajectory from WebGPU's, as it does between two GPUs.
+- Floating-point intermediates use JavaScript's 64-bit numbers. An `f32` buffer store rounds to 32 bits; texture stores convert to their format. Integer arithmetic preserves 32-bit wraparound. Float rounding can change threshold decisions or simulation trajectories compared with WebGPU.
+- Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
 
 `backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick a kernel that suits a CPU, as the kit's culling does, and an example's `meta.json` may give `fallback` scene options that size it.
@@ -28,7 +29,7 @@ A compute pipeline runs one of two ways. The fallback picks per pipeline, and fa
 - A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
 - No `textureGather` or `textureGatherCompare`, no `textureNumSamples`, no multisampled or cube-array texture bindings.
 - No `sample_index`, `primitive_index`, `clip_distances` or sample-mask input. A `sample_mask` output discards the fragment when bit 0 is clear, which is exact only without multisampling.
-- No `extractBits` or `insertBits`, no `f16`, no `bool` inside a buffer, no array of arrays in a buffer.
+- No `extractBits` or `insertBits` in generated GLSL (CPU kernels support both), no `f16`, no `bool` inside a buffer, no array of arrays in a buffer on the GPU path.
 - A render stage cannot write a buffer or a storage texture, and cannot use atomics other than `atomicLoad`.
 - A uniform buffer over 16 KiB is read through a texture instead of a uniform block. Reading a whole runtime-sized array as one value throws.
 - A stage may use 16 texture units, and a program 32. Each storage buffer, each large uniform buffer and each texture and sampler pair takes one. A program that needs more fails when it links, with a message that counts them.
