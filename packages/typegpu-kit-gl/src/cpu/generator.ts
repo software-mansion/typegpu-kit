@@ -37,7 +37,7 @@ export class CpuGenerator extends WgslGenerator {
     return this.#vectors.get(code.replace(/^\((\w+)\)$/, '$1'));
   }
   #vector(_schema: d.BaseData, components: string[]): string {
-    const name = this.ctx.makeUniqueIdentifier('cpuVector', 'block');
+    const name = this.ctx.makeUniqueIdentifier('cpuVector', 'global');
     this.#vectors.set(name, components);
     return name;
   }
@@ -87,7 +87,7 @@ export class CpuGenerator extends WgslGenerator {
         );
       const address = this.#addresses.get(code);
       if (address && !/^cpuAddress(?:_\d+)?$/.test(code)) {
-        const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'block');
+        const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'global');
         this.#addresses.set(name, address);
         return snip(name, result.dataType, result.origin, result.possibleSideEffects);
       }
@@ -152,7 +152,7 @@ export class CpuGenerator extends WgslGenerator {
               result.origin,
               result.possibleSideEffects,
             );
-          const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'block');
+          const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'global');
           this.#addresses.set(name, address);
           return snip(
             name,

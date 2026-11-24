@@ -100,3 +100,28 @@ it('preserves TypeGPU reference assignment validation', () => {
   );
   root.destroy();
 });
+
+it('keeps address expressions distinct in sibling blocks', async () => {
+  const root = cpuRoot();
+  const Row = d.struct({ a: d.vec3f, b: d.vec3f });
+  const input = root.createUniform(Row, { a: d.vec3f(1, 2, 3), b: d.vec3f(4, 5, 6) });
+  const output = root.createMutable(d.arrayOf(d.vec2f, 2));
+  const kernel = tgpu.computeFn({ workgroupSize: [2], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    if (id.x === 0) {
+      const values = input.$;
+      output.$[0] = d.vec2f(values.a.xz);
+    } else {
+      const values = input.$;
+      output.$[1] = d.vec2f(values.b.xz);
+    }
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  expect((await output.read()).map((v) => [v.x, v.y])).toEqual([
+    [1, 3],
+    [4, 6],
+  ]);
+  root.destroy();
+});
