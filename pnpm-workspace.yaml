@@ -43,3 +43,4 @@ patchedDependencies:
   metro@0.87.1: packages/typegpu-kit/patches/metro@0.87.1.patch
   metro-runtime@0.87.1: packages/typegpu-kit/patches/metro-runtime@0.87.1.patch
   unplugin-typegpu@0.12.8: patches/unplugin-typegpu@0.12.8.patch
+  typegpu@0.12.11: patches/typegpu@0.12.11.patch
