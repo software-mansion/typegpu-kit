@@ -6,6 +6,7 @@
  * @module
  */
 
+import * as backends from '../backends.ts';
 import * as cameras from '../cameras.ts';
 import { encoderOf, type Frame } from '../frames.ts';
 import * as passes from '../passes.ts';
@@ -122,6 +123,18 @@ export interface Environment extends Disposable {
 const missing = unfilled('an environment', 'sky', 'an `environment.create`');
 /** Holds nine spherical harmonics of light, the colour in `xyz`. */
 const Harmonics = d.arrayOf(d.vec4f, 9);
+/** The harmonics of one row of texels, as fields, since WebGL 2 shaders have no arrays of arrays. */
+const RowHarmonics = d.struct({
+  b0: d.vec4f,
+  b1: d.vec4f,
+  b2: d.vec4f,
+  b3: d.vec4f,
+  b4: d.vec4f,
+  b5: d.vec4f,
+  b6: d.vec4f,
+  b7: d.vec4f,
+  b8: d.vec4f,
+});
 const sky = tgpu.accessor(Settings, missing);
 const harmonics = tgpu.accessor(Harmonics, missing);
 const cube = tgpu.accessor(d.textureCube(d.f32), missing);
@@ -719,6 +732,8 @@ const UNTIMED = {};
  * of diffuse light, filled by `bake` from any source `add` prepared. Lit pipelines read it through
  * `sky.ambient` as the lighting's `ambient` hook; `sky.background()` draws it behind the scene.
  * Throws for a `size` that is not a power of two from 16 to 2048, or `samples` below 1.
+ * On a backend that runs compute on the CPU, the harmonics sum per row of texels into a third
+ * buffer, which one more kernel adds up, so the fallback runs both on its GPU too.
  *
  * @injects definition the cube, the harmonics and the settings that `environment.reflection`,
  * `irradiance`, `occluded`, `backdrop` and `ambient` read
@@ -870,9 +885,78 @@ export function create(root: TgpuRoot, options: Options = {}): Environment {
     }
   });
 
+  // Where compute runs on the CPU, the shared sum would run there and read the cube back. Kernels
+  // that each write their own element instead run as fragment passes on the fallback
+  const cpu = backends.of(root).compute === 'cpu';
+  const rows = 6 * shSide;
+  const partials = cpu
+    ? root.createBuffer(d.arrayOf(RowHarmonics, rows)).$usage('storage')
+    : undefined;
+  const rowsOut = partials?.as('mutable');
+  const rowsIn = partials?.as('readonly');
+  const projectRow = tgpu.computeFn({
+    workgroupSize: [SH_THREADS],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= rows) return;
+    // As `project` sums, one row of one face's texels
+    const face = std.intdiv(gid.x, d.u32(shSide));
+    const y = gid.x % shSide;
+    const sums = Harmonics();
+    for (let x = d.u32(0); x < shSide; x++) {
+      const uv = (d.vec2f(d.f32(x), d.f32(y)) + 0.5) / shSide;
+      const ab = uv * 2 - 1;
+      const angle = 4 / (shSide * shSide * std.pow(1 + std.dot(ab, ab), 1.5));
+      const n = faceDirection(face, uv);
+      const c = std.textureLoad(shView.$, d.vec2u(x, y), face, 0).rgb * angle;
+      const basis = basisOf(n);
+      for (const k of tgpu.unroll(NINE)) sums[k] = sums[k] + d.vec4f(c * basis[k], 0);
+      sums[0].w += angle;
+    }
+    rowsOut!.$[gid.x] = RowHarmonics({
+      b0: sums[0],
+      b1: sums[1],
+      b2: sums[2],
+      b3: sums[3],
+      b4: sums[4],
+      b5: sums[5],
+      b6: sums[6],
+      b7: sums[7],
+      b8: sums[8],
+    });
+  });
+  const projectRows = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const total = Harmonics();
+    for (let r = d.u32(0); r < rows; r++) {
+      const row = rowsIn!.$[r] as d.Infer<typeof RowHarmonics>;
+      total[0] = total[0] + row.b0;
+      total[1] = total[1] + row.b1;
+      total[2] = total[2] + row.b2;
+      total[3] = total[3] + row.b3;
+      total[4] = total[4] + row.b4;
+      total[5] = total[5] + row.b5;
+      total[6] = total[6] + row.b6;
+      total[7] = total[7] + row.b7;
+      total[8] = total[8] + row.b8;
+    }
+    // As `project` ends
+    const whole = (4 * PI) / total[0].w;
+    for (const k of tgpu.unroll(NINE)) {
+      shOut.$[k] = d.vec4f(total[k].xyz * (whole * BANDS[k]), 0);
+    }
+  });
+
   const halvingPipeline = root.createComputePipeline({ compute: halve });
   const prefilterPipeline = root.createComputePipeline({ compute: prefilter });
-  const projectPipeline = root.createComputePipeline({ compute: project });
+  const projectPipeline = cpu ? undefined : root.createComputePipeline({ compute: project });
+  const rowPipeline = cpu
+    ? root.createComputePipeline({ compute: projectRow }).$name('projectRow')
+    : undefined;
+  const rowsPipeline = cpu
+    ? root.createComputePipeline({ compute: projectRows }).$name('projectRows')
+    : undefined;
 
   const projected = (lightFrom: LightFrom) =>
     root.createComputePipeline({
@@ -916,7 +1000,7 @@ export function create(root: TgpuRoot, options: Options = {}): Environment {
     cubePipeline,
     halvingPipeline,
     prefilterPipeline,
-    projectPipeline,
+    ...(projectPipeline ? [projectPipeline] : [rowPipeline!, rowsPipeline!]),
   ];
 
   const inject: Inject = (cfg) =>
@@ -930,6 +1014,7 @@ export function create(root: TgpuRoot, options: Options = {}): Environment {
     radianceCube.destroy();
     reflectionCube.destroy();
     shBuffer.destroy();
+    partials?.destroy();
   };
 
   return {
@@ -987,8 +1072,15 @@ export function create(root: TgpuRoot, options: Options = {}): Environment {
         pass.setBindGroup(group);
         pass.dispatchWorkgroups(groups(side), groups(side), 6);
       }
-      pass.setPipeline(projectPipeline);
-      pass.dispatchWorkgroups(1);
+      if (projectPipeline) {
+        pass.setPipeline(projectPipeline);
+        pass.dispatchWorkgroups(1);
+      } else {
+        pass.setPipeline(rowPipeline!);
+        pass.dispatchWorkgroups(Math.ceil(rows / SH_THREADS));
+        pass.setPipeline(rowsPipeline!);
+        pass.dispatchWorkgroups(1);
+      }
       pass.end();
     },
 

@@ -1,7 +1,7 @@
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
-import { expect, it } from 'vitest';
-import { environment, lighting, materials, shading, images } from '../../src/index.ts';
+import { describe, expect, it } from 'vitest';
+import { backends, environment, lighting, materials, shading, images } from '../../src/index.ts';
 
 const AXES = [
   d.vec3f(1, 0, 0),
@@ -216,4 +216,31 @@ it('bakes a blue daylight sky, brighter at the horizon, that only the gradient l
     tgpu.fn(environment.daylight).pipe(night.inject()),
   );
   near(dark2.diffuse[2], [0.01, 0.02, 0.04], 3);
+});
+
+/** Light that differs in every band, so each harmonic sums something. */
+const varied = (direction: d.v3f) => {
+  'use gpu';
+  return d.vec3f(direction.y * direction.y, std.max(direction.x, 0) * 3, 0.25 + direction.z * 0.2);
+};
+
+describe('environment where compute runs on the CPU', () => {
+  it.each([16, 64])(
+    'projects the harmonics row by row as the workgroup does (size %i)',
+    async (size) => {
+      const shared = await gpuRoot();
+      const rowed = await gpuRoot();
+      // A device that says its compute runs on the CPU gets the row kernels, which a GPU runs too
+      Object.assign(rowed.device, {
+        [backends.brand]: { ...backends.of(rowed), compute: 'cpu' } satisfies backends.Backend,
+      });
+      const expected = await bakeAndRead(shared, environment.create(shared, { size }), varied);
+      const actual = await bakeAndRead(rowed, environment.create(rowed, { size }), varied);
+      for (const [i, value] of expected.diffuse.entries()) {
+        near(actual.diffuse[i] as d.v3f, [value.x, value.y, value.z], 4);
+      }
+      shared.destroy();
+      rowed.destroy();
+    },
+  );
 });
