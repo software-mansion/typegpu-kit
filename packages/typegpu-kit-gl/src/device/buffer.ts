@@ -32,6 +32,12 @@ export interface BufferImpl {
   vertex: Copy<WebGLBuffer> | undefined;
   index: Copy<WebGLBuffer> | undefined;
   data: Copy<DataTexture> | undefined;
+  uniform: Copy<WebGLBuffer> | undefined;
+  /** Uniform copies of ranges the whole copy cannot bind, by first byte and size. */
+  readonly slices: Map<
+    string,
+    Copy<WebGLBuffer> & { readonly offset: number; readonly size: number }
+  >;
   free(): void;
 }
 
@@ -42,10 +48,14 @@ export function bufferImpl(buffer: GPUBuffer): BufferImpl {
 /** Records that the CPU copy changed in `[start, end)`, for every GL copy to upload. */
 export function written(buffer: BufferImpl, start: number, end: number): void {
   if (end <= start) return;
-  for (const copy of [buffer.vertex, buffer.index, buffer.data]) {
+  for (const copy of [buffer.vertex, buffer.index, buffer.data, buffer.uniform]) {
     if (!copy) continue;
     copy.start = Math.min(copy.start, start);
     copy.end = Math.max(copy.end, end);
+  }
+  for (const slice of buffer.slices.values()) {
+    slice.start = Math.min(slice.start, start);
+    slice.end = Math.max(slice.end, end);
   }
 }
 
@@ -96,6 +106,54 @@ export function indexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
     copy.end = 0;
   }
   return copy.value;
+}
+
+/**
+ * Binds `size` bytes of the buffer from `offset` to a uniform block binding point, current. A range
+ * GL cannot bind in place, at an offset off `UNIFORM_BUFFER_OFFSET_ALIGNMENT` or past the end,
+ * binds a copy of its own.
+ */
+export function bindUniformRange(
+  ctx: Ctx,
+  buffer: BufferImpl,
+  point: number,
+  offset: number,
+  size: number,
+): void {
+  const { gl } = ctx;
+  const upload = (copy: Copy<WebGLBuffer>, base: number, length: number) => {
+    gl.bindBuffer(gl.UNIFORM_BUFFER, copy.value);
+    const start = Math.max(copy.start, base);
+    const end = Math.min(copy.end, base + length, buffer.bytes.length);
+    if (start < end)
+      gl.bufferSubData(gl.UNIFORM_BUFFER, start - base, buffer.bytes, start, end - start);
+    copy.start = Infinity;
+    copy.end = 0;
+  };
+  if (offset % ctx.uniformAlignment === 0 && offset + size <= buffer.bytes.length) {
+    let copy = buffer.uniform;
+    if (!copy) {
+      const value = gl.createBuffer();
+      gl.bindBuffer(gl.UNIFORM_BUFFER, value);
+      gl.bufferData(gl.UNIFORM_BUFFER, buffer.bytes, gl.DYNAMIC_DRAW);
+      copy = buffer.uniform = { value, start: Infinity, end: 0 };
+    } else {
+      upload(copy, 0, buffer.bytes.length);
+    }
+    gl.bindBufferRange(gl.UNIFORM_BUFFER, point, copy.value, offset, size);
+    return;
+  }
+  const key = `${offset}:${size}`;
+  let slice = buffer.slices.get(key);
+  if (!slice) {
+    const value = gl.createBuffer();
+    gl.bindBuffer(gl.UNIFORM_BUFFER, value);
+    gl.bufferData(gl.UNIFORM_BUFFER, size, gl.DYNAMIC_DRAW);
+    slice = { value, offset, size, start: 0, end: buffer.bytes.length };
+    buffer.slices.set(key, slice);
+  }
+  upload(slice, offset, size);
+  gl.bindBufferRange(gl.UNIFORM_BUFFER, point, slice.value, 0, size);
 }
 
 /** The data texture a shader reads the buffer through, current. */
@@ -170,11 +228,16 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     vertex: undefined,
     index: undefined,
     data: undefined,
+    uniform: undefined,
+    slices: new Map(),
     free() {
       if (impl.vertex) gl.deleteBuffer(impl.vertex.value);
       if (impl.index) gl.deleteBuffer(impl.index.value);
       if (impl.data) gl.deleteTexture(impl.data.value.texture);
-      impl.vertex = impl.index = impl.data = undefined;
+      if (impl.uniform) gl.deleteBuffer(impl.uniform.value);
+      for (const slice of impl.slices.values()) gl.deleteBuffer(slice.value);
+      impl.slices.clear();
+      impl.vertex = impl.index = impl.data = impl.uniform = undefined;
     },
   };
   const untrack = ctx.track(() => impl.free());

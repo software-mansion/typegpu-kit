@@ -1,7 +1,13 @@
 /** Running a recorded render pass on GL: its framebuffer, clears, bindings and draws. */
 
 import { type Bound, bufferEntry } from './binding.ts';
-import { type BufferImpl, dataTexture, indexBuffer, vertexBuffer } from './buffer.ts';
+import {
+  bindUniformRange,
+  type BufferImpl,
+  dataTexture,
+  indexBuffer,
+  vertexBuffer,
+} from './buffer.ts';
 import type { Ctx } from './context.ts';
 import type { RenderPipelineImpl } from './pipeline.ts';
 import {
@@ -265,6 +271,16 @@ function bindResources(pass: RenderPass, pipeline: RenderPipelineImpl): boolean 
       sampler = use.comparison || (filterable && !use.depth) ? impl.sampler : impl.unfiltered();
     }
     state.sampler(use.unit, sampler);
+  }
+  for (const use of pipeline.blocks) {
+    const entry = bufferEntry(pass.groups[use.group], use.binding);
+    if (!entry)
+      return missing(
+        pass,
+        pipeline,
+        `uniform buffer @group(${use.group}) @binding(${use.binding})`,
+      );
+    bindUniformRange(ctx, entry.buffer, use.point, entry.offset, use.size);
   }
   for (const use of pipeline.levels) {
     const entry = pass.groups[use.group]?.group.entries.get(use.binding);

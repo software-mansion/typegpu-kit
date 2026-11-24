@@ -140,6 +140,8 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     defines,
     maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
     maxTextureUnits: gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) as number,
+    uniformAlignment: gl.getParameter(gl.UNIFORM_BUFFER_OFFSET_ALIGNMENT) as number,
+    maxUniformBindings: gl.getParameter(gl.MAX_UNIFORM_BUFFER_BINDINGS) as number,
     nearest,
     scratch: { read: gl.createFramebuffer(), draw: gl.createFramebuffer() },
     id: () => nextId++,

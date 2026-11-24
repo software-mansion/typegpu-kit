@@ -16,6 +16,8 @@ export interface Ctx {
   readonly defines: readonly string[];
   readonly maxTextureSize: number;
   readonly maxTextureUnits: number;
+  readonly uniformAlignment: number;
+  readonly maxUniformBindings: number;
   /** A sampler that filters nothing, for buffers and texel loads. */
   readonly nearest: WebGLSampler;
   /** Framebuffers the device uses for copies, blits and readback. */

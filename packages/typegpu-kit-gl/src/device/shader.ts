@@ -7,6 +7,7 @@
 import { compile, isCpuModule } from '../cpu/index.ts';
 import type { CpuModule } from '../cpu/types.ts';
 import {
+  type BlockBinding,
   type BufferBinding,
   isRenderModule,
   type LevelCountBinding,
@@ -21,6 +22,7 @@ export interface Stages {
   readonly vertex: string | undefined;
   readonly fragment: string | undefined;
   readonly buffers: readonly BufferBinding[];
+  readonly blocks: readonly BlockBinding[];
   readonly textures: readonly TextureBinding[];
   readonly levels: readonly LevelCountBinding[];
 }
@@ -94,7 +96,14 @@ const { sampler: _sampler, ...loadTexture } = blitTexture;
 /** The GLSL for one of TypeGPU's own WGSL shaders, or undefined for any other WGSL. */
 function builtin(ctx: Ctx, code: string): Stages | undefined {
   if (isBlitVertex(code)) {
-    return { vertex: blitVertex(ctx), fragment: undefined, buffers: [], textures: [], levels: [] };
+    return {
+      vertex: blitVertex(ctx),
+      fragment: undefined,
+      buffers: [],
+      blocks: [],
+      textures: [],
+      levels: [],
+    };
   }
   const sample = SAMPLE_FRAGMENT.exec(code);
   if (sample && code.includes('@group(0) @binding(0) var src: texture_2d<f32>;')) {
@@ -103,6 +112,7 @@ function builtin(ctx: Ctx, code: string): Stages | undefined {
       vertex: undefined,
       fragment: blitFragment(ctx, `  kit_color = texture(kit_source, kit_uv)${swizzle};`),
       buffers: [],
+      blocks: [],
       textures: [blitTexture],
       levels: [],
     };
@@ -123,6 +133,7 @@ function builtin(ctx: Ctx, code: string): Stages | undefined {
   kit_color = sum * 0.25;`,
       ),
       buffers: [],
+      blocks: [],
       textures: [loadTexture],
       levels: [],
     };
@@ -135,6 +146,7 @@ function stagesOf(module: RenderModule): Stages {
     vertex: module.vertex,
     fragment: module.fragment,
     buffers: module.buffers,
+    blocks: module.blocks ?? [],
     textures: module.textures,
     levels: module.levels ?? [],
   };

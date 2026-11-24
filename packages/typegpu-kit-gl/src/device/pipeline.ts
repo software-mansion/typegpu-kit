@@ -36,6 +36,13 @@ export interface BufferUse {
   readonly range: WebGLUniformLocation | null;
 }
 
+export interface BlockUse {
+  readonly group: number;
+  readonly binding: number;
+  readonly point: number;
+  readonly size: number;
+}
+
 export interface LevelsUse {
   readonly group: number;
   readonly binding: number;
@@ -75,6 +82,7 @@ export interface RenderPipelineImpl {
   error: string | undefined;
   buffers: readonly BufferUse[];
   textures: readonly TextureUse[];
+  blocks: readonly BlockUse[];
   levels: readonly LevelsUse[];
   firstInstance: WebGLUniformLocation | null;
   baseVertex: WebGLUniformLocation | null;
@@ -332,6 +340,8 @@ function stagesOf(descriptor: GPURenderPipelineDescriptor): Stages | string {
         : [...vertex.stages.textures, ...fragment.textures],
     levels:
       same || !fragment ? vertex.stages.levels : [...vertex.stages.levels, ...fragment.levels],
+    blocks:
+      same || !fragment ? vertex.stages.blocks : [...vertex.stages.blocks, ...fragment.blocks],
   };
 }
 
@@ -378,6 +388,19 @@ function connect(ctx: Ctx, impl: RenderPipelineImpl, stages: Stages, program: Pr
     });
     unit++;
   }
+  const blocks: BlockUse[] = [];
+  for (const binding of stages.blocks) {
+    const index = gl.getUniformBlockIndex(program.program, binding.block);
+    if (index === gl.INVALID_INDEX) continue;
+    const point = blocks.length;
+    if (point >= ctx.maxUniformBindings) {
+      impl.error = `The pipeline '${impl.label}' reads ${stages.blocks.length} uniform blocks; WebGL 2 here binds ${ctx.maxUniformBindings}.`;
+      return;
+    }
+    gl.uniformBlockBinding(program.program, index, point);
+    blocks.push({ group: binding.group, binding: binding.binding, point, size: binding.size });
+  }
+  impl.blocks = blocks;
   impl.buffers = buffers;
   impl.textures = textures;
   impl.levels = stages.levels.flatMap((binding) => {
@@ -458,6 +481,7 @@ function makeRenderPipeline(
     error: typeof stages === 'string' ? stages : undefined,
     buffers: [],
     textures: [],
+    blocks: [],
     levels: [],
     firstInstance: null,
     baseVertex: null,
