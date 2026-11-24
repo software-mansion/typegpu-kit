@@ -99,6 +99,32 @@ export class CpuGenerator extends WgslGenerator {
     return undefined;
   }
 
+  #matrixParts(snippet: Snippet): string[][] | undefined {
+    if (snippet.possibleSideEffects) return undefined;
+    const type = scalar(snippet.dataType);
+    const shape = /^mat([234])x([234])f$/.exec(type);
+    if (!shape) return undefined;
+    const code = this.ctx.resolveSnippet(snippet).value;
+    const address = this.#addresses.get(code);
+    const columns = Number(shape[1]);
+    const rows = Number(shape[2]);
+    if (address?.layout.type === type)
+      return Array.from({ length: columns }, (_, c) =>
+        Array.from({ length: rows }, (_row, r) =>
+          readAddress({
+            layout: address.layout.element!.element!,
+            base: address.base,
+            offset: `(${address.offset})+${c * address.layout.stride! + r * 4}`,
+          }),
+        ),
+      );
+    if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(code))
+      return Array.from({ length: columns }, (_, c) =>
+        Array.from({ length: rows }, (_row, r) => `${code}[${c}][${r}]`),
+      );
+    return undefined;
+  }
+
   #value(snippet: Snippet): string {
     const code = this.ctx.resolveSnippet(snippet).value;
     const type = typeof snippet.dataType === 'symbol' ? '' : scalar(snippet.dataType);
@@ -1039,9 +1065,27 @@ export class CpuGenerator extends WgslGenerator {
       const left = this.#value(lhs),
         right = this.#value(rhs);
       if (op === '=')
-        return `${left}=${this.emitTypeAnnotation(lhs.dataType as d.BaseData)}(${right})`;
+        return `${left}=${this.#fresh(right) ? right : `${this.emitTypeAnnotation(lhs.dataType as d.BaseData)}(${right})`}`;
       const lm = /^mat([234])x([234])/.exec(type),
         rm = /^mat([234])x([234])/.exec(rhsType);
+      const matrixLeft = this.#matrixParts(lhs);
+      const matrixRight = this.#matrixParts(rhs);
+      if (op === '*' && matrixLeft && rightParts && !rhs.possibleSideEffects) {
+        const rows = Number(lm![2]);
+        return this.#vector(
+          d[`vec${rows}f` as 'vec2f'],
+          Array.from({ length: rows }, (_row, r) =>
+            matrixLeft.map((column, c) => `(${column[r]})*(${rightParts[c]})`).join('+'),
+          ),
+        );
+      }
+      if (op === '*' && matrixRight && leftParts && !lhs.possibleSideEffects)
+        return this.#vector(
+          d[`vec${matrixRight.length}f` as 'vec2f'],
+          matrixRight.map((column) =>
+            column.map((value, r) => `(${leftParts[r]})*(${value})`).join('+'),
+          ),
+        );
       let output: string;
       if (op === '*' && lm && rhsType.startsWith('vec'))
         output = `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) => Array.from({ length: Number(lm[1]) }, (_c, c) => `a[${c}][${r}]*b[${c}]`).join('+')).join(',')}])`;
@@ -1076,8 +1120,10 @@ export class CpuGenerator extends WgslGenerator {
       const code = `((a,b)=>$vector([${components.join(',')}]))(${left},${right})`;
       return assignment ? `${left} = ${code}` : code;
     }
-    if (op === '=' && ['struct', 'array'].includes(type))
-      return `${this.#value(lhs)} = ${this.emitTypeAnnotation(lhs.dataType as d.BaseData)}(${this.#value(rhs)})`;
+    if (op === '=' && ['struct', 'array'].includes(type)) {
+      const value = this.#value(rhs);
+      return `${this.#value(lhs)} = ${this.#fresh(value) ? value : `${this.emitTypeAnnotation(lhs.dataType as d.BaseData)}(${value})`}`;
+    }
 
     if (!['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(type))
       unsupported(`${op} on ${type}`);
