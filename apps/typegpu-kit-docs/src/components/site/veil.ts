@@ -1,4 +1,4 @@
-import { bayer, bytesOf, type Rgb } from './dither.ts';
+import { bayer, bytesOf, plain, type Rgb } from './dither.ts';
 
 /** Seconds a sweep takes to cross the veil. */
 const LIFT = 0.6;
@@ -12,13 +12,13 @@ export interface Veil {
   /** Puts the veil back, at once, settling a lift under way. */
   cover(): void;
   /**
-   * Stops the waiting light and shows the poster undimmed, for a screen that won't go live or waits
-   * to be asked; `rest(false)` starts the light again.
+   * Stops the waiting light and shows a printed poster undimmed, for a screen that won't go live or
+   * waits to be asked; `rest(false)` starts the light again. A sharp poster shows no light.
    */
   rest(resting?: boolean): void;
 }
 
-/** How bright a poster prints while it waits, before the passing light raises it. */
+/** How bright a printed poster shows while it waits, before the passing light raises it. */
 const DIM = 0.6;
 
 /** `value`, a byte, printed in six levels through the threshold `threshold`. */
@@ -30,9 +30,9 @@ const print = (value: number, threshold: number) => {
 
 /**
  * Veils `screen` with a canvas of cells `cell` CSS pixels wide, put over its first canvas and under
- * what follows it, on the screen's own background, or printing `poster`, an image's address, as it
- * covers the screen. When `owner` is given, the veil lifts as it gains the `live` class and comes
- * back as it loses it.
+ * what follows it, on the screen's own background, or showing `poster`, an image's address, as it
+ * covers the screen: printed in the cells, or sharp when the reader turned the dither off. When
+ * `owner` is given, the veil lifts as it gains the `live` class and comes back as it loses it.
  */
 export function veil(
   screen: HTMLElement,
@@ -57,9 +57,20 @@ export function veil(
     pointerEvents: 'none',
     imageRendering: 'pixelated',
   });
+  // A sharp poster at the screen's own resolution, under the cells, which print only the sweep
+  const plate = poster && plain ? document.createElement('canvas') : undefined;
+  if (plate) {
+    plate.setAttribute('aria-hidden', 'true');
+    Object.assign(plate.style, {
+      position: 'absolute',
+      top: '0',
+      left: '0',
+      pointerEvents: 'none',
+    });
+  }
   const content = screen.querySelector(':scope > canvas');
-  if (content) content.after(canvas);
-  else screen.prepend(canvas);
+  if (content) content.after(...(plate ? [plate, canvas] : [canvas]));
+  else screen.prepend(...(plate ? [plate, canvas] : [canvas]));
 
   const [base, raised, higher, highest, accent, bright] = bytesOf(screen, [
     getComputedStyle(screen).backgroundColor,
@@ -73,10 +84,15 @@ export function veil(
 
   const context = canvas.getContext('2d')!;
   let image = context.createImageData(1, 1);
+  // Where the sweep has passed or is passing, the cells the poster is cut out of
+  let cut = new ImageData(1, 1);
+  const cutCanvas = new OffscreenCanvas(1, 1);
   let resized = true;
-  // The poster at a pixel a cell, cropped as `object-fit: cover` would, once it has loaded
   let picture: HTMLImageElement | undefined;
+  // A printed poster at a pixel a cell, cropped as `object-fit: cover` would
   let pixels: Uint8ClampedArray | undefined;
+  // Plate pixels a CSS pixel
+  let pixel = 1;
   const size = () => {
     if (!resized) return;
     resized = false;
@@ -89,18 +105,31 @@ export function veil(
       canvas.style.width = `${columns * cell}px`;
       canvas.style.height = `${rows * cell}px`;
       image = context.createImageData(columns, rows);
+      cut = new ImageData(columns, rows);
+      cutCanvas.width = columns;
+      cutCanvas.height = rows;
     }
     if (!picture) return;
-    const scale = Math.max(columns / picture.naturalWidth, rows / picture.naturalHeight);
-    const shrunk = new OffscreenCanvas(columns, rows).getContext('2d', {
-      willReadFrequently: true,
-    })!;
-    shrunk.imageSmoothingQuality = 'high';
-    const [w, h] = [picture.naturalWidth * scale, picture.naturalHeight * scale];
-    shrunk.drawImage(picture, (columns - w) / 2, (rows - h) / 2, w, h);
-    pixels = shrunk.getImageData(0, 0, columns, rows).data;
+    if (!plate) {
+      const shrunk = new OffscreenCanvas(columns, rows).getContext('2d', {
+        willReadFrequently: true,
+      })!;
+      cover(shrunk, picture);
+      pixels = shrunk.getImageData(0, 0, columns, rows).data;
+      return;
+    }
+    pixel = devicePixelRatio;
+    plate.width = Math.max(1, Math.round(width * pixel));
+    plate.height = Math.max(1, Math.round(height * pixel));
+    plate.style.width = `${width}px`;
+    plate.style.height = `${height}px`;
   };
-  if (poster) {
+
+  // Loaded as the screen nears the viewport
+  let requested = false;
+  const request = () => {
+    if (requested || !poster) return;
+    requested = true;
     const loading = new Image();
     loading.src = poster;
     loading.decode().then(
@@ -111,13 +140,28 @@ export function veil(
       },
       () => {},
     );
-  }
+  };
+
+  // The poster, cropped as `object-fit: cover` would, less the cells the sweep has reached
+  const paint = (sweeping: boolean) => {
+    if (!plate || !picture) return;
+    const plating = plate.getContext('2d')!;
+    plating.globalCompositeOperation = 'source-over';
+    plating.imageSmoothingEnabled = true;
+    cover(plating, picture);
+    if (!sweeping) return;
+    cutCanvas.getContext('2d')!.putImageData(cut, 0, 0);
+    plating.globalCompositeOperation = 'destination-out';
+    plating.imageSmoothingEnabled = false;
+    plating.drawImage(cutCanvas, 0, 0, cut.width * cell * pixel, cut.height * cell * pixel);
+  };
 
   let resting = false;
 
   // Where the waiting light is, and where the sweep's front is, from -0.3 to 1.3 across
   const draw = (light: number, front: number) => {
     const { width: columns, height: rows, data } = image;
+    const gone = cut.data;
     for (let j = 0; j < rows; j++) {
       const y = (j + 0.5) / rows;
       for (let i = 0; i < columns; i++) {
@@ -125,7 +169,8 @@ export function veil(
         const threshold = bayer(i, j);
         const swept = (front - x * 0.85 - y * 0.15) * 9;
         const at = (j * columns + i) * 4;
-        if (swept > threshold + 0.6) {
+        if (plate) gone[at + 3] = swept > threshold ? 255 : 0;
+        if (swept > threshold + 0.6 || (plate && picture && swept <= threshold)) {
           data[at + 3] = 0;
           continue;
         }
@@ -167,6 +212,7 @@ export function veil(
     const before = phase;
     phase = { kind: shown ? 'covered' : 'gone' };
     canvas.style.display = shown ? '' : 'none';
+    if (plate) plate.style.display = shown ? '' : 'none';
     if (before.kind === 'lifting') for (const done of before.done) done();
   };
 
@@ -182,9 +228,14 @@ export function veil(
       const k = Math.min((now - phase.start) / 1000 / LIFT, 1);
       draw(light, -0.3 + 1.9 * (1 - (1 - k) ** 2));
       if (k === 1) return show(false);
-    } else draw(light, -1);
-    if (seen && (phase.kind === 'lifting' || !(still.matches || resting)))
-      frame = requestAnimationFrame(tick);
+      paint(true);
+    } else {
+      draw(light, -1);
+      paint(false);
+    }
+    // A sharp poster holds still until the sweep
+    const waiting = !(plate && picture) && !(still.matches || resting);
+    if (seen && (phase.kind === 'lifting' || waiting)) frame = requestAnimationFrame(tick);
   };
   const run = () => {
     if (!frame && phase.kind !== 'gone') frame = requestAnimationFrame(tick);
@@ -218,6 +269,12 @@ export function veil(
     },
   };
 
+  if (poster) {
+    new IntersectionObserver(([entry]) => entry?.isIntersecting && request(), {
+      rootMargin: '400px 0px',
+    }).observe(screen);
+  }
+
   new ResizeObserver(() => {
     resized = true;
     run();
@@ -231,4 +288,17 @@ export function veil(
   }
   run();
   return result;
+}
+
+/** Draws `picture` over all of `context`'s canvas, cropped as `object-fit: cover` would. */
+function cover(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  picture: HTMLImageElement,
+) {
+  const { width, height } = context.canvas;
+  context.clearRect(0, 0, width, height);
+  context.imageSmoothingQuality = 'high';
+  const scale = Math.max(width / picture.naturalWidth, height / picture.naturalHeight);
+  const [w, h] = [picture.naturalWidth * scale, picture.naturalHeight * scale];
+  context.drawImage(picture, (width - w) / 2, (height - h) / 2, w, h);
 }

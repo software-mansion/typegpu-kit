@@ -55,11 +55,14 @@ const META: Readonly<Record<string, (value: unknown) => boolean>> = {
   hint: text,
   poster: (value) =>
     record(value) &&
-    Object.keys(value).every((field) => field === 'seconds' || field === 'quality') &&
+    Object.keys(value).every((field) => ['seconds', 'quality', 'width'].includes(field)) &&
     optional((seconds) => typeof seconds === 'number' && seconds >= 0)(value.seconds) &&
     optional(
       (quality) => Number.isInteger(quality) && Number(quality) >= 0 && Number(quality) <= 100,
-    )(value.quality),
+    )(value.quality) &&
+    optional((width) => Number.isInteger(width) && Number(width) > 0 && Number(width) % 8 === 0)(
+      value.width,
+    ),
 };
 
 const REQUIRED = ['title', 'category', 'rarity', 'description', 'line', 'order'];
@@ -90,7 +93,7 @@ describe('the examples', () => {
   });
 
   it.each(found)('%s has a scene, a poster and a test, and no page code', async (key) => {
-    for (const file of ['meta.json', 'scene.ts', 'poster.webp']) {
+    for (const file of ['meta.json', 'scene.ts', 'poster.webp', 'poster-small.webp']) {
       expect(existsSync(at(`../src/${key}/${file}`)), `${key}/${file}`).toBe(true);
     }
     for (const file of ['index.ts', 'index.html']) {
@@ -107,7 +110,7 @@ describe('the examples', () => {
 
   it.each(found)('%s names the CC0 source of the files it ships', (key) => {
     const shipped = filesOf(key).filter(
-      (path) => !/\.(?:ts|json|html)$/.test(path) && !path.endsWith('/poster.webp'),
+      (path) => !/\.(?:ts|json|html)$/.test(path) && !/\/poster(?:-small)?\.webp$/.test(path),
     );
     if (shipped.length === 0) return;
 

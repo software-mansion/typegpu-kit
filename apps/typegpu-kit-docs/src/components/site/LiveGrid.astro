@@ -50,10 +50,12 @@ const cards = keys.map((key, index) => {
         <div class="screen">
           <canvas aria-hidden="true" />
           <span class="wait" data-wait />
-          {/* The title's link serves the keyboard and screen readers; this one serves the pointer
-              where that link does not cover the picture, as on the featured card */}
+          {/* The title's link serves the keyboard and screen readers; this one, over the picture,
+              serves the pointer where that link does not reach, as on the featured card */}
           <a class="open" href={exampleHref(example.key)} tabindex="-1" aria-hidden="true">
-            Open example<span class="arrow">→</span>
+            <span class="chip">
+              Open example<span class="arrow">→</span>
+            </span>
           </a>
         </div>
         <div class="caption">
@@ -175,10 +177,18 @@ const cards = keys.map((key, index) => {
       color: var(--text-2);
     }
 
-    .grid[data-feature] > .example:first-child .open {
+    .grid[data-feature] > .example:first-child .chip,
+    .grid[data-feature] > .example:first-child .screen > :global(.viz-run) {
       top: var(--s-3);
       right: var(--s-3);
       bottom: auto;
+    }
+
+    @media (pointer: coarse) {
+      .grid[data-feature] > .example:first-child .screen > :global(.viz-run) {
+        top: var(--s-1);
+        right: var(--s-1);
+      }
     }
   }
 
@@ -273,9 +283,15 @@ const cards = keys.map((key, index) => {
   /* A playing preview points to its example: on hover, or always where there is none */
   .open {
     position: absolute;
+    inset: 0;
+    z-index: 1;
+    text-decoration: none;
+  }
+
+  .chip {
+    position: absolute;
     right: var(--s-2);
     bottom: var(--s-2);
-    z-index: 1;
     display: flex;
     gap: var(--s-1);
     align-items: center;
@@ -286,8 +302,6 @@ const cards = keys.map((key, index) => {
     backdrop-filter: blur(6px);
     color: var(--text);
     font: 11px / 1.5 var(--font-mono);
-    text-decoration: none;
-    pointer-events: none;
     opacity: 0;
     translate: 0 4px;
     transition:
@@ -301,12 +315,11 @@ const cards = keys.map((key, index) => {
     transition: translate 0.15s ease;
   }
 
-  .example:global(.live):is(:hover, :has(:focus-visible)) .open {
+  .example:global(.live):is(:hover, :has(:focus-visible)) .chip {
     opacity: 1;
     translate: 0 0;
     border-color: var(--accent);
     color: var(--link);
-    pointer-events: auto;
   }
 
   .example:global(.live):hover .arrow {
@@ -314,16 +327,15 @@ const cards = keys.map((key, index) => {
   }
 
   @media (hover: none) {
-    .example:global(.live) .open {
+    .example:global(.live) .chip {
       opacity: 1;
       translate: 0 0;
       transition-delay: 0.4s;
-      pointer-events: auto;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .open,
+    .chip,
     .arrow {
       translate: none;
       transition: none;

@@ -6,6 +6,7 @@
   "line": "65 536 particles flowing along Perlin noise.",
   "order": 32,
   "poster": {
-    "quality": 65
+    "quality": 65,
+    "width": 800
   }
 }

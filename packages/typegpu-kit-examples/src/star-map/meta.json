@@ -8,5 +8,8 @@
   "card": {
     "choose": [-5, 0, -1.5]
   },
-  "hint": "hover a star \u00b7 click to choose \u00b7 drag to orbit \u00b7 wheel to zoom"
+  "hint": "hover a star \u00b7 click to choose \u00b7 drag to orbit \u00b7 wheel to zoom",
+  "poster": {
+    "width": 800
+  }
 }

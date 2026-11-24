@@ -11,6 +11,7 @@
   },
   "hint": "tap to drop more food",
   "poster": {
-    "seconds": 24
+    "seconds": 24,
+    "width": 800
   }
 }

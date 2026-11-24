@@ -9,6 +9,24 @@ const BAYER = [
   39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
 ];
 
+/**
+ * Whether the reader turned the dither off: gallery posters then show sharp, and figures, diagrams
+ * and the lights behind text print smooth. Head.astro marks the root before the first paint.
+ */
+export const plain =
+  typeof document !== 'undefined' && document.documentElement.dataset.dither === 'off';
+
+/** Turns the dither on or off on every page, reloading this one, whose shaders print one way. */
+export function setDither(on: boolean) {
+  try {
+    if (on) localStorage.removeItem('typegpu-kit:dither');
+    else localStorage.setItem('typegpu-kit:dither', 'off');
+  } catch {
+    return;
+  }
+  location.reload();
+}
+
 /** The 8×8 ordered threshold of the cell at column `i` and row `j`, in (0, 1). */
 export const bayer = (i: number, j: number) => ((BAYER[(j % 8) * 8 + (i % 8)] ?? 0) + 0.5) / 64;
 
@@ -93,9 +111,13 @@ export function paint(
     for (let i = 0; i < columns; i++) {
       const at = clamp(field((i + 0.5) / columns, (j + 0.5) / rows)) * steps;
       const low = Math.min(Math.floor(at), steps - 1);
+      const k = (j * columns + i) * 4;
+      if (plain) {
+        blend(cells.data, k, ramp[low], ramp[low + 1], at - low);
+        continue;
+      }
       const color = ramp[at - low > bayer(i, j) ? low + 1 : low];
       if (!color) continue;
-      const k = (j * columns + i) * 4;
       cells.data.set(color, k);
       cells.data[k + 3] = 255;
     }
@@ -107,6 +129,21 @@ export function paint(
   if (canvas.height !== rows * size) canvas.height = rows * size;
   const context = canvas.getContext('2d')!;
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.imageSmoothingEnabled = false;
+  context.imageSmoothingEnabled = plain;
   context.drawImage(small, 0, 0, canvas.width, canvas.height);
+}
+
+/** Writes `from` mixed `t` of the way to `to` at `k`, where a missing colour is clear. */
+function blend(
+  data: Uint8ClampedArray,
+  k: number,
+  from: Rgb | null | undefined,
+  to: Rgb | null | undefined,
+  t: number,
+) {
+  const [a, b] = [from ? 1 - t : 0, to ? t : 0];
+  const alpha = a + b;
+  if (alpha === 0) return;
+  for (let c = 0; c < 3; c++) data[k + c] = ((from?.[c] ?? 0) * a + (to?.[c] ?? 0) * b) / alpha;
+  data[k + 3] = alpha * 255;
 }
