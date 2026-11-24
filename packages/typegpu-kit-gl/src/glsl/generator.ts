@@ -129,11 +129,11 @@ export function memberName(prop: string): string {
   return RESERVED_MEMBERS.has(prop) || prop.startsWith('gl_') ? `${prop}_` : prop;
 }
 
-const unsupported = (feature: string): Error =>
-  new Error(`@typegpu/kit-gl: ${feature} is not available in WebGL 2 render stages.`);
+export const unsupported = (feature: string): Error =>
+  new Error(`@typegpu/kit-gl: ${feature} is not available in WebGL 2 shaders.`);
 
 /** Reads a buffer's words, which come four to a `uvec4`. */
-interface Source {
+export interface Source {
   /** Loaders are made once per key. */
   readonly key: string;
   /** The parameter loaders for this source take, if any, and what a caller passes for it. */
@@ -146,8 +146,11 @@ interface Source {
   word2(address: string): string;
 }
 
-interface BufferInfo {
+export interface BufferInfo {
   readonly id: string;
+  /** The binding's group, possibly a placeholder TypeGPU replaces in the whole module. */
+  readonly group: string;
+  readonly binding: number;
   /** The `uvec2` range uniform of a buffer read from a data texture. */
   readonly range?: string;
   readonly access: BufferAccess;
@@ -163,7 +166,7 @@ interface BufferInfo {
  */
 const MAX_BLOCK_SIZE = 16384;
 
-interface HandleInfo {
+export interface HandleInfo {
   readonly id: string;
   readonly group: string;
   readonly binding: number;
@@ -174,20 +177,39 @@ interface HandleInfo {
  * A value in a buffer. Its snippet holds the expression that reads it whole, and member and index
  * access narrow it to a smaller read instead.
  */
-interface Place {
+export interface Place {
   readonly buffer: BufferInfo;
   /** A GLSL `uint` expression: the place's first word in the buffer's data texture. */
   readonly address: string;
   readonly schema: d.BaseData;
+  /** Words from the bound range's start, while no index has made the address dynamic. */
+  readonly offset?: number;
+  /** Set inside an element of the outermost array of the buffer. */
+  readonly element?: Element;
 }
 
-interface TextureKind {
+/** Where a place lies in the outermost array of its buffer. */
+export interface Element {
+  /** The array's first word, from the bound range's start. */
+  readonly offset: number;
+  readonly array: d.WgslArray;
+  /** A GLSL `uint` expression: the element's index. */
+  readonly index: string;
+  /** Whether the index is the invocation's own, as `indexIsOwn` proved. */
+  readonly own: boolean;
+  /** The GLSL access from the element to the place, such as `.position.x`. */
+  readonly path: string;
+}
+
+export type TextureInfo = HandleInfo & { readonly kind: TextureKind };
+
+export interface TextureKind {
   readonly dimension: TextureBinding['dimension'];
   readonly sampleType: TextureBinding['sampleType'];
   readonly multisampled: boolean;
 }
 
-function textureKind(schema: d.BaseData): TextureKind {
+export function textureKind(schema: d.BaseData): TextureKind {
   const type = schema.type as string;
   if (type === 'texture_external') {
     return { dimension: '2d', sampleType: 'f32', multisampled: false };
@@ -207,7 +229,7 @@ function textureKind(schema: d.BaseData): TextureKind {
   };
 }
 
-function samplerType(kind: TextureKind, shadow: boolean): string {
+export function samplerType(kind: TextureKind, shadow: boolean): string {
   if (kind.multisampled) throw unsupported('A multisampled texture');
   const prefix = kind.sampleType === 'i32' ? 'i' : kind.sampleType === 'u32' ? 'u' : '';
   const dimension = {
@@ -222,25 +244,27 @@ function samplerType(kind: TextureKind, shadow: boolean): string {
   return `${prefix}sampler${dimension}${shadow ? 'Shadow' : ''}`;
 }
 
-const isHandleType = (data: unknown): boolean => {
+export const isHandleType = (data: unknown): boolean => {
   const type = (data as { type?: unknown } | undefined)?.type;
   return typeof type === 'string' && (type.startsWith('texture_') || type.startsWith('sampler'));
 };
 
-const roundUp = (value: number, to: number) => Math.ceil(value / to) * to;
+export const roundUp = (value: number, to: number) => Math.ceil(value / to) * to;
 
-function undecorate(data: d.BaseData): d.BaseData {
+export function undecorate(data: d.BaseData): d.BaseData {
   return d.isDecorated(data) ? (data.inner as d.BaseData) : data;
 }
 
-function attributeOf(data: d.BaseData, kind: string): unknown[] | undefined {
+export function attributeOf(data: d.BaseData, kind: string): unknown[] | undefined {
   if (!d.isDecorated(data)) return undefined;
   const attribs = data.attribs as { type: string; params: unknown[] }[];
   return attribs.find((attrib) => attrib.type === kind)?.params;
 }
 
 /** Each member of a struct with its byte offset, as WGSL lays it out. */
-function membersOf(struct: d.WgslStruct): { name: string; type: d.BaseData; offset: number }[] {
+export function membersOf(
+  struct: d.WgslStruct,
+): { name: string; type: d.BaseData; offset: number }[] {
   let offset = 0;
   return Object.entries(struct.propTypes as Record<string, d.BaseData>).map(([name, type]) => {
     offset = roundUp(offset, d.alignmentOf(type as d.AnyData));
@@ -250,23 +274,24 @@ function membersOf(struct: d.WgslStruct): { name: string; type: d.BaseData; offs
   });
 }
 
-const strideOf = (element: d.BaseData) =>
+export const strideOf = (element: d.BaseData) =>
   roundUp(d.sizeOf(element as d.AnyData), d.alignmentOf(element as d.AnyData));
 
-function wordsOf(bytes: number): number {
+export function wordsOf(bytes: number): number {
   if (bytes % 4 !== 0) throw unsupported('A buffer member that is not 4-byte aligned');
   return bytes / 4;
 }
 
 /** Reinterprets raw words as `f`, `i` or `u` components. */
-const cast = (raw: string, scalar: string, size: number) =>
+export const cast = (raw: string, scalar: string, size: number) =>
   scalar === 'f'
     ? `uintBitsToFloat(${raw})`
     : scalar === 'i'
       ? `${size === 1 ? 'int' : `ivec${size}`}(${raw})`
       : raw;
 
-const plus = (address: string, words: number) => (words === 0 ? address : `${address} + ${words}u`);
+export const plus = (address: string, words: number) =>
+  words === 0 ? address : `${address} + ${words}u`;
 
 /** `common.fullScreenTriangle`, the one WGSL string function TypeGPU Kit draws with. */
 const FULL_SCREEN_TRIANGLE =
@@ -321,11 +346,16 @@ export class KitGlslGenerator extends GlslGenerator {
   override initGenerator(ctx: ResolutionCtx): void {
     super.initGenerator(ctx);
     for (const name of KIT_NAMES) ctx.reserveIdentifier(name, 'global');
-    ctx.addDeclaration(HEADER);
+    ctx.addDeclaration(this.header());
     // TypeGPU adds functions written as WGSL strings without calling the generator
     const add = ctx.addDeclaration.bind(ctx);
     ctx.addDeclaration = (code: string, name?: string) =>
       add(code.startsWith('//#') ? code : this.#foreign(code, name), name);
+  }
+
+  /** The first line of the module, which tells the device what the module is. */
+  protected header(): string {
+    return HEADER;
   }
 
   /** GLSL for a declaration TypeGPU wrote in WGSL itself. */
@@ -361,27 +391,32 @@ export class KitGlslGenerator extends GlslGenerator {
     );
   }
 
-  #chunk(stage: ChunkStage, names: readonly string[], code: string, directives: string[] = []) {
+  protected chunk(
+    stage: ChunkStage,
+    names: readonly string[],
+    code: string,
+    directives: string[] = [],
+  ) {
     this.ctx.addDeclaration(
       [`${CHUNK} ${stage} ${names.join(' ')}`.trimEnd(), ...directives, code].join('\n'),
     );
   }
 
-  #helper(name: string, code: string) {
+  protected helper(name: string, code: string): void {
     if (this.#helpers.has(name)) return;
     this.#helpers.add(name);
-    this.#chunk('shared', [name], code);
+    this.chunk('shared', [name], code);
   }
 
   protected override _declareHelper(name: string, code: string): void {
-    this.#helper(name, code);
+    this.helper(name, code);
   }
 
   // ---------------------------------------------------------------------------------------------
   // Types and declarations
   // ---------------------------------------------------------------------------------------------
 
-  #suffix(data: d.BaseData): string {
+  protected arraySuffix(data: d.BaseData): string {
     const inner = undecorate(data);
     if (!d.isWgslArray(inner)) return '';
     if (d.isWgslArray(undecorate(inner.elementType as d.BaseData))) {
@@ -401,23 +436,23 @@ export class KitGlslGenerator extends GlslGenerator {
       const id = this.ctx.makeUniqueIdentifier(getName(data), 'global');
       const members = Object.entries(data.propTypes as Record<string, d.BaseData>).map(
         ([prop, type]) =>
-          `  ${this.ctx.resolve(undecorate(type)).value} ${memberName(prop)}${this.#suffix(type)};`,
+          `  ${this.ctx.resolve(undecorate(type)).value} ${memberName(prop)}${this.arraySuffix(type)};`,
       );
-      this.#chunk('shared', [id], `struct ${id} {\n${members.join('\n')}\n};`);
+      this.chunk('shared', [id], `struct ${id} {\n${members.join('\n')}\n};`);
       this.#structs.set(id, data);
       return id;
     }
-    if (d.isWgslArray(data)) this.#suffix(data);
+    if (d.isWgslArray(data)) this.arraySuffix(data);
     return super.emitTypeAnnotation(data);
   }
 
   override declareGlobalConst(options: ConstantDefinitionOptions): ResolvedSnippet {
     const init = this.ctx.resolveSnippet(options.init).value;
     const type = this.ctx.resolve(options.dataType).value;
-    this.#chunk(
+    this.chunk(
       'shared',
       [options.id],
-      `const ${type} ${options.id}${this.#suffix(options.dataType)} = ${init};`,
+      `const ${type} ${options.id}${this.arraySuffix(options.dataType)} = ${init};`,
     );
     return snip(options.id, options.dataType, 'constant-immutable-def');
   }
@@ -441,7 +476,7 @@ export class KitGlslGenerator extends GlslGenerator {
     if (scope === 'private') {
       const init = options.init ? ` = ${this.ctx.resolveSnippet(options.init).value}` : '';
       const type = this.ctx.resolve(dataType).value;
-      this.#chunk('shared', [id], `${type} ${id}${this.#suffix(dataType)}${init};`);
+      this.chunk('shared', [id], `${type} ${id}${this.arraySuffix(dataType)}${init};`);
       return snip(id, dataType, 'private');
     }
     throw unsupported(`A '${scope}' variable`);
@@ -458,16 +493,24 @@ export class KitGlslGenerator extends GlslGenerator {
     if (access === 'uniform' && size > 0 && size <= MAX_BLOCK_SIZE) {
       const block = this.ctx.makeUniqueIdentifier(`${id}_block`, 'global');
       const vectors = Math.ceil(size / 16);
-      this.#chunk(
+      this.chunk(
         'shared',
         [block, id],
         `layout(std140) uniform ${block} {\n  uvec4 ${id}[${vectors}];\n};`,
         [`${BLOCK} ${options.group} ${options.binding} ${block} ${vectors * 16}`],
       );
-      buffer = { id, access, schema: dataType, source: this.#blockSource(id), base: '0u' };
+      buffer = {
+        id,
+        group: String(options.group),
+        binding: options.binding ?? 0,
+        access,
+        schema: dataType,
+        source: this.#blockSource(id),
+        base: '0u',
+      };
     } else {
       const range = this.ctx.makeUniqueIdentifier(`${id}_range`, 'global');
-      this.#chunk(
+      this.chunk(
         'shared',
         [id, range],
         `uniform highp usampler2D ${id};\nuniform highp uvec2 ${range};`,
@@ -475,6 +518,8 @@ export class KitGlslGenerator extends GlslGenerator {
       );
       buffer = {
         id,
+        group: String(options.group),
+        binding: options.binding ?? 0,
         range,
         access,
         schema: dataType,
@@ -482,27 +527,27 @@ export class KitGlslGenerator extends GlslGenerator {
         base: `${range}.x`,
       };
     }
-    const root = this.#placeSnippet({ buffer, address: buffer.base, schema: dataType });
+    const root = this.placeSnippet({ buffer, address: buffer.base, schema: dataType, offset: 0 });
     return snip(root.value as string, dataType, access) as ResolvedSnippet;
   }
 
   /** Words from a data texture: `texture` is the global, or a loader's `t` parameter. */
   #textureSource(texture: string): Source {
-    this.#helper(
+    this.helper(
       'kit_texel',
       `uvec4 kit_texel(highp usampler2D t, uint i) {
   uint width = uint(textureSize(t, 0).x);
   return texelFetch(t, ivec2(int(i % width), int(i / width)), 0);
 }`,
     );
-    this.#helper(
+    this.helper(
       'kit_word',
       `uint kit_word(highp usampler2D t, uint a) {
   uvec4 texel = kit_texel(t, a >> 2u);
   return texel[a & 3u];
 }`,
     );
-    this.#helper(
+    this.helper(
       'kit_word2',
       `uvec2 kit_word2(highp usampler2D t, uint a) {
   uvec4 texel = kit_texel(t, a >> 2u);
@@ -522,8 +567,8 @@ export class KitGlslGenerator extends GlslGenerator {
 
   /** Words from the `uvec4` array of a uniform block, which loaders read by name. */
   #blockSource(words: string): Source {
-    this.#helper('kit_pick', 'uint kit_pick(uvec4 v, uint a) {\n  return v[a & 3u];\n}');
-    this.#helper(
+    this.helper('kit_pick', 'uint kit_pick(uvec4 v, uint a) {\n  return v[a & 3u];\n}');
+    this.helper(
       'kit_pick2',
       'uvec2 kit_pick2(uvec4 v, uint a) {\n  return (a & 2u) == 0u ? v.xy : v.zw;\n}',
     );
@@ -540,10 +585,10 @@ export class KitGlslGenerator extends GlslGenerator {
   }
 
   /** A GLSL expression that reads `schema` from `source` at word `address`. */
-  #load(source: Source, address: string, schema: d.BaseData, owner: string): string {
+  protected load(source: Source, address: string, schema: d.BaseData, owner: string): string {
     const data = undecorate(schema);
     const type = data.type as string;
-    if (d.isAtomic(data)) return this.#load(source, address, data.inner as d.BaseData, owner);
+    if (d.isAtomic(data)) return this.load(source, address, data.inner as d.BaseData, owner);
     if (d.isWgslArray(data) && data.elementCount === 0) {
       return `${UNLOADABLE}${owner}_${this.#temporaries++}`;
     }
@@ -588,20 +633,20 @@ export class KitGlslGenerator extends GlslGenerator {
       const rows = Number(mat[2]);
       const stride = rows === 2 ? 2 : 4;
       const column = (i: number) =>
-        this.#load(source, plus('a', i * stride), d[`vec${rows}f` as 'vec4f'], '');
+        this.load(source, plus('a', i * stride), d[`vec${rows}f` as 'vec4f'], '');
       base = `kit_load_${data.type}`;
       body = `  return ${type}(${Array.from({ length: columns }, (_, i) => column(i)).join(', ')});`;
     } else if (d.isWgslStruct(data)) {
       const members = membersOf(data).map((member) =>
-        this.#load(source, plus('a', wordsOf(member.offset)), member.type, ''),
+        this.load(source, plus('a', wordsOf(member.offset)), member.type, ''),
       );
       base = `kit_load_${type}`;
       body = `  return ${type}(${members.join(', ')});`;
     } else if (d.isWgslArray(data)) {
       const element = data.elementType as d.BaseData;
       const stride = wordsOf(strideOf(element));
-      const load = this.#load(source, `a + i * ${stride}u`, element, '');
-      suffix = this.#suffix(data);
+      const load = this.load(source, `a + i * ${stride}u`, element, '');
+      suffix = this.arraySuffix(data);
       base = 'kit_load_array';
       body = `  ${type} r${suffix};
   for (uint i = 0u; i < ${data.elementCount}u; i++) {
@@ -616,19 +661,32 @@ export class KitGlslGenerator extends GlslGenerator {
       'global',
     );
     const parameters = [source.parameter, 'uint a'].filter(Boolean).join(', ');
-    this.#chunk('shared', [name], `${type}${suffix} ${name}(${parameters}) {\n${body}\n}`);
+    this.chunk('shared', [name], `${type}${suffix} ${name}(${parameters}) {\n${body}\n}`);
     byType.set(data, name);
     return name;
   }
 
-  #placeSnippet(place: Place, sideEffects = false): Snippet {
-    const load = this.#load(place.buffer.source, place.address, place.schema, place.buffer.id);
-    this.#places.set(load, place);
-    return snip(load, undecorate(place.schema), place.buffer.access, sideEffects);
+  protected placeSnippet(place: Place, sideEffects = false): Snippet {
+    const value = this.placeValue(
+      place,
+      this.load(place.buffer.source, place.address, place.schema, place.buffer.id),
+    );
+    this.#places.set(value, place);
+    return snip(value, undecorate(place.schema), place.buffer.access, sideEffects);
+  }
+
+  /** The expression a place's snippet holds, given the one that reads it from the buffer. */
+  protected placeValue(_place: Place, load: string): string {
+    return load;
+  }
+
+  /** Whether an array index is provably the invocation's own. Only compute kernels have one. */
+  protected indexIsOwn(_index: Snippet): boolean {
+    return false;
   }
 
   /** The buffer place a snippet stands for, when it reads a buffer the generator declared. */
-  #placeOf(snippet: Snippet): Place | undefined {
+  protected placeOf(snippet: Snippet): Place | undefined {
     const value = snippet.value;
     if (typeof value === 'string') return this.#places.get(value);
     if (!BUFFER_ORIGINS.has(snippet.origin) || snippet.dataType === UnknownData) return undefined;
@@ -636,7 +694,7 @@ export class KitGlslGenerator extends GlslGenerator {
     return this.#places.get(this.ctx.resolveSnippet(snippet).value);
   }
 
-  #uint(index: Snippet): string {
+  protected uintOf(index: Snippet): string {
     const value = this.ctx.resolveSnippet(index).value;
     if (index.dataType !== UnknownData && index.dataType.type === 'u32') return value;
     if (typeof index.value === 'number') return `${index.value}u`;
@@ -665,8 +723,16 @@ export class KitGlslGenerator extends GlslGenerator {
       if (d.isWgslStruct(schema)) {
         const member = membersOf(schema).find((each) => each.name === prop);
         if (!member) return undefined;
-        const address = plus(place.address, wordsOf(member.offset));
-        return this.#placeSnippet({ buffer: place.buffer, address, schema: member.type });
+        const words = wordsOf(member.offset);
+        return this.placeSnippet({
+          buffer: place.buffer,
+          address: plus(place.address, words),
+          schema: member.type,
+          ...(place.offset !== undefined && { offset: place.offset + words }),
+          ...(place.element && {
+            element: { ...place.element, path: `${place.element.path}.${memberName(prop)}` },
+          }),
+        });
       }
       if (d.isWgslArray(schema) && prop === 'length') return this.#arrayLength(place);
       return undefined;
@@ -674,11 +740,19 @@ export class KitGlslGenerator extends GlslGenerator {
     if (d.isWgslArray(schema)) {
       const index = this._expression(node[2]);
       const stride = wordsOf(strideOf(schema.elementType as d.BaseData));
-      const offset = stride === 1 ? this.#uint(index) : `${this.#uint(index)} * ${stride}u`;
+      const offset = stride === 1 ? this.uintOf(index) : `${this.uintOf(index)} * ${stride}u`;
       const address = `${place.address} + ${offset}`;
-      const element = schema.elementType as d.BaseData;
-      return this.#placeSnippet(
-        { buffer: place.buffer, address, schema: element },
+      const element: Element = place.element
+        ? { ...place.element, path: `${place.element.path}[${this.uintOf(index)}]` }
+        : {
+            offset: place.offset ?? 0,
+            array: schema,
+            index: this.uintOf(index),
+            own: this.indexIsOwn(index),
+            path: '',
+          };
+      return this.placeSnippet(
+        { buffer: place.buffer, address, schema: schema.elementType as d.BaseData, element },
         index.possibleSideEffects,
       );
     }
@@ -701,7 +775,7 @@ export class KitGlslGenerator extends GlslGenerator {
     }
     const [kind, targetNode, propertyNode] = expression as [number, Expression, Expression];
     let target = this._expression(targetNode);
-    const place = this.#placeOf(target);
+    const place = this.placeOf(target);
     if (place) {
       const narrowed = this.#narrow(place, expression);
       if (narrowed) return narrowed;
@@ -730,22 +804,35 @@ export class KitGlslGenerator extends GlslGenerator {
     eqNode: Expression,
     eq: Snippet,
   ): ResolvedStatement {
-    const place = this.#placeOf(eq);
+    const place = this.placeOf(eq);
     if (!place) return super._aliasConstStatement(rawId, eqNode, eq);
     const name = this.ctx.makeUniqueIdentifier(`${rawId}_at`, 'block');
-    const alias = this.#placeSnippet({ buffer: place.buffer, address: name, schema: place.schema });
+    const lines = [`${this.ctx.pre}uint ${name} = ${place.address};`];
+    let element = place.element;
+    if (element && !element.own) {
+      // The alias keeps reading the element it named, whatever its index expression does later
+      const index = this.ctx.makeUniqueIdentifier(`${rawId}_index`, 'block');
+      lines.push(`${this.ctx.pre}uint ${index} = ${element.index};`);
+      element = { ...element, index };
+    }
+    const alias = this.placeSnippet({
+      buffer: place.buffer,
+      address: name,
+      schema: place.schema,
+      ...(element && { element }),
+    });
     this.ctx.defineVariable(rawId, snip(alias.value, alias.dataType, eq.origin, false));
-    return { code: `${this.ctx.pre}uint ${name} = ${place.address};`, definesInNearestScope: true };
+    return { code: lines.join('\n'), definesInNearestScope: true };
   }
 
   override call(callee: AnyFn, args: readonly Snippet[], calleeSnippet?: Snippet): Snippet {
     if ((callee as unknown) === std.atomicLoad || (callee as unknown) === std.arrayLength) {
-      const place = args[0] && this.#placeOf(args[0]);
+      const place = args[0] && this.placeOf(args[0]);
       if (!place) throw unsupported(`'${getName(callee)}' outside a buffer`);
       if ((callee as unknown) === std.arrayLength) return this.#arrayLength(place);
       const inner = (undecorate(place.schema) as d.Atomic).inner as d.BaseData;
       return snip(
-        this.#load(place.buffer.source, place.address, inner, place.buffer.id),
+        this.load(place.buffer.source, place.address, inner, place.buffer.id),
         inner,
         'runtime',
         false,
@@ -776,7 +863,7 @@ export class KitGlslGenerator extends GlslGenerator {
     return tagged;
   }
 
-  #handleId(snippet: Snippet): string {
+  protected handleId(snippet: Snippet): string {
     const tag = (snippet.dataType as unknown as Record<symbol, string | undefined>)[HANDLE];
     return tag ?? this.ctx.resolveSnippet(snippet).value;
   }
@@ -790,7 +877,7 @@ export class KitGlslGenerator extends GlslGenerator {
     args: readonly Snippet[],
   ): ResolvedSnippet | undefined {
     if (!args.some((arg) => isHandleType(arg.dataType))) return super._callShellless(callee, args);
-    const ids = args.map((arg) => (isHandleType(arg.dataType) ? this.#handleId(arg) : ''));
+    const ids = args.map((arg) => (isHandleType(arg.dataType) ? this.handleId(arg) : ''));
     const key = ids.join('|');
     const tagged = args.map((arg, i) =>
       isHandleType(arg.dataType)
@@ -838,19 +925,19 @@ export class KitGlslGenerator extends GlslGenerator {
     return withValue(value, result);
   }
 
-  #texture(snippet: Snippet | undefined): HandleInfo & { kind: TextureKind } {
+  protected textureOf(snippet: Snippet | undefined): TextureInfo {
     if (!snippet) throw new Error('@typegpu/kit-gl: a texture call without a texture');
-    const id = this.#handleId(snippet);
+    const id = this.handleId(snippet);
     const info = this.#textures.get(id);
     if (!info) throw new Error(`@typegpu/kit-gl: '${id}' is not a texture this shader declared`);
     return { ...info, kind: textureKind(info.schema) };
   }
 
   /** The GLSL sampler uniform that reads `texture` through `sampler`, declared on first use. */
-  #uniform(texture: HandleInfo & { kind: TextureKind }, samplerSnippet?: Snippet): string {
+  protected samplerUniform(texture: TextureInfo, samplerSnippet?: Snippet): string {
     let sampler: HandleInfo | undefined;
     if (samplerSnippet) {
-      const id = this.#handleId(samplerSnippet);
+      const id = this.handleId(samplerSnippet);
       sampler = this.#samplers.get(id);
       if (!sampler)
         throw new Error(`@typegpu/kit-gl: '${id}' is not a sampler this shader declared`);
@@ -875,40 +962,40 @@ export class KitGlslGenerator extends GlslGenerator {
       kind.multisampled ? 1 : 0,
       ...(sampler ? [sampler.group, sampler.binding] : []),
     ].join(' ');
-    this.#chunk('shared', [name], `uniform ${samplerType(kind, shadow)} ${name};`, [directive]);
+    this.chunk('shared', [name], `uniform ${samplerType(kind, shadow)} ${name};`, [directive]);
     this.#combined.set(key, name);
     return name;
   }
 
   /** Any uniform of `texture`, for size queries, which work through every sampler type. */
-  #anyUniform(texture: HandleInfo & { kind: TextureKind }): string {
+  #anyUniform(texture: TextureInfo): string {
     for (const [key, name] of this.#combined) {
       if (key.startsWith(`${texture.id}|`)) return name;
     }
-    return this.#uniform(texture);
+    return this.samplerUniform(texture);
   }
 
-  #value(snippet: Snippet | undefined): string {
+  protected valueOf(snippet: Snippet | undefined): string {
     if (!snippet) throw new Error('@typegpu/kit-gl: a texture call is missing an argument');
     return this.ctx.resolveSnippet(snippet).value;
   }
 
-  #float(snippet: Snippet | undefined): string {
-    const value = this.#value(snippet);
+  protected floatOf(snippet: Snippet | undefined): string {
+    const value = this.valueOf(snippet);
     const type = (snippet as Snippet).dataType;
     return type !== UnknownData && type.type === 'f32' ? value : `float(${value})`;
   }
 
-  #int(snippet: Snippet | undefined): string {
-    const value = this.#value(snippet);
+  protected intOf(snippet: Snippet | undefined): string {
+    const value = this.valueOf(snippet);
     const type = (snippet as Snippet).dataType;
     return type !== UnknownData && type.type === 'i32' ? value : `int(${value})`;
   }
 
-  #ivec(snippet: Snippet | undefined, size: number): string {
-    const value = this.#value(snippet);
+  protected ivecOf(snippet: Snippet | undefined, size: number): string {
+    const value = this.valueOf(snippet);
     const type = (snippet as Snippet).dataType;
-    if (size === 1) return this.#int(snippet);
+    if (size === 1) return this.intOf(snippet);
     return type !== UnknownData && type.type === `vec${size}i` ? value : `ivec${size}(${value})`;
   }
 
@@ -918,13 +1005,13 @@ export class KitGlslGenerator extends GlslGenerator {
     if (name.startsWith('textureGather')) throw unsupported(`'${name}'`);
     if (name === 'textureNumSamples') throw unsupported("'textureNumSamples'");
 
-    const texture = this.#texture(args[0]);
+    const texture = this.textureOf(args[0]);
     const { kind } = texture;
     const arrayed = kind.dimension === '2d-array' || kind.dimension === 'cube-array';
     const depth = kind.sampleType === 'depth';
 
     if (name === 'textureDimensions') {
-      const level = args[1] ? this.#int(args[1]) : '0';
+      const level = args[1] ? this.intOf(args[1]) : '0';
       const size = `textureSize(${this.#anyUniform(texture)}, ${level})`;
       if (kind.dimension === '1d') return `uint(${size}.x)`;
       if (kind.dimension === '3d') return `uvec3(${size})`;
@@ -935,7 +1022,7 @@ export class KitGlslGenerator extends GlslGenerator {
       let uniform = this.#levels.get(texture.id);
       if (!uniform) {
         uniform = this.ctx.makeUniqueIdentifier(`${texture.id}_levels`, 'global');
-        this.#chunk('shared', [uniform], `uniform int ${uniform};`, [
+        this.chunk('shared', [uniform], `uniform int ${uniform};`, [
           `${LEVELS} ${texture.group} ${texture.binding} ${uniform}`,
         ]);
         this.#levels.set(texture.id, uniform);
@@ -943,28 +1030,28 @@ export class KitGlslGenerator extends GlslGenerator {
       return `uint(${uniform})`;
     }
     if (name === 'textureLoad') {
-      const uniform = this.#uniform(texture);
+      const uniform = this.samplerUniform(texture);
       const storage = (texture.schema.type as string).startsWith('texture_storage');
       const external = texture.schema.type === 'texture_external';
       let coords: string;
-      if (kind.dimension === '1d') coords = `ivec2(${this.#int(args[1])}, 0)`;
-      else if (kind.dimension === '3d') coords = this.#ivec(args[1], 3);
-      else if (arrayed) coords = `ivec3(${this.#ivec(args[1], 2)}, ${this.#int(args[2])})`;
-      else coords = this.#ivec(args[1], 2);
+      if (kind.dimension === '1d') coords = `ivec2(${this.intOf(args[1])}, 0)`;
+      else if (kind.dimension === '3d') coords = this.ivecOf(args[1], 3);
+      else if (arrayed) coords = `ivec3(${this.ivecOf(args[1], 2)}, ${this.intOf(args[2])})`;
+      else coords = this.ivecOf(args[1], 2);
       const levelArg = storage || external ? undefined : args[arrayed ? 3 : 2];
       if (kind.multisampled) throw unsupported('Loading from a multisampled texture');
-      const level = levelArg ? this.#int(levelArg) : '0';
+      const level = levelArg ? this.intOf(levelArg) : '0';
       return `texelFetch(${uniform}, ${coords}, ${level})${depth ? '.r' : ''}`;
     }
 
     const sampler = args[1];
     const shadow = name.startsWith('textureSampleCompare');
-    const uniform = this.#uniform(texture, sampler);
-    const coordsValue = this.#value(args[2]);
+    const uniform = this.samplerUniform(texture, sampler);
+    const coordsValue = this.valueOf(args[2]);
     let rest = args.slice(3);
     let layer: string | undefined;
     if (arrayed) {
-      layer = this.#float(rest[0]);
+      layer = this.floatOf(rest[0]);
       rest = rest.slice(1);
     }
     const coords =
@@ -975,7 +1062,7 @@ export class KitGlslGenerator extends GlslGenerator {
           : coordsValue;
 
     if (name === 'textureSampleBaseClampToEdge') {
-      this.#helper(
+      this.helper(
         'kit_sampleClamped',
         `vec4 kit_sampleClamped(highp sampler2D t, vec2 c) {
   vec2 h = 0.5 / vec2(textureSize(t, 0));
@@ -986,8 +1073,8 @@ export class KitGlslGenerator extends GlslGenerator {
     }
 
     if (shadow) {
-      const reference = this.#float(rest[0]);
-      const offset = rest[1] ? this.#value(rest[1]) : undefined;
+      const reference = this.floatOf(rest[0]);
+      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
       const point =
         kind.dimension === '2d'
           ? `vec3(${coordsValue}, ${reference})`
@@ -1013,29 +1100,29 @@ export class KitGlslGenerator extends GlslGenerator {
 
     const channel = depth ? '.r' : '';
     if (name === 'textureSample') {
-      const offset = rest[0] ? this.#value(rest[0]) : undefined;
+      const offset = rest[0] ? this.valueOf(rest[0]) : undefined;
       return offset
         ? `textureOffset(${uniform}, ${coords}, ${offset})${channel}`
         : `texture(${uniform}, ${coords})${channel}`;
     }
     if (name === 'textureSampleBias') {
-      const bias = this.#float(rest[0]);
-      const offset = rest[1] ? this.#value(rest[1]) : undefined;
+      const bias = this.floatOf(rest[0]);
+      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
       return offset
         ? `textureOffset(${uniform}, ${coords}, ${offset}, ${bias})${channel}`
         : `texture(${uniform}, ${coords}, ${bias})${channel}`;
     }
     if (name === 'textureSampleLevel') {
-      const level = this.#float(rest[0]);
-      const offset = rest[1] ? this.#value(rest[1]) : undefined;
+      const level = this.floatOf(rest[0]);
+      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
       return offset
         ? `textureLodOffset(${uniform}, ${coords}, ${level}, ${offset})${channel}`
         : `textureLod(${uniform}, ${coords}, ${level})${channel}`;
     }
     if (name === 'textureSampleGrad') {
-      const dx = this.#value(rest[0]);
-      const dy = this.#value(rest[1]);
-      const offset = rest[2] ? this.#value(rest[2]) : undefined;
+      const dx = this.valueOf(rest[0]);
+      const dy = this.valueOf(rest[1]);
+      const offset = rest[2] ? this.valueOf(rest[2]) : undefined;
       return offset
         ? `textureGradOffset(${uniform}, ${coords}, ${dx}, ${dy}, ${offset})${channel}`
         : `textureGrad(${uniform}, ${coords}, ${dx}, ${dy})${channel}`;
@@ -1063,7 +1150,7 @@ export class KitGlslGenerator extends GlslGenerator {
       if (options.functionType === 'vertex' || options.functionType === 'fragment') {
         code = this.#entryDefinition(options, options.functionType);
       } else if (options.functionType === 'compute') {
-        throw new Error('@typegpu/kit-gl: compute entry functions go to the CPU generator.');
+        code = this.computeEntry(options);
       } else {
         const args = options.args.filter((arg) => !isHandleType(arg.decoratedType));
         code = `${CHUNK} shared ${options.name}\n${super.functionDefinition({ ...options, args })}`;
@@ -1079,6 +1166,11 @@ export class KitGlslGenerator extends GlslGenerator {
     } finally {
       this.#entry = outer;
     }
+  }
+
+  /** A compute entry function's code. Render modules have none. */
+  protected computeEntry(_options: FunctionDefinitionOptions): string {
+    throw new Error('@typegpu/kit-gl: compute entry functions go to the CPU generator.');
   }
 
   override _return(statement: Return): string {
@@ -1219,7 +1311,7 @@ export class KitGlslGenerator extends GlslGenerator {
     }
     if (baseVertex) declarations.push(`uniform int ${BASE_VERTEX};`);
     if (firstInstance) declarations.push(`uniform int ${FIRST_INSTANCE};`);
-    if (declarations.length > 0) this.#chunk(stage, [], declarations.join('\n'));
+    if (declarations.length > 0) this.chunk(stage, [], declarations.join('\n'));
 
     const withOutputs = body.replace(OUT_PATTERN, (_, prop: string) => {
       const name = outputs.get(prop);

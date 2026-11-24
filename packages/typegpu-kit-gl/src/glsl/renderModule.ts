@@ -54,6 +54,17 @@ export interface LevelCountBinding {
   readonly uniform: string;
 }
 
+/** What a module's shaders read, and where the device binds each. */
+export interface Bindings {
+  /** Buffers read through data textures. */
+  readonly buffers: readonly BufferBinding[];
+  /** Uniform buffers read through uniform blocks. */
+  readonly blocks: readonly BlockBinding[];
+  readonly textures: readonly TextureBinding[];
+  /** Views whose level count a shader reads with `textureNumLevels`. */
+  readonly levels: readonly LevelCountBinding[];
+}
+
 export interface RenderModule {
   readonly kind: 'render';
   /** Complete GLSL ES 3.00 vertex source, `#version` line included. */
@@ -87,7 +98,8 @@ export const BLOCK = '//#block';
 export const TEXTURE = '//#texture';
 export const LEVELS = '//#levels';
 
-export type ChunkStage = 'shared' | 'vertex' | 'fragment';
+/** `shared`, a render stage, or one pass of a compute module's GPU form. */
+export type ChunkStage = 'shared' | 'vertex' | 'fragment' | `pass${number}`;
 
 /** The precision every stage declares, so uniforms both stages read agree. */
 const PRECISION = [
@@ -114,10 +126,10 @@ const PRECISION = [
 
 /** Reports whether `code` is a module `KitGlslGenerator` wrote. */
 export function isRenderModule(code: string): boolean {
-  return code.includes(HEADER);
+  return /^\/\/#kit-gl render$/m.test(code);
 }
 
-interface Chunk {
+export interface Chunk {
   readonly stage: ChunkStage;
   readonly names: readonly string[];
   readonly directives: readonly string[];
@@ -152,7 +164,7 @@ function usesOf(code: string): Set<string> {
   return uses;
 }
 
-function chunksOf(code: string): Chunk[] {
+export function chunksOf(code: string): Chunk[] {
   const chunks: Chunk[] = [];
   let current:
     | { stage: ChunkStage; names: string[]; directives: string[]; lines: string[] }
@@ -178,7 +190,7 @@ function chunksOf(code: string): Chunk[] {
     } else if (current) {
       current.lines.push(line);
     } else if (line.trim() !== '') {
-      throw new Error(`@typegpu/kit-gl: render module text outside a chunk: '${line}'`);
+      throw new Error(`@typegpu/kit-gl: module text outside a chunk: '${line}'`);
     }
   }
   close();
@@ -186,7 +198,7 @@ function chunksOf(code: string): Chunk[] {
 }
 
 /** The chunks a stage needs: its own and the shared chunks they reach, in module order. */
-function reachable(chunks: readonly Chunk[], stage: 'vertex' | 'fragment'): Chunk[] {
+export function reachable(chunks: readonly Chunk[], stage: ChunkStage): Chunk[] {
   const owner = new Map<string, Chunk>();
   for (const chunk of chunks) {
     if (chunk.stage === 'shared' || chunk.stage === stage) {
@@ -209,7 +221,7 @@ function reachable(chunks: readonly Chunk[], stage: 'vertex' | 'fragment'): Chun
   return chunks.filter((chunk) => included.has(chunk));
 }
 
-function source(chunks: readonly Chunk[], defines: readonly string[]): string {
+export function source(chunks: readonly Chunk[], defines: readonly string[]): string {
   return [
     '#version 300 es',
     ...defines,
@@ -218,7 +230,7 @@ function source(chunks: readonly Chunk[], defines: readonly string[]): string {
   ].join('\n\n');
 }
 
-const int = (text: string | undefined, line: string) => {
+export const int = (text: string | undefined, line: string) => {
   const value = Number(text);
   if (!Number.isInteger(value)) {
     throw new Error(`@typegpu/kit-gl: malformed directive '${line}'`);
@@ -226,22 +238,13 @@ const int = (text: string | undefined, line: string) => {
   return value;
 };
 
-/** Splits a render module into its stages and reads its bindings. */
-export function parse(code: string, options: ParseOptions = {}): RenderModule {
-  if (!isRenderModule(code)) {
-    throw new Error('@typegpu/kit-gl: not a render module');
-  }
-  const defines = options.defines ?? [];
-  const chunks = chunksOf(code.replace(HEADER, ''));
-  const vertexChunks = reachable(chunks, 'vertex');
-  const hasFragment = chunks.some((chunk) => chunk.stage === 'fragment');
-  const fragmentChunks = hasFragment ? reachable(chunks, 'fragment') : [];
-
+/** The bindings the directives of `chunks` declare, each once. */
+export function bindingsOf(chunks: Iterable<Chunk>): Bindings {
   const buffers = new Map<string, BufferBinding>();
   const blocks = new Map<string, BlockBinding>();
   const textures = new Map<string, TextureBinding>();
   const levels = new Map<string, LevelCountBinding>();
-  for (const chunk of new Set([...vertexChunks, ...fragmentChunks])) {
+  for (const chunk of chunks) {
     for (const line of chunk.directives) {
       const [kind, ...parts] = line.trim().split(/\s+/);
       if (kind === BUFFER) {
@@ -286,12 +289,28 @@ export function parse(code: string, options: ParseOptions = {}): RenderModule {
   }
 
   return {
-    kind: 'render',
-    vertex: source(vertexChunks, defines),
-    fragment: hasFragment ? source(fragmentChunks, defines) : undefined,
     buffers: [...buffers.values()],
     blocks: [...blocks.values()],
     textures: [...textures.values()],
     levels: [...levels.values()],
+  };
+}
+
+/** Splits a render module into its stages and reads its bindings. */
+export function parse(code: string, options: ParseOptions = {}): RenderModule {
+  if (!isRenderModule(code)) {
+    throw new Error('@typegpu/kit-gl: not a render module');
+  }
+  const defines = options.defines ?? [];
+  const chunks = chunksOf(code.replace(HEADER, ''));
+  const vertexChunks = reachable(chunks, 'vertex');
+  const hasFragment = chunks.some((chunk) => chunk.stage === 'fragment');
+  const fragmentChunks = hasFragment ? reachable(chunks, 'fragment') : [];
+
+  return {
+    kind: 'render',
+    vertex: source(vertexChunks, defines),
+    fragment: hasFragment ? source(fragmentChunks, defines) : undefined,
+    ...bindingsOf(new Set([...vertexChunks, ...fragmentChunks])),
   };
 }
