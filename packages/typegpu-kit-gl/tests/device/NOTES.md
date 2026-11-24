@@ -2,26 +2,33 @@
 
 ## Where the time goes on slow examples
 
-`device.stats` (on a `GLDevice`) accumulates milliseconds per compute pipeline label, texture readback
-into CPU copies and uploads of CPU copies; `stats.reset()` starts over. Profiles of 800×600 frames in
-headless Chromium, after warm-up:
+`device.stats` (on a `GLDevice`) accumulates milliseconds per compute pipeline label (GPU forms as
+`<label> (gpu)`), texture readback into CPU copies and uploads of CPU copies; `stats.reset()` starts
+over. Milliseconds per 800×600 frame in headless Chromium at eb33f1e7, after warm-up. A kernel's
+time includes the readback it triggers; GL is the time inside every WebGL call, `readPixels`
+included.
 
-| Example      | Frame   | CPU kernels                                       | Device                                                                 |
-| ------------ | ------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
-| ember-mirror | 124 ms  | `shedder` 80, `stepPipeline` 36, `live_compact` 8 | readback 3.2 (feed texture, half the frames)                           |
-| night-market | 106 ms  | `stepPipeline` 76, `moving` 22                    | readback 22 (one texture a frame, mostly the GPU sync of `readPixels`) |
-| forest       | 2990 ms | culling `marking` 2770, `placing` 220             | under 0.2                                                              |
-| quiver-trees | 1023 ms | culling `marking` 950, `placing` 71               | under 0.3                                                              |
-| jump-flood   | 7340 ms | `pipeline` 7140, `neighboursPipeline` 180         | under 0.3                                                              |
+| Example      | Frame | CPU kernels (largest)                | Readback | GL (calls)  |
+| ------------ | ----- | ------------------------------------ | -------- | ----------- |
+| classroom    | 157   | `summing` 153 (incl. readback)       | 25       | 25.5 (2022) |
+| forest       | 99    | `placing` 61, `marking` 38           | 0        | 0.1 (281)   |
+| quiver-trees | 49    | `placing` 31, `marking` 18           | 0        | 0.1 (655)   |
+| fishtank     | 35    | `steerPipeline` 25, `live_compact` 5 | 0        | 5 (349)     |
+| fireworks    | 30    | `exposure` 25 (incl. readback 23)    | 23       | 24.5 (895)  |
+| skeletons    | 26    | `finding` 12, `marking` 7            | 0        | 7 (743)     |
+| kinetic      | 20    | `exposure` 19 (incl. readback 17)    | 17       | 16.6 (320)  |
+| jelly-world  | 13    | `culling` 12                         | 0        | 0.2 (140)   |
+| night-market | 11    | `live_compact` 2.5                   | 0        | 8 (4387)    |
+| ember-mirror | 11    | `shedder` 6, `live_compact` 4.5      | 2.2      | 3.7 (245)   |
+| benthos      | 6     | `live_compact` 6                     | 0        | 3.1 (229)   |
 
-GL calls for a whole frame of night-market (591 draws) total about 1 ms. The device is not the
-bottleneck anywhere measured; the CPU kernels are. The instance culling in
-`packages/typegpu-kit/src/render/culling.ts` is the largest single cost: on `backends.of(root).compute
-=== 'cpu'` it could skip culling and draw every row, as `forest` does with `cull: false`.
-
-A kernel that reads a texture a pass rendered this frame forces a synchronous `readPixels`, which
-waits for the GPU. One-channel textures read back as `RED`/`FLOAT` to keep it small; the wait
-remains.
+Uploads are under 0.3 ms everywhere. The device's own share is the readback that a CPU kernel
+reading a rendered texture forces: `exposure` reads the HDR target each frame, a synchronous
+`readPixels` that waits for the frame's GPU work, and classroom's `summing` reads a 64-slice 3D
+texture. Levels a kernel never touches are not read back (eb33f1e7), and half-float textures read
+back as half floats. Draw overhead is small: night-market's 4387 GL calls take 8 ms. The rest of
+each frame is CPU kernels; the instance culling in `packages/typegpu-kit/src/render/culling.ts`
+(`marking`, `placing`) is the largest, and could skip work on `backends.of(root).compute === 'cpu'`.
 
 ## Failures that are not the device's
 
