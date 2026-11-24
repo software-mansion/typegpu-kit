@@ -12,6 +12,7 @@
 import { tgpu, type TgpuRoot } from 'typegpu';
 import { createDevice, isSupported, type DeviceOptions } from './device/index.ts';
 import { KitGenerator } from './generator.ts';
+import { defineConstants } from './globals.ts';
 
 export interface InitOptions extends DeviceOptions {}
 
@@ -38,6 +39,7 @@ export function supported(): boolean {
  * @returns a root whose `destroy` also frees the WebGL device
  */
 export async function init(options: InitOptions = {}): Promise<TgpuRoot> {
+  defineConstants();
   const device = createDevice(options);
   const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: KitGenerator });
 
