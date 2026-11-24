@@ -6,6 +6,8 @@ Rendering, post-processing and simulation modules on TypeGPU for the web and Rea
 
 - `packages/typegpu-kit` contains `@typegpu/kit`. Core modules live in `src/*.ts`; `post/`, `particles/`, `render/`, `text/` and `gltf/` contain the other areas. `/testing` exports test helpers, `/debug` a GPU debug panel, and `typegpu-kit-bake-font` bakes the MSDF fonts in `fonts/`.
 - `packages/typegpu-kit/src/geometry` contains TypeGPU's geometry, public at `@typegpu/kit/geometry`, and `src/sort` its radix sort, which only `sorter` imports. Edit them only as their READMEs say.
+- `packages/typegpu-kit-gl` contains `@typegpu/kit-gl`, the WebGL 2 fallback: a `GPUDevice` on WebGL 2 in `src/device`, the kit's part of GLSL generation in `src/glsl` and compute on the CPU in `src/cpu`. Its `ARCHITECTURE.md` explains how they fit, and `LIMITATIONS.md` lists what it cannot do.
+- `packages/typegpu-gl` contains a vendored `@typegpu/gl`, which generates the fallback's GLSL. Change it only with a patch meant for TypeGPU, and record each in `packages/typegpu-kit-gl/PATCHES.md`.
 - `packages/typegpu-create-kit` contains `@typegpu/create-kit`, run by `npm create @typegpu/kit`, which writes `template/` with one of `scenes/`, the Starter scenes page's scenes, at the kit's version.
 - `packages/typegpu-kit-pull` shares the box and card animation between the docs and native app.
 - `packages/typegpu-kit-examples` contains the examples, private and shared by the docs and the native app in `apps/typegpu-kit-native`. Each lives in `src/<name>/`, its test in `tests/`.
@@ -31,6 +33,7 @@ pnpm dev:host     # serve them over LAN HTTPS, self-signed, for phones
 pnpm test         # types, lint, format, unit and GPU tests, docs build with link checks
 pnpm test:unit    # headless Vitest tests on recordingRoot
 pnpm test:gpu     # *.test.gpu.ts on dawn.node, including every example's WGSL
+pnpm test:gl      # *.test.gl.ts in headless Chromium, on WebGL 2 beside WebGPU
 pnpm build        # build docs and examples
 pnpm preview      # serve the last build
 pnpm fix          # fix lint and formatting

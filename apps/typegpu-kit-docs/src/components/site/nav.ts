@@ -155,7 +155,15 @@ export const areas: readonly Area[] = [
       {
         label: 'Hosts',
         concept: 'platforms',
-        modules: ['kit/web', 'kit/native', 'kit/hosting', 'kit/host', 'kit/react', 'kit/runtimes'],
+        modules: [
+          'kit/web',
+          'kit/native',
+          'kit/hosting',
+          'kit/backends',
+          'kit/host',
+          'kit/react',
+          'kit/runtimes',
+        ],
       },
       {
         label: 'Testing and debugging',

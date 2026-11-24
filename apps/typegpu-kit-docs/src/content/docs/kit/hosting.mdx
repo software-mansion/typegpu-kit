@@ -1,7 +1,7 @@
 ---
 title: Hosting scenes
 description: Run a scene file on a web or React Native canvas, with its root, surface, loop, errors and teardown handled in order.
-modules: [kit/hosting, kit/host, kit/react, kit/runtimes]
+modules: [kit/hosting, kit/backends, kit/host, kit/react, kit/runtimes]
 ---
 
 import Module from '../../../components/site/Module.astro';
@@ -129,6 +129,45 @@ requestAnimationFrame(function tick(now) {
 
 - Each host watches the device. WebGPU doesn't say which scene caused an error, so the first uncaptured error or unexpected device loss reaches every running scene's `onError`.
 - Without a schedule, the first error still stops the frames. A `loop.run` that throws reports the error to `onError` and rethrows it to you. Every later `run` returns false.
+
+## Where WebGPU is missing
+
+<Module id="kit/backends" />
+
+A browser without WebGPU cannot create the device a scene draws with. `@typegpu/kit-gl` creates a root on WebGL 2 instead. Pass its fallback as `fallback`. The host makes the root on WebGPU where the browser gives a device, and on WebGL 2 where it does not:
+
+```ts twoslash
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+declare function createScene(root: TgpuRoot, surface: Surface): { frame(frame: Frame): void };
+declare const canvas: HTMLCanvasElement;
+// ---cut---
+import * as web from '@typegpu/kit/web';
+import { webgl } from '@typegpu/kit-gl';
+
+const hosted = web.host(createScene, { canvas, fallback: webgl.fallback() });
+```
+
+The fallback root is TypeGPU's own root, on a device that draws with WebGL 2. The scene file and its modules stay as they are. Their shaders compile to GLSL, and a buffer that a shader reads reaches it as a texture.
+
+<Rules>
+
+- **Compute** WebGL 2 has no compute stage, so the fallback runs each compute pipeline on the CPU, one invocation after another. A kernel over a few thousand rows keeps its frame rate. A kernel over a large texture or hundreds of thousands of rows does not.
+- **Branching** `backends.of(root)` reports the `kind`, `'webgpu'` or `'webgl'`, and where `compute` runs, `'gpu'` or `'cpu'`. Read it where you create a module to choose a smaller capacity or another technique.
+- **Trying it** `webgl.fallback({ force: true })` hosts on WebGL 2 in a browser that has WebGPU too.
+- **Your own root** A program that makes its own root calls `await webgl.initWithFallback({ canvas })`, which returns a root of either kind. `web.surface` configures a canvas for both.
+- **Loading it late** `fallback` takes any object with `init(canvas)`. One that imports `@typegpu/kit-gl` inside `init` keeps the fallback out of what a WebGPU browser downloads.
+
+</Rules>
+
+```ts twoslash
+import { tgpu, type TgpuRoot } from 'typegpu';
+declare const root: TgpuRoot;
+// ---cut---
+import { backends } from '@typegpu/kit';
+
+const capacity = backends.of(root).compute === 'cpu' ? 4_096 : 65_536;
+```
 
 ## A host of your own
 

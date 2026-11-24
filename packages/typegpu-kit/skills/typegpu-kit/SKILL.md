@@ -24,6 +24,7 @@ Look up each feature here before writing it. Each line names its modules and a f
   - A scene on React Native: `useScene`, or `host` without React; [on React Native](../../docs/kit/hosting.md#on-react-native).
   - GPU work on a React Native worker, and values between runtimes: `runtimes`; [the runtime pieces](../../docs/kit/hosting.md#the-runtime-pieces).
   - A host of your own: `hosting`; [a host of your own](../../docs/kit/hosting.md#a-host-of-your-own).
+  - A browser without WebGPU: `web.host`'s `fallback` from `@typegpu/kit-gl`, and `backends.of(root)` to size compute for the CPU; [where WebGPU is missing](../../docs/kit/hosting.md#where-webgpu-is-missing).
 - Look
   - Many models, finished: shadows, occlusion, TAA and bloom in one file to copy, [look.ts](../../docs/recipes/lit-models/look.ts), which [the finished look](../../docs/recipes/lit-models.md) explains.
   - Sun shadows: `lighting` with `shadow`, read in shaders through `shading`; lamp shadows: `pointShadow.define`, given to `lighting.create`; [robot-arm](../../docs/examples/robot-arm/).
