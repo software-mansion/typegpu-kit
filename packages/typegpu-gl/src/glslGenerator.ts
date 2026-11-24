@@ -898,9 +898,10 @@ export class GlslGenerator extends WgslGenerator {
     if (name === 'firstLeadingBit') {
       return this.#componentwise(args[0], (component) => {
         // For a negative i32, WGSL finds the highest 0 bit, which is the highest 1 bit of its complement
+        const value = this.ctx.resolveSnippet(component).value;
         const bits =
           component.dataType === d.i32
-            ? snip(`uint(${component.value} < 0 ? ~${component.value} : ${component.value})`, d.u32, 'runtime')
+            ? snip(`uint(${value} < 0 ? ~${value} : ${value})`, d.u32, 'runtime')
             : component;
         const leading = this._callShellless(countLeadingZeros, [bits])?.value;
         const result = `(${this.ctx.resolveSnippet(bits).value} == 0u ? 0xFFFFFFFFu : 31u - ${leading})`;
