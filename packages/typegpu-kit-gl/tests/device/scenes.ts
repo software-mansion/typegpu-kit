@@ -19,7 +19,8 @@ export interface SceneRun {
   readonly frameTime: number;
 }
 
-const unavailable = (what: string) => () => Promise.reject(new Error(`${what} is not available in this test`));
+const unavailable = (what: string) => () =>
+  Promise.reject(new Error(`${what} is not available in this test`));
 
 const loading: Loading = {
   read: unavailable('reading files'),
@@ -49,11 +50,11 @@ export async function runScene(
     const files = await filesOf(key, loading);
     const scene = await begin(await createScene(root, surface, files));
     destroy = () => scene.destroy?.();
-    let ready = scene.ready === undefined;
-    void scene.ready?.then(() => (ready = true));
+    const state = { ready: scene.ready === undefined };
+    void scene.ready?.then(() => (state.ready = true));
     const loop = frames.create(root, scene.frame);
     let seconds = 0;
-    for (let i = 0; i < 100 && !ready; i++) {
+    for (let i = 0; i < 100 && !state.ready; i++) {
       loop.run(seconds);
       seconds += 0.04;
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -70,7 +71,11 @@ export async function runScene(
     return { frame, errors, frameTime };
   } catch (error) {
     errors.push(`thrown: ${(error as Error).message}`);
-    return { frame: { width, height, format: 'rgba8unorm', bytes: new Uint8Array(width * height * 4) }, errors, frameTime };
+    return {
+      frame: { width, height, format: 'rgba8unorm', bytes: new Uint8Array(width * height * 4) },
+      errors,
+      frameTime,
+    };
   } finally {
     try {
       destroy?.();

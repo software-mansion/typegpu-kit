@@ -1,15 +1,13 @@
 import { tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { compare } from './compare.ts';
-import { glRoot } from './compare.ts';
+import { compare, glRoot } from './compare.ts';
 import { runScene } from './scenes.ts';
 
-/** Examples that ship no files, so they load without a page around them. */
-const EXAMPLES = (import.meta.env.EXAMPLES as string | undefined)?.split(',') ?? [
-  'benthos', 'blockfall', 'censer', 'dominoes', 'ember-mirror', 'falling-sand', 'fishtank',
-  'flow-field', 'forest', 'jellies', 'jump-flood', 'lattice', 'ocean', 'platformer', 'raymarch',
-  'robot-arm', 'slime-mould', 'sph-sculpt', 'spider', 'survey-model',
-];
+/**
+ * Examples that ship no files and run quickly with CPU compute, as a smoke test of the device under
+ * whole scenes. `scripts/examples.ts` runs every example in its page.
+ */
+const EXAMPLES = ['blockfall', 'lattice', 'raymarch', 'robot-arm'];
 
 let gpu: TgpuRoot;
 beforeAll(async () => {
