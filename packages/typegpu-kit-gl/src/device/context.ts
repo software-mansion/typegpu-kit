@@ -11,6 +11,8 @@ export interface DeviceStats {
   readonly kernels: Map<string, { ms: number; dispatches: number }>;
   /** Texture reads from GL into CPU copies for kernels. */
   readonly readback: { ms: number; textures: number };
+  /** Readback per texture, by label with its format and size, for finding the costly ones. */
+  readonly readbacks: Map<string, { ms: number; levels: number }>;
   /** Uploads of the CPU copies kernels wrote, before GL uses them. */
   readonly upload: { ms: number; textures: number };
   /**
@@ -25,11 +27,13 @@ export function createStats(): DeviceStats {
   const stats: DeviceStats = {
     kernels: new Map(),
     readback: { ms: 0, textures: 0 },
+    readbacks: new Map(),
     upload: { ms: 0, textures: 0 },
     fallbacks: new Map(),
     reset() {
       stats.kernels.clear();
       Object.assign(stats.readback, { ms: 0, textures: 0 });
+      stats.readbacks.clear();
       Object.assign(stats.upload, { ms: 0, textures: 0 });
     },
   };

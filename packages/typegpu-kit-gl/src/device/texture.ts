@@ -28,6 +28,7 @@ interface Derived {
 
 export interface TextureImpl {
   readonly id: number;
+  readonly label: string;
   readonly format: GPUTextureFormat;
   readonly info: FormatInfo;
   readonly dimension: GPUTextureDimension;
@@ -580,6 +581,7 @@ export function createTexture(ctx: Ctx, descriptor: GPUTextureDescriptor): GPUTe
     framebuffers: new Set(),
     destroyed: false,
     canvas: undefined,
+    label: descriptor.label ?? '',
   };
   if (impl.width > ctx.maxTextureSize || impl.height > ctx.maxTextureSize) {
     ctx.errors.report(
