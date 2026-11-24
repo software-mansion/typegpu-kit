@@ -1,3 +1,4 @@
+import { workgroup } from '@typegpu/kit';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
@@ -39,6 +40,46 @@ it('reuses plain barrier phases across workgroups and preserves private state an
       );
     }
     expect(code).toContain('"phases":3');
+  } finally {
+    root.destroy();
+  }
+});
+
+it('keeps repeated scan helper locals separate across unrolled barrier phases', async () => {
+  let code = '';
+  const root = cpuRoot({
+    onModule: (source) => {
+      code = source;
+    },
+  });
+  const scan = workgroup.scan(workgroup.sum(d.u32), 4);
+  const output = root.createMutable(d.arrayOf(d.vec2u, 12));
+  const kernel = tgpu.computeFn({
+    workgroupSize: [4],
+    in: { gid: d.builtin.globalInvocationId, lid: d.builtin.localInvocationIndex },
+  })(({ gid, lid }) => {
+    'use gpu';
+    let first = scan(gid.x + d.u32(1), lid);
+    let second = scan(d.u32(1), lid);
+    if (gid.x === 11) return;
+    output.$[gid.x] = d.vec2u(first, second);
+  });
+  try {
+    root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(3);
+    expect((await output.read()).flatMap((v) => [v.x, v.y])).toEqual(
+      Array.from({ length: 12 }, (_, i) =>
+        i === 11
+          ? [0, 0]
+          : [
+              Array.from({ length: i % 4 }, (_, j) => Math.floor(i / 4) * 4 + j + 1).reduce(
+                (a, b) => a + b,
+                0,
+              ),
+              i % 4,
+            ],
+      ).flat(),
+    );
+    expect(code).toContain('"phases":13');
   } finally {
     root.destroy();
   }

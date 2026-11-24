@@ -1,3 +1,4 @@
+import { expandBarrierHelpers, type BarrierHelper } from './phase-helpers.ts';
 import { splitPhases } from './phases.ts';
 import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
 import { addressParts, callArguments, lowerReferences } from './references.ts';
@@ -107,6 +108,7 @@ export class CpuGenerator extends WgslGenerator {
     return !!call && this.#functions.has(call[1]!);
   }
   #generators = new Set<string>();
+  #barrierHelpers = new Map<string, BarrierHelper>();
   #types = new Map<d.BaseData, string>();
 
   protected override _expression(expression: Expression): Snippet {
@@ -852,6 +854,15 @@ export class CpuGenerator extends WgslGenerator {
         return address ? readAddress(address) : name;
       });
       const returnType = options.determineReturnType();
+      if (
+        generator &&
+        options.functionType === 'normal' &&
+        ['u32', 'i32', 'f32', 'bool'].includes(scalar(returnType))
+      )
+        this.#barrierHelpers.set(options.name, {
+          body,
+          parameters: options.args.map((arg) => arg.name),
+        });
       this.emitTypeAnnotation(returnType);
       const args = options.args.filter((arg) => arg.used || options.functionType === 'normal');
       if (options.functionType === 'normal') {
@@ -880,15 +891,15 @@ export class CpuGenerator extends WgslGenerator {
       options.workgroupSize?.forEach((value, index) => {
         size[index] = value;
       });
-      const hasReturn = (node: unknown): boolean =>
-        Array.isArray(node) && (node[0] === NODE.return || node.some(hasReturn));
-      const phases =
-        generator && !hasReturn(options.body)
-          ? splitPhases(
-              body,
-              args.map((arg) => arg.name),
-            )
-          : undefined;
+      const phaseBody = expandBarrierHelpers(body, this.#barrierHelpers, () =>
+        this.ctx.makeUniqueIdentifier('cpuPhaseLocal', 'global'),
+      );
+      const phases = generator
+        ? splitPhases(
+            phaseBody,
+            args.map((arg) => arg.name),
+          )
+        : undefined;
       return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
     } finally {
       this.#vectors = previousVectors;

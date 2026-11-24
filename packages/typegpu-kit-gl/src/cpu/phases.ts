@@ -11,6 +11,8 @@ export function splitPhases(
   let brackets = 0;
   let quote = '';
   let comment = '';
+  const functions: boolean[] = [];
+  let returned = false;
   for (let i = 0; i < body.length; i++) {
     const char = body[i]!;
     const next = body[i + 1];
@@ -39,7 +41,7 @@ export function splitPhases(
       continue;
     }
     if (body.startsWith('(yield)', i)) {
-      if (braces !== 1 || parentheses !== 0 || brackets !== 0) return undefined;
+      if (braces !== 1 || parentheses !== 0 || brackets !== 0 || returned) return undefined;
       phases.push(code);
       code = '';
       i += '(yield)'.length - 1;
@@ -56,11 +58,14 @@ export function splitPhases(
         continue;
       }
     }
+    if (/^return\b/.test(body.slice(i)) && !functions.some(Boolean)) returned = true;
     if (char === '{') {
+      functions.push(/=>\s*$|function[^{}]*\)\s*$/.test(body.slice(0, i)));
       braces++;
       if (braces === 1) continue;
     }
     if (char === '}') {
+      functions.pop();
       braces--;
       if (braces === 0) continue;
     }
