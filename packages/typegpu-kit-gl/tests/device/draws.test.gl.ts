@@ -432,7 +432,7 @@ layout(location = 0) out vec4 color;`,
     });
     const draw = (loadOp: GPULoadOp) => {
       const encoder = device.createCommandEncoder();
-      const pass = encoder.beginRenderPass({
+      const render = encoder.beginRenderPass({
         colorAttachments: [a, b].map((texture) => ({
           view: texture.createView(),
           loadOp,
@@ -446,9 +446,9 @@ layout(location = 0) out vec4 color;`,
           depthClearValue: 1,
         },
       });
-      pass.setPipeline(pipeline);
-      pass.draw(3);
-      pass.end();
+      render.setPipeline(pipeline);
+      render.draw(3);
+      render.end();
       device.queue.submit([encoder.finish()]);
     };
     draw('clear');
