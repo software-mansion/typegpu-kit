@@ -266,6 +266,8 @@ value.yx = d.vec2f(value.xy); // Valid, but a string-valued swizzle is rejected 
 value = value.yxwz; // Valid, but giving the swizzle a local-variable origin rejects this copy.
 ```
 
+Constant vector indexing takes this same path: `state.$[0]` becomes a `Swizzle` in `tgsl/accessIndex.ts` and resolves to `state.x`. A subclass that only retargets member-access AST nodes misses indexed reads and writes. On an array-valued CPU backend this produced undefined reads in `randf`'s private state and an all-zero random stream.
+
 **Upstream.** Keep lvalue provenance separate from emitted text, and expose swizzle emission with the original base and components. Mutation validation in `tgsl/wgslGenerator.ts` should consume that provenance without requiring a concrete `tgsl/swizzle.ts` instance.
 
 **Workaround.** `CpuGenerator.#lowerSwizzle` clones the original Swizzle instance and uses `makeResolvable` to change only its emitted code. This retains readonly and nested-swizzle validation while lowering components to JavaScript indices.
