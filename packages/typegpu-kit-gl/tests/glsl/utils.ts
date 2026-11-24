@@ -7,6 +7,8 @@ import {
   type ShaderGenerator,
 } from 'typegpu/~internal';
 import { KitGenerator } from '../../src/generator.ts';
+import { attachComputeForm } from '../../src/glsl/compute.ts';
+import { cpuOnlyReason, gpuFormOf, parseCompute } from '../../src/glsl/computeModule.ts';
 import { KitGlslGenerator } from '../../src/glsl/generator.ts';
 import { isRenderModule, parse, type RenderModule } from '../../src/glsl/renderModule.ts';
 
@@ -21,14 +23,15 @@ type GeneratorClass = NonNullable<
 class RenderGenerator implements ShaderGenerator {
   #ctx: ResolutionCtx | undefined;
   #backend: ShaderGenerator | undefined;
+  #compute = false;
   readonly languageKey = 'wgsl' as const;
 
   #use(compute = false): ShaderGenerator {
     if (!this.#backend) {
       const scope = (this.#ctx as { topFunctionScope?: { functionType?: string } } | undefined)
         ?.topFunctionScope;
-      this.#backend =
-        compute || scope?.functionType === 'compute' ? new WgslGenerator() : new KitGlslGenerator();
+      this.#compute = compute || scope?.functionType === 'compute';
+      this.#backend = this.#compute ? new WgslGenerator() : new KitGlslGenerator();
       if (this.#ctx) this.#backend.initGenerator(this.#ctx);
     }
     return this.#backend;
@@ -36,6 +39,7 @@ class RenderGenerator implements ShaderGenerator {
 
   initGenerator(ctx: ResolutionCtx) {
     this.#ctx = ctx;
+    attachComputeForm(ctx, () => this.#compute);
     // A compute entry written as a WGSL string never reaches `functionDefinition`, so this reads
     // the pipeline's kind from the call that started the resolution
     const limit = Error.stackTraceLimit;
@@ -73,7 +77,13 @@ export interface GlslRoot {
   codes(): string[];
   /** Every render module created so far, parsed. */
   modules(): RenderModule[];
+  /** For every compute module created so far: its GPU form, or why it has none. */
+  computes(): ComputeVerdict[];
 }
+
+export type ComputeVerdict =
+  | { readonly code: string; readonly module: NonNullable<ReturnType<typeof parseCompute>> }
+  | { readonly reason: string };
 
 export interface GlslRootOptions {
   /** Resolves compute pipelines with the CPU backend too, as the fallback does. Default false. */
@@ -90,5 +100,16 @@ export function glslRoot(options: GlslRootOptions = {}): GlslRoot {
       : RenderGenerator) as unknown as GeneratorClass,
   });
   const codes = () => recording.log.shaders.filter(isRenderModule);
-  return { root, recording, codes, modules: () => codes().map((code) => parse(code)) };
+  const computes = () =>
+    recording.log.shaders
+      .filter((code) => /@compute|\/\/#kit-gl compute/.test(code))
+      .map((code): ComputeVerdict => {
+        const form = gpuFormOf(code);
+        if (form === undefined) return { reason: cpuOnlyReason(code) ?? 'no GPU form' };
+        return {
+          code: form,
+          module: parseCompute(code) as NonNullable<ReturnType<typeof parseCompute>>,
+        };
+      });
+  return { root, recording, codes, modules: () => codes().map((code) => parse(code)), computes };
 }
