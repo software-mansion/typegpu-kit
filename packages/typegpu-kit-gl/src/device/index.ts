@@ -40,6 +40,11 @@ export interface DeviceOptions {
   readonly canvas?: HTMLCanvasElement | OffscreenCanvas;
   /** Default `'high-performance'`. */
   readonly powerPreference?: WebGLPowerPreference;
+  /**
+   * Runs compute kernels as fragment passes where their generator wrote a GPU form. False runs
+   * every kernel on the CPU, to compare the two. Default true.
+   */
+  readonly gpuCompute?: boolean;
 }
 
 /** How `@typegpu/kit` recognises the fallback: `device[BACKEND]`, read by `backends.of(root)`. */
@@ -156,6 +161,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     },
     presented: (record) => presentRecord?.(record),
     stats: createStats(),
+    gpuCompute: options.gpuCompute ?? true,
     lost: false,
   };
 

@@ -509,7 +509,7 @@ export function createComputePipeline(
   if (error) ctx.errors.report('validation', error);
   let gpu: GpuCompute | undefined;
   if (module.kind === 'compute' && module.gpuError) ctx.stats.fallbacks.set(label, module.gpuError);
-  if (module.kind === 'compute' && module.gpu) {
+  if (module.kind === 'compute' && module.gpu && ctx.gpuCompute) {
     const prepared = prepareGpu(ctx, label, module.module, module.gpu);
     if (typeof prepared === 'string') ctx.stats.fallbacks.set(label, prepared);
     else gpu = prepared;

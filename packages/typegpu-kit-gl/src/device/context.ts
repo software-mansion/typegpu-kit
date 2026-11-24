@@ -60,6 +60,8 @@ export interface Ctx {
   /** Called after a submit wrote to a canvas texture, to present it. */
   presented(texture: object): void;
   readonly stats: DeviceStats;
+  /** Whether compute pipelines may run their GPU forms. */
+  readonly gpuCompute: boolean;
   lost: boolean;
 }
 
