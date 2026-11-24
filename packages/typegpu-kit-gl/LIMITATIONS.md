@@ -1,0 +1,51 @@
+# What the WebGL fallback cannot do
+
+`@typegpu/kit-gl` runs a TypeGPU Kit program on WebGL 2, which has no compute stage, no storage buffers and fewer texture kinds than WebGPU. This file lists what differs from WebGPU. A feature that is missing throws an error that names it; nothing here fails silently unless the entry says so.
+
+`ARCHITECTURE.md` explains the mechanisms these limits come from.
+
+## Compute
+
+A compute pipeline runs one of two ways. The fallback picks per pipeline, and falls back from the first to the second per dispatch.
+
+**As fragment passes on the GPU**, when every write is provably to the invocation's own cell: its own array element or texel, a linear index with a constant width, an index plus an offset every invocation shares, a constant stride, a column of a 3d or array texture, a binding only one chosen invocation writes, or atomics on its own cell. Such a kernel runs at GPU speed. Two things differ from WebGPU:
+
+- A read of a cell another invocation writes in the same dispatch returns the value from before the dispatch. WebGPU leaves such a read a data race, so a kernel that is correct there does not depend on it.
+- The whole kernel runs once per written resource, and once more for each texel a buffer element spans beyond the first, so a kernel that writes several large structs costs a multiple of its WebGPU cost.
+
+**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed indices, writes inside helper functions that are not handed the invocation's own index.
+
+- Invocations run one after another, in order. A kernel that is correct under any interleaving is correct here.
+- A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
+- A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame.
+- Arithmetic runs in 64-bit floats and rounds to 32 bits when a value is stored. A simulation follows a slightly different trajectory from WebGPU's, as it does between two GPUs.
+- Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
+
+`backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick a kernel that suits a CPU, as the kit's culling does, and an example's `meta.json` may give `fallback` scene options that size it.
+
+## Shaders
+
+- A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
+- No `textureGather` or `textureGatherCompare`, no `textureNumSamples`, no multisampled or cube-array texture bindings.
+- No `sample_index`, `primitive_index`, `clip_distances` or sample-mask input. A `sample_mask` output discards the fragment when bit 0 is clear, which is exact only without multisampling.
+- No `extractBits` or `insertBits`, no `f16`, no `bool` inside a buffer, no array of arrays in a buffer.
+- A render stage cannot write a buffer or a storage texture, and cannot use atomics other than `atomicLoad`.
+- A uniform buffer over 16 KiB is read through a texture instead of a uniform block. Reading a whole runtime-sized array as one value throws.
+- A stage may use 16 texture units, and a program 32. Each storage buffer, each large uniform buffer and each texture and sampler pair takes one. A program that needs more fails when it links, with a message that counts them.
+
+## Device
+
+- No timestamp or occlusion queries, and no immediate data.
+- No cube-array textures. A multisampled texture can be rendered and resolved, not sampled.
+- A 6-layer texture is stored as a cube or as an array, whichever its first view asks for. A view of the other kind, or of part of a texture's layers, samples a copy the device refreshes after each change.
+- Two views of one texture with different mip ranges cannot be bound in the same draw.
+- Different blend states per colour target need `OES_draw_buffers_indexed`.
+- Depth bias has no clamp.
+- Reading back a depth or signed-normalised texture needs `EXT_color_buffer_float`.
+- A device created on a canvas presents to that canvas without a copy and to no other. A device created without one presents to any number, each through a bitmap transfer.
+- `firstInstance` and `baseVertex` are emulated with a uniform and offset attribute pointers.
+
+## Browsers
+
+- Checked in Chromium with WebGPU removed from the page and in WebKit, which has no WebGPU. WebKit draws at the display's 60 Hz.
+- Not checked in Firefox: the test browser did not start under automation here.
