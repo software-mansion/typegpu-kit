@@ -324,7 +324,10 @@ export class CpuGenerator extends WgslGenerator {
       }
     }
 
-    if (['mutable', 'readonly', 'uniform'].includes(result.origin)) {
+    if (
+      typeof result.dataType !== 'symbol' &&
+      ['mutable', 'readonly', 'uniform'].includes(result.origin)
+    ) {
       const code = this.ctx.resolveSnippet(result).value;
       if (this.#addresses.has(code)) return result;
       const indexed = /^(\w+)\[(.*)\]$/.exec(code);

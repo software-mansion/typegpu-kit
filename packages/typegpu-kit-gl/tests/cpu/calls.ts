@@ -1,5 +1,43 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 
+export async function matrixLocals(root: TgpuRoot): Promise<number[]> {
+  const source = root.createMutable(d.mat2x2f, d.mat2x2f(d.vec2f(1, 2), d.vec2f(3, 4)));
+  const output = root.createMutable(d.arrayOf(d.vec4f, 2));
+  const count = tgpu.privateVar(d.u32);
+  const make = tgpu.fn(
+    [],
+    d.mat2x2f,
+  )(() => {
+    'use gpu';
+    count.$ += d.u32(1);
+    return d.mat2x2f(source.$);
+  });
+  const inspect = tgpu.fn(
+    [d.mat2x2f],
+    d.vec4f,
+  )((matrix) => {
+    'use gpu';
+    let copy = d.mat2x2f(matrix);
+    let rows = std.transpose(matrix);
+    copy.columns[0].x += 3;
+    return d.vec4f(copy.columns[0].x, copy.columns[1].y, rows.columns[0].y, rows.columns[1].x);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    let snapshot = std.transpose(make());
+    source.$.columns[0].y = 91;
+    output.$[0] = inspect(snapshot);
+    output.$[1] = d.vec4f(
+      snapshot.columns[0].y,
+      snapshot.columns[1].x,
+      d.f32(count.$),
+      source.$.columns[0].y,
+    );
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return (await output.read()).flatMap((value) => [value.x, value.y, value.z, value.w]);
+}
+
 export async function callValues(root: TgpuRoot): Promise<number[]> {
   const count = tgpu.privateVar(d.u32);
   const output = root.createMutable(d.arrayOf(d.vec4u, 8));
