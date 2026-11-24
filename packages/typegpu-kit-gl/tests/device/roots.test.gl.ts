@@ -1,11 +1,12 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { compareRoots, pixel, roots } from './compare.ts';
+import { compareRoots, pixel, roots, hasWebGpu } from './compare.ts';
 
 let gpu: TgpuRoot;
 let gl: TgpuRoot;
 
 beforeAll(async () => {
+  if (!hasWebGpu) return;
   ({ gpu, gl } = await roots());
 });
 
@@ -278,7 +279,7 @@ function pulledWithBaseVertex(root: TgpuRoot) {
   return color;
 }
 
-describe('roots on the WebGL device match WebGPU', () => {
+describe.skipIf(!hasWebGpu)('roots on the WebGL device match WebGPU', () => {
   test('vertices pulled by index with a base vertex, direct and indirect', async () => {
     const result = await compareRoots(gpu, gl, pulledWithBaseVertex);
     expect(result.first).toBeUndefined();

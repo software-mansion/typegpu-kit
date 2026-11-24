@@ -2,7 +2,7 @@ import { meshPool } from '@typegpu/kit';
 import { meshes } from '@typegpu/kit/geometry';
 import { d, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, test } from 'vitest';
-import { glRoot } from './compare.ts';
+import { glRoot, hasWebGpu } from './compare.ts';
 import { diffScene } from './diff.ts';
 
 /**
@@ -32,16 +32,18 @@ async function cylinder(root: TgpuRoot) {
 }
 
 // The top cap's ring, vertices 67 to 98, comes out at x = z = 0 on the CPU
-test.fails("a cylinder's cap vertices from a CPU kernel", { timeout: 60_000 }, async () => {
-  const gpu = await tgpu.init();
-  const gl = glRoot({ gpuCompute: false });
-  try {
-    expect(await cylinder(gl)).toEqual(await cylinder(gpu));
-  } finally {
-    gpu.destroy();
-    gl.destroy();
-  }
-});
+test
+  .skipIf(!hasWebGpu)
+  .fails("a cylinder's cap vertices from a CPU kernel", { timeout: 60_000 }, async () => {
+    const gpu = await tgpu.init();
+    const gl = glRoot({ gpuCompute: false });
+    try {
+      expect(await cylinder(gl)).toEqual(await cylinder(gpu));
+    } finally {
+      gpu.destroy();
+      gl.destroy();
+    }
+  });
 
 /** Bakes a box into a mesh pool and reads back the bounds the bake's atomics wrote. */
 async function boxBounds(root: TgpuRoot) {
@@ -63,31 +65,36 @@ async function boxBounds(root: TgpuRoot) {
 
 // The bake's `workgroup.reduce` and `atomicMin`/`atomicMax` leave every box at zero size, so culling
 // drops meshes that WebGPU keeps: robot-arm's table and wall
-test.fails("a mesh pool's baked bounds from CPU kernels", { timeout: 60_000 }, async () => {
-  const gpu = await tgpu.init();
-  const gl = glRoot({ gpuCompute: false });
-  try {
-    expect(await boxBounds(gl)).toEqual(await boxBounds(gpu));
-  } finally {
-    gpu.destroy();
-    gl.destroy();
-  }
-});
+test
+  .skipIf(!hasWebGpu)
+  .fails("a mesh pool's baked bounds from CPU kernels", { timeout: 60_000 }, async () => {
+    const gpu = await tgpu.init();
+    const gl = glRoot({ gpuCompute: false });
+    try {
+      expect(await boxBounds(gl)).toEqual(await boxBounds(gpu));
+    } finally {
+      gpu.destroy();
+      gl.destroy();
+    }
+  });
 
 // The pose kernels leave words of `Pose_device` at 0 where WebGPU has 1 and -0.44, and 39 % of
 // `poses_joints` differs after 4 s, so skeletons stay collapsed on the floor. Every kernel runs on
 // the CPU here and both runs draw the same seeded random numbers.
-test.fails("skeletons' poses from CPU kernels", { timeout: 280_000 }, async () => {
-  const gpu = await tgpu.init();
-  const gl = glRoot({ gpuCompute: false });
-  try {
-    const { buffers } = await diffScene(gpu, gl, 'skeletons', { frames: 100 });
-    const poses = buffers.filter(
-      (buffer) => buffer.label.startsWith('Pose_device') || buffer.label.startsWith('poses_joints'),
-    );
-    expect(poses).toEqual([]);
-  } finally {
-    gpu.destroy();
-    gl.destroy();
-  }
-});
+test
+  .skipIf(!hasWebGpu)
+  .fails("skeletons' poses from CPU kernels", { timeout: 280_000 }, async () => {
+    const gpu = await tgpu.init();
+    const gl = glRoot({ gpuCompute: false });
+    try {
+      const { buffers } = await diffScene(gpu, gl, 'skeletons', { frames: 100 });
+      const poses = buffers.filter(
+        (buffer) =>
+          buffer.label.startsWith('Pose_device') || buffer.label.startsWith('poses_joints'),
+      );
+      expect(poses).toEqual([]);
+    } finally {
+      gpu.destroy();
+      gl.destroy();
+    }
+  });

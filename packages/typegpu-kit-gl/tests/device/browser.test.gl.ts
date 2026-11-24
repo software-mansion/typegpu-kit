@@ -7,7 +7,7 @@ test('the test browser has WebGL 2', () => {
   expect(gl.getParameter(gl.MAX_COLOR_ATTACHMENTS)).toBeGreaterThanOrEqual(4);
 });
 
-test('the test browser has WebGPU to compare against', async () => {
+test.skipIf(!('gpu' in navigator))('the test browser has WebGPU to compare against', async () => {
   const adapter = await navigator.gpu?.requestAdapter();
   expect(adapter).toBeTruthy();
 });

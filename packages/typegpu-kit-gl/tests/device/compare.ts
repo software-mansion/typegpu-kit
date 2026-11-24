@@ -14,6 +14,9 @@ import { tgpu, type TgpuRoot } from 'typegpu';
 import { createDevice, type DeviceOptions, type GLDevice } from '../../src/device/index.ts';
 import { KitGenerator } from '../../src/generator.ts';
 
+/** Whether the browser has WebGPU to compare with; WebKit and Firefox runs skip the comparisons. */
+export const hasWebGpu = 'gpu' in navigator && !!navigator.gpu;
+
 /** A WebGPU root and a WebGL root. Destroy both when done. */
 export async function roots(options: DeviceOptions = {}): Promise<{ gpu: TgpuRoot; gl: TgpuRoot }> {
   const gpu = await tgpu.init();

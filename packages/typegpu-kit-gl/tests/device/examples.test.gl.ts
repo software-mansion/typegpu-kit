@@ -1,6 +1,6 @@
 import { tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { compare, glRoot } from './compare.ts';
+import { compare, glRoot, hasWebGpu } from './compare.ts';
 import { runScene } from './scenes.ts';
 
 /**
@@ -11,11 +11,12 @@ const EXAMPLES = ['blockfall', 'lattice', 'raymarch', 'robot-arm'];
 
 let gpu: TgpuRoot;
 beforeAll(async () => {
+  if (!hasWebGpu) return;
   gpu = await tgpu.init();
 });
 afterAll(() => gpu?.destroy());
 
-describe('whole examples on the WebGL device', () => {
+describe.skipIf(!hasWebGpu)('whole examples on the WebGL device', () => {
   for (const key of EXAMPLES) {
     test(key, { timeout: 120_000 }, async () => {
       const expected = await runScene(gpu, key);
