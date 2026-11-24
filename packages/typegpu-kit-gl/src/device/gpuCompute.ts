@@ -18,6 +18,7 @@ import { type Bound, bufferEntry } from './binding.ts';
 import { type BufferImpl, dataTexture, replaceData } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import { link, type Program } from './program.ts';
+import type { BlendState } from './state.ts';
 import {
   blitLevel,
   glWritten,
@@ -81,6 +82,16 @@ export function prepareGpu(
   }
   return { module, passes };
 }
+
+const NO_BLEND: BlendState = {
+  enabled: false,
+  colorOp: 0,
+  colorSrc: 0,
+  colorDst: 0,
+  alphaOp: 0,
+  alphaSrc: 0,
+  alphaDst: 0,
+};
 
 const pools = new WeakMap<Ctx, Map<string, WebGLTexture[]>>();
 /** Textures a pass may render into are kept for the next dispatch, up to this many per size. */
@@ -269,15 +280,19 @@ export function runGpu(
       state.viewport(0, 0, width, height);
       writeEverything(ctx);
       for (const cap of [
-        gl.BLEND,
+        gl.SCISSOR_TEST,
         gl.DEPTH_TEST,
         gl.STENCIL_TEST,
         gl.CULL_FACE,
+        gl.RASTERIZER_DISCARD,
         gl.SAMPLE_ALPHA_TO_COVERAGE,
         gl.POLYGON_OFFSET_FILL,
       ]) {
         state.enable(cap, false);
       }
+      // Through `blend`: disabling BLEND as a cap turns off every draw buffer's blending behind
+      // the per-buffer cache that render passes rely on
+      state.blend(0, NO_BLEND);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
       made.push(texture);
