@@ -31,6 +31,7 @@ export class CpuGenerator extends WgslGenerator {
   #functions = new Set<string>();
   #privateResets: string[] = [];
   #addresses = new Map<string, Address>();
+  #globalAddresses = new Map<string, Address>();
   #vectors = new Map<string, string[]>();
   #components(code: string): string[] | undefined {
     return this.#vectors.get(code.replace(/^\((\w+)\)$/, '$1'));
@@ -72,6 +73,10 @@ export class CpuGenerator extends WgslGenerator {
     const result = super._expression(expression);
     if (Array.isArray(expression) && expression[0] === NODE.objectExpr) {
       let code = this.ctx.resolveSnippet(result).value;
+      if (typeof result.dataType !== 'symbol' && result.dataType.type === 'struct') {
+        const type = this.emitTypeAnnotation(result.dataType);
+        code = code.replace(`${type}(`, `${type}.fields(`);
+      }
       for (const [name, parts] of this.#vectors)
         code = code.replace(
           new RegExp(`(?<![.\\w])\\b${name}\\b`, 'g'),
@@ -361,7 +366,13 @@ export class CpuGenerator extends WgslGenerator {
     const name = this.ctx.makeUniqueIdentifier('cpuType', 'global');
     this.#types.set(schema, name);
     this.ctx.addDeclaration(
-      `function ${name}(...args) { return $construct(${JSON.stringify(layout)}, ...args); }`,
+      `function ${name}(...args) { return $construct(${JSON.stringify(layout)}, ...args); }${
+        layout.fields
+          ? `\n${name}.fields=(...args)=>${name}({${Object.keys(layout.fields)
+              .map((key, i) => `${JSON.stringify(key)}:args[${i}]`)
+              .join(',')}});`
+          : ''
+      }`,
       name,
     );
     return name;
@@ -415,6 +426,15 @@ export class CpuGenerator extends WgslGenerator {
     }
     const type = this.emitTypeAnnotation(schema);
     const value = args.length ? this.#value(args[0]!) : '0';
+    if (schema.type === 'struct' && args.length) {
+      const keys = Object.keys((schema as d.WgslStruct).propTypes);
+      return snip(
+        `${type}({${args.map((arg, i) => `${JSON.stringify(keys[i])}:${this.#value(arg)}`).join(',')}})`,
+        schema,
+        'runtime',
+        args.some((arg) => arg.possibleSideEffects),
+      );
+    }
     if (type.startsWith('cpuType'))
       return snip(
         `${type}(${args.map((arg) => this.#value(arg)).join(',')})`,
@@ -511,7 +531,9 @@ export class CpuGenerator extends WgslGenerator {
         `//#binding ${JSON.stringify({ group, binding, kind: 'buffer', reads: true, writes: scope === 'mutable' })}\nconst ${id}_u32 = $buffer(${group},${binding},Uint32Array);\nconst ${id}_i32 = $buffer(${group},${binding},Int32Array);\nconst ${id}_f32 = $buffer(${group},${binding},Float32Array);`,
         id,
       );
-      this.#addresses.set(id, { layout, base: id, offset: '0' });
+      const address = { layout, base: id, offset: '0' };
+      this.#globalAddresses.set(id, address);
+      this.#addresses.set(id, address);
       return snip(id, dataType, scope);
     }
     const ctor = type === 'u32' ? 'Uint32Array' : type === 'i32' ? 'Int32Array' : 'Float32Array';
@@ -524,7 +546,9 @@ export class CpuGenerator extends WgslGenerator {
 
   override functionDefinition(options: FunctionDefinitionOptions): string {
     const previousVectors = this.#vectors;
+    const previousAddresses = this.#addresses;
     this.#vectors = new Map();
+    this.#addresses = new Map(this.#globalAddresses);
     try {
       if (options.functionType !== 'normal' && options.functionType !== 'compute')
         unsupported(`${options.functionType} entry point`);
@@ -612,6 +636,8 @@ export class CpuGenerator extends WgslGenerator {
       return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}`;
     } finally {
       this.#vectors = previousVectors;
+      this.#addresses = previousAddresses;
+      for (const [id, address] of this.#globalAddresses) this.#addresses.set(id, address);
     }
   }
 

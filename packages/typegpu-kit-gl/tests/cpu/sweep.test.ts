@@ -1,5 +1,6 @@
 import { cpuRoot } from './device.ts';
 import { writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
@@ -57,14 +58,42 @@ it.runIf(process.env.CPU_SWEEP === '1')(
     const results: { example: string; status: string; modules: number; error?: string }[] = [];
     for (const example of examples.filter(
       (candidate) =>
-        !process.env.CPU_EXAMPLES || process.env.CPU_EXAMPLES.split(',').includes(candidate.key),
+        (!process.env.CPU_EXAMPLES ||
+          process.env.CPU_EXAMPLES.split(',').includes(candidate.key)) &&
+        !process.env.CPU_SKIP?.split(',').includes(candidate.key),
     )) {
       const recording = recordingRoot();
+      const dispatched = new Map<
+        string,
+        { calls: number; milliseconds: number; invocations: number }
+      >();
       const root =
         process.env.CPU_EXECUTE === '1'
           ? cpuRoot({
               generator: SweepGenerator,
-              onModule: (code) => recording.log.shaders.push(code),
+              onDispatch: (code, milliseconds, invocations) => {
+                const previous = dispatched.get(code) ?? {
+                  calls: 0,
+                  milliseconds: 0,
+                  invocations: 0,
+                };
+                dispatched.set(code, {
+                  calls: previous.calls + 1,
+                  milliseconds: previous.milliseconds + milliseconds,
+                  invocations: previous.invocations + invocations,
+                });
+              },
+              onModule: (code) => {
+                recording.log.shaders.push(code);
+                if (process.env.CPU_DIAGNOSTICS === '1' && isCpuModule(code))
+                  writeFileSync(
+                    new URL(
+                      `./module-${recording.log.shaders.length}.generated.txt`,
+                      import.meta.url,
+                    ),
+                    code,
+                  );
+              },
             })
           : tgpu.initFromDevice({
               device: recording.root.device,
@@ -103,11 +132,24 @@ it.runIf(process.env.CPU_SWEEP === '1')(
             compile(code);
           } catch (error) {
             if (process.env.CPU_DIAGNOSTICS === '1')
-              await writeFile(new URL('./failure.generated.js', import.meta.url), code);
+              await writeFile(new URL('./failure.generated.txt', import.meta.url), code);
             throw error;
           }
         }
-        results.push({ example: example.key, status: 'pass', modules: modules.length });
+        results.push({
+          example: example.key,
+          status: 'pass',
+          modules: modules.length,
+          ...(process.env.CPU_EXECUTE === '1'
+            ? {
+                executedModules: dispatched.size,
+                dispatches: [...dispatched].map(([code, timing]) => ({
+                  entry: JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name,
+                  ...timing,
+                })),
+              }
+            : {}),
+        });
       } catch (error) {
         results.push({
           example: example.key,
@@ -132,14 +174,16 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         root.destroy();
         if (process.env.CPU_EXECUTE === '1')
           await writeFile(
-            new URL('./execution-results.json', import.meta.url),
+            new URL(process.env.CPU_RESULTS ?? './execution-results.json', import.meta.url),
             JSON.stringify(results, null, 2),
           );
       }
     }
     await writeFile(
       new URL(
-        process.env.CPU_EXECUTE === '1' ? './execution-results.json' : './sweep-results.json',
+        process.env.CPU_EXECUTE === '1'
+          ? (process.env.CPU_RESULTS ?? './execution-results.json')
+          : './sweep-results.json',
         import.meta.url,
       ),
       `${JSON.stringify(results, null, 2)}\n`,

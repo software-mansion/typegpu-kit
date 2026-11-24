@@ -17,10 +17,12 @@ export function cpuRoot(
       Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
     >;
     onModule?: (code: string) => void;
+    onDispatch?: (code: string, milliseconds: number, invocations: number) => void;
   } = {},
 ) {
   const recording = recordingRoot();
   const original = recording.root.device;
+  const sources = new WeakMap<CpuModule, string>();
   const texture = textureDevice(original);
   const queue = new Proxy(original.queue, {
     get(target, key) {
@@ -41,9 +43,14 @@ export function cpuRoot(
       if (key === 'createShaderModule')
         return (descriptor: GPUShaderModuleDescriptor) => {
           options.onModule?.(descriptor.code);
-          return isCpuModule(descriptor.code)
-            ? { ...compile(descriptor.code), getCompilationInfo: async () => ({ messages: [] }) }
-            : { ...original.createShaderModule(descriptor), code: descriptor.code };
+          if (!isCpuModule(descriptor.code))
+            return { ...original.createShaderModule(descriptor), code: descriptor.code };
+          const module = {
+            ...compile(descriptor.code),
+            getCompilationInfo: async () => ({ messages: [] }),
+          };
+          sources.set(module, descriptor.code);
+          return module;
         };
       if (key === 'createComputePipeline')
         return (descriptor: GPUComputePipelineDescriptor) => descriptor;
@@ -84,7 +91,8 @@ export function cpuRoot(
                     `CPU test device: raw compute shader ${(module as unknown as { code: string }).code}`,
                   );
                 const bindings = new Map(groups);
-                commands.push(() =>
+                commands.push(() => {
+                  const start = performance.now();
                   module.dispatch(x, y, z, {
                     buffer(group, binding) {
                       const resource = Array.from(bindings.get(group)!.entries).find(
@@ -109,8 +117,13 @@ export function cpuRoot(
                       )!.resource;
                       return texture.samplers.get(resource)!;
                     },
-                  }),
-                );
+                  });
+                  options.onDispatch?.(
+                    sources.get(module)!,
+                    performance.now() - start,
+                    x * y * z * module.workgroupSize.reduce((a, b) => a * b, 1),
+                  );
+                });
               };
               return {
                 setPipeline(value: Pipeline) {

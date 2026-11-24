@@ -53,3 +53,36 @@ it('keeps scalarized vector locals scoped to their shader function', async () =>
   expect([value.x, value.y]).toEqual([10.5, -7.5]);
   root.destroy();
 });
+
+it('scopes buffer address aliases to their declaring helper', async () => {
+  const root = cpuRoot();
+  const Row = d.struct({ value: d.vec2f });
+  const source = root.createUniform(Row, { value: d.vec2f(3, 7) });
+  const output = root.createMutable(d.arrayOf(d.vec2f, 2));
+  const read = tgpu.fn(
+    [Row],
+    d.vec2f,
+  )((view) => {
+    'use gpu';
+    return d.vec2f(view.value);
+  });
+  const nested = tgpu.fn(
+    [],
+    d.vec2f,
+  )(() => {
+    'use gpu';
+    const view = source.$;
+    return read(view);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    output.$[0] = nested();
+    output.$[1] = read(Row({ value: d.vec2f(11, 13) }));
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  expect((await output.read()).map((v) => [v.x, v.y])).toEqual([
+    [3, 7],
+    [11, 13],
+  ]);
+  root.destroy();
+});
