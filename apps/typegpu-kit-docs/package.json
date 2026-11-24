@@ -21,6 +21,7 @@
     "@typegpu/color": "catalog:",
     "@typegpu/create-kit": "workspace:*",
     "@typegpu/kit": "workspace:*",
+    "@typegpu/kit-gl": "workspace:*",
     "@typegpu/noise": "catalog:",
     "@typegpu/radiance-cascades": "catalog:",
     "astro": "^7.4.12",

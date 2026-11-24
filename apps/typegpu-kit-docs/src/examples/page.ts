@@ -212,9 +212,10 @@ function ui(declared: Ui | undefined, scene: ExampleScene, gui?: GUI): Shown {
 /**
  * Hosts example `key` on the page: its input, a settings panel titled with its
  * title, its declared UI and the bar's Pause button. Removes the cover when the scene is ready and
- * has drawn `WARMUP_FRAMES` frames, then pauses under reduced motion.
+ * has drawn `WARMUP_FRAMES` frames, then pauses under reduced motion. Hosts on WebGL 2 where WebGPU
+ * is missing, or everywhere with `webgl` `'force'`.
  */
-export function run(key: string): Hosted<ExampleScene> {
+export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted<ExampleScene> {
   const example = exampleOf(key);
   const picks = Object.values(example.ui ?? {}).some(
     (part) => part.kind === 'image' || part.kind === 'camera',
@@ -229,6 +230,7 @@ export function run(key: string): Hosted<ExampleScene> {
 
   const hosted = host(key, canvas, {
     say,
+    webgl,
     onError: fail,
     attach: ({ scene }) => {
       const gui =

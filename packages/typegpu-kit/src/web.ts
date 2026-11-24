@@ -681,6 +681,8 @@ export interface HostOptions<S extends Scene> extends AnyHostOptions<S, Surface>
 
 /** Creates a root on another graphics API for `web.host`, which owns and destroys it. */
 export interface Fallback {
+  /** Uses the fallback even where WebGPU works, to see a scene on it. Default false. */
+  readonly force?: boolean;
   /**
    * Creates the root. Its `destroy` frees the device with it.
    *
@@ -695,7 +697,7 @@ async function init(
   fallback: Fallback | undefined,
 ): Promise<TgpuRoot> {
   if (!fallback) return tgpu.init({ device: { optionalFeatures } });
-  if (navigator.gpu) {
+  if (!fallback.force && navigator.gpu) {
     try {
       return await tgpu.init({ device: { optionalFeatures } });
     } catch {

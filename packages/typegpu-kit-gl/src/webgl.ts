@@ -17,7 +17,13 @@ export interface InitOptions extends DeviceOptions {}
 
 /** What `web.host` takes as `fallback`: it creates the root on the hosted canvas. */
 export interface Fallback {
+  readonly force: boolean;
   init(canvas: HTMLCanvasElement): Promise<TgpuRoot>;
+}
+
+export interface FallbackOptions extends Omit<InitOptions, 'canvas'> {
+  /** Hosts on WebGL 2 even where WebGPU works, to see a scene on the fallback. Default false. */
+  readonly force?: boolean;
 }
 
 /** Reports whether this browser can create a WebGL 2 context. */
@@ -47,8 +53,9 @@ export async function init(options: InitOptions = {}): Promise<TgpuRoot> {
  * Returns the fallback for `web.host`: `web.host(createScene, { canvas, fallback:
  * webgl.fallback() })` hosts on WebGPU where it works and on WebGL 2 where it does not.
  */
-export function fallback(options: Omit<InitOptions, 'canvas'> = {}): Fallback {
-  return { init: (canvas) => init({ ...options, canvas }) };
+export function fallback(options: FallbackOptions = {}): Fallback {
+  const { force = false, ...rest } = options;
+  return { force, init: (canvas) => init({ ...rest, canvas }) };
 }
 
 export interface InitWithFallbackOptions extends InitOptions {

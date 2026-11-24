@@ -193,7 +193,7 @@ const { example } = Astro.props as { example: Example };
     <output id="notice" role="alert"></output>
     <script>
       import { gpuDebug } from '@typegpu/kit/debug';
-      import { fail, run, tell } from '../../examples/page.ts';
+      import { fail, run } from '../../examples/page.ts';
 
       // Where the bar ends, for the controls beside it on a phone
       const bar = document.querySelector<HTMLElement>('.bar')!;
@@ -204,9 +204,19 @@ const { example } = Astro.props as { example: Example };
 
       const key = document.getElementById('example')?.dataset.key;
 
-      if (!('gpu' in navigator)) tell('This browser has no WebGPU.');
-      else if (!key) fail(new Error('The page names no example.'));
-      else {
+      // `?backend=webgl` shows the example on the WebGL 2 fallback where WebGPU works too
+      const forced = new URLSearchParams(location.search).get('backend') === 'webgl';
+
+      if (!key) fail(new Error('The page names no example.'));
+      else if (forced || !('gpu' in navigator)) {
+        // The profiler patches WebGPU's own classes, which the fallback does not use
+        document.documentElement.dataset.backend = 'webgl';
+        try {
+          run(key, 'force');
+        } catch (error) {
+          fail(error);
+        }
+      } else {
         // The profiler patches WebGPU before the example requests its device, and stays idle until
         // the button starts it
         const debug = gpuDebug.install();

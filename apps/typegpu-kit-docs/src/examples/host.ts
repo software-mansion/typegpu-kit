@@ -28,9 +28,20 @@ export interface HostOptions {
   readonly onFrame?: (stage: web.Stage<ExampleScene>, frame: Frame) => void;
   /** Connects page code once the scene is up; the host disposes what it returns. Default none. */
   readonly attach?: (stage: web.Stage<ExampleScene>) => Disposable | void;
+  /**
+   * Hosts on WebGL 2 where WebGPU is missing, or everywhere with `'force'`. Ignored with `root`.
+   * Default `'missing'`.
+   */
+  readonly webgl?: 'missing' | 'force';
   /** Receives errors from loading, creating or running the scene. */
   readonly onError: (error: unknown) => void;
 }
+
+/** Hosts on WebGL 2, loading the fallback only where a page needs it. */
+const fallback = (force: boolean): web.Fallback => ({
+  force,
+  init: async (canvas) => (await import('@typegpu/kit-gl')).webgl.init({ canvas }),
+});
 
 /** Hosts example `key` on the canvas with `web.host`, loading its files and connecting its input. */
 export function host(
@@ -46,7 +57,9 @@ export function host(
   return web.host((pageRoot, surface) => create(key, pageRoot, surface, files, given), {
     canvas,
     onError,
-    ...(root ? { root } : { optionalFeatures: features }),
+    ...(root
+      ? { root }
+      : { optionalFeatures: features, fallback: fallback(options.webgl === 'force') }),
     ...(schedule === undefined ? {} : { schedule }),
     ...(maxPixelRatio === undefined ? {} : { maxPixelRatio }),
     ...(onFrame ? { onFrame } : {}),
