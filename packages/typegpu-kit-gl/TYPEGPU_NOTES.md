@@ -300,7 +300,7 @@ const current = tgpu.accessor(Pass, () => {
 
 **Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` marks a function as shared when it has no parameters and its generated body names no private variable, written resource, invocation id or function that is not shared itself.
 
-### 23. Local liveness and callee effects are not exposed together
+### 24. Local liveness and callee effects are not exposed together
 
 Function arguments expose `used`, but local declarations have no equivalent hook and function definitions carry no reusable purity summary. When a specialised callback ignores an argument, a backend can omit the call's argument but still computes the local that supplied it. In stampede's culling this left an unused default bounding sphere, including its transforms, in every row's visibility check.
 
@@ -308,11 +308,12 @@ Function arguments expose `used`, but local declarations have no equivalent hook
 const fallback = sphereOf(row);
 return customBounds(row, fallback); // This fill never reads its second argument.
 // A backend can emit customBounds(row, undefined) but still emits sphereOf(row).
+return placementOf(row).position; // The helper still computes rotation and scale.
 ```
 
-**Upstream.** Expose local use counts or stable binding identities, and a function effect summary covering writes and barriers, through `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Then a backend can remove unused pure initializers before emitting text.
+**Upstream.** Expose local use counts or stable binding identities, field use paths on record arguments and returns, and a function effect summary covering writes and barriers, through `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Then a backend can remove unused pure initializers and record fields before emitting text.
 
-**Workaround.** `CpuGenerator` tracks function effects; `src/cpu/dead-locals.ts` conservatively removes unused generated declarations whose calls are known pure. Unknown calls, mutations and initializers with nested functions stay.
+**Workaround.** `CpuGenerator` tracks function effects; `src/cpu/dead-locals.ts` conservatively removes unused generated declarations whose calls are known pure. `src/cpu/record-fields.ts` projects pure helpers onto the record fields their callers use, preserving eager snapshots and argument evaluation. Unknown calls, mutations, escaping records and field dependencies keep the original calculation.
 
 ## Roots and devices
 
