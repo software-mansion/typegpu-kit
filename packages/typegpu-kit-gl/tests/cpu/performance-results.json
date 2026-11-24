@@ -1,0 +1,6 @@
+{
+  "kernel": "scalar hash, eight multiply/add/xor/shift rounds per invocation",
+  "invocations": 5242880,
+  "milliseconds": 59.150540999999976,
+  "invocationsPerSecond": 88636213.82600714
+}

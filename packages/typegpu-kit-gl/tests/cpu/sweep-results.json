@@ -1,0 +1,197 @@
+[
+  {
+    "example": "jelly-world",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 2 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:kernel\n- textureView:below.$\n- textureView:below\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:kernel\n- textureView:below.$\n- textureView:below\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:cullTiles\n- uniformBufferBinding:grid.$\n- uniformBufferBinding:grid: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "classroom",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 2 of 6 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 3 of 4 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:scatter\n- vec3f(160, 90, 64): @typegpu/kit-gl CPU: unsupported type vec3f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:sum\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic"
+  },
+  {
+    "example": "night-market",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "afterimage",
+    "status": "pass",
+    "modules": 0
+  },
+  {
+    "example": "cloister",
+    "status": "pass",
+    "modules": 0
+  },
+  {
+    "example": "fireworks",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "hex-isle",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:move\n- mutableBufferBinding:state.$\n- mutableBufferBinding:state: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "forest",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "quiver-trees",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "kinetic",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "falling-sand",
+    "status": "fail",
+    "modules": 1,
+    "error": "AggregateError: 8 of 11 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:shape\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:measure\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:outline\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:start\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:paint\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:empty()\n- struct:Interval: @typegpu/kit-gl CPU: unsupported type struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:fill\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 5 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:step\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:flow\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i"
+  },
+  {
+    "example": "ocean",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 6 of 9 items failed to compile: 5 of 5 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:initialSpectrum\n- uniformBufferBinding:cascades.$\n- uniformBufferBinding:cascades: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:evolve\n- const:reachOf.$\n- const:reachOf: @typegpu/kit-gl CPU: unsupported type array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:transformRows\n- const:reachOf.$\n- const:reachOf: @typegpu/kit-gl CPU: unsupported type array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:transformColumns\n- const:reachOf.$\n- const:reachOf: @typegpu/kit-gl CPU: unsupported type array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:fillThree\n- vec4f(0, 0, 0, 0): @typegpu/kit-gl CPU: unsupported type vec4f; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:kernel\n- textureView:below.$\n- textureView:below\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; 4 of 4 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:bakeTransmittance\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:bakeMultiScatter\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:bakeSkyView\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:bakeLighting\n- uniformBufferBinding:settings.$\n- uniformBufferBinding:settings: @typegpu/kit-gl CPU: unsupported buffer element struct; 6 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn:ge: @typegpu/kit-gl CPU: unsupported >= on vec3u; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- textureView:target.$\n- textureView:target\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d; 6 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:halve\n- textureView:into.$\n- textureView:into\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:prefilter\n- textureView:into.$\n- textureView:into\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:project\n- fn:undefined: @typegpu/kit-gl CPU: unsupported type array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:meter\n- textureView:source.$\n- textureView:source\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_2d"
+  },
+  {
+    "example": "censer",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn*:<unnamed>(u32)\n- mutableBufferBinding:output.$\n- mutableBufferBinding:output: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "slime-mould",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 3 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:kernel\n- textureView:below.$\n- textureView:below\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:across\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:down\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:scatter\n- uniformBufferBinding:physarum.$\n- uniformBufferBinding:physarum: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:move\n- uniformBufferBinding:physarum.$\n- uniformBufferBinding:physarum: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "dominoes",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "sph-sculpt",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 3 of 5 items failed to compile: 7 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:heightKernel\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:originKernel\n- fn:vec3f: @typegpu/kit-gl CPU: unsupported type vec3f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:generateKernel\n- d.ref(writeLayout.$.info)\n- uniform:info.$\n- uniform:info: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:editKernel\n- d.ref(readLayout.$.info)\n- uniform:info.$\n- uniform:info: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:storeKernel\n- d.ref(writeLayout.$.info)\n- uniform:info.$\n- uniform:info: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:mapKernel\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:aimKernel\n- d.ref(brush.$)\n- uniformBufferBinding:brush.$\n- uniformBufferBinding:brush: @typegpu/kit-gl CPU: unsupported buffer element struct; 7 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:bakeNoise\n- fn:vec3f: @typegpu/kit-gl CPU: unsupported type vec3f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:cone\n- uniformBufferBinding:view.$\n- uniformBufferBinding:view: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:traceWorld\n- uniformBufferBinding:view.$\n- uniformBufferBinding:view: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:traceFluid\n- uniformBufferBinding:view.$\n- uniformBufferBinding:view: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:shadowKernel\n- textureView:shadow.$\n- textureView:shadow\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:paintKernel\n- uniformBufferBinding:view.$\n- uniformBufferBinding:view: @typegpu/kit-gl CPU: unsupported buffer element struct; 6 of 6 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compute\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:halve\n- textureView:into.$\n- textureView:into\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:prefilter\n- textureView:into.$\n- textureView:into\n- [object Object]: @typegpu/kit-gl CPU: unsupported type texture_storage_2d_array; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:project\n- fn:undefined: @typegpu/kit-gl CPU: unsupported type array; 7 of 7 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:integrate\n- fn*:end()\n- mutableBufferBinding:sim.$\n- mutableBufferBinding:sim: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:recount\n- mutableBufferBinding:sim.$\n- mutableBufferBinding:sim: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:density\n- fn*:neighbourAt(u32)\n- readonlyBufferBinding:copying.$\n- readonlyBufferBinding:copying: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:relax\n- fn*:neighbourAt(u32)\n- readonlyBufferBinding:copying.$\n- readonlyBufferBinding:copying: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:surfaceKernel\n- fn*:block(u32)\n- fn*:blockAt(u32)\n- fn:vec3i: @typegpu/kit-gl CPU: unsupported type vec3i; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:coarseKernel: @typegpu/kit-gl CPU: unsupported * on vec3u; 4 of 4 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:count\n- fn*:key(u32)\n- fn*:alive(u32)\n- fn*:end()\n- mutableBufferBinding:sim.$\n- mutableBufferBinding:sim: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:size\n- mutableBufferBinding:tally.$\n- mutableBufferBinding:tally: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:reserve\n- mutableBufferBinding:tally.$\n- mutableBufferBinding:tally: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:scatter\n- mutableBufferBinding:tally.$\n- mutableBufferBinding:tally: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "fishtank",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "benthos",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic"
+  },
+  {
+    "example": "ember-mirror",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 2 of 6 items failed to compile: 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:shed\n- fn:vec2i: @typegpu/kit-gl CPU: unsupported type vec2i; 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic"
+  },
+  {
+    "example": "stampede",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "skeletons",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "jellies",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 3 of 5 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 4 of 4 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:swim\n- mutableBufferBinding:jellyBuffer.$\n- mutableBufferBinding:jellyBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:trail\n- mutableBufferBinding:jellyBuffer.$\n- mutableBufferBinding:jellyBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:startle\n- mutableBufferBinding:jellyBuffer.$\n- mutableBufferBinding:jellyBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:pickKernel\n- d.ref(cameras.current.$)\n- uniformBufferBinding:uniform.$\n- uniformBufferBinding:uniform: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "spider",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:fill\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f"
+  },
+  {
+    "example": "robot-arm",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "solar-system",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "star-map",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:pickKernel\n- d.ref(cameras.current.$)\n- uniformBufferBinding:uniform.$\n- uniformBufferBinding:uniform: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "survey-model",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "platformer",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 4 of 7 items failed to compile: 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:Coin_alive(u32)\n- uniformBufferBinding:Coin_index.$\n- uniformBufferBinding:Coin_index: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:Critter_alive(u32)\n- uniformBufferBinding:Critter_index.$\n- uniformBufferBinding:Critter_index: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:Critter_alive(u32)\n- uniformBufferBinding:Critter_index.$\n- uniformBufferBinding:Critter_index: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 2 of 2 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 2 of 6 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic"
+  },
+  {
+    "example": "blockfall",
+    "status": "fail",
+    "modules": 0,
+    "error": "Error: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:<unnamed>\n- d.ref(baking.$.bake)\n- uniform:bake.$\n- uniform:bake: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "lattice",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 2 of 8 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic; 2 of 6 items failed to compile: 3 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:spawnKernel\n- readonlyBufferBinding:burstBuffer.$\n- readonlyBufferBinding:burstBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; 2 of 2 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:compact\n- fn*:alive(u32)\n- mutableBufferBinding:poolBuffer.$\n- mutableBufferBinding:poolBuffer: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:finishing\n- mutableBufferBinding:live_counts.$\n- mutableBufferBinding:live_counts: @typegpu/kit-gl CPU: unsupported buffer element atomic"
+  },
+  {
+    "example": "raymarch",
+    "status": "pass",
+    "modules": 0
+  },
+  {
+    "example": "flow-field",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 2 of 3 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:seedKernel\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:stepKernel\n- mutableBufferBinding:particles.$\n- mutableBufferBinding:particles: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  },
+  {
+    "example": "jump-flood",
+    "status": "fail",
+    "modules": 0,
+    "error": "AggregateError: 4 of 5 items failed to compile: Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:clearKernel\n- mutableBufferBinding:touching.$\n- mutableBufferBinding:touching: @typegpu/kit-gl CPU: unsupported buffer element atomic; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:placeKernel\n- fn:vec2f: @typegpu/kit-gl CPU: unsupported type vec2f; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:floodKernel\n- fn*:current\n- fn*:current()\n- uniform:pass.$\n- uniform:pass: @typegpu/kit-gl CPU: unsupported buffer element struct; Resolution of the following tree failed:\n- computePipelineCore\n- computeFn:neighboursKernel\n- uniformBufferBinding:view.$\n- uniformBufferBinding:view: @typegpu/kit-gl CPU: unsupported buffer element struct"
+  }
+]
