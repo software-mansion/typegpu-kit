@@ -277,8 +277,11 @@ interface WrittenBuffer extends WrittenPlan {
 
 /** What one function knows: the names that hold own values, and whether it is the entry. */
 interface Frame {
+  readonly name: string;
   readonly names: Map<string, Own>;
   readonly entry: boolean;
+  /** Whether its code depends on its arguments being the invocation's own. */
+  relies: boolean;
 }
 
 /**
@@ -298,6 +301,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #pending: (Own | undefined)[] | undefined;
   /** The own arguments each function was generated for. */
   readonly #assumed = new Map<string, string>();
+  /** Functions whose code depends on the own arguments they were generated for. */
+  readonly #relies = new Set<string>();
   /** Whether the dispatch is one invocation, by the entry's workgroup size. */
   #single = false;
   #packers = 0;
@@ -338,6 +343,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   get #frame(): Frame | undefined {
     return this.#frames.at(-1);
+  }
+
+  /** Marks the function being generated as depending on its own arguments. */
+  #relyOnOwn(): void {
+    const frame = this.#frame;
+    if (frame && !frame.entry) frame.relies = true;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -410,10 +421,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#pending = outer;
     }
     const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
-    const assumed = name === undefined ? undefined : this.#assumed.get(name);
-    if (assumed !== undefined && assumed !== JSON.stringify(owns.some(Boolean) ? owns : [])) {
+    if (name === undefined || !this.#relies.has(name)) return result;
+    if (this.#assumed.get(name) !== JSON.stringify(owns.some(Boolean) ? owns : [])) {
       throw new Ineligible(`calls '${name}' with other invocation indices than it was made for`);
     }
+    this.#relyOnOwn();
     return result;
   }
 
@@ -453,6 +465,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       return;
     }
     const { buffer, element } = place;
+    this.#relyOnOwn();
     if (element?.own) {
       const layout = element.ownership as Layout;
       this.#record(buffer, { whole: false, offset: element.offset, layout }, element.array);
@@ -537,7 +550,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (element.offset !== written.offset) return load;
     const shadow = `${this.#bufferShadow(place.buffer, written, element.array)}${element.path}`;
     const own = element.own && sameLayout(element.ownership as Layout, written.layout);
-    if (own) return shadow;
+    if (own) {
+      this.#relyOnOwn();
+      return shadow;
+    }
     return `((${element.index}) == ${linear(written.layout, GID)} ? ${shadow} : ${load})`;
   }
 
@@ -614,6 +630,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (this.#plan && !this.#plan.textures.has(texture.id)) {
       throw new Error(`@typegpu/kit-gl: the second resolution stores to '${texture.id}' anew`);
     }
+    this.#relyOnOwn();
     this.#textures.set(texture.id, texture);
     const value = args[dimension === '2d-array' ? 3 : 2];
     return `${this.#textureShadow(texture)} = ${this.valueOf(value)}`;
@@ -642,7 +659,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   // ---------------------------------------------------------------------------------------------
 
   override functionDefinition(options: FunctionDefinitionOptions): string {
-    const frame: Frame = { names: new Map(), entry: options.functionType === 'compute' };
+    const frame: Frame = {
+      name: options.name,
+      names: new Map(),
+      entry: options.functionType === 'compute',
+      relies: false,
+    };
     if (options.functionType === 'normal') {
       const pointer = options.args.find((arg) => d.isPtr(arg.decoratedType));
       if (pointer) throw new Ineligible(`a helper function takes the pointer '${pointer.name}'`);
@@ -661,6 +683,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     } finally {
       this.#frames.pop();
     }
+    if (frame.relies) this.#relies.add(options.name);
     const stale = code.indexOf(STALE);
     if (stale >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(stale + STALE.length))?.[1];

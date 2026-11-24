@@ -400,6 +400,22 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     },
     "writes 'big' whole, which is larger than 1024 bytes",
   ],
+  [
+    'reads through a helper at its own and other indices',
+    (root) => {
+      const input = root.createReadonly(d.arrayOf(d.f32, 64));
+      const out = root.createMutable(d.arrayOf(d.f32, 64));
+      const at = (i: number) => {
+        'use gpu';
+        return input.$[i] as number;
+      };
+      return line(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x] = at(id.x) + at(std.min(id.x + 1, 63));
+      });
+    },
+    1,
+  ],
 ];
 
 function verdictOf(make: Make): ComputeVerdict {
