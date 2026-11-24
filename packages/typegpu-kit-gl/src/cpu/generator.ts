@@ -1,3 +1,4 @@
+import { splitPhases } from './phases.ts';
 import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
 import { addressParts, callArguments, lowerReferences } from './references.ts';
 import { layoutOf } from './memory.ts';
@@ -47,7 +48,7 @@ export class CpuGenerator extends WgslGenerator {
     );
     makeResolvable(value, {
       asString: () => 'CPU swizzle',
-      resolve: () => ({ ...original, value: code }),
+      resolve: () => ({ ...original, value: code, dataType: original.dataType as d.BaseData }),
     });
     return snip(value, original.dataType, original.origin, original.possibleSideEffects);
   }
@@ -395,8 +396,13 @@ export class CpuGenerator extends WgslGenerator {
           `a[k]=(($1) ${inner.type === 'u32' ? '>>>0' : '|0'});`,
         );
       if (!operation) unsupported(`builtin ${name}`);
+      const code = /^\w+$/.test(target)
+        ? name === 'atomicLoad'
+          ? target
+          : `((v,w)=>{const old=${target};${operation.replaceAll('a[k]', target)}})(${values[0] ?? '0'},${values[1] ?? '0'})`
+        : `((a,k,v,w)=>{const old=a[k];${operation}})(${object},${key},${values[0] ?? '0'},${values[1] ?? '0'})`;
       return snip(
-        `((a,k,v,w)=>{const old=a[k];${operation}})(${object},${key},${values[0] ?? '0'},${values[1] ?? '0'})`,
+        code,
         name === 'atomicStore'
           ? d.Void
           : name === 'atomicCompareExchangeWeak'
@@ -862,7 +868,16 @@ export class CpuGenerator extends WgslGenerator {
       options.workgroupSize?.forEach((value, index) => {
         size[index] = value;
       });
-      return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}`;
+      const hasReturn = (node: unknown): boolean =>
+        Array.isArray(node) && (node[0] === NODE.return || node.some(hasReturn));
+      const phases =
+        generator && !hasReturn(options.body)
+          ? splitPhases(
+              body,
+              args.map((arg) => arg.name),
+            )
+          : undefined;
+      return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
     } finally {
       this.#vectors = previousVectors;
       this.#addresses = previousAddresses;

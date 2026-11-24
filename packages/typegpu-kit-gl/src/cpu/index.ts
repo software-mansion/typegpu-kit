@@ -15,11 +15,13 @@ interface Entry {
   size: [number, number, number];
   inputs: string[];
   generator?: boolean;
+  phases?: number;
 }
 
 type Kernel = (...args: unknown[]) => void | Generator<unknown, void>;
 interface Execution {
   kernel: Kernel;
+  phases?: () => ((...args: unknown[]) => void)[];
   capture(values?: unknown[]): unknown[];
   restore(values: unknown[]): void;
   resetWorkgroup(): void;
@@ -62,7 +64,7 @@ export function compile(code: string): CpuModule {
       '$pack',
       '$unpack',
     ],
-    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial }) => `${name}=${initial};`).join('')}}};`,
+    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},${entry.phases ? `phases:${entry.name}_phases,` : ''}capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial }) => `${name}=${initial};`).join('')}}};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
     constructValue: typeof construct,
@@ -128,6 +130,15 @@ export function compile(code: string): CpuModule {
         local_invocation_index: 0,
       };
       const args: unknown[] = [];
+      const phaseLanes = execution.phases
+        ? Array.from({ length: entry.size[0] * entry.size[1] * entry.size[2] }, () => ({
+            phases: execution.phases!(),
+            inputs: entry.inputs.map((name) =>
+              Array.isArray(builtins[name]) ? [0, 0, 0] : 0,
+            ) as unknown[],
+            privateValues: [] as unknown[],
+          }))
+        : undefined;
       for (workgroup[2] = 0; workgroup[2] < z; workgroup[2]++)
         for (workgroup[1] = 0; workgroup[1] < y; workgroup[1]++)
           for (workgroup[0] = 0; workgroup[0] < x; workgroup[0]++) {
@@ -144,6 +155,21 @@ export function compile(code: string): CpuModule {
                   global[1] = workgroup[1] * entry.size[1] + local[1];
                   global[2] = workgroup[2] * entry.size[2] + local[2];
                   builtins.local_invocation_index = index++;
+                  if (phaseLanes) {
+                    const lane = phaseLanes[index - 1]!;
+                    for (let i = 0; i < entry.inputs.length; i++) {
+                      const value = builtins[entry.inputs[i]!];
+                      if (Array.isArray(value)) {
+                        const held = lane.inputs[i] as number[];
+                        held[0] = value[0];
+                        held[1] = value[1];
+                        held[2] = value[2];
+                      } else lane.inputs[i] = value;
+                    }
+                    lane.phases[0]!(...lane.inputs);
+                    if (privateNames.length) execution.capture(lane.privateValues);
+                    continue;
+                  }
                   for (let i = 0; i < entry.inputs.length; i++)
                     args[i] =
                       entry.generator && Array.isArray(builtins[entry.inputs[i]!])
@@ -152,6 +178,14 @@ export function compile(code: string): CpuModule {
                   const invocation = execution.kernel(...args);
                   if (invocation) invocations.push({ iterator: invocation });
                 }
+            if (phaseLanes) {
+              for (let phase = 1; phase < entry.phases!; phase++)
+                for (const lane of phaseLanes) {
+                  if (privateNames.length) execution.restore(lane.privateValues);
+                  lane.phases[phase]!();
+                  if (privateNames.length) execution.capture(lane.privateValues);
+                }
+            }
             if (invocations.length) {
               for (;;) {
                 let finished = 0;
