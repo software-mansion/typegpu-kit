@@ -136,7 +136,23 @@ const launchOptions =
   engineName === 'chromium'
     ? { channel: 'chromium', args }
     : engineName === 'firefox'
-      ? { firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.disabled': false } }
+      ? {
+          firefoxUserPrefs: {
+            'webgl.force-enabled': true,
+            'webgl.disabled': false,
+            'security.sandbox.content.level': 0,
+          },
+          // Firefox's child processes cannot take sandbox extensions inside another sandbox
+          env: {
+            ...process.env,
+            ...Object.fromEntries(
+              ['CONTENT', 'GPU', 'RDD', 'SOCKET_PROCESS', 'UTILITY', 'GMP'].map((kind) => [
+                `MOZ_DISABLE_${kind}_SANDBOX`,
+                '1',
+              ]),
+            ),
+          },
+        }
       : {};
 
 /** Opens one example on one backend in `browser` and reports what it did. */
