@@ -26,7 +26,7 @@ tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: Glsl });
 
 TypeGPU builds one generator per pipeline with `new root.shaderGeneratorClass()`: no arguments, no pipeline kind, no stage. A generator that emits GLSL for render pipelines and something else for compute pipelines has to find out the kind by itself.
 
-- The first call it receives is not always `functionDefinition` for the entry: `declareGlobalVar` or `emitTypeAnnotation` can come first. `KitGenerator` reads `ctx.topFunctionScope?.functionType`, which the public `ResolutionCtx` type does not promise.
+- The first call it receives is not always `functionDefinition` for the entry: `declareGlobalVar` or `emitTypeAnnotation` can come first. `KitGenerator` reads `ctx.topFunctionScope?.functionType`. This is exposed by the internal `ResolutionCtx` type, but couples backend selection to the resolver's current stack.
 - A compute entry written as a WGSL template never calls `functionDefinition` at all (see entry 6).
 
 ```ts
@@ -103,6 +103,67 @@ Retargeting by subclassing works well where a hook exists (`emitCall`, `emitBina
 **Upstream.** Split `_expressionImpl` and `_statement` into one overridable method per node kind, and route every operator and access through a typed hook the way binary operators are.
 
 **Workaround.** The overrides in `src/cpu/generator.ts` and `packages/typegpu-gl/src/glslGenerator.ts`.
+
+### 11. Shader-function calls bypass `emitCall`
+
+User functions use `stitch` to assemble `name(args)` directly. Overriding `emitCall` therefore changes builtin calls that use that hook, but does not change calls to `tgpu.fn` or shellless shader functions. A backend that passes vector components as separate numeric parameters must change both the definition and every call.
+
+```ts
+const twice = tgpu.fn([d.vec2f], d.vec2f)((v) => v * 2);
+const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  output.$ = twice(d.vec2f(1, 2));
+});
+// A backend defining twice(x, y) still receives a generated twice(vec2f(1, 2)) call.
+```
+
+**Upstream.** Route the `codegenImpl` in `core/function/tgpuFn.ts` and shellless calls through `ctx.gen.emitCall`, after argument conversion and function resolution. Keep the converted argument snippets typed until that hook.
+
+**Workaround.** `CpuGenerator.call` resolves the call result and `callArguments` in `src/cpu/references.ts` splits its text before re-emitting it. Remove this parsing once all function calls use the hook.
+
+### 12. Atomic references arrive as pointer-shaped text
+
+The generic call hook has a typed snippet, but its lvalue has already become WGSL pointer syntax. A backend using indexed typed arrays needs the target array and index separately to implement an atomic operation without reading or writing adjacent fields.
+
+```ts
+const row = rows.$[id.x];
+std.atomicAdd(row.count, 1);
+// The backend must recover the address from an expression such as (&row.count).
+```
+
+**Upstream.** Expose a typed lvalue representation and an atomic-operation hook in `tgsl/shaderGenerator.ts`. Keep member/index accesses structured through the pointer conversion in `tgsl/wgslGenerator.ts` and `data/ref.ts`.
+
+**Workaround.** `addressParts` and `lowerReferences` in `src/cpu/references.ts`, plus atomic handling in `CpuGenerator.call`, parse and lower pointer text.
+
+### 13. Barrier suspension and its call graph are not generator metadata
+
+A CPU backend must suspend every lane at a barrier, including barriers reached through helpers. There is no function property or barrier hook reporting that requirement, so the fallback recognises emitted barrier calls and propagates generator-function status through helper calls. A loose substring check even misclassified a helper named `yields` as a suspension.
+
+```ts
+const sync = () => { 'use gpu'; std.workgroupBarrier(); };
+const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
+  'use gpu'; sync();
+});
+// The entry must suspend although its body contains no direct barrier call.
+```
+
+**Upstream.** Add typed barrier emission and function effects, including reachable barriers, to `tgsl/shaderGenerator.ts`; preserve calls as structured nodes until function emission in `tgsl/wgslGenerator.ts`.
+
+**Workaround.** `CpuGenerator.functionDefinition` lowers barrier text to `yield`, then propagates `yield*`. `src/cpu/index.ts` schedules the resulting generators in workgroup phases.
+
+### 14. Local names are reusable across sibling blocks, without scope hooks
+
+Reusing names is valid WGSL, but a backend that caches scalar components or buffer offsets by emitted name needs to retire that cache on block exit. The generator exposes no enter/leave-block hooks with stable variable identities. Reusing a cached temporary can leak an address from a previous sibling block and produce `ReferenceError: cpuAddress_4 is not defined` in generated JavaScript.
+
+```ts
+if (first) { const item = rows.$[i]; consume(item.position); }
+if (second) { const item = rows.$[j]; consume(item.position); }
+// Both blocks may receive the same local identifier; they are different bindings.
+```
+
+**Upstream.** Expose block-scope lifecycle hooks or stable variable identities in `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Backend metadata should be keyed by binding identity, not printed text.
+
+**Workaround.** Compiler-owned address/vector/argument temporaries in `src/cpu/generator.ts` use `ctx.makeUniqueIdentifier(..., 'global')`, with maps saved and restored per function. User-local names are never substituted throughout the whole function body.
 
 ## Roots and devices
 
