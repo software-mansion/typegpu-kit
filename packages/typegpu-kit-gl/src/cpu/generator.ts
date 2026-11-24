@@ -64,6 +64,14 @@ export class CpuGenerator extends WgslGenerator {
     const address = this.#addresses.get(code);
     return address ? readAddress(address) : code;
   }
+  #fresh(code: string): boolean {
+    if (
+      /^(?:cpuVector(?:_\d+)?$|cpuType(?:_\d+)?(?:\.fields)?\(|\$vector\(|\(\([^)]*\)=>)/.test(code)
+    )
+      return true;
+    const call = /^(\w+)\(/.exec(code);
+    return !!call && this.#functions.has(call[1]!);
+  }
   #generators = new Set<string>();
   #types = new Map<d.BaseData, string>();
 
@@ -206,7 +214,7 @@ export class CpuGenerator extends WgslGenerator {
     const ctor = this.emitTypeAnnotation(type);
     const address = this.#addresses.get(match[2]!);
     const value = address ? readAddress(address) : match[2]!;
-    return `${match[1]}${ctor.startsWith('cpuType') ? `${ctor}(${value})` : value};`;
+    return `${match[1]}${ctor.startsWith('cpuType') && !this.#fresh(value) ? `${ctor}(${value})` : value};`;
   }
 
   protected override _statement(statement: Statement): ResolvedStatement {
@@ -537,7 +545,7 @@ export class CpuGenerator extends WgslGenerator {
     const type = this.emitTypeAnnotation(schema);
     const address = this.#addresses.get(rhs);
     if (address) rhs = readAddress(address);
-    return `let ${name} = ${type.startsWith('cpuType') ? `${type}(${rhs})` : rhs};`;
+    return `let ${name} = ${type.startsWith('cpuType') && !this.#fresh(rhs) ? `${type}(${rhs})` : rhs};`;
   }
 
   override declareGlobalConst(options: ConstantDefinitionOptions): ResolvedSnippet {

@@ -147,6 +147,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         loop = frames.create(root, scene.frame);
         const driver = driven(loop, scene.ready);
         await driver.warmUp();
+        await driver.run(2);
         steady = true;
         if (session && process.env.CPU_PROFILE_PHASE === 'steady')
           await session.post('Profiler.start');
