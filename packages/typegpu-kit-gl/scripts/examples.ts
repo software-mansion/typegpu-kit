@@ -1,8 +1,9 @@
 // Opens every example page of a running docs server on the WebGL fallback and on WebGPU, and
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
-// [--out dir] [--backend webgl|webgpu|both] [--timeout seconds] [example ...]`
+// [--out dir] [--backend webgl|webgpu|both] [--timeout seconds] [--reference dir] [example ...]`.
+// With `--reference`, it also scores each screenshot against the one of the same name there.
 
-import { mkdirSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium, type Page } from 'playwright';
@@ -14,6 +15,7 @@ const { values, positionals } = parseArgs({
     out: { type: 'string', default: 'packages/typegpu-kit-gl/.examples' },
     backend: { type: 'string', default: 'webgl' },
     timeout: { type: 'string', default: '90' },
+    reference: { type: 'string' },
   },
 });
 
@@ -36,9 +38,37 @@ interface Result {
   readonly fps?: number;
   /** The share of canvas pixels that differ from the first one, so a blank canvas reads 0. */
   readonly ink?: number;
+  /**
+   * The mean difference from the reference screenshot, 0 to 255, after shrinking both to 64 by 48,
+   * so it measures composition and colour and ignores noise and animation phase.
+   */
+  readonly difference?: number;
   readonly errors: readonly string[];
   readonly seconds: number;
 }
+
+/** Scores two PNGs in a page, which decodes them. */
+const differenceOf = (page: Page, a: string, b: string) =>
+  page.evaluate(
+    async ([first, second]) => {
+      const pixels = async (source: string) => {
+        const image = new Image();
+        image.src = `data:image/png;base64,${source}`;
+        await image.decode();
+        const canvas = new OffscreenCanvas(64, 48);
+        const context = canvas.getContext('2d')!;
+        context.drawImage(image, 0, 0, 64, 48);
+        return context.getImageData(0, 0, 64, 48).data;
+      };
+      const [left, right] = await Promise.all([pixels(first!), pixels(second!)]);
+      let sum = 0;
+      for (let i = 0; i < left.length; i += 4) {
+        for (let c = 0; c < 3; c++) sum += Math.abs(left[i + c]! - right[i + c]!);
+      }
+      return sum / ((left.length / 4) * 3);
+    },
+    [a, b],
+  );
 
 /** Waits for the cover to lift or the notice to fill, whichever comes first. */
 async function settle(page: Page): Promise<'ready' | 'failed' | 'timeout'> {
@@ -99,28 +129,54 @@ for (const example of keys) {
     let notice = '';
     let fps: number | undefined;
     let ink: number | undefined;
-    try {
-      await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
-      state = await settle(page);
-      notice = (await page.locator('#notice').textContent()) ?? '';
-      if (state === 'ready') {
-        fps = await fpsOf(page);
-        await page.waitForTimeout(500);
+    // The dev server reloads a page when it optimises a dependency it had not seen: try again
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
+        state = await settle(page);
+        notice = (await page.locator('#notice').textContent()) ?? '';
+        if (state === 'ready') {
+          fps = await fpsOf(page);
+          await page.waitForTimeout(500);
+        }
+        const shot = await page.locator('#example canvas').screenshot({
+          path: join(values.out, `${example}.${backend}.png`),
+          timeout: 20_000,
+        });
+        // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
+        ink = shot.byteLength;
+        break;
+      } catch (error) {
+        if (attempt < 2 && String(error).includes('navigation')) {
+          errors.length = 0;
+          continue;
+        }
+        errors.push(String(error).slice(0, 2000));
+        break;
       }
-      const shot = await page.locator('#example canvas').screenshot({
-        path: join(values.out, `${example}.${backend}.png`),
-        timeout: 20_000,
-      });
-      // A flat frame compresses to almost nothing; the byte count stands in for how much it shows
-      ink = shot.byteLength;
-    } catch (error) {
-      errors.push(String(error).slice(0, 2000));
+    }
+
+    let difference: number | undefined;
+    const reference = values.reference && join(values.reference, `${example}.webgpu.png`);
+    const own = join(values.out, `${example}.${backend}.png`);
+    if (reference && existsSync(reference) && existsSync(own) && state === 'ready') {
+      try {
+        const blank = await context.newPage();
+        difference = await differenceOf(
+          blank,
+          readFileSync(own).toString('base64'),
+          readFileSync(reference).toString('base64'),
+        );
+      } catch (error) {
+        errors.push(String(error).slice(0, 2000));
+      }
     }
 
     const result: Result = {
       example,
       backend,
       state,
+      ...(difference === undefined ? {} : { difference: Math.round(difference * 10) / 10 }),
       ...(notice || errors[0] ? { error: (notice || errors[0]!).slice(0, 600) } : {}),
       ...(fps === undefined ? {} : { fps: Math.round(fps * 10) / 10 }),
       ...(ink === undefined ? {} : { ink }),
@@ -129,7 +185,7 @@ for (const example of keys) {
     };
     results.push(result);
     process.stdout.write(
-      `${example.padEnd(16)} ${backend.padEnd(7)} ${state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(ink ?? '-').padStart(8)} B  ${(result.error ?? '').split('\n')[0]!.slice(0, 140)}\n`,
+      `${example.padEnd(16)} ${backend.padEnd(7)} ${state.padEnd(8)} ${String(result.fps ?? '-').padStart(6)} fps ${String(ink ?? '-').padStart(8)} B ${String(result.difference ?? '-').padStart(6)} diff  ${(result.error ?? '').split('\n')[0]!.slice(0, 140)}\n`,
     );
     await context.close();
   }
