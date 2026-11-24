@@ -176,3 +176,41 @@ export async function callEffects(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return output.read();
 }
+
+export async function vectorResults(root: TgpuRoot): Promise<number[]> {
+  const state = tgpu.privateVar(d.u32);
+  const output = root.createMutable(d.arrayOf(d.vec4u, 8));
+  const next = tgpu.fn(
+    [d.u32],
+    d.vec2u,
+  )((value) => {
+    'use gpu';
+    state.$ += d.u32(1);
+    const x = value + state.$;
+    return d.vec2u(x, x * d.u32(3));
+  });
+  const forward = tgpu.fn(
+    [d.u32],
+    d.vec2u,
+  )((value) => {
+    'use gpu';
+    return next(value);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [4], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    let accumulated = d.vec2u();
+    for (let i = d.u32(0); i < 3; i++) {
+      const a = forward(id.x);
+      const b = forward(id.x + d.u32(10));
+      accumulated += a + b;
+    }
+    const before = next(id.x);
+    std.workgroupBarrier();
+    const after = next(id.x);
+    output.$[id.x] = d.vec4u(accumulated, before.x, after.x);
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(2);
+  return (await output.read()).flatMap((v) => [v.x, v.y, v.z, v.w]);
+}

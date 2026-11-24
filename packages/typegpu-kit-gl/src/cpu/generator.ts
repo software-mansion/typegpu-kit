@@ -1142,6 +1142,12 @@ export class CpuGenerator extends WgslGenerator {
         const count = Number(source[3]);
         if (count !== Number(targetSchema.type[3]))
           unsupported('bitcast with different vector sizes');
+        const components = this.#parts(args[0]!);
+        if (components && !args[0]!.possibleSideEffects)
+          return this.#vector(
+            targetSchema,
+            components.map((component) => `$bits.${from}_${to}(${component})`),
+          );
         return `((v)=>$vector([${Array.from({ length: count }, (_, i) => `$bits.${from}_${to}(v[${i}])`).join(',')}]))(${this.#value(args[0]!)})`;
       }
       if (!['u32', 'i32', 'f32'].includes(target) || !['u32', 'i32', 'f32'].includes(source))
