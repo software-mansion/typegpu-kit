@@ -300,6 +300,20 @@ const current = tgpu.accessor(Pass, () => {
 
 **Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` marks a function as shared when it has no parameters and its generated body names no private variable, written resource, invocation id or function that is not shared itself.
 
+### 23. Local liveness and callee effects are not exposed together
+
+Function arguments expose `used`, but local declarations have no equivalent hook and function definitions carry no reusable purity summary. When a specialised callback ignores an argument, a backend can omit the call's argument but still computes the local that supplied it. In stampede's culling this left an unused default bounding sphere, including its transforms, in every row's visibility check.
+
+```ts
+const fallback = sphereOf(row);
+return customBounds(row, fallback); // This fill never reads its second argument.
+// A backend can emit customBounds(row, undefined) but still emits sphereOf(row).
+```
+
+**Upstream.** Expose local use counts or stable binding identities, and a function effect summary covering writes and barriers, through `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Then a backend can remove unused pure initializers before emitting text.
+
+**Workaround.** `CpuGenerator` tracks function effects; `src/cpu/dead-locals.ts` conservatively removes unused generated declarations whose calls are known pure. Unknown calls, mutations and initializers with nested functions stay.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
