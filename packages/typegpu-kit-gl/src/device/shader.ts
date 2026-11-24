@@ -6,7 +6,7 @@
 
 import { compile, isCpuModule } from '../cpu/index.ts';
 import type { CpuModule } from '../cpu/types.ts';
-import { type ComputeModule, parseCompute } from '../glsl/computeModule.ts';
+import { type ComputeModule, cpuOnlyReason, parseCompute } from '../glsl/computeModule.ts';
 import {
   type BlockBinding,
   type BufferBinding,
@@ -35,7 +35,7 @@ export type ModuleImpl =
       readonly module: CpuModule;
       /** The kernel as fragment passes, when the generator could write it so. */
       readonly gpu: ComputeModule | undefined;
-      /** Why the GPU form failed to parse. */
+      /** Why the GPU form failed to parse, or why the generator wrote none. */
       readonly gpuError?: string;
       readonly label: string;
     }
@@ -188,10 +188,13 @@ function build(
     if (isCpuModule(code)) {
       const module = compile(code);
       try {
+        const gpu = parseCompute(code, { defines: ctx.defines });
+        const reason = cpuOnlyReason(code);
         return {
           kind: 'compute',
           module,
-          gpu: parseCompute(code, { defines: ctx.defines }),
+          gpu,
+          ...(!gpu && reason !== undefined && { gpuError: `CPU only: ${reason}` }),
           label,
         };
       } catch (error) {
