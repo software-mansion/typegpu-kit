@@ -331,7 +331,7 @@ export async function uniformArguments(root: TgpuRoot): Promise<number[]> {
     { value: d.vec4u(7, 8, 9, 10) },
   ]);
   const layer = tgpu.privateVar(d.u32);
-  const output = root.createMutable(d.arrayOf(d.vec2u, 4));
+  const output = root.createMutable(d.arrayOf(d.vec2u, 8));
   const index = tgpu.fn(
     [],
     d.u32,
@@ -364,6 +364,11 @@ export async function uniformArguments(root: TgpuRoot): Promise<number[]> {
     output.$[2] = consume(view());
     layer.$ = 0;
     output.$[3] = consume(view());
+    output.$[4] = consume(views.$[0]);
+    output.$[5] = consume(views.$[1]);
+    output.$[6] = consume(views.$[layer.$]);
+    layer.$ = 1;
+    output.$[7] = consume(views.$[layer.$]);
   });
   const pipeline = root.createComputePipeline({ compute: kernel });
   pipeline.dispatchWorkgroups(1);

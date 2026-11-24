@@ -37,6 +37,7 @@ export class CpuGenerator extends WgslGenerator {
   #functionBodies = new Map<string, string>();
   #globalScopes = new Map<string, { scope: string; type: string }>();
   #uniformCaches = new Map<string, string>();
+  #uniformValues = new Set<string>();
   #uniformDependencies(name: string, seen = new Set<string>()): Set<string> | undefined {
     if (seen.has(name) || this.#functionEffects.get(name) !== false) return undefined;
     const body = this.#functionBodies.get(name);
@@ -59,13 +60,12 @@ export class CpuGenerator extends WgslGenerator {
     }
     return dependencies;
   }
-  #cachedUniformArgument(value: string): string {
+  #cachedUniformArgument(value: string, fixedUniform = false): string {
     const call = /^([A-Za-z_$][\w$]*)\(\)$/.exec(value);
-    if (!call) return value;
-    const name = call[1]!;
-    const known = this.#uniformCaches.get(name);
+    if (!call && !fixedUniform) return value;
+    const known = this.#uniformCaches.get(value);
     if (known) return `${known}()`;
-    const dependencies = this.#uniformDependencies(name);
+    const dependencies = fixedUniform ? new Set<string>() : this.#uniformDependencies(call![1]!);
     if (!dependencies) return value;
     const cached = this.ctx.makeUniqueIdentifier('cpuUniformValue', 'global');
     const getter = this.ctx.makeUniqueIdentifier('cpuUniformRead', 'global');
@@ -76,7 +76,7 @@ export class CpuGenerator extends WgslGenerator {
       `let ${[cached, ...keys].join(',')};\nfunction ${getter}(){if(${cached}===undefined${[...dependencies].map((dependency, i) => `||${keys[i]}!==${dependency}`).join('')}){${keys.map((key, i) => `${key}=${[...dependencies][i]};`).join('')}${cached}=${value};}return ${cached};}`,
       getter,
     );
-    this.#uniformCaches.set(name, getter);
+    this.#uniformCaches.set(value, getter);
     return `${getter}()`;
   }
   #vectorReturns = new Map<
@@ -195,7 +195,14 @@ export class CpuGenerator extends WgslGenerator {
     const components = type.startsWith('vec') ? this.#components(code) : undefined;
     if (components) return `$vector([${components.join(',')}])`;
     const address = this.#addresses.get(code);
-    return address && address.layout.type === type ? readAddress(address) : code;
+    if (!address || address.layout.type !== type) return code;
+    const value = readAddress(address);
+    if (
+      this.#globalScopes.get(address.base)?.scope === 'uniform' &&
+      /^[\d()+*/% -]+$/.test(address.offset)
+    )
+      this.#uniformValues.add(value);
+    return value;
   }
   #fresh(code: string): boolean {
     if (code.startsWith('({')) return true;
@@ -1371,7 +1378,7 @@ export class CpuGenerator extends WgslGenerator {
         if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
           // Parameters are immutable values; only this borrowed-argument path can reuse a record.
           if (type === 'struct' || type.startsWith('mat')) {
-            const cached = this.#cachedUniformArgument(value);
+            const cached = this.#cachedUniformArgument(value, this.#uniformValues.has(value));
             if (cached !== value) return cached;
           }
           // Non-pointer arguments are immutable; a callee cannot reach an owned caller local.

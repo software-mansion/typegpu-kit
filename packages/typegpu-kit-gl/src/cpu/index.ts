@@ -99,6 +99,7 @@ export function compile(code: string): CpuModule {
             return views[to][0]!;
           };
       const shared = new Map<string, unknown>();
+      // Generated uniform caches belong to this dispatch, so every new binding/write is visible.
       const instantiate = () =>
         makeKernel(
           (group, binding, ctor) => {
