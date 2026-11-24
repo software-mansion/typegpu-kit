@@ -49,7 +49,7 @@ export function compile(code: string): CpuModule {
   const privateNames = [...code.matchAll(/^\/\/#private (\w+)$/gm)].map((match) => match[1]!);
   const workgroupState = code.includes('//#scope workgroup');
   const workgroupVariables = [...code.matchAll(/^\/\/#workgroup (.*)$/gm)].map(
-    (match) => JSON.parse(match[1]!) as { name: string; initial: string },
+    (match) => JSON.parse(match[1]!) as { name: string; initial: string; reset?: string },
   );
   const makeKernel = compileJavascript(
     [
@@ -64,7 +64,7 @@ export function compile(code: string): CpuModule {
       '$pack',
       '$unpack',
     ],
-    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},${entry.phases ? `phases:${entry.name}_phases,` : ''}capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial }) => `${name}=${initial};`).join('')}}};`,
+    `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {kernel:${entry.name},${entry.phases ? `phases:${entry.name}_phases,` : ''}capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial, reset }) => reset ?? `${name}=${initial};`).join('')}}};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
     constructValue: typeof construct,

@@ -29,12 +29,15 @@ it.runIf(process.env.CPU_BENCH === '1')(
     });
     const pipeline = root.createComputePipeline({ compute: kernel });
     pipeline.dispatchWorkgroups(count / 100);
-    const start = performance.now();
-    for (let i = 0; i < 3; i++) pipeline.dispatchWorkgroups(count / 100);
-    const milliseconds = performance.now() - start;
+    const measurements = Array.from({ length: 5 }, () => {
+      const start = performance.now();
+      for (let i = 0; i < 3; i++) pipeline.dispatchWorkgroups(count / 100);
+      return performance.now() - start;
+    });
+    const milliseconds = measurements.toSorted((a, b) => a - b)[2]!;
     await writeFile(
       new URL('./particles-performance-results.json', import.meta.url),
-      `${JSON.stringify({ rows: count, iterations: 3, vectorOperationsPerInvocation: 30, milliseconds, invocationsPerSecond: ((count * 3) / milliseconds) * 1000 }, null, 2)}\n`,
+      `${JSON.stringify({ rows: count, iterations: 3, measurements, vectorOperationsPerInvocation: 30, milliseconds, invocationsPerSecond: ((count * 3) / milliseconds) * 1000 }, null, 2)}\n`,
     );
     expect(generated.slice(generated.indexOf('function kernel'))).not.toContain('$vector');
     root.destroy();

@@ -129,3 +129,33 @@ it('reports lanes returning at different barrier phases as divergent', () => {
     root.destroy();
   }
 });
+
+it('zeros reused workgroup integer arrays between groups and dispatches', async () => {
+  const root = cpuRoot();
+  const shared = tgpu.workgroupVar(d.arrayOf(d.atomic(d.u32), 4));
+  const enabled = root.createUniform(d.u32, 1);
+  const output = root.createMutable(d.arrayOf(d.u32, 8));
+  const kernel = tgpu.computeFn({
+    workgroupSize: [4],
+    in: {
+      gid: d.builtin.globalInvocationId,
+      wid: d.builtin.workgroupId,
+      lid: d.builtin.localInvocationIndex,
+    },
+  })(({ gid, wid, lid }) => {
+    'use gpu';
+    if (wid.x === 0 && enabled.$ !== 0) std.atomicAdd(shared.$[lid], gid.x + d.u32(1));
+    std.workgroupBarrier();
+    output.$[gid.x] = std.atomicLoad(shared.$[lid]);
+  });
+  try {
+    const pipeline = root.createComputePipeline({ compute: kernel });
+    pipeline.dispatchWorkgroups(2);
+    expect(await output.read()).toEqual([1, 2, 3, 4, 0, 0, 0, 0]);
+    enabled.write(0);
+    pipeline.dispatchWorkgroups(2);
+    expect(await output.read()).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  } finally {
+    root.destroy();
+  }
+});

@@ -790,11 +790,21 @@ export class CpuGenerator extends WgslGenerator {
     }
     if (scope === 'private' || scope === 'workgroup') {
       const ctor = this.emitTypeAnnotation(dataType);
-      const initial = options.init
+      let initial = options.init
         ? this.#value(options.init)
         : ctor.startsWith('cpuType')
           ? `${ctor}()`
           : '0';
+      let reset: string | undefined;
+      if (scope === 'workgroup' && !options.init && d.isWgslArray(dataType)) {
+        const element = d.isAtomic(dataType.elementType)
+          ? dataType.elementType.inner
+          : dataType.elementType;
+        if (element.type === 'u32' || element.type === 'i32') {
+          initial = `new ${element.type === 'u32' ? 'Uint32Array' : 'Int32Array'}(${dataType.elementCount})`;
+          reset = `${id}.fill(0);`;
+        }
+      }
       if (scope === 'private') this.#privateResets.push(`${id}=${initial};`);
       const scalarType = ['u32', 'i32', 'f32', 'bool'].includes(scalar(dataType));
       const expression =
@@ -802,7 +812,7 @@ export class CpuGenerator extends WgslGenerator {
           ? initial
           : `$shared(${JSON.stringify(id)},()=>(${scalarType ? `{value:${initial}}` : initial}))`;
       this.ctx.addDeclaration(
-        `//#scope ${scope}\n${scope === 'private' ? `//#private ${id}\n` : `//#workgroup ${JSON.stringify({ name: id, initial: expression })}\n`}let ${id} = ${expression};`,
+        `//#scope ${scope}\n${scope === 'private' ? `//#private ${id}\n` : `//#workgroup ${JSON.stringify({ name: id, initial: expression, ...(reset ? { reset } : {}) })}\n`}let ${id} = ${expression};`,
         id,
       );
       return snip(scope === 'workgroup' && scalarType ? `${id}.value` : id, dataType, scope);

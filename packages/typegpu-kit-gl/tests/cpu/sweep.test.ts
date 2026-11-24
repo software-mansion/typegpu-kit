@@ -12,6 +12,10 @@ import { fromDisk, driven } from '../../../typegpu-kit-examples/tests/utils/exam
 import { SweepGenerator } from './scene-generator.ts';
 import { compile, isCpuModule } from '../../src/cpu/index.ts';
 
+function median(values: number[]): number {
+  return values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)]!;
+}
+
 it.runIf(process.env.CPU_SWEEP === '1')(
   'records per-example CPU compilation coverage',
   async () => {
@@ -139,7 +143,33 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           await session.post('Profiler.start');
           profiling = true;
         }
-        await driver.run(2);
+        const repeatCount = Math.max(1, Number(process.env.CPU_REPEATS ?? 1));
+        const samples: { pipelines: typeof steadyPipelines; total: typeof steadyDispatches }[] = [];
+        for (let repeat = 0; repeat < repeatCount; repeat++) {
+          steadyPipelines.clear();
+          steadyDispatches.calls = 0;
+          steadyDispatches.milliseconds = 0;
+          steadyDispatches.invocations = 0;
+          await driver.run(2);
+          samples.push({
+            pipelines: new Map([...steadyPipelines].map(([code, timing]) => [code, { ...timing }])),
+            total: { ...steadyDispatches },
+          });
+        }
+        const codes = new Set(samples.flatMap((sample) => [...sample.pipelines.keys()]));
+        steadyPipelines.clear();
+        for (const code of codes) {
+          const timings = samples.map((sample) => sample.pipelines.get(code));
+          steadyPipelines.set(code, {
+            pipeline: timings.find((timing) => timing)?.pipeline ?? '<unnamed>',
+            calls: median(timings.map((timing) => timing?.calls ?? 0)),
+            milliseconds: median(timings.map((timing) => timing?.milliseconds ?? 0)),
+            invocations: median(timings.map((timing) => timing?.invocations ?? 0)),
+          });
+        }
+        steadyDispatches.calls = median(samples.map((sample) => sample.total.calls));
+        steadyDispatches.milliseconds = median(samples.map((sample) => sample.total.milliseconds));
+        steadyDispatches.invocations = median(samples.map((sample) => sample.total.invocations));
         steady = false;
         const rawCompute = recording.log.shaders.find(
           (code) => !isCpuModule(code) && /@compute\b/.test(code),
@@ -167,6 +197,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
+                timingSamples: repeatCount,
                 steadyPipelines: [...steadyPipelines]
                   .map(([code, timing]) => ({
                     entry: JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name,
