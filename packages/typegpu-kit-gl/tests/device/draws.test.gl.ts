@@ -369,6 +369,34 @@ layout(location = 0) out vec4 color;`,
     // A write reaches the copy an unaligned range binds
     device.queue.writeBuffer(values, 16, new Float32Array([1, 1, 0, 1]));
     expect(await draw(16)).toEqual([255, 255, 0, 255]);
+
+    // A dynamic offset moves the bound range
+    const layout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+      ],
+    });
+    const dynamic = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      vertex: { module: shader },
+      fragment: { module: shader, targets: [{ format: 'rgba8unorm' }] },
+    });
+    const group = device.createBindGroup({
+      layout,
+      entries: [{ binding: 0, resource: { buffer: values, size: 16 } }],
+    });
+    const encoder = device.createCommandEncoder();
+    const render = pass(encoder, texture);
+    render.setPipeline(dynamic);
+    render.setBindGroup(0, group, [256]);
+    render.draw(3);
+    render.end();
+    device.queue.submit([encoder.finish()]);
+    expect(pixel(await readTexture(device, texture), 0, 0)).toEqual([0, 0, 255, 255]);
   });
 
   test('captures errors in an error scope', async () => {
