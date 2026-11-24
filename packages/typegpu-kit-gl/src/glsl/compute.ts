@@ -106,7 +106,7 @@ function texelMapOf(own: Own): TexelMap | undefined {
     const others = [...AXES].filter((c) => c !== name) as ('x' | 'y' | 'z')[];
     if (step < 1 || each.k !== 0 || each.s || others.some((c) => each[c] !== 0)) return undefined;
     if (each.r) {
-      if (each.r.mask >= step || dependsOn(each.r.of, name) || each.r.of.s) return undefined;
+      if (each.r.mask >= step || dependsOn(each.r.of, name)) return undefined;
       residues++;
     }
     map.push({ step, ...(each.r && { r: each.r }) });
@@ -493,12 +493,17 @@ class Arithmetic {
     if (rest.startsWith('(')) {
       this.#at++;
       const value = this.#sum();
-      if (value !== undefined && this.#peek() === '&') {
-        this.#at++;
-        const mask = this.#sum();
+      if (value !== undefined && (this.#peek() === '&' || this.#peek() === '%')) {
+        const op = this.#text[this.#at++];
+        const from = this.#at;
+        const right = this.#sum();
+        const literal = this.#text.slice(from, this.#at);
         if (this.#peek() !== ')') return undefined;
         this.#at++;
-        return this.#masked(start, value, mask);
+        if (op === '&') return this.#masked(start, value, right);
+        // A remainder by a power of two is a mask, in unsigned arithmetic, which a `u` literal forces
+        if (typeof right !== 'number' || !/^\d+u$/.test(literal) || right < 1) return undefined;
+        return (right & (right - 1)) === 0 ? this.#masked(start, value, right - 1) : undefined;
       }
       if (this.#peek() !== ')') return undefined;
       this.#at++;
@@ -1242,6 +1247,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       throw new Ineligible(`stores to '${texture.id}' at texels of two shapes`);
     }
     this.#maps.set(texture.id, map);
+    // A residue read through a settled variable holds only while it is never reassigned
+    for (const name of fromOf([...coords, ...layer])) this.#frame?.choosing.add(name);
     return true;
   }
 

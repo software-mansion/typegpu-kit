@@ -592,6 +592,36 @@ describe('GPU forms with offsets and strides run as WebGPU runs them', () => {
   }
 });
 
+it('stores a checkerboard a uniform turns', async () => {
+  const layout = tgpu
+    .bindGroupLayout({
+      target: { storageTexture: d.textureStorage2d('rgba32float', 'write-only') },
+      turn: { uniform: d.u32 },
+    })
+    .$idx(0);
+  await expectSame({
+    layout,
+    kernel: tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: id }) => {
+      'use gpu';
+      const at = d.vec2u(id.x * 2 + ((id.y + layout.$.turn) % 2), id.y);
+      if (at.x >= 7) return;
+      std.textureStore(layout.$.target, at, d.vec4f(d.f32(id.x), d.f32(id.y), 1, 0.5));
+    }),
+    workgroups: [1, 2, 1],
+    inputs: {
+      target: {
+        kind: 'texture',
+        format: 'rgba32float',
+        dimension: '2d',
+        size: [7, 6, 1],
+        data: new Float32Array(range(168, (i) => -i)),
+        storage: true,
+      },
+      turn: { kind: 'buffer', schema: d.u32, value: 3, uniform: true },
+    },
+  });
+});
+
 describe('GPU forms with one chosen writer run as WebGPU runs them', () => {
   const Pick = d.struct({ hit: d.u32, at: d.vec2f, count: d.atomic(d.u32) });
   const View = d.struct({ cursor: d.vec2f, size: d.vec2u });

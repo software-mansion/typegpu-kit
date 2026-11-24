@@ -556,6 +556,34 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     3,
   ],
   [
+    'stores a checkerboard a uniform turns',
+    (root) => {
+      const turn = root.createUniform(d.u32);
+      const layout = tgpu.bindGroupLayout({
+        target: { storageTexture: d.textureStorage2d('rgba16float', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const at = d.vec2u(id.x * 2 + ((id.y + turn.$) % 2), id.y);
+        std.textureStore(layout.$.target, at, d.vec4f(1));
+      });
+    },
+    2,
+  ],
+  [
+    'stores at a remainder that is not a mask',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        target: { storageTexture: d.textureStorage2d('rgba16float', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.textureStore(layout.$.target, d.vec2u(id.x * 3 + (id.y % 3), id.y), d.vec4f(1));
+      });
+    },
+    "stores to a texel of 'target",
+  ],
+  [
     'stores at a residue of its own axis',
     () => {
       const layout = tgpu.bindGroupLayout({
