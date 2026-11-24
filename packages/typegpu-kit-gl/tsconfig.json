@@ -1,4 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*"]
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/**/*",
+    "../../apps/typegpu-kit-docs/src/examples/draco3d.d.ts"
+  ]
 }

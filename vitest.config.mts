@@ -8,19 +8,19 @@ export default defineConfig({
     setupFiles: ['@typegpu/kit/testing/warnings'],
     testTimeout: 120_000,
     hookTimeout: 120_000,
-    projects: (
-      [
-        ['packages/typegpu-kit', true],
-        ['packages/typegpu-gl', false],
-        ['packages/typegpu-kit-gl', true],
-        ['packages/typegpu-kit-examples', true],
-        ['packages/typegpu-kit-pull', true],
-        ['packages/typegpu-create-kit', true],
-        ['apps/typegpu-kit-docs', true],
-        ['apps/typegpu-kit-native', true],
-      ] as const
-    )
-      .flatMap(([root, gpus]) =>
+    projects: [
+      ...(
+        [
+          ['packages/typegpu-kit', true],
+          ['packages/typegpu-gl', false],
+          ['packages/typegpu-kit-gl', true],
+          ['packages/typegpu-kit-examples', true],
+          ['packages/typegpu-kit-pull', true],
+          ['packages/typegpu-create-kit', true],
+          ['apps/typegpu-kit-docs', true],
+          ['apps/typegpu-kit-native', true],
+        ] as const
+      ).flatMap(([root, gpus]) =>
         (gpus ? [false, true] : [false]).map((gpu) => ({
           extends: true as const,
           test: {
@@ -30,8 +30,8 @@ export default defineConfig({
             ...(gpu ? { pool: 'forks' as const, fileParallelism: false } : {}),
           },
         })),
-      )
-      .concat({
+      ),
+      {
         extends: true as const,
         test: {
           // WebGL 2 exists only in a browser: these run in headless Chromium, which also has
@@ -54,6 +54,7 @@ export default defineConfig({
             instances: [{ browser: 'chromium' as const }],
           },
         },
-      }),
+      },
+    ],
   },
 });

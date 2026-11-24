@@ -5,3 +5,4 @@ dist/
 .claude/
 packages/typegpu-kit/docs/
 packages/typegpu-kit-gl/.examples/
+.vitest/

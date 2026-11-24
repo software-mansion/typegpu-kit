@@ -28,11 +28,9 @@ it('configures a WebGPU canvas for the device', () => {
   expect(configured).toBe(context);
   expect(context.configure).toHaveBeenCalledWith({ format: 'rgba8unorm', device: root.device });
   expect(() =>
-    backends
-      .of(root)
-      .configure({ getContext: () => null } as unknown as HTMLCanvasElement, {
-        format: 'rgba8unorm',
-      }),
+    backends.of(root).configure({ getContext: () => null } as unknown as HTMLCanvasElement, {
+      format: 'rgba8unorm',
+    }),
   ).toThrow(/no WebGPU context/);
 });
 
