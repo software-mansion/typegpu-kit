@@ -13,6 +13,7 @@ export interface Layout {
 export function layoutOf(schema: d.BaseData): Layout {
   if (d.isDecorated(schema)) return { ...layoutOf(schema.inner), size: d.sizeOf(schema) };
   const type = schema.type;
+  if (d.isAtomic(schema)) return layoutOf(schema.inner);
   if (['f32', 'i32', 'u32'].includes(type)) return { type, size: 4 };
   if (d.isWgslStruct(schema)) {
     const fields: NonNullable<Layout['fields']> = {};

@@ -1,0 +1,67 @@
+import type { Layout } from './memory.ts';
+
+type Value = number | boolean | Value[] | { [key: string]: Value };
+const vectorPrototype = Object.create(Array.prototype) as object;
+for (const alphabet of ['xyzw', 'rgba']) {
+  const define = (key: string): void => {
+    const indices = [...key].map((c) => alphabet.indexOf(c));
+    Object.defineProperty(vectorPrototype, key, {
+      get(this: number[]) {
+        return indices.length === 1 ? this[indices[0]!] : vector(indices.map((i) => this[i]!));
+      },
+      set(this: number[], value: number | number[]) {
+        indices.forEach((index, i) => {
+          this[index] = typeof value === 'number' ? value : value[i]!;
+        });
+      },
+    });
+    if (key.length < 4) for (const c of alphabet) define(key + c);
+  };
+  for (const c of alphabet) define(c);
+}
+
+export function vector(values: number[]): number[] {
+  return Object.setPrototypeOf(values, vectorPrototype) as number[];
+}
+
+export function construct(layout: Layout, ...args: Value[]): Value {
+  if (layout.type === 'u32') return Number(args[0] ?? 0) >>> 0;
+  if (layout.type === 'i32') return Number(args[0] ?? 0) | 0;
+  if (layout.type === 'f32') return Number(args[0] ?? 0);
+  if (layout.fields) {
+    const value: Record<string, Value> = {};
+    Object.entries(layout.fields).forEach(([key, field], index) => {
+      const input =
+        args.length === 1 && typeof args[0] === 'object'
+          ? (args[0] as Record<string, Value>)[key]
+          : args[index];
+      value[key] = construct(field.layout, ...(input === undefined ? [] : [input]));
+    });
+    return value;
+  }
+  if (layout.type.startsWith('vec')) {
+    const components: number[] = [];
+    for (const arg of args) {
+      if (typeof arg === 'number') components.push(arg);
+      else
+        for (let i = 0; i < Number((arg as Record<string, Value>).length); i++)
+          components.push((arg as number[])[i]!);
+    }
+    return vector(
+      Array.from({ length: layout.count! }, (_, i) =>
+        Number(
+          construct(
+            layout.element!,
+            components.length === 1 ? components[0]! : (components[i] ?? 0),
+          ),
+        ),
+      ),
+    );
+  }
+  const result: Value[] = [];
+  for (let i = 0; i < layout.count!; i++) {
+    const input = args.length === 1 ? (args[0] as Value[])[i] : args[i];
+    result.push(construct(layout.element!, ...(input === undefined ? [] : [input])));
+  }
+  return result;
+}

@@ -43,14 +43,15 @@ it('rejects strings without compute metadata', () => {
   expect(() => compile('//#kit-gl compute')).toThrow('missing entry metadata');
 });
 
-it('rejects barriers and writes individual vector buffer components', () => {
+it('compiles barriers and writes individual vector buffer components', () => {
   const barrier = tgpu.computeFn({ workgroupSize: [1] })(() => {
     'use gpu';
     std.workgroupBarrier();
   });
-  expect(() => tgpu.resolve([barrier], { unstable_shaderGenerator: new CpuGenerator() })).toThrow(
-    'unsupported builtin workgroupBarrier',
-  );
+  expect(
+    compile(tgpu.resolve([barrier], { unstable_shaderGenerator: new CpuGenerator() }))
+      .workgroupSize,
+  ).toEqual([1, 1, 1]);
   const { root } = recordingRoot();
   const data = root.createMutable(d.arrayOf(d.vec2f, 1));
   const composite = tgpu.computeFn({ workgroupSize: [1] })(() => {
@@ -71,5 +72,61 @@ it('rejects barriers and writes individual vector buffer components', () => {
     },
   });
   expect(Array.from(new Float32Array(bytes))).toEqual([1, 0]);
+  root.destroy();
+});
+
+it('executes atomic additions with sequential return values', () => {
+  const { root } = recordingRoot();
+  const counter = root.createMutable(d.atomic(d.u32));
+  const output = root.createMutable(d.arrayOf(d.u32, 16));
+  const kernel = tgpu.computeFn({ workgroupSize: [16], in: { id: d.builtin.globalInvocationId } })(
+    ({ id }) => {
+      'use gpu';
+      output.$[id.x] = std.atomicAdd(counter.$, d.u32(3));
+    },
+  );
+  const module = compile(tgpu.resolve([kernel], { unstable_shaderGenerator: new CpuGenerator() }));
+  const buffers = module.bindings.map(() => new ArrayBuffer(64));
+  module.dispatch(1, 1, 1, {
+    buffer: (_group, binding) => ({ bytes: buffers[binding]!, offset: 0, size: 64 }),
+    texture: (): never => {
+      throw new Error('unexpected texture');
+    },
+    sampler: (): never => {
+      throw new Error('unexpected sampler');
+    },
+  });
+  expect(buffers.map((buffer) => Array.from(new Uint32Array(buffer)))).toContainEqual(
+    Array.from({ length: 16 }, (_, i) => i * 3),
+  );
+  expect(buffers.some((buffer) => new Uint32Array(buffer)[0] === 48)).toBe(true);
+  root.destroy();
+});
+
+it('passes scalar function references without copying their storage', () => {
+  const { root } = recordingRoot();
+  const output = root.createMutable(d.u32);
+  const increment = tgpu.fn([d.ptrFn(d.u32)])((value) => {
+    'use gpu';
+    value.$ += d.u32(7);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const value = d.ref(d.u32(4));
+    increment(value);
+    output.$ = value.$;
+  });
+  const module = compile(tgpu.resolve([kernel], { unstable_shaderGenerator: new CpuGenerator() }));
+  const bytes = new ArrayBuffer(4);
+  module.dispatch(1, 1, 1, {
+    buffer: () => ({ bytes, offset: 0, size: 4 }),
+    texture: (): never => {
+      throw new Error('unexpected texture');
+    },
+    sampler: (): never => {
+      throw new Error('unexpected sampler');
+    },
+  });
+  expect(new Uint32Array(bytes)[0]).toBe(11);
   root.destroy();
 });
