@@ -256,6 +256,20 @@ tgpu.vertexFn({ out: { position: d.invariant(d.builtin.position) } }); // type e
 
 **Workaround.** The Kit's `passes.ts` builds its vertex shell untyped; tests cast through `unknown`.
 
+### 20. Swizzle mutation validation depends on the emitted value's class
+
+`validateSnippetMutation` is private and recognises `instanceof Swizzle`. A swizzle is a fresh value when read, but assignment validates its base's mutability. Replacing it with a target-language string loses that distinction: keeping its runtime origin rejects valid writes; changing its origin to the base's makes valid reads look like reference assignments.
+
+```ts
+let value = d.vec4f(1, 2, 3, 4);
+value.yx = d.vec2f(value.xy); // Valid, but a string-valued swizzle is rejected as a non-reference.
+value = value.yxwz; // Valid, but giving the swizzle a local-variable origin rejects this copy.
+```
+
+**Upstream.** Keep lvalue provenance separate from emitted text, and expose swizzle emission with the original base and components. Mutation validation in `tgsl/wgslGenerator.ts` should consume that provenance without requiring a concrete `tgsl/swizzle.ts` instance.
+
+**Workaround.** `CpuGenerator.#lowerSwizzle` clones the original Swizzle instance and uses `makeResolvable` to change only its emitted code. This retains readonly and nested-swizzle validation while lowering components to JavaScript indices.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
