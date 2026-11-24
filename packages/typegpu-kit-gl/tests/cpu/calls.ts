@@ -95,3 +95,31 @@ export async function callSwizzles(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return (await output.read()).flatMap((value) => [value.x, value.y, value.z, value.w]);
 }
+
+export async function callLocalSnapshot(root: TgpuRoot): Promise<number[]> {
+  const Row = d.struct({ value: d.vec2u });
+  const output = root.createMutable(d.vec2u);
+  const mutate = tgpu.fn(
+    [d.ptrFn(Row)],
+    d.u32,
+  )((value) => {
+    'use gpu';
+    value.$.value = d.vec2u(99);
+    return d.u32(0);
+  });
+  const take = tgpu.fn(
+    [Row, d.u32],
+    d.vec2u,
+  )((value, ignored) => {
+    'use gpu';
+    return value.value + d.vec2u(ignored);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    let local = Row({ value: d.vec2u(4, 5) });
+    output.$ = take(local, mutate(d.ref(local)));
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  const result = await output.read();
+  return [result.x, result.y];
+}

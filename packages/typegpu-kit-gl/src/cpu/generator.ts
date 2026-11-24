@@ -475,7 +475,12 @@ export class CpuGenerator extends WgslGenerator {
     const argumentTypes = resolvedName && this.#functionArguments.get(resolvedName);
     if (resolvedName && argumentTypes) {
       const converted = callArguments(code).map((value, i) =>
-        snip(value, argumentTypes[i]!, 'runtime', args[i]?.possibleSideEffects ?? true),
+        snip(
+          value,
+          argumentTypes[i]!,
+          args[i]?.origin ?? 'runtime',
+          args[i]?.possibleSideEffects ?? true,
+        ),
       );
       return snip(
         this.emitCall(resolvedName, [], converted),
@@ -619,7 +624,14 @@ export class CpuGenerator extends WgslGenerator {
     const value = args.length ? this.#value(args[0]!) : '0';
     if (schema.type === 'struct' && args.length) {
       if (args.length === 1 && scalar(args[0]!.dataType) === 'struct')
-        return snip(`${type}(${value})`, schema, 'runtime', args[0]!.possibleSideEffects);
+        return snip(
+          this.#fresh(value) || this.#addresses.has(this.ctx.resolveSnippet(args[0]!).value)
+            ? value
+            : `${type}(${value})`,
+          schema,
+          'runtime',
+          args[0]!.possibleSideEffects,
+        );
       const keys = Object.keys((schema as d.WgslStruct).propTypes);
       return snip(
         `${type}({${args.map((arg, i) => `${JSON.stringify(keys[i])}:${this.#value(arg)}`).join(',')}})`,
@@ -1092,6 +1104,13 @@ export class CpuGenerator extends WgslGenerator {
         const type = scalar(arg.dataType);
         const value = values[i]!;
         if (!widths[i] && (['struct', 'array'].includes(type) || type.startsWith('mat'))) {
+          // Non-pointer arguments are immutable; a callee cannot reach an owned caller local.
+          if (
+            !args.some((passed) => scalar(passed.dataType) === 'ptr') &&
+            args.slice(i + 1).every((passed) => !passed.possibleSideEffects) &&
+            (arg.origin === 'argument' || this.#ownedLocals.has(value))
+          )
+            return value;
           // Buffer reads and expression results already own their composite storage.
           if (this.#fresh(value) || value.startsWith('({') || value.startsWith('[')) return value;
           return `${this.emitTypeAnnotation(arg.dataType as d.BaseData)}(${value})`;
