@@ -205,6 +205,7 @@ export async function vectorResults(root: TgpuRoot): Promise<number[]> {
       const a = forward(id.x);
       const b = forward(id.x + d.u32(10));
       accumulated += a + b;
+      accumulated += forward(id.x);
     }
     const before = next(id.x);
     std.workgroupBarrier();

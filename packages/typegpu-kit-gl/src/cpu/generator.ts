@@ -1006,6 +1006,22 @@ export class CpuGenerator extends WgslGenerator {
     const width = vector ? Number(scalar(vector.dataType)[3]) : 0;
     const targetAddress = this.#addresses.get(this.ctx.resolveSnippet(lhs).value);
     if (vector && leftParts && ['+=', '-=', '*=', '/=', '%='].includes(op)) {
+      if (
+        !rightParts &&
+        rhsType.startsWith('vec') &&
+        leftParts.every((part) => /^[A-Za-z_$][\w$]*$/.test(part))
+      ) {
+        const primitive = type.endsWith('u') ? d.u32 : type.endsWith('i') ? d.i32 : d.f32;
+        const parameters = leftParts.map((_, i) => `a${i}`);
+        const results = leftParts.map((_, i) =>
+          this.emitBinaryOp(
+            snip(parameters[i]!, primitive, 'runtime', false),
+            op.slice(0, -1) as BinaryOperator,
+            snip(`b[${i}]`, primitive, 'runtime', false),
+          ),
+        );
+        return `((${[...parameters, 'b'].join(',')})=>{const ${results.map((value, i) => `v${i}=${value}`).join(',')};${leftParts.map((part, i) => `${part}=v${i};`).join('')}})(${[...leftParts, this.#value(rhs)].join(',')})`;
+      }
       const value = this.emitBinaryOp(lhs, op.slice(0, -1) as BinaryOperator, rhs);
       return this.emitBinaryOp(
         lhs,
