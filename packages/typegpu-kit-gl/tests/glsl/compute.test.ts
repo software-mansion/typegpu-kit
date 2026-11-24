@@ -176,7 +176,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = 1;
       });
     },
-    "@typegpu/kit-gl: 'atomicAdd'",
+    "'atomicAdd'",
   ],
   [
     'waits at a barrier',
@@ -188,7 +188,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = 1;
       });
     },
-    "@typegpu/kit-gl: 'workgroupBarrier'",
+    "'workgroupBarrier'",
   ],
   [
     'shares a workgroup variable',
@@ -201,7 +201,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = shared.$[0] as number;
       });
     },
-    "@typegpu/kit-gl: A 'workgroup' variable",
+    "A 'workgroup' variable",
   ],
   [
     'writes in a helper',

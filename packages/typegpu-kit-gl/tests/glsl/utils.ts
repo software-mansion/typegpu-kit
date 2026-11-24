@@ -81,9 +81,10 @@ export interface GlslRoot {
   computes(): ComputeVerdict[];
 }
 
-export type ComputeVerdict =
+export type ComputeVerdict = { readonly name: string } & (
   | { readonly code: string; readonly module: NonNullable<ReturnType<typeof parseCompute>> }
-  | { readonly reason: string };
+  | { readonly reason: string }
+);
 
 export interface GlslRootOptions {
   /** Resolves compute pipelines with the CPU backend too, as the fallback does. Default false. */
@@ -104,12 +105,11 @@ export function glslRoot(options: GlslRootOptions = {}): GlslRoot {
     recording.log.shaders
       .filter((code) => /@compute|\/\/#kit-gl compute/.test(code))
       .map((code): ComputeVerdict => {
+        const name = /@compute[^\n]*fn (\w+)/.exec(code)?.[1] ?? '<unnamed>';
         const form = gpuFormOf(code);
-        if (form === undefined) return { reason: cpuOnlyReason(code) ?? 'no GPU form' };
-        return {
-          code: form,
-          module: parseCompute(code) as NonNullable<ReturnType<typeof parseCompute>>,
-        };
+        if (form === undefined) return { name, reason: cpuOnlyReason(code) ?? 'no GPU form' };
+        const module = parseCompute(code) as NonNullable<ReturnType<typeof parseCompute>>;
+        return { name, code: form, module };
       });
   return { root, recording, codes, modules: () => codes().map((code) => parse(code)), computes };
 }

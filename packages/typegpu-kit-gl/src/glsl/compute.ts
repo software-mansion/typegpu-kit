@@ -188,6 +188,20 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return this.#own(index) === 'x';
   }
 
+  /**
+   * TypeGPU reuses a local's name in a sibling block, so a declaration in the entry takes the name
+   * away from the invocation's own index until a `const` gives it back.
+   */
+  override _emitVarDecl(
+    keyword: Parameters<KitGlslGenerator['_emitVarDecl']>[0],
+    name: string,
+    dataType: d.BaseData,
+    rhs: string,
+  ): string {
+    if (this.#inEntry) this.#ownLocals.delete(name);
+    return super._emitVarDecl(keyword, name, dataType, rhs);
+  }
+
   protected override _constStatement(statement: Const): ResolvedStatement {
     const result = super._constStatement(statement);
     const [, idNode, eqNode] = statement;
@@ -218,7 +232,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (!place) {
       const text = target.dataType === UnknownData ? '' : this.ctx.resolveSnippet(target).value;
       const root = /^\s*([A-Za-z_]\w*)/.exec(text)?.[1];
-      if (root && (this.#ids.has(root) || this.#ownLocals.has(root))) {
+      if (root && this.#inEntry && (this.#ids.has(root) || this.#ownLocals.has(root))) {
         throw new Ineligible(`modifies '${root}', which indices are derived from`);
       }
       return;
@@ -608,13 +622,14 @@ void main() {
   }
 }
 
-/** The reason an error gives for a kernel's GPU form failing. */
+/** The reason an error gives for a kernel's GPU form failing, with the function it is in. */
 function reasonOf(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const own = /GPU compute: (.*)$/m.exec(message);
-  if (own) return own[1] as string;
-  const lines = message.split('\n');
-  return (lines.at(-1) ?? message).replace(/^- [^:]*: /, '');
+  const kit = /@typegpu\/kit-gl: (.*)$/m.exec(message);
+  const reason = own?.[1] ?? kit?.[1] ?? message.split('\n').at(-1) ?? message;
+  const trace = [...message.matchAll(/^- (?:fn\*?|computeFn|var):(\w+)/gm)].at(-1)?.[1];
+  return trace && !own ? `${reason} (in '${trace}')` : reason;
 }
 
 /** A compute pipeline's GPU form, or why it has none. */
