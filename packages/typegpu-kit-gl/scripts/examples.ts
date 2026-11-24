@@ -1,10 +1,13 @@
 // Opens every example page of a running docs server on the WebGL fallback and on WebGPU, and
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
 // [--out dir] [--backend webgl|webgpu|both|nogpu] [--browser chromium|firefox|webkit]
-// [--timeout seconds] [--reference dir] [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
+// [--timeout seconds] [--reference dir] [--review] [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
 // the page first, as a browser without it, so the page must fall back by itself.
 // With `--reference`, it also scores each screenshot against the one of the same name there.
 // Screenshots outside Chromium carry the browser in their name, `forest.nogpu.webkit.png`.
+// `--review` also takes three shots a second apart, `forest.webgl.1.png` to `.3.png`, resizes the
+// page to a portrait viewport for `forest.webgl.resized.png`, and reports the canvas size before
+// and after, the frame times and the live WebGL objects the page holds.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,6 +23,7 @@ const { values, positionals } = parseArgs({
     browser: { type: 'string', default: 'chromium' },
     timeout: { type: 'string', default: '90' },
     reference: { type: 'string' },
+    review: { type: 'boolean', default: false },
   },
 });
 
@@ -61,7 +65,72 @@ interface Result {
   readonly difference?: number;
   readonly errors: readonly string[];
   readonly seconds: number;
+  /** Seconds from navigation until the cover lifted. */
+  readonly ready?: number;
+  /** With `--review`: the differences between consecutive shots a second apart. */
+  readonly shots?: readonly number[];
+  /** With `--review`: the canvas's CSS and backing size, before and after the resize. */
+  readonly canvas?: { readonly before: CanvasSize; readonly after: CanvasSize };
+  /** With `--review`: median and worst frame time in milliseconds over the two seconds. */
+  readonly frameMs?: { readonly median: number; readonly worst: number };
+  /** With `--review`: WebGL objects created and not deleted, by kind. */
+  readonly live?: Record<string, number>;
 }
+
+interface CanvasSize {
+  readonly css: readonly [number, number];
+  readonly backing: readonly [number, number];
+  /** The viewport's CSS size, so stretching shows as a CSS aspect unlike the backing one. */
+  readonly viewport: readonly [number, number];
+}
+
+const RESIZED = { width: 600, height: 760 };
+
+const canvasOf = (page: Page) =>
+  page.evaluate((): CanvasSize => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#example canvas')!;
+    const box = canvas.getBoundingClientRect();
+    return {
+      css: [Math.round(box.width), Math.round(box.height)],
+      backing: [canvas.width, canvas.height],
+      viewport: [innerWidth, innerHeight],
+    };
+  });
+
+/** Counts WebGL objects as the page creates and deletes them, under `globalThis.kitGlLive`. */
+const countObjects = () => {
+  const live: Record<string, number> = {};
+  (globalThis as { kitGlLive?: Record<string, number> }).kitGlLive = live;
+  const proto = WebGL2RenderingContext.prototype as unknown as Record<
+    string,
+    (...args: unknown[]) => unknown
+  >;
+  for (const kind of [
+    'Buffer',
+    'Texture',
+    'Framebuffer',
+    'Renderbuffer',
+    'Program',
+    'Shader',
+    'Sampler',
+    'VertexArray',
+    'Query',
+    'Sync',
+  ]) {
+    const create = proto[kind === 'Sync' ? 'fenceSync' : `create${kind}`];
+    const remove = proto[`delete${kind}`];
+    if (!create || !remove) continue;
+    proto[kind === 'Sync' ? 'fenceSync' : `create${kind}`] = function (this: unknown, ...args) {
+      const made = create.apply(this, args);
+      if (made) live[kind] = (live[kind] ?? 0) + 1;
+      return made;
+    };
+    proto[`delete${kind}`] = function (this: unknown, ...args) {
+      if (args[0]) live[kind] = (live[kind] ?? 0) - 1;
+      return remove.apply(this, args);
+    };
+  }
+};
 
 /** Scores two PNGs in a page, which decodes them. */
 const differenceOf = (page: Page, a: string, b: string) =>
@@ -108,13 +177,23 @@ async function settle(page: Page): Promise<'ready' | 'failed' | 'timeout'> {
 const fpsOf = (page: Page) =>
   page.evaluate(
     () =>
-      new Promise<number>((resolve) => {
-        let frames = 0;
+      new Promise<{ fps: number; median: number; worst: number }>((resolve) => {
+        const times: number[] = [];
         const start = performance.now();
+        let last = start;
         const tick = (now: number) => {
-          frames++;
-          if (now - start >= 2000) resolve((frames * 1000) / (now - start));
-          else requestAnimationFrame(tick);
+          times.push(now - last);
+          last = now;
+          if (now - start < 2000) {
+            requestAnimationFrame(tick);
+            return;
+          }
+          const sorted = times.toSorted((a, b) => a - b);
+          resolve({
+            fps: (times.length * 1000) / (now - start),
+            median: sorted[sorted.length >> 1]!,
+            worst: sorted.at(-1)!,
+          });
         };
         requestAnimationFrame(tick);
       }),
@@ -162,6 +241,7 @@ async function visit(browser: Browser, example: string, backend: string): Promis
     viewport: { width: 800, height: 600 },
     deviceScaleFactor: 1,
   });
+  if (values.review) await context.addInitScript(countObjects);
   if (backend === 'nogpu') {
     await context.addInitScript(() => {
       delete (Navigator.prototype as { gpu?: unknown }).gpu;
@@ -182,6 +262,11 @@ async function visit(browser: Browser, example: string, backend: string): Promis
   let state: Result['state'] = 'timeout';
   let notice = '';
   let fps: number | undefined;
+  let frameMs: Result['frameMs'];
+  let ready: number | undefined;
+  let shots: number[] | undefined;
+  let canvas: Result['canvas'];
+  let live: Record<string, number> | undefined;
   let ink: number | undefined;
   let webgpu: boolean | undefined;
   // The dev server reloads a page when it optimises a dependency it had not seen: try again
@@ -190,10 +275,42 @@ async function visit(browser: Browser, example: string, backend: string): Promis
       await page.goto(`${values.base}/examples/${example}/${query}`, { timeout });
       webgpu = await page.evaluate(() => 'gpu' in navigator && !!navigator.gpu);
       state = await settle(page);
+      ready = Math.round((Date.now() - started) / 100) / 10;
       notice = (await page.locator('#notice').textContent()) ?? '';
       if (state === 'ready') {
-        fps = await fpsOf(page);
+        const timing = await fpsOf(page);
+        fps = timing.fps;
+        frameMs = { median: Math.round(timing.median * 10) / 10, worst: Math.round(timing.worst) };
         await page.waitForTimeout(500);
+      }
+      if (state === 'ready' && values.review) {
+        const taken: string[] = [];
+        for (let i = 1; i <= 3; i++) {
+          if (i > 1) await page.waitForTimeout(1000);
+          const shot = await page.locator('#example canvas').screenshot({
+            path: join(values.out, `${example}.${backend}${suffix}.${i}.png`),
+            timeout: 20_000,
+          });
+          taken.push(shot.toString('base64'));
+        }
+        shots = [];
+        for (let i = 1; i < taken.length; i++) {
+          const score = await differenceOf(page, taken[i - 1]!, taken[i]!);
+          shots.push(Math.round(score * 10) / 10);
+        }
+        const before = await canvasOf(page);
+        await page.setViewportSize(RESIZED);
+        await page.waitForTimeout(1500);
+        await page.screenshot({
+          path: join(values.out, `${example}.${backend}${suffix}.resized.png`),
+          timeout: 20_000,
+        });
+        canvas = { before, after: await canvasOf(page) };
+        live = await page.evaluate(
+          () => (globalThis as { kitGlLive?: Record<string, number> }).kitGlLive ?? {},
+        );
+        await page.setViewportSize({ width: 800, height: 600 });
+        await page.waitForTimeout(1000);
       }
       const shot = await page.locator('#example canvas').screenshot({
         path: join(values.out, `${example}.${backend}${suffix}.png`),
@@ -241,6 +358,11 @@ async function visit(browser: Browser, example: string, backend: string): Promis
     ...(difference === undefined ? {} : { difference: Math.round(difference * 10) / 10 }),
     ...(notice || errors[0] ? { error: (notice || errors[0]!).slice(0, 3000) } : {}),
     ...(fps === undefined ? {} : { fps: Math.round(fps * 10) / 10 }),
+    ...(frameMs ? { frameMs } : {}),
+    ...(ready === undefined ? {} : { ready }),
+    ...(shots ? { shots } : {}),
+    ...(canvas ? { canvas } : {}),
+    ...(live ? { live } : {}),
     ...(ink === undefined ? {} : { ink }),
     errors,
     seconds: Math.round((Date.now() - started) / 100) / 10,
