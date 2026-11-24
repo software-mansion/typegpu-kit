@@ -5,53 +5,12 @@ import { Session } from 'node:inspector/promises';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
-import {
-  WgslGenerator,
-  type FunctionDefinitionOptions,
-  type ResolutionCtx,
-} from 'typegpu/~internal';
 import { expect, it } from 'vitest';
 import { examples } from '../../../typegpu-kit-examples/src/index.ts';
 import { begin, filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
 import { fromDisk, driven } from '../../../typegpu-kit-examples/tests/utils/examples.ts';
-import { CpuGenerator } from '../../src/cpu/generator.ts';
+import { SweepGenerator } from './scene-generator.ts';
 import { compile, isCpuModule } from '../../src/cpu/index.ts';
-
-class SweepGenerator extends WgslGenerator {
-  override languageKey = 'wgsl' as const;
-  constructor() {
-    super();
-    let backend: WgslGenerator | undefined;
-    let context: ResolutionCtx;
-    return new Proxy(this, {
-      get(_target, key) {
-        if (key === 'initGenerator')
-          return (ctx: ResolutionCtx) => {
-            context = ctx;
-          };
-        if (key === 'functionDefinition')
-          return (options: FunctionDefinitionOptions) => {
-            if (!backend) {
-              backend =
-                options.functionType === 'compute' ? new CpuGenerator() : new WgslGenerator();
-              backend.initGenerator(context);
-            }
-            return backend.functionDefinition(options);
-          };
-        if (key === 'languageKey') return backend?.languageKey ?? 'wgsl';
-        if (!backend) {
-          backend =
-            context.topFunctionScope?.functionType === 'compute'
-              ? new CpuGenerator()
-              : new WgslGenerator();
-          backend.initGenerator(context);
-        }
-        const member = Reflect.get(backend, key);
-        return typeof member === 'function' ? member.bind(backend) : member;
-      },
-    });
-  }
-}
 
 it.runIf(process.env.CPU_SWEEP === '1')(
   'records per-example CPU compilation coverage',

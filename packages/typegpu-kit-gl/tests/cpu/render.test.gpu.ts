@@ -1,9 +1,9 @@
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
-import { boxBounds, cylinder } from './render.ts';
+import { boxBounds, cylinder, posePhase } from './render.ts';
 
-for (const run of [boxBounds, cylinder]) {
+for (const run of [boxBounds, cylinder, posePhase]) {
   it(`matches dawn for render geometry ${run.name}`, async () => {
     const gpu = await gpuRoot();
     const cpu = cpuRoot();
