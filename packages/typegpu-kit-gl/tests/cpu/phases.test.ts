@@ -71,7 +71,7 @@ it('keeps repeated scan helper locals separate across unrolled barrier phases', 
         i === 11
           ? [0, 0]
           : [
-              Array.from({ length: i % 4 }, (_, j) => Math.floor(i / 4) * 4 + j + 1).reduce(
+              Array.from({ length: i % 4 }, (_item, j) => Math.floor(i / 4) * 4 + j + 1).reduce(
                 (a, b) => a + b,
                 0,
               ),

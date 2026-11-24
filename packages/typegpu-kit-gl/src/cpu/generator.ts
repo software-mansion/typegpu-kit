@@ -1168,7 +1168,7 @@ export class CpuGenerator extends WgslGenerator {
           `(${direct[arg]?.[component] ?? this.#value(args[arg]!)})`;
         const product = Array.from(
           { length: count },
-          (_, i) => `${at(0, i)}*${at(name === 'dot' || name === 'reflect' ? 1 : 0, i)}`,
+          (_, i) => `${at(0, i)}*${at(['dot', 'reflect', 'refract'].includes(name) ? 1 : 0, i)}`,
         ).join('+');
         if (name === 'dot') return `(${product})`;
         if (name === 'length') return `Math.sqrt(${product})`;
@@ -1179,7 +1179,14 @@ export class CpuGenerator extends WgslGenerator {
           parts = Array.from({ length: count }, (_, i) => `${at(0, i)}/Math.sqrt(${product})`);
         else if (name === 'reflect')
           parts = Array.from({ length: count }, (_, i) => `${at(0, i)}-2*(${product})*${at(1, i)}`);
-        else if (name === 'cross')
+        else if (name === 'refract') {
+          const eta = this.#value(args[2]!);
+          parts = Array.from(
+            { length: count },
+            (_, i) =>
+              `((k)=>k<0?0:((${eta})*${at(0, i)}-((${eta})*(${product})+Math.sqrt(k))*${at(1, i)}))(1-(${eta})*(${eta})*(1-(${product})*(${product})))`,
+          );
+        } else if (name === 'cross')
           parts = [0, 1, 2].map(
             (i) =>
               `${at(0, (i + 1) % 3)}*${at(1, (i + 2) % 3)}-${at(0, (i + 2) % 3)}*${at(1, (i + 1) % 3)}`,
@@ -1214,6 +1221,9 @@ export class CpuGenerator extends WgslGenerator {
       if (name === 'reflect') {
         const product = Array.from({ length: count }, (_, i) => `a0[${i}]*a1[${i}]`).join('+');
         body = `$vector([${Array.from({ length: count }, (_, i) => `a0[${i}]-2*(${product})*a1[${i}]`).join(',')}])`;
+      } else if (name === 'refract') {
+        const product = Array.from({ length: count }, (_, i) => `a0[${i}]*a1[${i}]`).join('+');
+        body = `((dot)=>{const k=1-a2*a2*(1-dot*dot);return $vector([${Array.from({ length: count }, (_, i) => `k<0?0:a2*a0[${i}]-(a2*dot+Math.sqrt(k))*a1[${i}]`).join(',')}]);})(${product})`;
       } else if (name === 'distance')
         body = `Math.sqrt(${Array.from({ length: count }, (_, i) => `(a0[${i}]-a1[${i}])**2`).join('+')})`;
       else if (name === 'dot' || name === 'length')
