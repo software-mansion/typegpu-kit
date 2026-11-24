@@ -84,7 +84,7 @@ A function implemented with a WGSL template goes into the output as written. Thr
 
 - `createGuardedComputePipeline`'s entry. Patched: `PATCHES.md`, core patch 6. The source comment says why it is WGSL: TypeGPU does not run `unplugin-typegpu` on its own package. Running the plugin on TypeGPU's source at build time, or attaching the metadata by hand as the patch does, removes the whole class.
 - `common.fullScreenTriangle`. Not patched: `src/glsl/generator.ts` recognises it and substitutes GLSL.
-- The mipmap and resampling shaders in `core/texture/textureUtils.ts`, which `texture.generateMipmaps()` and a resizing `texture.write()` compile through `device.createShaderModule` directly. Not patched: the device recognises those pipelines and runs GL calls instead.
+- The mipmap and resampling shaders in `core/texture/textureUtils.ts`, which `texture.generateMipmaps()` and a resizing `texture.write()` compile through `device.createShaderModule` directly, bypassing the root's generator. Not patched: the device recognises the fullscreen vertex shader and the sampling and gathering fragment shaders by fragments of their WGSL text and substitutes GLSL programs of its own, so any edit to those strings upstream silently breaks mipmaps on the fallback.
 
 ```ts
 const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: Glsl });
@@ -94,7 +94,7 @@ root.createRenderPipeline({ vertex: common.fullScreenTriangle, fragment, targets
 
 **Upstream.** Write the three as `'use gpu'` functions. For the mipmap shaders, build them with the root's generator like any other pipeline.
 
-**Workaround.** As listed per item.
+**Workaround.** As listed per item; the shader substitution is `builtin` in `src/device/shader.ts`.
 
 ### 7. `WgslGenerator` has few seams for another target
 
@@ -195,3 +195,29 @@ TypeGPU can call a `'use gpu'` function in JavaScript, but not a whole kernel: `
 **Upstream.** A supported CPU executor for compute pipelines, taking bound resources and a dispatch size, would let `tgpu.simulate`, tests and fallbacks share one implementation.
 
 **Workaround.** `src/cpu`.
+
+### 11. A texture's cube or array viewing is unknown when it is created
+
+WebGPU lets a 6-layer texture be viewed as `cube` or `2d-array`; WebGL 2 must pick `TEXTURE_CUBE_MAP` or `TEXTURE_2D_ARRAY` when it allocates storage. WebGPU's compatibility mode solves the same problem with `textureBindingViewDimension` on `GPUTextureDescriptor`, but TypeGPU never passes it: `INTERNAL_createTexture` materialises the texture from `props` alone, and views are created later, when a bind group first unwraps them. A texture written before its first cube view is created ends up stored as an array, and every cube view of it then samples a copy the device refreshes whenever the texture changes.
+
+```ts
+const sky = root.createTexture({ size: [256, 256, 6], format: 'rgba16float' }).$usage('sampled', 'render');
+sky.write(faces); // allocates storage now, before any view exists
+const cube = sky.createView(d.textureCube(d.f32)); // on WebGL: a copy, re-blitted after each write
+```
+
+**Upstream.** Accept `textureBindingViewDimension` in texture props, or infer it from the first view schema created before materialisation, and pass it to `device.createTexture`. In `core/texture/texture.ts`.
+
+**Workaround.** `sampled` and `derivedCopy` in `src/device/texture.ts`: storage is chosen from the views created before allocation, reallocated if the first sampled view disagrees and nothing was written yet, and otherwise copied per view.
+
+### 12. TypeGPU's internal blits allocate per call and submit their own encoder
+
+`blit` in `core/texture/textureUtils.ts` creates a bind group on every call, and `generateTextureMipmaps` and `writeImages` each create a command encoder and submit it at once. A module that regenerates mipmaps every frame, such as one mipmapping a rendered target, allocates bind groups each frame and submits outside the frame's encoder, so its work cannot be ordered with the frame's passes.
+
+```ts
+target.generateMipmaps(); // its own encoder and submit, a new bind group per level and layer
+```
+
+**Upstream.** Cache the bind group per source view, and give `generateMipmaps` an optional encoder to record into. In `core/texture/textureUtils.ts` and `core/texture/texture.ts`.
+
+**Workaround.** None in the fallback; the device runs each submit as it comes.
