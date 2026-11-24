@@ -1,8 +1,8 @@
-import { cpuRoot } from './device.ts';
+import { cpuRoot, cpuBackend } from './device.ts';
 import { writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
-import { frames } from '@typegpu/kit';
+import { frames, backends } from '@typegpu/kit';
 import { offscreenSurface, recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -97,7 +97,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
               },
             })
           : tgpu.initFromDevice({
-              device: recording.root.device,
+              device: Object.assign(recording.root.device, { [backends.brand]: cpuBackend }),
               unstable_shaderGeneratorClass: SweepGenerator,
             });
       const surface = offscreenSurface(root, { width: 64, height: 36, format: 'bgra8unorm' });

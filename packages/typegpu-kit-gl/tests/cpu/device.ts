@@ -1,3 +1,4 @@
+import { backends } from '@typegpu/kit';
 import { textureDevice } from './texture-device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
@@ -5,6 +6,14 @@ import { CpuGenerator } from '../../src/cpu/generator.ts';
 import { compile, isCpuModule, type CpuModule } from '../../src/cpu/index.ts';
 
 const noop = () => {};
+export const cpuBackend: backends.Backend = {
+  kind: 'webgl',
+  compute: 'cpu',
+  preferredCanvasFormat: 'rgba8unorm',
+  configure() {
+    throw new Error('CPU test device has no canvas');
+  },
+};
 
 type Command = () => void;
 interface Pipeline {
@@ -38,6 +47,7 @@ export function cpuRoot(
   });
   const device = new Proxy(original, {
     get(target, key) {
+      if (key === backends.brand) return cpuBackend;
       if (key === 'queue') return queue;
       if (key === 'createTexture') return texture.createTexture;
       if (key === 'createSampler') return texture.createSampler;
