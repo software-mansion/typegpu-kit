@@ -43,6 +43,20 @@ From `scripts/examples.ts --backend webgl` at device commit 3c4aa4c1:
   matches WebGPU on the device (`roots.test.gl.ts`), so the records the CPU kernels write are the
   likelier cause.
 
+## Rendering bugs traced to CPU kernels
+
+`tests/device/diff.ts` runs a scene on WebGPU and on the device and compares every texture and
+buffer both create, in creation order; `glRoot({ gpuCompute: false })` keeps every kernel on the
+CPU. Cases the CPU backend gets wrong are `test.fails` in `kernels.test.gl.ts`, so each flips once
+fixed:
+
+- robot-arm, the missing table, wall and lamp light: the mesh pool's bake leaves every bounding box
+  at zero size (`workgroup.reduce` with `atomicMin`/`atomicMax`, case "a mesh pool's baked bounds"),
+  so culling drops meshes WebGPU keeps. It also writes a cylinder's cap ring at x = z = 0 (case "a
+  cylinder's cap vertices"; the cap's `vertexAt` inside `concat` and `transform`).
+- classroom renders correctly at d00fa719 in the device's harness; its dark frames came from an
+  earlier state of the generators.
+
 ## Compute as fragment passes
 
 The device runs a compute pipeline's GPU form (`src/glsl/computeModule.ts`) when its module carries
