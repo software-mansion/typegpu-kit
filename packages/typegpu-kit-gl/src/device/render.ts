@@ -1,21 +1,15 @@
 /** Running a recorded render pass on GL: its framebuffer, clears, bindings and draws. */
 
-import { type Bound, bufferEntry } from './binding.ts';
-import {
-  bindUniformRange,
-  type BufferImpl,
-  dataTexture,
-  indexBuffer,
-  vertexBuffer,
-} from './buffer.ts';
+import type { Bound } from './binding.ts';
+import { type BufferImpl, indexBuffer, vertexBuffer } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import type { RenderPipelineImpl } from './pipeline.ts';
+import { bindUses, setInt } from './uses.ts';
 import {
   type Attachment,
   framebuffer,
   glWritten,
   mipSize,
-  sampled,
   type TextureImpl,
   type ViewImpl,
   viewImpl,
@@ -211,84 +205,15 @@ export function endRender(pass: RenderPass): void {
   }
 }
 
-const ranges = new WeakMap<WebGLUniformLocation, [number, number]>();
-const ints = new WeakMap<WebGLUniformLocation, number>();
-
-function setInt(gl: WebGL2RenderingContext, location: WebGLUniformLocation | null, value: number) {
-  if (!location || ints.get(location) === value) return;
-  ints.set(location, value);
-  gl.uniform1i(location, value);
-}
-
-function missing(pass: RenderPass, pipeline: RenderPipelineImpl, what: string): false {
-  pass.ctx.errors.report(
-    'validation',
-    `The draw with pipeline '${pipeline.label}' is missing ${what}.`,
-  );
-  return false;
-}
-
 /** Binds the pipeline's buffers and textures to their units. False when one is missing. */
 function bindResources(pass: RenderPass, pipeline: RenderPipelineImpl): boolean {
-  const { ctx } = pass;
-  const { gl, state } = ctx;
-  for (const use of pipeline.buffers) {
-    const entry = bufferEntry(pass.groups[use.group], use.binding);
-    if (!entry)
-      return missing(pass, pipeline, `buffer @group(${use.group}) @binding(${use.binding})`);
-    const data = dataTexture(ctx, entry.buffer);
-    state.texture(use.unit, gl.TEXTURE_2D, data.texture);
-    state.sampler(use.unit, ctx.nearest);
-    if (use.range) {
-      const words = entry.offset >>> 2;
-      const last = ranges.get(use.range);
-      if (!last || last[0] !== words || last[1] !== entry.size) {
-        state.program(pipeline.program!.program);
-        gl.uniform2ui(use.range, words, entry.size);
-        ranges.set(use.range, [words, entry.size]);
-      }
-    }
-  }
-  for (const use of pipeline.textures) {
-    const entry = pass.groups[use.group]?.group.entries.get(use.binding);
-    if (entry?.kind !== 'texture') {
-      return missing(pass, pipeline, `texture @group(${use.group}) @binding(${use.binding})`);
-    }
-    const { target, texture } = sampled(ctx, entry.view);
-    state.texture(use.unit, target, texture);
-    let sampler = ctx.nearest;
-    if (use.sampler) {
-      const samplerEntry = pass.groups[use.sampler.group]?.group.entries.get(use.sampler.binding);
-      if (samplerEntry?.kind !== 'sampler') {
-        return missing(
-          pass,
-          pipeline,
-          `sampler @group(${use.sampler.group}) @binding(${use.sampler.binding})`,
-        );
-      }
-      const impl = samplerEntry.sampler;
-      const filterable = entry.view.texture.info.filterable;
-      sampler = use.comparison || (filterable && !use.depth) ? impl.sampler : impl.unfiltered();
-    }
-    state.sampler(use.unit, sampler);
-  }
-  for (const use of pipeline.blocks) {
-    const entry = bufferEntry(pass.groups[use.group], use.binding);
-    if (!entry)
-      return missing(
-        pass,
-        pipeline,
-        `uniform buffer @group(${use.group}) @binding(${use.binding})`,
-      );
-    bindUniformRange(ctx, entry.buffer, use.point, entry.offset, use.size);
-  }
-  for (const use of pipeline.levels) {
-    const entry = pass.groups[use.group]?.group.entries.get(use.binding);
-    if (entry?.kind !== 'texture') continue;
-    state.program(pipeline.program!.program);
-    setInt(gl, use.location, entry.view.mipLevelCount);
-  }
-  return true;
+  const missing = bindUses(pass.ctx, pipeline, pipeline.program!, pass.groups);
+  if (missing === undefined) return true;
+  pass.ctx.errors.report(
+    'validation',
+    `The draw with pipeline '${pipeline.label}' is missing ${missing}.`,
+  );
+  return false;
 }
 
 function applyState(pass: RenderPass, pipeline: RenderPipelineImpl): void {
@@ -359,7 +284,10 @@ function prepare(
   for (const slot of pipeline.slots) {
     const bound = pass.vertex[slot.slot];
     if (!bound) {
-      missing(pass, pipeline, `vertex buffer ${slot.slot}`);
+      ctx.errors.report(
+        'validation',
+        `The draw with pipeline '${pipeline.label}' is missing vertex buffer ${slot.slot}.`,
+      );
       return undefined;
     }
     const buffer = vertexBuffer(ctx, bound.buffer);
@@ -438,12 +366,14 @@ export function drawIndexed(
 
 export function drawIndirect(pass: RenderPass, buffer: BufferImpl, offset: number): void {
   const at = offset >>> 2;
+  buffer.sync();
   const words = buffer.words;
   draw(pass, words[at]!, words[at + 1]!, words[at + 2]!, words[at + 3]!);
 }
 
 export function drawIndexedIndirect(pass: RenderPass, buffer: BufferImpl, offset: number): void {
   const at = offset >>> 2;
+  buffer.sync();
   const words = buffer.words;
   drawIndexed(pass, words[at]!, words[at + 1]!, words[at + 2]!, words[at + 3]! | 0, words[at + 4]!);
 }

@@ -285,6 +285,8 @@ export function createCommandEncoder(
       const destination = bufferImpl(to);
       const size = given ?? source.size - sourceOffset;
       record(() => {
+        source.sync();
+        destination.sync();
         destination.bytes.set(
           source.bytes.subarray(sourceOffset, sourceOffset + size),
           destinationOffset,
@@ -335,6 +337,7 @@ export function createCommandEncoder(
       const impl = bufferImpl(buffer);
       const length = size ?? impl.size - offset;
       record(() => {
+        impl.sync();
         impl.bytes.fill(0, offset, offset + length);
         written(impl, offset, offset + length);
       });
@@ -349,6 +352,7 @@ export function createCommandEncoder(
     ) {
       const impl = bufferImpl(destination);
       record(() => {
+        impl.sync();
         impl.bytes.fill(0, offset, offset + count * 8);
         written(impl, offset, offset + count * 8);
         void first;

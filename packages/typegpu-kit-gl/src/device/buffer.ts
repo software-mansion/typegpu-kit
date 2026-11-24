@@ -1,10 +1,11 @@
 /**
- * Buffers. The CPU copy is the only one anything writes, since WebGL 2 shaders cannot write
- * buffers: GL holds lazily made copies for vertex and index input and an `RGBA32UI` data texture
- * for bindings, each with the byte range the CPU changed since its last upload.
+ * Buffers. The CPU copy is current unless a compute kernel that ran as fragment passes replaced the
+ * data texture, the one GL copy a shader writes; `sync` reads it back before the CPU copy is used.
+ * GL holds lazily made copies for vertex, index and uniform input and an `RGBA32UI` data texture for
+ * bindings, each with the byte range the CPU changed since its last upload.
  */
 
-import { BUFFER_USAGE, type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
+import { type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
 
 /** Bytes per data-texture row is `ROW_TEXELS * 16` unless the buffer needs wider rows. */
 const ROW_TEXELS = 1024;
@@ -29,6 +30,10 @@ export interface BufferImpl {
   readonly bytes: Uint8Array;
   readonly words: Uint32Array;
   destroyed: boolean;
+  /** The data texture holds newer contents than the CPU copy. */
+  gpuNewer: boolean;
+  /** Makes the CPU copy current. Call before reading or writing `bytes`. */
+  sync(): void;
   vertex: Copy<WebGLBuffer> | undefined;
   index: Copy<WebGLBuffer> | undefined;
   data: Copy<DataTexture> | undefined;
@@ -62,6 +67,7 @@ export function written(buffer: BufferImpl, start: number, end: number): void {
 /** The GL buffer for vertex input, current. Binds it to `ARRAY_BUFFER`. */
 export function vertexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
   const { gl, state } = ctx;
+  buffer.sync();
   let copy = buffer.vertex;
   if (!copy) {
     const value = gl.createBuffer();
@@ -85,6 +91,7 @@ export function vertexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
  */
 export function indexBuffer(ctx: Ctx, buffer: BufferImpl): WebGLBuffer {
   const { gl } = ctx;
+  buffer.sync();
   let copy = buffer.index;
   if (!copy) {
     const value = gl.createBuffer();
@@ -121,6 +128,7 @@ export function bindUniformRange(
   size: number,
 ): void {
   const { gl } = ctx;
+  buffer.sync();
   const upload = (copy: Copy<WebGLBuffer>, base: number, length: number) => {
     gl.bindBuffer(gl.UNIFORM_BUFFER, copy.value);
     const start = Math.max(copy.start, base);
@@ -212,6 +220,42 @@ export function dataTexture(ctx: Ctx, buffer: BufferImpl): DataTexture {
   return copy.value;
 }
 
+/** Reads the data texture back into the CPU copy, which every other GL copy then uploads. */
+function readBack(ctx: Ctx, buffer: BufferImpl): void {
+  const { gl, state } = ctx;
+  const data = buffer.data!.value;
+  const all = new Uint32Array(data.width * data.height * 4);
+  state.readFramebuffer(ctx.scratch.read);
+  gl.framebufferTexture2D(
+    gl.READ_FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    data.texture,
+    0,
+  );
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.readPixels(0, 0, data.width, data.height, gl.RGBA_INTEGER, gl.UNSIGNED_INT, all);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  buffer.words.set(all.subarray(0, buffer.words.length));
+  buffer.gpuNewer = false;
+  written(buffer, 0, buffer.bytes.length);
+  buffer.data!.start = Infinity;
+  buffer.data!.end = 0;
+}
+
+/**
+ * Replaces the data texture with one a fragment pass wrote, of the same size, which leaves every
+ * other copy stale.
+ */
+export function replaceData(ctx: Ctx, buffer: BufferImpl, texture: WebGLTexture): void {
+  const copy = buffer.data!;
+  ctx.gl.deleteTexture(copy.value.texture);
+  copy.value = { ...copy.value, texture };
+  copy.start = Infinity;
+  copy.end = 0;
+  buffer.gpuNewer = true;
+}
+
 export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuffer {
   const { gl } = ctx;
   const { size, usage } = descriptor;
@@ -225,6 +269,10 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     bytes: new Uint8Array(storage),
     words: new Uint32Array(storage),
     destroyed: false,
+    gpuNewer: false,
+    sync() {
+      if (impl.gpuNewer && impl.data && !impl.destroyed) readBack(ctx, impl);
+    },
     vertex: undefined,
     index: undefined,
     data: undefined,
@@ -277,6 +325,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
         queueMicrotask(() => {
           if (pending !== map) return;
           pending = undefined;
+          impl.sync();
           mapState = 'mapped';
           mapMode = mode;
           mapOffset = offset;
@@ -328,10 +377,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
 
 /** Copies `size` bytes from the start of `data` into the buffer at `offset`. */
 export function writeBytes(buffer: BufferImpl, offset: number, data: Uint8Array): void {
+  buffer.sync();
   buffer.bytes.set(data, offset);
   written(buffer, offset, offset + data.byteLength);
-}
-
-export function isIndexOrVertex(buffer: BufferImpl): boolean {
-  return (buffer.usage & (BUFFER_USAGE.INDEX | BUFFER_USAGE.VERTEX)) !== 0;
 }

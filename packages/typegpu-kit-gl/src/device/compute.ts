@@ -59,6 +59,7 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
       const entry = bufferEntry(pass.groups[group], binding);
       if (!entry) throw new Error(`no buffer at @group(${group}) @binding(${binding})`);
       buffers.set(`${group}:${binding}`, entry);
+      entry.buffer.sync();
       return {
         bytes: entry.buffer.words.buffer as ArrayBuffer,
         offset: entry.offset,
@@ -118,5 +119,6 @@ export function dispatchIndirect(
   offset: number,
 ): void {
   const at = offset >>> 2;
+  buffer.sync();
   dispatch(ctx, pass, buffer.words[at]!, buffer.words[at + 1]!, buffer.words[at + 2]!);
 }

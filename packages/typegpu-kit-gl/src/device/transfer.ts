@@ -177,6 +177,7 @@ export function copyBufferToTexture(
   destination: GPUTexelCopyTextureInfo,
   size: GPUExtent3DStrict,
 ): void {
+  source.sync();
   uploadLaidOut(ctx, destination, source.bytes, layout, size);
 }
 
@@ -425,6 +426,7 @@ export function copyTextureToBuffer(
   layout: GPUTexelCopyBufferLayout,
   size: GPUExtent3DStrict,
 ): void {
+  destination.sync();
   const texture = textureImpl(source.texture);
   const [width, height, layers] = extent(size);
   const [x, y, z] = origin(source.origin);

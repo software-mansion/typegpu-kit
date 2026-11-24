@@ -9,6 +9,15 @@ import { type Linked, link, linkAsync, type Program } from './program.ts';
 import { compareFunc } from './sampler.ts';
 import { moduleImpl, type Stages } from './shader.ts';
 import type { BlendState, StencilFace } from './state.ts';
+import {
+  type BlockUse,
+  type BufferUse,
+  connectUses,
+  type LevelsUse,
+  type TextureUse,
+} from './uses.ts';
+
+export type { BlockUse, BufferUse, LevelsUse, TextureUse } from './uses.ts';
 
 export interface Attribute {
   readonly location: number;
@@ -27,35 +36,6 @@ export interface VertexSlot {
   /** The GL buffer and byte offset the attributes point at now, in the pipeline's VAO. */
   buffer: WebGLBuffer | null;
   base: number;
-}
-
-export interface BufferUse {
-  readonly group: number;
-  readonly binding: number;
-  readonly unit: number;
-  readonly range: WebGLUniformLocation | null;
-}
-
-export interface BlockUse {
-  readonly group: number;
-  readonly binding: number;
-  readonly point: number;
-  readonly size: number;
-}
-
-export interface LevelsUse {
-  readonly group: number;
-  readonly binding: number;
-  readonly location: WebGLUniformLocation;
-}
-
-export interface TextureUse {
-  readonly group: number;
-  readonly binding: number;
-  readonly unit: number;
-  readonly sampler: { readonly group: number; readonly binding: number } | undefined;
-  readonly comparison: boolean;
-  readonly depth: boolean;
 }
 
 export interface RenderState {
@@ -347,66 +327,15 @@ function stagesOf(descriptor: GPURenderPipelineDescriptor): Stages | string {
 
 /** Assigns texture units and finds uniforms once the program linked. */
 function connect(ctx: Ctx, impl: RenderPipelineImpl, stages: Stages, program: Program): void {
-  const { gl, state } = ctx;
-  const units = stages.buffers.length + stages.textures.length;
-  if (units > ctx.maxTextureUnits - 1) {
-    impl.error = `The pipeline '${impl.label}' binds ${stages.buffers.length} buffers and ${stages.textures.length} textures, which need ${units} texture units; WebGL 2 here has ${ctx.maxTextureUnits - 1} for shaders.`;
+  const uses = connectUses(ctx, `The pipeline '${impl.label}'`, stages, program);
+  if (typeof uses === 'string') {
+    impl.error = uses;
     return;
   }
-  state.program(program.program);
-  const buffers: BufferUse[] = [];
-  const textures: TextureUse[] = [];
-  let unit = 0;
-  const seen = new Set<string>();
-  for (const binding of stages.buffers) {
-    if (seen.has(binding.texture)) continue;
-    seen.add(binding.texture);
-    const location = program.uniforms.get(binding.texture);
-    if (!location) continue;
-    gl.uniform1i(location, unit);
-    buffers.push({
-      group: binding.group,
-      binding: binding.binding,
-      unit,
-      range: program.uniforms.get(binding.range) ?? null,
-    });
-    unit++;
-  }
-  for (const binding of stages.textures) {
-    if (seen.has(binding.uniform)) continue;
-    seen.add(binding.uniform);
-    const location = program.uniforms.get(binding.uniform);
-    if (!location) continue;
-    gl.uniform1i(location, unit);
-    textures.push({
-      group: binding.group,
-      binding: binding.binding,
-      unit,
-      sampler: binding.sampler,
-      comparison: binding.comparison,
-      depth: binding.sampleType === 'depth',
-    });
-    unit++;
-  }
-  const blocks: BlockUse[] = [];
-  for (const binding of stages.blocks) {
-    const index = gl.getUniformBlockIndex(program.program, binding.block);
-    if (index === gl.INVALID_INDEX) continue;
-    const point = blocks.length;
-    if (point >= ctx.maxUniformBindings) {
-      impl.error = `The pipeline '${impl.label}' reads ${stages.blocks.length} uniform blocks; WebGL 2 here binds ${ctx.maxUniformBindings}.`;
-      return;
-    }
-    gl.uniformBlockBinding(program.program, index, point);
-    blocks.push({ group: binding.group, binding: binding.binding, point, size: binding.size });
-  }
-  impl.blocks = blocks;
-  impl.buffers = buffers;
-  impl.textures = textures;
-  impl.levels = stages.levels.flatMap((binding) => {
-    const location = program.uniforms.get(binding.uniform);
-    return location ? [{ group: binding.group, binding: binding.binding, location }] : [];
-  });
+  impl.buffers = uses.buffers;
+  impl.textures = uses.textures;
+  impl.blocks = uses.blocks;
+  impl.levels = uses.levels;
   impl.firstInstance = program.uniforms.get(FIRST_INSTANCE) ?? null;
   impl.baseVertex = program.uniforms.get(BASE_VERTEX) ?? null;
   impl.program = program;
