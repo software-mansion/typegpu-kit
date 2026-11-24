@@ -645,29 +645,35 @@ export function createClouds(
   const viewMarch = marcher(VIEW_STEPS, true);
   const bakeMarch = marcher(BAKE_STEPS, false);
 
+  /** Marches the pixel at `at` of the eye's view. */
+  const marchPixel = (at: d.v2u) => {
+    'use gpu';
+    const size = std.textureDimensions(viewWriteLayout.$.target);
+    if (at.x >= size.x || at.y >= size.y) return;
+    const camera = cameras.current.$;
+    const lens = cameras.lensOf(camera);
+    const pixel = std.max(2 / (lens.x * d.f32(size.x)), 2 / (lens.y * d.f32(size.y)));
+    const uv = (d.vec2f(at) + 0.5) / d.vec2f(size);
+    const ray = cameras.rayOf(camera, d.vec2f(uv.x * 2 - 1, 1 - uv.y * 2)).direction;
+    // Each pixel's step offset moves on each frame, so the slices average out in the history
+    randf.seed2(d.vec2f(at));
+    const jitter = std.fract(randf.sample() + shape.$.turn * GOLDEN);
+    std.textureStore(viewWriteLayout.$.target, at, viewMarch(camera.position, ray, pixel, jitter));
+  };
+  // Two kernels rather than a branch on `blend`, so each pixel's index is plain in its kernel
   const viewKernel = root.pipe(view.inject()).createComputePipeline({
     compute: tgpu.computeFn({ workgroupSize: [8, 8], in: { gid: d.builtin.globalInvocationId } })(
       ({ gid }) => {
         'use gpu';
-        const size = std.textureDimensions(viewWriteLayout.$.target);
-        let at = gid.xy;
-        if (shape.$.blend < 1) {
-          at = d.vec2u(gid.x * CHECKER + ((gid.y + d.u32(shape.$.turn)) % CHECKER), gid.y);
-        }
-        if (at.x >= size.x || at.y >= size.y) return;
-        const camera = cameras.current.$;
-        const lens = cameras.lensOf(camera);
-        const pixel = std.max(2 / (lens.x * d.f32(size.x)), 2 / (lens.y * d.f32(size.y)));
-        const uv = (d.vec2f(at) + 0.5) / d.vec2f(size);
-        const ray = cameras.rayOf(camera, d.vec2f(uv.x * 2 - 1, 1 - uv.y * 2)).direction;
-        // Each pixel's step offset moves on each frame, so the slices average out in the history
-        randf.seed2(d.vec2f(at));
-        const jitter = std.fract(randf.sample() + shape.$.turn * GOLDEN);
-        std.textureStore(
-          viewWriteLayout.$.target,
-          at,
-          viewMarch(camera.position, ray, pixel, jitter),
-        );
+        marchPixel(gid.xy);
+      },
+    ),
+  });
+  const checkerKernel = root.pipe(view.inject()).createComputePipeline({
+    compute: tgpu.computeFn({ workgroupSize: [8, 8], in: { gid: d.builtin.globalInvocationId } })(
+      ({ gid }) => {
+        'use gpu';
+        marchPixel(d.vec2u(gid.x * CHECKER + ((gid.y + d.u32(shape.$.turn)) % CHECKER), gid.y));
       },
     ),
   });
@@ -719,7 +725,15 @@ export function createClouds(
 
   return {
     initAsync: () =>
-      pipelines.compile([bakeNoise, bakeDensity, bakeLighting, bakeShadow, viewKernel, resolve]),
+      pipelines.compile([
+        bakeNoise,
+        bakeDensity,
+        bakeLighting,
+        bakeShadow,
+        viewKernel,
+        checkerKernel,
+        resolve,
+      ]),
     /** The light and transmittance along any ray, for an environment's bake; see `marcher`. */
     march: (eye: d.v3f, ray: d.v3f, pixel: number) => {
       'use gpu';
@@ -775,7 +789,7 @@ export function createClouds(
       const [width, height] = fresh.props.size;
       const groups = [Math.ceil(width / 8), Math.ceil(height / 8)] as const;
       const across = whole ? width : Math.ceil(width / CHECKER);
-      viewKernel
+      (whole ? viewKernel : checkerKernel)
         .with(pass)
         .with(writeGroupOf(fresh))
         .dispatchWorkgroups(Math.ceil(across / 8), groups[1]);

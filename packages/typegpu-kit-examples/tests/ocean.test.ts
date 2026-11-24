@@ -44,8 +44,8 @@ describeExample(
     });
   },
   {
-    // The example's 20: waves 5, atmosphere 4, clouds 6, foam 3, sea and sky 2; the kit's 12 for
+    // The example's 21: waves 5, atmosphere 4, clouds 7, foam 3, sea and sky 2; the kit's 12 for
     // the environment, bloom, metering and the final pass
-    pipelines: 32,
+    pipelines: 33,
   },
 );
