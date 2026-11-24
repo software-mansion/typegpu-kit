@@ -1,4 +1,5 @@
 import { cpuRoot, cpuBackend } from './device.ts';
+import { recordResults } from './results.ts';
 import { writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
@@ -252,22 +253,17 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         scene?.destroy?.();
         surface.destroy();
         root.destroy();
-        if (process.env.CPU_EXECUTE === '1')
-          await writeFile(
-            new URL(process.env.CPU_RESULTS ?? './execution-results.json', import.meta.url),
-            JSON.stringify(results, null, 2),
-          );
+        if (process.env.CPU_EXECUTE === '1') {
+          if (process.env.CPU_RESULTS)
+            await writeFile(
+              new URL(process.env.CPU_RESULTS, import.meta.url),
+              `${JSON.stringify(results, null, 2)}\n`,
+            );
+          else recordResults('execution', results);
+        }
       }
     }
-    await writeFile(
-      new URL(
-        process.env.CPU_EXECUTE === '1'
-          ? (process.env.CPU_RESULTS ?? './execution-results.json')
-          : './sweep-results.json',
-        import.meta.url,
-      ),
-      `${JSON.stringify(results, null, 2)}\n`,
-    );
+    if (process.env.CPU_EXECUTE !== '1') recordResults('compilation', results);
     expect(results.filter((result) => result.status === 'fail')).toEqual([]);
   },
   600000,

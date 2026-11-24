@@ -1,11 +1,11 @@
-import { writeFile } from 'node:fs/promises';
+import { recordResults } from './results.ts';
 import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 
 it.runIf(process.env.CPU_BENCH === '1')(
   'measures 100k composite particle rows with thirty vector operations',
-  async () => {
+  () => {
     let generated = '';
     const root = cpuRoot({
       onModule: (code) => {
@@ -35,10 +35,14 @@ it.runIf(process.env.CPU_BENCH === '1')(
       return performance.now() - start;
     });
     const milliseconds = measurements.toSorted((a, b) => a - b)[2]!;
-    await writeFile(
-      new URL('./particles-performance-results.json', import.meta.url),
-      `${JSON.stringify({ rows: count, iterations: 3, measurements, vectorOperationsPerInvocation: 30, milliseconds, invocationsPerSecond: ((count * 3) / milliseconds) * 1000 }, null, 2)}\n`,
-    );
+    recordResults('particlesBenchmark', {
+      rows: count,
+      iterations: 3,
+      measurements,
+      vectorOperationsPerInvocation: 30,
+      milliseconds,
+      invocationsPerSecond: ((count * 3) / milliseconds) * 1000,
+    });
     expect(generated.slice(generated.indexOf('function kernel'))).not.toContain('$vector');
     root.destroy();
   },
