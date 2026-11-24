@@ -88,6 +88,11 @@ export interface Meta {
     readonly seconds?: number;
     /** WebP quality from 0 to 100. Default 70. */
     readonly quality?: number;
+    /**
+     * Pixels across the scene renders the poster at, for a scene drawn in pixels, such as points or
+     * text, to match a live card. Default 1280.
+     */
+    readonly width?: number;
   };
 }
 

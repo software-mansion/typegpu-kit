@@ -5,7 +5,7 @@ import * as web from '@typegpu/kit/web';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import type { Loading } from 'typegpu-kit-examples/contract';
 import { loading } from '../../examples/files.ts';
-import { COLORS, colorsOf, type Colors } from '../site/dither.ts';
+import { COLORS, colorsOf, plain, type Colors } from '../site/dither.ts';
 import { animation, note, reducedMotion, type Animation, type LiveOptions } from './figure.ts';
 import * as loupe from './loupe.ts';
 import { orbitInPage } from './orbit.ts';
@@ -65,12 +65,17 @@ export function createPrint(root: TgpuRoot, target: Surface, cell = 1, colors: C
   });
   const size = root.createUniform(d.vec2f);
   const written = [0, 0];
-  const grade = (_color: d.v3f, uv: d.v2f) => {
-    'use gpu';
-    const at = std.floor((uv * size.$) / cell);
-    const color = finish.picture(((at + 0.5) * cell) / size.$);
-    return printColor(color, d.vec2u(at), palette.$.ground);
-  };
+  const grade = plain
+    ? (color: d.v3f, _uv: d.v2f) => {
+        'use gpu';
+        return printColor(color, d.vec2u(), palette.$.ground);
+      }
+    : (_color: d.v3f, uv: d.v2f) => {
+        'use gpu';
+        const at = std.floor((uv * size.$) / cell);
+        const color = finish.picture(((at + 0.5) * cell) / size.$);
+        return printColor(color, d.vec2u(at), palette.$.ground);
+      };
   const final = finish.create(root, {
     format: target.format,
     source: () => screen.textures.picture,

@@ -1,6 +1,17 @@
 import { perlin3d } from '@typegpu/noise';
 import { common, d, std, tgpu, type TgpuRenderCommands, type TgpuRoot } from 'typegpu';
-import { bayerCell } from './dither.ts';
+import { bayerCell, plain } from './dither.ts';
+
+/** How much of a cell `coverage` inks through `threshold`: all or none, or `coverage` with the dither off. */
+const inked = plain
+  ? (_threshold: number, coverage: number) => {
+      'use gpu';
+      return std.saturate(coverage);
+    }
+  : (threshold: number, coverage: number) => {
+      'use gpu';
+      return std.step(threshold, coverage);
+    };
 
 /** One list's light: where it was, where it goes, and since when, in CSS pixels of the list. */
 export const Box = d.struct({
@@ -137,7 +148,7 @@ const ruleAt = (cell: d.v2u, p: d.v2f, lit: d.v4f, strength: number) => {
     const away = std.max(std.max(lit.y - p.y, p.y - lit.w), 0);
     const outside = std.max(std.max(line.y - middle, middle - line.z), 0);
     const spill = strength * std.exp(-away / SPILL) * std.exp(-outside / 8);
-    const dots = std.step(bayerCell(cell), 0.5 + 0.5 * spill);
+    const dots = inked(bayerCell(cell), 0.5 + 0.5 * spill);
     const alpha = dots * std.mix(rules.color.w, 1, spill);
     out = d.vec4f(std.mix(rules.color.xyz, box.color.xyz, spill) * alpha, alpha);
   }
@@ -182,7 +193,7 @@ const fragment = tgpu.fragmentFn({
   // Lit smoke as grains, one per canvas pixel: on where the light passes its threshold, and
   // brighter nearer the source. The light never passes them all, so the brightest smoke keeps its
   // grain
-  const grain = std.step(bayerCell(d.vec2u(position.xy)), light * 0.8);
+  const grain = inked(bayerCell(d.vec2u(position.xy)), light * 0.8);
   const alpha = grain * (0.22 + 0.32 * light) + light * 0.07;
 
   return d.vec4f(box.color.xyz * alpha, alpha) + rule * (1 - alpha);

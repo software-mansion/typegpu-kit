@@ -8,7 +8,7 @@ import { mulberry32 } from 'math/random';
 import sharp from 'sharp';
 import type { TgpuRoot } from 'typegpu';
 import { describe, it } from 'vitest';
-import { examples } from '../src/index.ts';
+import { examples, highlights } from '../src/index.ts';
 import { create } from '../src/hosts.ts';
 import { fromDisk } from './utils/examples.ts';
 
@@ -118,18 +118,32 @@ function chosen(list: string | undefined) {
   return examples.filter(({ key }) => !only || only.includes(key));
 }
 
+// Posters are 16:10, rendered larger than they are saved. The featured card crops its poster
+// nearly square, about 1440 px tall on a 2× screen
 describe.runIf(process.env.POSTERS)('gallery posters', () => {
   it.each(chosen(process.env.POSTERS))(
     'renders $key',
-    ({ key, card = {}, poster = {} }) =>
-      render(key, { width: 640, height: 400 }, card, async ({ until, pixels }) => {
+    ({ key, card = {}, poster = {} }) => {
+      const featured = key === highlights[0]?.key;
+      const width = featured ? 2560 : (poster.width ?? 1280);
+      const saved = Math.min(width, featured ? 2304 : 960);
+      const size = { width, height: (width * 5) / 8 };
+      return render(key, size, card, async ({ until, pixels }) => {
         await until(poster.seconds ?? 4);
-        await sharp(await pixels(), { raw: { width: 640, height: 400, channels: 4 } })
-          .resize(320, 200, { kernel: 'lanczos3' })
-          .removeAlpha()
-          .webp({ quality: poster.quality ?? 70, effort: 6 })
-          .toFile(fileURLToPath(new URL(`../src/${key}/poster.webp`, import.meta.url)));
-      }),
+        const frame = await pixels();
+        // Sharp for the plain gallery, and small for the dithered cells, which print 3 px each
+        for (const [wide, name] of [
+          [saved, 'poster.webp'],
+          [320, 'poster-small.webp'],
+        ] as const) {
+          await sharp(frame, { raw: { ...size, channels: 4 } })
+            .resize(wide, (wide * 5) / 8, { kernel: 'lanczos3' })
+            .removeAlpha()
+            .webp({ quality: poster.quality ?? 70, effort: 6 })
+            .toFile(fileURLToPath(new URL(`../src/${key}/${name}`, import.meta.url)));
+        }
+      });
+    },
     600_000,
   );
 });

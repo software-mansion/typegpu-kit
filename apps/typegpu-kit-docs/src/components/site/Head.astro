@@ -30,4 +30,11 @@ const notFound = Astro.locals.starlightRoute.entry.id === '404';
     cardsOff = localStorage.getItem('typegpu-kit:cards') === 'off';
   } catch {}
   if (navigator.gpu && !cardsOff) document.documentElement.dataset.cards = '';
+  // Figures, diagrams and the lights behind text print smooth where the reader turned the dither
+  // off; see site/dither.ts
+  try {
+    if (localStorage.getItem('typegpu-kit:dither') === 'off') {
+      document.documentElement.dataset.dither = 'off';
+    }
+  } catch {}
 </script>

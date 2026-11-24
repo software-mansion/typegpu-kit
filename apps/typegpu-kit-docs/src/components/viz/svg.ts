@@ -1,4 +1,4 @@
-import { bayer } from '../site/dither.ts';
+import { bayer, plain } from '../site/dither.ts';
 import { onKeys } from './figure.ts';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -29,13 +29,17 @@ export function text(parent: Element, x: number, y: number, content: string, att
   return element;
 }
 
-/** An 8×8 Bayer fill on the drawing's ground, in cells of `cell` SVG units. */
+/**
+ * An 8×8 Bayer fill on the drawing's ground, in cells of `cell` SVG units, or `color` at `density`
+ * with the dither off.
+ */
 export function stipple(
   parent: SVGElement,
   color = 'var(--viz-line)',
   density = 0.25,
   cell = 1,
 ): string {
+  if (plain) return `color-mix(in srgb, ${color} ${Math.round(density * 100)}%, transparent)`;
   const figure = parent instanceof SVGSVGElement ? parent : parent.ownerSVGElement!;
   let fills = patterns.get(figure);
   if (!fills) patterns.set(figure, (fills = new Map()));

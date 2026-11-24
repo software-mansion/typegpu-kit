@@ -39,6 +39,7 @@ const { prev, next } = neighbours(groups, pages, slugOf(Astro.url.pathname));
     {new Date().getFullYear()}. All trademarks and copyrights belong to their respective owners.
     Read about our <a href="https://swmansion.com/privacy/policy/">Privacy Policy</a>.
   </span>
+  <button type="button" class="cards" data-dither-toggle></button>
   <button type="button" class="cards" data-cards-toggle hidden></button>
 </p>
 
@@ -47,7 +48,14 @@ const { prev, next } = neighbours(groups, pages, slugOf(Astro.url.pathname));
 <script>
   import { cardsOn, setCards } from '../album/cards.ts';
   import { clamp } from '../home/geometry.ts';
-  import { paint, rampOf } from './dither.ts';
+  import { paint, plain, rampOf, setDither } from './dither.ts';
+
+  const dither = document.querySelector<HTMLButtonElement>('[data-dither-toggle]');
+  if (dither) {
+    dither.textContent = `Dither: ${plain ? 'off' : 'on'}`;
+    dither.setAttribute('aria-pressed', String(!plain));
+    dither.addEventListener('click', () => setDither(plain));
+  }
 
   // The reader's switch for the cards hidden in the docs, where WebGPU runs
   const toggle = document.querySelector<HTMLButtonElement>('[data-cards-toggle]');
@@ -158,6 +166,10 @@ const { prev, next } = neighbours(groups, pages, slugOf(Astro.url.pathname));
     text-decoration: underline;
     text-decoration-color: var(--rule-strong);
     cursor: pointer;
+  }
+
+  .legal .cards + .cards {
+    margin-left: var(--s-4);
   }
 
   .legal .cards:hover {
