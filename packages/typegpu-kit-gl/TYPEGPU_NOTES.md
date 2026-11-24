@@ -230,6 +230,32 @@ The GLSL generators use `ctx.topFunctionScope` (which function is being generate
 
 **Workaround.** `src/glsl/generator.ts`, `src/glsl/compute.ts` and `src/generator.ts`.
 
+### 20. A second resolution of a pipeline numbers its bindings its own way
+
+The catch-all group's bindings are numbered in the order a resolution reaches its resources (`allocateFixedEntry`), and a layout without an explicit index takes the next free group in the order it is reached. A generator that resolves the same pipeline again in another order, as the GPU form of a compute pipeline does while it analyses what the kernel writes, gets other numbers than the resolution the pipeline is created from, and nothing says so: the form bound the wrong textures in two examples until a check compared it with the WGSL.
+
+```ts
+const a = root.createReadonly(d.arrayOf(d.f32, 4));
+const b = root.createMutable(d.arrayOf(d.f32, 4));
+// WGSL: `a` at @binding(0), `b` at @binding(1); a generator that reaches `b` first numbers them the other way
+```
+
+**Upstream.** Let a nested resolution inherit its parent's binding numbers, for example by taking the parent's `fixedBindings` and placeholders as an option of `resolveWithContext`, or give each fixed binding a stable index when it is created. In `resolutionCtx.ts`.
+
+**Workaround.** `KitGlslComputeGenerator.#numbered` in `src/glsl/compute.ts` maps each binding to the outer resolution's catch-all index or layout placeholder, through `fixedBindings` and `bindGroupLayoutsToPlaceholderMap`, and writes placeholders the outer resolution replaces.
+
+### 21. A vertex output position cannot be typed `@invariant`
+
+`d.invariant(d.builtin.position)` is a valid vertex output, and TypeGPU emits `@invariant` for it, but the types of `tgpu.vertexFn`'s `out` accept only `d.builtin.position` with its one attribute.
+
+```ts
+tgpu.vertexFn({ out: { position: d.invariant(d.builtin.position) } }); // type error
+```
+
+**Upstream.** Accept `Decorated<Vec4f, [Builtin<'position'>, Invariant]>` in `AnyVertexOutputBuiltin`. In `core/function/tgpuVertexFn.ts` and `data/wgslTypes.ts`.
+
+**Workaround.** The Kit's `passes.ts` builds its vertex shell untyped; tests cast through `unknown`.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
