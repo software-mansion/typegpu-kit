@@ -123,3 +123,18 @@ export async function callLocalSnapshot(root: TgpuRoot): Promise<number[]> {
   const result = await output.read();
   return [result.x, result.y];
 }
+
+export async function vectorPrecedence(root: TgpuRoot): Promise<number[]> {
+  const input = root.createReadonly(d.arrayOf(d.vec3f, 2), [d.vec3f(2, 3, 5), d.vec3f(7, 11, 13)]);
+  const output = root.createMutable(d.arrayOf(d.vec3f, 3));
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const a = input.$[0];
+    const b = input.$[1];
+    output.$[0] = std.cross(a, b) * 2;
+    output.$[1] = 3 * std.cross(a, b);
+    output.$[2] = std.reflect(a, d.vec3f(0, 1, 0)) * 4;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return (await output.read()).flatMap((v) => [v.x, v.y, v.z]);
+}

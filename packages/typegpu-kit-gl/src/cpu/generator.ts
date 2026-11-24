@@ -1040,8 +1040,8 @@ export class CpuGenerator extends WgslGenerator {
 
     if (!['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(type))
       unsupported(`${op} on ${type}`);
-    const left = this.#value(lhs);
-    const right = this.#value(rhs);
+    const left = `(${this.#value(lhs)})`;
+    const right = `(${this.#value(rhs)})`;
     if (op === '=') return `${left} = ${right}`;
     const assignment = op.endsWith('=') && !['==', '!=', '<=', '>='].includes(op);
     const operator = assignment ? op.slice(0, -1) : op;

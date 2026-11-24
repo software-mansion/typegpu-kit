@@ -1,5 +1,11 @@
 import { expect, it } from 'vitest';
-import { callSnapshot, callSwizzles, callValues, callLocalSnapshot } from './calls.ts';
+import {
+  callSnapshot,
+  callSwizzles,
+  callValues,
+  callLocalSnapshot,
+  vectorPrecedence,
+} from './calls.ts';
 import { cpuRoot } from './device.ts';
 
 it('preserves argument evaluation order and vector arguments across a helper barrier', async () => {
@@ -8,6 +14,7 @@ it('preserves argument evaluation order and vector arguments across a helper bar
     expect(await callValues(root)).toEqual(Array.from({ length: 8 }, () => [1, 2, 3, 80]).flat());
     expect(await callSnapshot(root)).toEqual([4, 5]);
     expect(await callLocalSnapshot(root)).toEqual([4, 5]);
+    expect(await vectorPrecedence(root)).toEqual([-32, 18, 2, -48, 27, 3, 8, -12, 20]);
     expect(await callSwizzles(root)).toEqual([1, 2, 9, 5, 5, 6, 9, 5]);
   } finally {
     root.destroy();
