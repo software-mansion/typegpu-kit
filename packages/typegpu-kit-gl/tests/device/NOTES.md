@@ -61,8 +61,8 @@ fixed:
   at zero size (`workgroup.reduce` with `atomicMin`/`atomicMax`, case "a mesh pool's baked bounds"),
   so culling drops meshes WebGPU keeps. It also writes a cylinder's cap ring at x = z = 0 (case "a
   cylinder's cap vertices"; the cap's `vertexAt` inside `concat` and `transform`).
-- classroom renders correctly at d00fa719 in the device's harness; its dark frames came from an
-  earlier state of the generators.
+- classroom: dark on the docs page up to ea61c2ea and correct from 4158329c ("preserve composite
+  compute values across calls", a CPU backend fix), bisected on a clean checkout's docs server.
 - skeletons stay collapsed: with every kernel on the CPU and seeded `Math.random`, the pose
   kernels leave words of `Pose_device` at 0 where WebGPU has 1 and -0.44 (words 166, 167, 171,
   537, 538 after 100 frames), and 39 % of `poses_joints` differs (case "skeletons' poses"). Clips
