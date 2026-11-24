@@ -140,9 +140,13 @@ std.atomicAdd(row.count, 1);
 A CPU backend must suspend every lane at a barrier, including barriers reached through helpers. There is no function property or barrier hook reporting that requirement, so the fallback recognises emitted barrier calls and propagates generator-function status through helper calls. A loose substring check even misclassified a helper named `yields` as a suspension.
 
 ```ts
-const sync = () => { 'use gpu'; std.workgroupBarrier(); };
+const sync = () => {
+  'use gpu';
+  std.workgroupBarrier();
+};
 const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
-  'use gpu'; sync();
+  'use gpu';
+  sync();
 });
 // The entry must suspend although its body contains no direct barrier call.
 ```
@@ -156,8 +160,14 @@ const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
 Reusing names is valid WGSL, but a backend that caches scalar components or buffer offsets by emitted name needs to retire that cache on block exit. The generator exposes no enter/leave-block hooks with stable variable identities. Reusing a cached temporary can leak an address from a previous sibling block and produce `ReferenceError: cpuAddress_4 is not defined` in generated JavaScript.
 
 ```ts
-if (first) { const item = rows.$[i]; consume(item.position); }
-if (second) { const item = rows.$[j]; consume(item.position); }
+if (first) {
+  const item = rows.$[i];
+  consume(item.position);
+}
+if (second) {
+  const item = rows.$[j];
+  consume(item.position);
+}
 // Both blocks may receive the same local identifier; they are different bindings.
 ```
 
@@ -201,7 +211,9 @@ TypeGPU can call a `'use gpu'` function in JavaScript, but not a whole kernel: `
 WebGPU lets a 6-layer texture be viewed as `cube` or `2d-array`; WebGL 2 must pick `TEXTURE_CUBE_MAP` or `TEXTURE_2D_ARRAY` when it allocates storage. WebGPU's compatibility mode solves the same problem with `textureBindingViewDimension` on `GPUTextureDescriptor`, but TypeGPU never passes it: `INTERNAL_createTexture` materialises the texture from `props` alone, and views are created later, when a bind group first unwraps them. A texture written before its first cube view is created ends up stored as an array, and every cube view of it then samples a copy the device refreshes whenever the texture changes.
 
 ```ts
-const sky = root.createTexture({ size: [256, 256, 6], format: 'rgba16float' }).$usage('sampled', 'render');
+const sky = root
+  .createTexture({ size: [256, 256, 6], format: 'rgba16float' })
+  .$usage('sampled', 'render');
 sky.write(faces); // allocates storage now, before any view exists
 const cube = sky.createView(d.textureCube(d.f32)); // on WebGL: a copy, re-blitted after each write
 ```
