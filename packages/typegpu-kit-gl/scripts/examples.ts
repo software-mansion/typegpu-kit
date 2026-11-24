@@ -67,6 +67,7 @@ interface Result {
 const differenceOf = (page: Page, a: string, b: string) =>
   page.evaluate(
     async ([first, second]) => {
+      // oxlint-disable-next-line unicorn/consistent-function-scoping -- the page sees only this callback
       const pixels = async (source: string) => {
         const image = new Image();
         image.src = `data:image/png;base64,${source}`;

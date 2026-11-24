@@ -72,6 +72,48 @@ fixed:
 `diffScene` seeds `Math.random` the same for both runs; row ids still differ by design, since
 each table made from a definition starts its generations elsewhere.
 
+## Browsers without WebGPU
+
+`scripts/examples.ts --backend nogpu` deletes `navigator.gpu` and every `GPU*` global before the
+page loads, so the page falls back by itself; `--browser webkit|firefox` picks the engine.
+`tests/device/nogpu.test.gl.ts` runs an example the same way, and
+`tests/device/vitest.browsers.config.mts` runs the device tests in WebKit or Firefox (`BROWSER=`),
+skipping the WebGPU comparisons there.
+
+At 4775cb9e (WebKit 26.5 is Playwright's build; Firefox 151 cannot be driven in this environment,
+its automation channel never connects, so it is untested):
+
+| Example      | Chromium, no WebGPU | WebKit, no WebGPU                                          |
+| ------------ | ------------------- | ---------------------------------------------------------- |
+| afterimage   | 120                 | 60                                                         |
+| benthos      | 120                 | 60                                                         |
+| blockfall    | 120                 | 60                                                         |
+| censer       | hung                | hung                                                       |
+| classroom    | 7 (CPU summing)     | 60                                                         |
+| cloister     | 120                 | 60                                                         |
+| dominoes     | 120                 | 60                                                         |
+| ember-mirror | 100                 | 60                                                         |
+| falling-sand | 0.6                 | 0.9                                                        |
+| fireworks    | 27                  | 31                                                         |
+| fishtank     | 63                  | 60                                                         |
+| flow-field   | 120                 | 60                                                         |
+| forest       | 11                  | 61                                                         |
+| hex-isle     | 120                 | 60                                                         |
+| jellies      | 120                 | 60                                                         |
+| jelly-world  | 79                  | 60                                                         |
+| jump-flood   | 12                  | 8                                                          |
+| kinetic      | 48                  | 51                                                         |
+| lattice      | 120                 | 60                                                         |
+| night-market | 111                 | 61                                                         |
+| ocean        | hung                | hung                                                       |
+| others       | ready               | ready (60 except slime-mould 2, sph-sculpt 19, stampede 9) |
+
+WebKit's frame rate is capped at 60 and the Chromium column was swept before the culling and
+`summing` GPU forms, which explains forest and classroom. Every screenshot matches the Chromium
+fallback's apart from animation and simulation state; WebKit's WebGL 2 (ANGLE on Metal) exposes the
+same extensions the device uses except `EXT_disjoint_timer_query_webgl2`, which the device does
+not need. `navigator.gpu` is absent in that WebKit build, so plain URLs fall back there too.
+
 ## Compute as fragment passes
 
 The device runs a compute pipeline's GPU form (`src/glsl/computeModule.ts`) when its module carries
