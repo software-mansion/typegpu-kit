@@ -3,6 +3,7 @@ import { meshes } from '@typegpu/kit/geometry';
 import { d, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, test } from 'vitest';
 import { glRoot } from './compare.ts';
+import { diffScene } from './diff.ts';
 
 /**
  * Kernel results the CPU backend gets wrong, found by comparing whole examples with WebGPU. Each is
@@ -67,6 +68,24 @@ test.fails("a mesh pool's baked bounds from CPU kernels", { timeout: 60_000 }, a
   const gl = glRoot({ gpuCompute: false });
   try {
     expect(await boxBounds(gl)).toEqual(await boxBounds(gpu));
+  } finally {
+    gpu.destroy();
+    gl.destroy();
+  }
+});
+
+// The pose kernels leave words of `Pose_device` at 0 where WebGPU has 1 and -0.44, and 39 % of
+// `poses_joints` differs after 4 s, so skeletons stay collapsed on the floor. Every kernel runs on
+// the CPU here and both runs draw the same seeded random numbers.
+test.fails("skeletons' poses from CPU kernels", { timeout: 280_000 }, async () => {
+  const gpu = await tgpu.init();
+  const gl = glRoot({ gpuCompute: false });
+  try {
+    const { buffers } = await diffScene(gpu, gl, 'skeletons', { frames: 100 });
+    const poses = buffers.filter(
+      (buffer) => buffer.label.startsWith('Pose_device') || buffer.label.startsWith('poses_joints'),
+    );
+    expect(poses).toEqual([]);
   } finally {
     gpu.destroy();
     gl.destroy();

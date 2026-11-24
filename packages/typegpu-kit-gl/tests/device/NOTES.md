@@ -56,6 +56,14 @@ fixed:
   cylinder's cap vertices"; the cap's `vertexAt` inside `concat` and `transform`).
 - classroom renders correctly at d00fa719 in the device's harness; its dark frames came from an
   earlier state of the generators.
+- skeletons stay collapsed: with every kernel on the CPU and seeded `Math.random`, the pose
+  kernels leave words of `Pose_device` at 0 where WebGPU has 1 and -0.44 (words 166, 167, 171,
+  537, 538 after 100 frames), and 39 % of `poses_joints` differs (case "skeletons' poses"). Clips
+  and poses live in buffers, which the device keeps on the CPU, so no device copy is involved. The
+  arena walls are missing for the same reason as robot-arm's table.
+
+`diffScene` seeds `Math.random` the same for both runs; row ids still differ by design, since
+each table made from a definition starts its generations elsewhere.
 
 ## Compute as fragment passes
 

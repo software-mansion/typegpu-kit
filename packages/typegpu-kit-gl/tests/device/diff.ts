@@ -69,6 +69,7 @@ function record(device: GPUDevice): Made[] {
 interface MadeBuffer {
   readonly descriptor: GPUBufferDescriptor;
   readonly buffer: GPUBuffer;
+  readonly origin: string;
 }
 
 /** Records the buffers `device` creates from now on, with COPY_SRC where WebGPU allows it. */
@@ -79,7 +80,7 @@ function recordBuffers(device: GPUDevice): MadeBuffer[] {
     const mappable = descriptor.usage & (GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE);
     const usage = mappable ? descriptor.usage : descriptor.usage | GPUBufferUsage.COPY_SRC;
     const buffer = create({ ...descriptor, usage });
-    if (!mappable) made.push({ descriptor, buffer });
+    if (!mappable) made.push({ descriptor, buffer, origin: origin() });
     return buffer;
   };
   return made;
@@ -124,12 +125,35 @@ function compareWords(a: Uint8Array, b: Uint8Array): { mismatched: number; first
     const close = Math.abs(fa[i]! - fb[i]!) <= 1e-3 * Math.max(1, Math.abs(fa[i]!));
     if (close) continue;
     far++;
-    if (!first) first = `word ${i}: gpu ${ua[i]} (${fa[i]}) gl ${ub[i]} (${fb[i]})`;
+    if (far <= 6)
+      first += `[${i}] gpu ${ua[i]} (${fa[i]?.toPrecision(4)}) gl ${ub[i]} (${fb[i]?.toPrecision(4)}) `;
   }
   return { mismatched: Number((far / Math.max(1, ua.length)).toFixed(4)), first };
 }
 
+/** A small seeded generator, so both runs draw the same random numbers. */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 async function run(root: TgpuRoot, key: string, count: number, size: [number, number]) {
+  const random = Math.random;
+  Math.random = seeded(1);
+  try {
+    return await runSeeded(root, key, count, size);
+  } finally {
+    Math.random = random;
+  }
+}
+
+async function runSeeded(root: TgpuRoot, key: string, count: number, size: [number, number]) {
   const made = record(root.device);
   const buffers = recordBuffers(root.device);
   const surface = offscreenSurface(root, { width: size[0], height: size[1], format: 'rgba8unorm' });
@@ -247,7 +271,7 @@ export async function diffScene(
     if (words.mismatched === 0) continue;
     buffers.push({
       index,
-      label: a.descriptor.label ?? '',
+      label: `${a.descriptor.label ?? ''} ${a.origin}`,
       size: a.buffer.size,
       usage: a.descriptor.usage,
       ...words,
