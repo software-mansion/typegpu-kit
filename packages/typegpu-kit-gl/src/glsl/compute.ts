@@ -64,6 +64,11 @@ export interface WrittenPlan {
   /** The written array's first word, for a buffer written element by element. */
   readonly offset: number;
   readonly layout: Layout;
+  /**
+   * With `whole`, when one invocation chosen by values every invocation shares writes the binding:
+   * its `x`, then `y` and `z` if the choice names them, as GLSL `uint` expressions.
+   */
+  readonly chosen?: readonly string[];
 }
 
 /** What a kernel writes: found by a first resolution, used by the second. */
@@ -195,6 +200,62 @@ function add(a: Value, b: Value): Value | undefined {
   return own.length === 1 ? [{ ...(own[0] as Affine), k: (own[0] as Affine).k + k }] : undefined;
 }
 
+/** GLSL text with the settled variables of `frame` it names replaced by their values. */
+function inlined(text: string, frame: Frame): string {
+  return text.replace(/(?<![\w.])[A-Za-z_]\w*/g, (name) => {
+    const known = frame.settled.get(name);
+    return known ? `(${known.value})` : name;
+  });
+}
+
+/** `text` split at `separator` where it is outside parentheses and brackets. */
+function splitTop(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string;
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth--;
+    else if (depth === 0 && text.startsWith(separator, i)) {
+      const before = text[i - 1];
+      const after = text[i + separator.length];
+      // `==` must not be part of `<=`, `>=`, `!=` or `===`
+      if (separator === '==' && (/[<>!=]/.test(before ?? '') || after === '=')) continue;
+      parts.push(text.slice(start, i));
+      start = i + separator.length;
+      i = start - 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** The terms of a GLSL conjunction, however its `&&`s are grouped. */
+function conjuncts(text: string): string[] {
+  const parts = splitTop(unwrap(text), '&&');
+  return parts.length === 1 ? parts : parts.flatMap(conjuncts);
+}
+
+/** `text` without parentheses around all of it. */
+function unwrap(text: string): string {
+  let inner = text;
+  while (inner.startsWith('(') && inner.endsWith(')')) {
+    let depth = 0;
+    let closes = -1;
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '(') depth++;
+      else if (inner[i] === ')' && --depth === 0) {
+        closes = i;
+        break;
+      }
+    }
+    if (closes !== inner.length - 1) break;
+    inner = inner.slice(1, -1);
+  }
+  return inner;
+}
+
 /**
  * Reads GLSL integer arithmetic over `names` into affine forms: sums, differences, products with
  * constants, casts and vector constructors. Anything else is not provably own.
@@ -296,6 +357,17 @@ interface Frame {
   readonly name: string;
   readonly names: Map<string, Own>;
   readonly entry: boolean;
+  /** Its parameters and local variables, which may differ between invocations. */
+  readonly locals: Set<string>;
+  /**
+   * Variables first set to what every invocation sees alike, which may be reassigned later: the
+   * others of them their value came from, and that value with theirs inlined.
+   */
+  readonly settled: Map<string, { readonly from: readonly string[]; readonly value: string }>;
+  /** Variables it assigns after declaring them. */
+  readonly assigned: Set<string>;
+  /** The settled variables a choice of invocation depends on. */
+  readonly choosing: Set<string>;
   /** Whether its code depends on its arguments being the invocation's own. */
   relies: boolean;
 }
@@ -311,6 +383,16 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #buffers = new Map<string, WrittenBuffer>();
   readonly #textures = new Map<string, TextureInfo>();
   readonly #columns = new Set<string>();
+  readonly #functions = new Set<string>();
+  /** The conditions around the statement being generated that choose one invocation by axis. */
+  readonly #chosen: {
+    readonly frame: Frame;
+    readonly axes: ReadonlyMap<number, string>;
+    /** The settled variables the choice reads. */
+    readonly from: readonly string[];
+  }[] = [];
+  /** The condition of the `if` being generated, when it may choose an invocation. */
+  #condition: Expression | undefined;
   /** Storage textures the kernel loads from. */
   readonly #loaded = new Set<string>();
   readonly #shadows = new Map<string, string>();
@@ -362,9 +444,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   get plan(): ComputePlan {
     return {
       buffers: new Map(
-        [...this.#buffers].map(([id, { whole, offset, layout }]) => [
+        [...this.#buffers].map(([id, { whole, offset, layout, chosen }]) => [
           id,
-          { whole, offset, layout },
+          { whole, offset, layout, ...(chosen && { chosen }) },
         ]),
       ),
       textures: new Set(this.#textures.keys()),
@@ -432,7 +514,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     dataType: d.BaseData,
     rhs: string,
   ): string {
-    this.#frame?.names.delete(name);
+    const frame = this.#frame;
+    frame?.names.delete(name);
+    frame?.settled.delete(name);
+    // A copy of what every invocation sees alike is seen alike too, until it is reassigned
+    const from = frame && this.#shared(rhs, frame);
+    if (from) frame.settled.set(name, { from, value: inlined(rhs, frame) });
+    else frame?.locals.add(name);
     return super._emitVarDecl(keyword, name, dataType, rhs);
   }
 
@@ -535,8 +623,105 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (Array.isArray(statement)) {
       if (statement[0] === NODE.assignmentExpr) this.#checkWrite(statement[1] as Expression);
       if (statement[0] === NODE.postUpdate) this.#checkWrite(statement[2] as Expression);
+      // Without an `else`, the condition holds for everything the `if` generates
+      if (statement[0] === NODE.if && statement[3] === undefined) {
+        const depth = this.#chosen.length;
+        this.#condition = statement[1] as Expression;
+        try {
+          return super._statement(statement);
+        } finally {
+          this.#condition = undefined;
+          this.#chosen.length = depth;
+        }
+      }
     }
     return super._statement(statement);
+  }
+
+  protected override _expressionWithTypeConversion(
+    expression: Expression,
+    expectedType: d.BaseData | d.BaseData[],
+  ): Snippet {
+    const result = super._expressionWithTypeConversion(expression, expectedType);
+    const frame = this.#frame;
+    if (expression === this.#condition && frame) {
+      this.#condition = undefined;
+      const choice =
+        typeof result.value === 'string' ? this.#choiceIn(result.value, frame) : undefined;
+      if (choice) this.#chosen.push({ frame, ...choice });
+    }
+    return result;
+  }
+
+  /**
+   * The invocation a condition chooses, axis by axis: each top-level conjunct `gid.<axis> == e`
+   * where `e` is the same for every invocation. Other conjuncts only narrow the choice.
+   */
+  #choiceIn(
+    condition: string,
+    frame: Frame,
+  ): { axes: Map<number, string>; from: string[] } | undefined {
+    const axes = new Map<number, string>();
+    const from: string[] = [];
+    for (const conjunct of conjuncts(condition.replace(/\s+/g, ''))) {
+      const sides = splitTop(unwrap(conjunct), '==');
+      if (sides.length !== 2) continue;
+      for (const [own, other] of [sides, [...sides].reverse()] as [string, string][]) {
+        const value = new Arithmetic(own, frame.names).read();
+        const axis = typeof value === 'object' ? axesOf(value) : undefined;
+        const settled = axis?.length === 1 ? this.#shared(other, frame) : undefined;
+        if (!settled) continue;
+        axes.set('xyz'.indexOf(axis as string), inlined(other, frame));
+        from.push(...settled);
+        break;
+      }
+    }
+    return axes.size > 0 ? { axes, from } : undefined;
+  }
+
+  /**
+   * Whether GLSL text reads only what every invocation sees alike: the settled variables it reads
+   * if so, which must then not be reassigned.
+   */
+  #shared(text: string, frame: Frame): string[] | undefined {
+    if (/texel|texture/.test(text)) return undefined;
+    const varying = new Set([
+      GID,
+      ...this.#privates.map((each) => each.id),
+      ...this.#buffers.keys(),
+      ...this.#textures.keys(),
+      ...(this.#plan ? [...this.#plan.buffers.keys(), ...this.#plan.textures] : []),
+    ]);
+    const settled: string[] = [];
+    for (const [name] of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+      if (frame.locals.has(name) || frame.names.has(name) || this.#functions.has(name)) {
+        return undefined;
+      }
+      if (varying.has(name) || name.startsWith('kit_shadow')) return undefined;
+      const known = frame.settled.get(name);
+      if (known) settled.push(name, ...known.from);
+    }
+    return settled;
+  }
+
+  /**
+   * The invocation the conditions around the current statement choose, from `x` on. Using it
+   * forbids reassigning the settled variables it reads.
+   */
+  #choice(): string[] | undefined {
+    const frame = this.#frame;
+    const axes = new Map<number, string>();
+    const from: string[] = [];
+    for (const each of this.#chosen) {
+      if (each.frame !== frame) continue;
+      for (const [axis, text] of each.axes) axes.set(axis, text);
+      from.push(...each.from);
+    }
+    const chosen: string[] = [];
+    for (let axis = 0; axes.has(axis); axis++) chosen.push(`uint(${axes.get(axis)})`);
+    if (chosen.length === 0 || !frame) return undefined;
+    for (const name of from) frame.choosing.add(name);
+    return chosen;
   }
 
   #checkWrite(node: Expression): void {
@@ -546,6 +731,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (!place) {
       const text = target.dataType === UnknownData ? '' : this.ctx.resolveSnippet(target).value;
       const root = /^\s*([A-Za-z_]\w*)/.exec(text)?.[1];
+      if (root) frame?.assigned.add(root);
       if (root && frame?.names.has(root)) {
         throw new Ineligible(`modifies '${root}', which indices are derived from`);
       }
@@ -568,6 +754,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#record(buffer, { whole: true, offset: 0, layout: {} });
       return;
     }
+    const chosen = this.#choice();
+    if (chosen) {
+      this.#record(buffer, { whole: true, offset: 0, layout: {}, chosen });
+      return;
+    }
     if (!element) throw new Ineligible(`${verb} '${buffer.id}' outside an array`);
     if (!frame?.entry && !frame?.names.size) {
       throw new Ineligible(`a helper function ${verb} '${buffer.id}'`);
@@ -577,6 +768,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   #record(buffer: BufferInfo, written: WrittenPlan, array?: d.WgslArray): void {
     const known = this.#buffers.get(buffer.id);
+    if (
+      known &&
+      (known.chosen || written.chosen) &&
+      (known.whole !== written.whole || String(known.chosen) !== String(written.chosen))
+    ) {
+      throw new Ineligible(`writes '${buffer.id}' from invocations chosen differently`);
+    }
     if (written.whole || known?.whole) {
       const size = d.sizeOf(buffer.schema as d.AnyData);
       if (size === 0 || size > MAX_WHOLE_BYTES) {
@@ -584,7 +782,14 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
           `writes '${buffer.id}' whole, which is larger than ${MAX_WHOLE_BYTES} bytes`,
         );
       }
-      this.#buffers.set(buffer.id, { buffer, whole: true, offset: 0, layout: {} });
+      const chosen = written.chosen ?? known?.chosen;
+      this.#buffers.set(buffer.id, {
+        buffer,
+        whole: true,
+        offset: 0,
+        layout: {},
+        ...(chosen && { chosen }),
+      });
     } else if (known) {
       if (known.offset !== written.offset) {
         throw new Ineligible(`writes two arrays of '${buffer.id}'`);
@@ -602,6 +807,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       (!planned ||
         planned.whole !== recorded.whole ||
         planned.offset !== recorded.offset ||
+        String(planned.chosen) !== String(recorded.chosen) ||
         !sameLayout(planned.layout, recorded.layout))
     ) {
       throw new Error(`@typegpu/kit-gl: the second resolution writes '${buffer.id}' differently`);
@@ -796,8 +1002,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       name: options.name,
       names: new Map(),
       entry: options.functionType === 'compute',
+      locals: new Set(options.args.map((arg) => arg.name)),
+      settled: new Map(),
+      assigned: new Set(),
+      choosing: new Set(),
       relies: false,
     };
+    this.#functions.add(options.name);
     if (options.functionType === 'normal') {
       const pointer = options.args.find((arg) => d.isPtr(arg.decoratedType));
       if (pointer) throw new Ineligible(`a helper function takes the pointer '${pointer.name}'`);
@@ -817,6 +1028,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#frames.pop();
     }
     if (frame.relies) this.#relies.add(options.name);
+    for (const name of frame.choosing) {
+      if (frame.assigned.has(name)) {
+        throw new Ineligible(`chooses an invocation by '${name}', which it reassigns`);
+      }
+    }
     const stale = code.indexOf(STALE);
     if (stale >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(stale + STALE.length))?.[1];
@@ -870,7 +1086,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
           throw new Ineligible(`loads from '${id}', of which an invocation writes a whole column`);
         }
       }
-      for (const { layout, whole } of buffers) {
+      for (const { layout, whole, chosen } of buffers) {
+        if (chosen && size.slice(chosen.length).some((each) => each !== 1)) {
+          throw new Ineligible('chooses an invocation on fewer axes than its workgroup spans');
+        }
         if (whole) continue;
         const covered = layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3;
         if (size.slice(covered).some((each) => each !== 1)) {
@@ -885,12 +1104,18 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       throw new Error('@typegpu/kit-gl: the second resolution writes other resources');
     }
 
-    const single = buffers.some((each) => each.whole);
+    const single = buffers.some((each) => each.whole && !each.chosen);
     const grid = single
       ? 1
       : Math.min(
-          ...buffers.map(({ layout }) =>
-            layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3,
+          ...buffers.map(({ layout, chosen }) =>
+            chosen
+              ? chosen.length
+              : layout.width === undefined
+                ? 1
+                : layout.height === undefined
+                  ? 2
+                  : 3,
           ),
           ...[...this.#textures.values()].map((texture) =>
             this.#columns.has(texture.id)
@@ -968,7 +1193,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ...(layout.width === undefined ? [] : [layout.width]),
       ...(layout.height === undefined ? [] : [layout.height]),
     ].join(' ');
-    const gid = written.whole ? 'uvec3(0u)' : invocationOf(layout, 'element');
+    const { chosen } = written;
+    const gid = chosen
+      ? `uvec3(${[0, 1, 2].map((axis) => chosen[axis] ?? '0u').join(', ')})`
+      : written.whole
+        ? 'uvec3(0u)'
+        : invocationOf(layout, 'element');
     return `${CHUNK} pass${index} main
 ${target}
 layout(location = 0) out uvec4 ${RESULT};

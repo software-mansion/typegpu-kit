@@ -480,6 +480,51 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
   });
 });
 
+describe('GPU forms with one chosen writer run as WebGPU runs them', () => {
+  const Pick = d.struct({ hit: d.u32, at: d.vec2f, count: d.atomic(d.u32) });
+  const View = d.struct({ cursor: d.vec2f, size: d.vec2u });
+
+  const picking = (cursor: d.v2f) => {
+    const layout = tgpu
+      .bindGroupLayout({
+        image: { storage: d.arrayOf(d.f32, 64), access: 'mutable' },
+        pick: { storage: Pick, access: 'mutable' },
+        view: { uniform: View },
+      })
+      .$idx(0);
+    return expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const view = View(layout.$.view);
+        if (id.x >= view.size.x || id.y >= view.size.y) return;
+        const value = d.f32(id.x * 3 + id.y) * 0.5;
+        if (d.u32(view.cursor.x) === id.x && id.y === d.u32(view.cursor.y)) {
+          layout.$.pick.hit = d.u32(value > 2);
+          layout.$.pick.at = d.vec2f(id.xy) + value;
+          std.atomicAdd(layout.$.pick.count, 1);
+          if (value > 100) return;
+        }
+        layout.$.image[id.y * 8 + id.x] = value;
+      }),
+      workgroups: [2, 2, 1],
+      inputs: {
+        image: { kind: 'buffer', schema: d.arrayOf(d.f32, 64), value: range(64, (i) => -i) },
+        pick: { kind: 'buffer', schema: Pick, value: { hit: 7, at: d.vec2f(-1, -2), count: 5 } },
+        view: {
+          kind: 'buffer',
+          schema: View,
+          value: { cursor, size: d.vec2u(7, 8) },
+          uniform: true,
+        },
+      },
+    });
+  };
+
+  it('writes the pick of the invocation under the cursor', () => picking(d.vec2f(5.5, 3.2)));
+  it('keeps the pick when no invocation is under the cursor', () => picking(d.vec2f(7.5, 3.2)));
+});
+
 describe('GPU forms of wider kernels run as WebGPU runs them', () => {
   it('runs a guarded pipeline that writes a buffer at its linear index', async () => {
     const layout = tgpu

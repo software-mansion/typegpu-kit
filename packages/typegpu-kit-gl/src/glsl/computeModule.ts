@@ -10,8 +10,10 @@
  * writes: element `global_invocation_id.x` of one array in a storage buffer, or texel
  * `global_invocation_id.xy` (`.xyz` for 2d-array and 3d) of a storage texture, or, in a form whose
  * `grid` is 2, the column of a 2d-array or 3d texture at `global_invocation_id.xy`, every layer or
- * slice of it. A pass renders one such target: every fragment runs the whole kernel for the
- * invocation that owns its cell and outputs the cell's new value. Writes go to per-invocation copies of the written cells, so reads
+ * slice of it. A buffer target may also be a whole binding that at most one invocation writes, as
+ * values every invocation sees alike choose; its pass works out which. A pass renders one such
+ * target: every fragment runs the whole kernel for the invocation that owns its cell and outputs
+ * the cell's new value. Writes go to per-invocation copies of the written cells, so reads
  * after writes inside an invocation see them; every other read sees the contents from before the
  * dispatch.
  *

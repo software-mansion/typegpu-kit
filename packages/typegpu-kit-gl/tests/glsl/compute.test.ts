@@ -169,6 +169,62 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     "stores to a texel of 'volume' that is not the invocation's own",
   ],
   [
+    'writes a pick from the invocation a uniform chooses',
+    (root) => {
+      const cursor = root.createUniform(d.vec2u);
+      const pick = root.createMutable(Holder);
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const at = d.vec2u(cursor.$);
+        if (id.x === at.x && id.y === at.y && id.x > 2) {
+          pick.$.count = id.x;
+        }
+      });
+    },
+    2,
+  ],
+  [
+    'chooses by a variable it reassigns',
+    (root) => {
+      const cursor = root.createUniform(d.vec2u);
+      const pick = root.createMutable(Holder);
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        let at = d.vec2u(cursor.$);
+        for (let i = 0; i < 2; i++) {
+          if (id.x === at.x && id.y === at.y) {
+            pick.$.count = id.x;
+          }
+          at = id.xy;
+        }
+      });
+    },
+    "chooses an invocation by 'at', which it reassigns",
+  ],
+  [
+    'chooses on fewer axes than its workgroup',
+    (root) => {
+      const cursor = root.createUniform(d.vec2u);
+      const pick = root.createMutable(Holder);
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x === cursor.$.x) pick.$.count = id.y;
+      });
+    },
+    'chooses an invocation on fewer axes than its workgroup spans',
+  ],
+  [
+    'chooses by what another invocation writes',
+    (root) => {
+      const pick = root.createMutable(Holder);
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x === pick.$.count) pick.$.total = d.f32(id.x);
+      });
+    },
+    "writes 'pick' outside an array",
+  ],
+  [
     'reads its position from other builtins',
     (root) => {
       const out = root.createMutable(d.arrayOf(d.u32, 256));
@@ -288,7 +344,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     'writes nothing',
   ],
   [
-    'writes a struct outside an array',
+    'writes a struct from the one invocation a constant chooses',
     (root) => {
       const holder = root.createMutable(Holder);
       return line(({ gid: id }) => {
@@ -296,7 +352,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         if (id.x === 0) holder.$.count = 1;
       });
     },
-    "writes 'holder' outside an array",
+    1,
   ],
   [
     'stores to another texel',
