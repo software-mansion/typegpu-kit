@@ -325,6 +325,52 @@ layout(location = 0) out vec4 color;`,
     expect(pixel(await readTexture(device, texture), 0, 0)).toEqual([0, 0, 0, 255]);
   });
 
+  test('binds uniform blocks at aligned and unaligned offsets', async () => {
+    device = glDevice();
+    const texture = target('rgba8unorm', 2);
+    const shader = module(device, {
+      vertex: '',
+      vertexMain: `  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
+  gl_Position = vec4(p, 0.0, 1.0);`,
+      fragment: `layout(std140) uniform Tint { uvec4 words[1]; } tint;
+layout(location = 0) out vec4 color;`,
+      fragmentMain: '  color = uintBitsToFloat(tint.words[0]);',
+      blocks: [{ group: 0, binding: 0, block: 'Tint', size: 16 }],
+    });
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: shader },
+      fragment: { module: shader, targets: [{ format: 'rgba8unorm' }] },
+    });
+    const values = device.createBuffer({
+      size: 512,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(values, 0, new Float32Array([1, 0, 0, 1]));
+    device.queue.writeBuffer(values, 16, new Float32Array([0, 1, 0, 1]));
+    device.queue.writeBuffer(values, 256, new Float32Array([0, 0, 1, 1]));
+    const draw = async (offset: number) => {
+      const group = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: values, offset, size: 16 } }],
+      });
+      const encoder = device.createCommandEncoder();
+      const render = pass(encoder, texture);
+      render.setPipeline(pipeline);
+      render.setBindGroup(0, group);
+      render.draw(3);
+      render.end();
+      device.queue.submit([encoder.finish()]);
+      return pixel(await readTexture(device, texture), 0, 0);
+    };
+    expect(await draw(0)).toEqual([255, 0, 0, 255]);
+    expect(await draw(16)).toEqual([0, 255, 0, 255]);
+    expect(await draw(256)).toEqual([0, 0, 255, 255]);
+    // A write reaches the copy an unaligned range binds
+    device.queue.writeBuffer(values, 16, new Float32Array([1, 1, 0, 1]));
+    expect(await draw(16)).toEqual([255, 255, 0, 255]);
+  });
+
   test('captures errors in an error scope', async () => {
     device = glDevice();
     device.pushErrorScope('validation');

@@ -3,7 +3,12 @@
  * buffers as RGBA32UI data textures, a y-flipping vertex epilogue and 0 to 1 depth.
  */
 
-import type { BufferBinding, RenderModule, TextureBinding } from '../../src/glsl/renderModule.ts';
+import type {
+  BlockBinding,
+  BufferBinding,
+  RenderModule,
+  TextureBinding,
+} from '../../src/glsl/renderModule.ts';
 import { shaderModuleFrom } from '../../src/device/index.ts';
 
 const PRECISION = `precision highp float;
@@ -67,6 +72,7 @@ export interface ModuleSource {
   readonly fragment?: string;
   readonly fragmentMain?: string;
   readonly buffers?: readonly BufferBinding[];
+  readonly blocks?: readonly BlockBinding[];
   readonly textures?: readonly TextureBinding[];
 }
 
@@ -96,6 +102,7 @@ ${source.fragmentMain}
 }
 `,
     buffers: source.buffers ?? [],
+    blocks: source.blocks ?? [],
     textures: source.textures ?? [],
     levels: [],
   };
