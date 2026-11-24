@@ -1,3 +1,4 @@
+import { textureDevice } from './texture-device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
 import { CpuGenerator } from '../../src/cpu/generator.ts';
@@ -11,8 +12,10 @@ interface Pipeline {
 export function cpuRoot() {
   const recording = recordingRoot();
   const original = recording.root.device;
+  const texture = textureDevice(original);
   const queue = new Proxy(original.queue, {
     get(target, key) {
+      if (key === 'writeTexture') return texture.writeTexture;
       if (key === 'submit')
         return (commands: { commands: Command[] }[]) => {
           for (const buffer of commands) for (const command of buffer.commands) command();
@@ -24,6 +27,8 @@ export function cpuRoot() {
   const device = new Proxy(original, {
     get(target, key) {
       if (key === 'queue') return queue;
+      if (key === 'createTexture') return texture.createTexture;
+      if (key === 'createSampler') return texture.createSampler;
       if (key === 'createShaderModule')
         return ({ code }: GPUShaderModuleDescriptor) => ({
           ...compile(code),
@@ -56,11 +61,17 @@ export function cpuRoot() {
                         size: resource.size ?? data.byteLength - (resource.offset ?? 0),
                       };
                     },
-                    texture(): never {
-                      throw new Error('CPU test device: textures are not implemented');
+                    texture(group, binding) {
+                      const resource = Array.from(bindings.get(group)!.entries).find(
+                        (entry) => entry.binding === binding,
+                      )!.resource;
+                      return texture.textures.get(resource)!;
                     },
-                    sampler(): never {
-                      throw new Error('CPU test device: samplers are not implemented');
+                    sampler(group, binding) {
+                      const resource = Array.from(bindings.get(group)!.entries).find(
+                        (entry) => entry.binding === binding,
+                      )!.resource;
+                      return texture.samplers.get(resource)!;
                     },
                   }),
                 );

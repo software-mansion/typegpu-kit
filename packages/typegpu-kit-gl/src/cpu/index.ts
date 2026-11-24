@@ -1,3 +1,5 @@
+import { pack, unpack } from './packing.ts';
+import { textureOps } from './textures.ts';
 import { ref } from './references.ts';
 import { construct, vector } from './values.ts';
 import type { CpuBindingUse, CpuModule, CpuResources } from './types.ts';
@@ -42,6 +44,10 @@ export function compile(code: string): CpuModule {
     '$shared',
     '$bits',
     '$vector',
+    '$resources',
+    '$textures',
+    '$pack',
+    '$unpack',
     `const arrayLength = (value) => value.$.length;\n${code}\nreturn ${entry.name};`,
   ) as (
     buffer: (group: number, binding: number, ctor: ViewConstructor) => ArrayBufferView,
@@ -50,6 +56,10 @@ export function compile(code: string): CpuModule {
     sharedValue: (name: string, make: () => unknown) => unknown,
     bits: Record<string, (value: number) => number>,
     vectorValue: typeof vector,
+    resourcesValue: CpuResources,
+    texturesValue: typeof textureOps,
+    packValue: typeof pack,
+    unpackValue: typeof unpack,
   ) => Kernel;
   return {
     kind: 'compute',
@@ -87,6 +97,10 @@ export function compile(code: string): CpuModule {
           },
           bits,
           vector,
+          resources,
+          textureOps,
+          pack,
+          unpack,
         );
       let kernel = instantiate();
       const global = vector([0, 0, 0]) as unknown as { x: number; y: number; z: number };

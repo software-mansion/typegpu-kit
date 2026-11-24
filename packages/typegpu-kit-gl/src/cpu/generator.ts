@@ -330,6 +330,24 @@ export class CpuGenerator extends WgslGenerator {
 
   override declareGlobalVar(options: VariableDefinitionOptions): ResolvedSnippet {
     const { dataType, id, scope, group, binding } = options;
+    if (scope === 'handle') {
+      const kind = dataType.type.startsWith('sampler')
+        ? 'sampler'
+        : dataType.type.startsWith('texture_storage')
+          ? 'storageTexture'
+          : 'texture';
+      if (
+        kind !== 'sampler' &&
+        !['2d', '2d-array', '3d'].includes((dataType as d.WgslTexture).dimension)
+      )
+        unsupported(`texture dimension ${(dataType as d.WgslTexture).dimension}`);
+      const access = (dataType as d.WgslStorageTexture).access;
+      this.ctx.addDeclaration(
+        `//#binding ${JSON.stringify({ group, binding, kind, reads: kind !== 'sampler' && access !== 'write-only', writes: kind === 'storageTexture' && access !== 'read-only' })}\nconst ${id} = $resources.${kind === 'sampler' ? 'sampler' : 'texture'}(${group},${binding});`,
+        id,
+      );
+      return snip(id, dataType, 'handle');
+    }
     if (scope === 'private' || scope === 'workgroup') {
       const ctor = this.emitTypeAnnotation(dataType);
       const initial = options.init
@@ -464,8 +482,26 @@ export class CpuGenerator extends WgslGenerator {
     }
 
     const rhsType = scalar(rhs.dataType);
-    if ((type.startsWith('mat') || rhsType.startsWith('mat')) && op !== '=')
-      unsupported('matrix arithmetic');
+    if (type.startsWith('mat') || rhsType.startsWith('mat')) {
+      const left = this.#value(lhs),
+        right = this.#value(rhs);
+      if (op === '=')
+        return `${left}=${this.emitTypeAnnotation(lhs.dataType as d.BaseData)}(${right})`;
+      const lm = /^mat([234])x([234])/.exec(type),
+        rm = /^mat([234])x([234])/.exec(rhsType);
+      let output: string;
+      if (op === '*' && lm && rhsType.startsWith('vec'))
+        output = `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) => Array.from({ length: Number(lm[1]) }, (_c, c) => `a[${c}][${r}]*b[${c}]`).join('+')).join(',')}])`;
+      else if (op === '*' && rm && type.startsWith('vec'))
+        output = `$vector([${Array.from({ length: Number(rm[1]) }, (_c, c) => Array.from({ length: Number(rm[2]) }, (_r, r) => `a[${r}]*b[${c}][${r}]`).join('+')).join(',')}])`;
+      else if (op === '*' && lm && rm)
+        output = `[${Array.from({ length: Number(rm[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) => Array.from({ length: Number(lm[1]) }, (_k, k) => `a[${k}][${r}]*b[${c}][${k}]`).join('+')).join(',')}])`).join(',')}]`;
+      else if (['+', '-', '*', '/'].includes(op)) {
+        const shape = lm ?? rm!;
+        output = `[${Array.from({ length: Number(shape[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(shape[2]) }, (_r, r) => `${lm ? `a[${c}][${r}]` : 'a'}${op}${rm ? `b[${c}][${r}]` : 'b'}`).join(',')}])`).join(',')}]`;
+      } else return unsupported(`matrix operator ${op}`);
+      return `((a,b)=>${output})(${left},${right})`;
+    }
     if (type.startsWith('vec') || rhsType.startsWith('vec')) {
       const schema = (type.startsWith('vec') ? lhs.dataType : rhs.dataType) as d.BaseData;
       const vectorType = scalar(schema);
@@ -510,10 +546,35 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   override emitCall(name: string, templates: readonly Snippet[], args: readonly Snippet[]): string {
+    const packing = /^(pack|unpack)(?:2x16|4x8)(float|snorm|unorm)$/.exec(name);
+    if (packing)
+      return `$${packing[1]}(${this.#value(args[0]!)},${name.includes('16') ? 16 : 8},${JSON.stringify(packing[2])})`;
+    if (name === 'transpose') {
+      const type = scalar(args[0]!.dataType),
+        columns = Number(type[3]),
+        rows = Number(type[5]);
+      return `((m)=>[${Array.from({ length: rows }, (_r, r) => `$vector([${Array.from({ length: columns }, (_c, c) => `m[${c}][${r}]`).join(',')}])`).join(',')}])(${this.#value(args[0]!)})`;
+    }
+    if (/^bitcast(F32|I32|U32)to(F32|I32|U32)$/.test(name)) {
+      const match = /^bitcast(F32|I32|U32)to(F32|I32|U32)$/.exec(name)!;
+      return `$bits.${match[1]!.toLowerCase()}_${match[2]!.toLowerCase()}(${this.#value(args[0]!)})`;
+    }
+    if (name.startsWith('texture')) {
+      const supported = [
+        'textureLoad',
+        'textureStore',
+        'textureDimensions',
+        'textureNumLevels',
+        'textureNumLayers',
+        'textureSampleLevel',
+      ];
+      if (!supported.includes(name)) unsupported(`builtin ${name}`);
+      return `$textures.${name}(${args.map((arg) => this.#value(arg)).join(',')})`;
+    }
     if (name === 'bitcast') {
       const target = this.ctx.resolveSnippet(templates[0]!).value;
       const source = scalar(args[0]!.dataType);
-      const targetSchema = [...this.#types].find(([, name]) => name === target)?.[0];
+      const targetSchema = [...this.#types].find(([, typeName]) => typeName === target)?.[0];
       if (source.startsWith('vec') && targetSchema?.type.startsWith('vec')) {
         const from = source.endsWith('f') ? 'f32' : source.endsWith('i') ? 'i32' : 'u32';
         const to = targetSchema.type.endsWith('f')
@@ -577,6 +638,8 @@ export class CpuGenerator extends WgslGenerator {
         ).join(',')})`;
       return `((${letters.join(',')})=>${body})(${values.join(',')})`;
     }
+    if (name === 'reverseBits')
+      return `((a)=>{let r=0;for(let i=0;i<32;i++){r=(r<<1)|(a&1);a>>>=1;}return r>>>0;})(${values[0]})`;
     if (name === 'countOneBits')
       return `((a)=>{a=a-((a>>>1)&0x55555555);a=(a&0x33333333)+((a>>>2)&0x33333333);return Math.imul((a+(a>>>4))&0x0f0f0f0f,0x01010101)>>>24;})(${values[0]})`;
     const expressions: Record<string, string> = {
@@ -616,6 +679,12 @@ export class CpuGenerator extends WgslGenerator {
         'max',
         'sin',
         'cos',
+        'cosh',
+        'sinh',
+        'tanh',
+        'acosh',
+        'asinh',
+        'atanh',
         'tan',
         'asin',
         'acos',
