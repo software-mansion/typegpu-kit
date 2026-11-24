@@ -1,3 +1,60 @@
+diff --git a/core/root/init.js b/core/root/init.js
+index 589f74fe6491db8bc933b141c82f48544e659b41..4937ae37d9c0754f0f7df5a67337bb175bdd2dcc 100644
+--- a/core/root/init.js
++++ b/core/root/init.js
+@@ -21,7 +21,7 @@ import { ConfigurableImpl } from "./configurableImpl.js";
+ import { vec3f, vec3u } from "../../data/vector.js";
+ import { u32 } from "../../data/numeric.js";
+ import { ceil } from "../../std/numeric.js";
+-import { allEq } from "../../std/boolean.js";
++import { allEq, any, ge } from "../../std/boolean.js";
+ import { getName, setName } from "../../shared/meta.js";
+ import { logger } from "../../tgpuLogger.js";
+ import { safeStringify } from "../../shared/stringify.js";
+@@ -140,17 +140,35 @@ class WithBindingImpl {
+             wrappedCallback.$name('wrappedCallback');
+         }
+         const sizeUniform = root.createUniform(vec3u);
+-        // WGSL instead of JS because we do not run unplugin
+-        // before shipping the typegpu package
++        // The metadata unplugin-typegpu would attach, written by hand because the package is not
++        // built with it. A TypeGPU function, unlike a WGSL string, reaches the shader generator.
++        const guarded = (input) => {
++            if (any(ge(input.id, sizeUniform.$))) {
++                return;
++            }
++            wrappedCallback(input.id.x, input.id.y, input.id.z);
++        };
++        (globalThis.__TYPEGPU_META__ ??= new WeakMap()).set(guarded, {
++            v: 2,
++            name: 'mainCompute',
++            ast: {
++                params: [{ type: 'i', name: 'input' }],
++                body: [0, [
++                        [11, [6, 'std.any', [[6, 'std.ge', [[7, 'input', 'id'], [7, 'sizeUniform', '$']]]]], [0, [[10]]]],
++                        [6, 'wrappedCallback', [[7, [7, 'input', 'id'], 'x'], [7, [7, 'input', 'id'], 'y'], [7, [7, 'input', 'id'], 'z']]],
++                    ]],
++            },
++            externals: {
++                'std.any': () => any,
++                'std.ge': () => ge,
++                sizeUniform: () => sizeUniform,
++                wrappedCallback: () => wrappedCallback,
++            },
++        });
+         const mainCompute = computeFn({
+             workgroupSize,
+             in: { id: builtin.globalInvocationId },
+-        }) `{
+-  if (any(in.id >= sizeUniform)) {
+-    return;
+-  }
+-  wrappedCallback(in.id.x, in.id.y, in.id.z);
+-}`.$uses({ sizeUniform, wrappedCallback });
++        })(guarded);
+         // NOTE: in certain setups, unplugin can run on package typegpu, so we have to avoid auto-naming triggering here
+         const pipeline = (() => this.createComputePipeline({ compute: mainCompute }))();
+         return new TgpuGuardedComputePipelineImpl(root, pipeline, { uniform: sizeUniform, lastValue: vec3u() }, workgroupSize);
 diff --git a/core/sampler/sampler.js b/core/sampler/sampler.js
 index e7ce6a55ef6dace5701e20c4387536039d27a205..5a584be766c45511de6e960f9ea5c00813e1df0c 100644
 --- a/core/sampler/sampler.js
