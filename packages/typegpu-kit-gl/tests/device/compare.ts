@@ -172,7 +172,7 @@ export function compare(expected: Readback, actual: Readback, tolerance = 2 / 25
   return { maxDifference, mismatched: far / a.length, first };
 }
 
-type Drawn = GPUTexture | { readonly [key: string]: unknown };
+type Drawn = GPUTexture | object;
 
 function rawTexture(root: TgpuRoot, drawn: Drawn): GPUTexture {
   if ('createView' in drawn && 'format' in drawn && 'width' in drawn) return drawn as GPUTexture;
