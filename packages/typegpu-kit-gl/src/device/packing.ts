@@ -5,6 +5,14 @@ import type { FormatInfo } from './formats.ts';
 const f32 = new Float32Array(1);
 const u32 = new Uint32Array(f32.buffer);
 
+/** `value >>> shift`, rounded to nearest with ties to even. */
+function roundedShift(value: number, shift: number): number {
+  const kept = value >>> shift;
+  const rest = value & ((1 << shift) - 1);
+  const halfway = 1 << (shift - 1);
+  return rest > halfway || (rest === halfway && (kept & 1) === 1) ? kept + 1 : kept;
+}
+
 export function toHalf(value: number): number {
   f32[0] = value;
   const bits = u32[0]!;
@@ -18,12 +26,10 @@ export function toHalf(value: number): number {
     if (e < -10) return sign;
     mantissa |= 0x800000;
     const shift = 14 - e;
-    const half = mantissa >>> shift;
-    const round = (mantissa >>> (shift - 1)) & 1;
-    return sign | (half + round);
+    return sign | roundedShift(mantissa, shift);
   }
-  const half = sign | (e << 10) | (mantissa >>> 13);
-  return half + ((mantissa >>> 12) & 1);
+  // A carry out of the mantissa rounds up into the exponent, as it should
+  return sign | ((e << 10) + roundedShift(mantissa, 13));
 }
 
 export function fromHalf(half: number): number {
