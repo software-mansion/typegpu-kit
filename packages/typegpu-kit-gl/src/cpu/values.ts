@@ -1,7 +1,8 @@
 import type { Layout } from './memory.ts';
 
 type Value = number | boolean | Value[] | { [key: string]: Value };
-const vectorPrototype = Object.create(Array.prototype) as object;
+class Vector extends Array<number> {}
+const vectorPrototype = Vector.prototype;
 for (const alphabet of ['xyzw', 'rgba']) {
   const define = (key: string): void => {
     const indices = [...key].map((c) => alphabet.indexOf(c));
@@ -21,7 +22,12 @@ for (const alphabet of ['xyzw', 'rgba']) {
 }
 
 export function vector(values: number[]): number[] {
-  return Object.setPrototypeOf(values, vectorPrototype) as number[];
+  if (values.length === 2) return new Vector(values[0]!, values[1]!);
+  if (values.length === 3) return new Vector(values[0]!, values[1]!, values[2]!);
+  if (values.length === 4) return new Vector(values[0]!, values[1]!, values[2]!, values[3]!);
+  const result = new Vector(values.length);
+  for (let i = 0; i < values.length; i++) result[i] = values[i]!;
+  return result;
 }
 
 export function construct(layout: Layout, ...args: Value[]): Value {

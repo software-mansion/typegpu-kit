@@ -71,17 +71,37 @@ export class CpuGenerator extends WgslGenerator {
     // Preserve integer overflow for unary negation before subsequent conversions.
     // eslint-disable-next-line no-underscore-dangle
     const result = super._expression(expression);
+    if (
+      typeof result.dataType !== 'symbol' &&
+      result.dataType.type !== 'ptr' &&
+      result.origin !== 'constant'
+    ) {
+      const code = this.ctx.resolveSnippet(result).value;
+      const components = this.#components(code);
+      if (components)
+        return snip(
+          this.#vector(result.dataType, components),
+          result.dataType,
+          result.origin,
+          result.possibleSideEffects,
+        );
+      const address = this.#addresses.get(code);
+      if (address && !/^cpuAddress(?:_\d+)?$/.test(code)) {
+        const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'block');
+        this.#addresses.set(name, address);
+        return snip(name, result.dataType, result.origin, result.possibleSideEffects);
+      }
+    }
     if (Array.isArray(expression) && expression[0] === NODE.objectExpr) {
       let code = this.ctx.resolveSnippet(result).value;
       if (typeof result.dataType !== 'symbol' && result.dataType.type === 'struct') {
         const type = this.emitTypeAnnotation(result.dataType);
         code = code.replace(`${type}(`, `${type}.fields(`);
       }
-      for (const [name, parts] of this.#vectors)
-        code = code.replace(
-          new RegExp(`(?<![.\\w])\\b${name}\\b`, 'g'),
-          () => `$vector([${parts.join(',')}])`,
-        );
+      code = code.replace(/\bcpuVector(?:_\d+)?\b/g, (name) => {
+        const parts = this.#components(name);
+        return parts ? `$vector([${parts.join(',')}])` : name;
+      });
       return snip(code, result.dataType as d.BaseData, result.origin, result.possibleSideEffects);
     }
 
@@ -365,8 +385,19 @@ export class CpuGenerator extends WgslGenerator {
     const layout = layoutOf(schema);
     const name = this.ctx.makeUniqueIdentifier('cpuType', 'global');
     this.#types.set(schema, name);
+    if (/^vec[234][fui]$/.test(type)) {
+      const count = Number(type[3]);
+      const convert = (value: string) =>
+        type.endsWith('u') ? `((${value})>>>0)` : type.endsWith('i') ? `((${value})|0)` : value;
+      this.ctx.addDeclaration(
+        `function ${name}(...args) { const value = args.length === 1 && typeof args[0] !== 'number' ? args[0] : args; return $vector([${Array.from({ length: count }, (_, i) => convert(`(value[${i}] ?? (value.length===1 ? value[0] : 0))`)).join(',')}]); }`,
+        name,
+      );
+      return name;
+    }
+    const layoutName = this.ctx.makeUniqueIdentifier('cpuLayout', 'global');
     this.ctx.addDeclaration(
-      `function ${name}(...args) { return $construct(${JSON.stringify(layout)}, ...args); }${
+      `const ${layoutName}=${JSON.stringify(layout)};\nfunction ${name}(...args) { return $construct(${layoutName}, ...args); }${
         layout.fields
           ? `\n${name}.fields=(...args)=>${name}({${Object.keys(layout.fields)
               .map((key, i) => `${JSON.stringify(key)}:args[${i}]`)
@@ -621,12 +652,14 @@ export class CpuGenerator extends WgslGenerator {
       }
       const generator = /\(yield(?:\)|\* )/.test(body);
       if (generator) this.#generators.add(options.name);
-      for (const [name, parts] of this.#vectors) {
-        body = body.replace(
-          new RegExp(`(?<![.\\w"'])\\b${name}\\b(?!["'])`, 'g'),
-          () => `$vector([${parts.join(',')}])`,
-        );
-      }
+      body = body.replace(/\bcpuVector(?:_\d+)?\b/g, (name) => {
+        const parts = this.#components(name);
+        return parts ? `$vector([${parts.join(',')}])` : name;
+      });
+      body = body.replace(/\bcpuAddress(?:_\d+)?\b/g, (name) => {
+        const address = this.#addresses.get(name);
+        return address ? readAddress(address) : name;
+      });
       const returnType = options.determineReturnType();
       this.emitTypeAnnotation(returnType);
       const args = options.args.filter((arg) => arg.used || options.functionType === 'normal');
@@ -872,6 +905,10 @@ export class CpuGenerator extends WgslGenerator {
     if (templates.length) unsupported(`template call ${name}`);
     const values = args.map((arg) => this.#value(arg));
 
+    if (name === 'all' || name === 'any') {
+      const parts = this.#parts(args[0]!);
+      if (parts) return `(${parts.join(name === 'all' ? '&&' : '||')})`;
+    }
     if (name === 'all' || name === 'any')
       return scalar(args[0]!.dataType) === 'bool'
         ? values[0]!
@@ -882,6 +919,50 @@ export class CpuGenerator extends WgslGenerator {
       const schema = vectorArg.dataType as d.BaseData;
       const count = Number(schema.type[3]);
       const ctor = this.emitTypeAnnotation(schema);
+      const direct = args.map((arg) => this.#parts(arg));
+      if (
+        args.every(
+          (arg, i) =>
+            !arg.possibleSideEffects && (!scalar(arg.dataType).startsWith('vec') || direct[i]),
+        )
+      ) {
+        const at = (arg: number, component: number) =>
+          `(${direct[arg]?.[component] ?? this.#value(args[arg]!)})`;
+        const product = Array.from(
+          { length: count },
+          (_, i) => `${at(0, i)}*${at(name === 'dot' || name === 'reflect' ? 1 : 0, i)}`,
+        ).join('+');
+        if (name === 'dot') return `(${product})`;
+        if (name === 'length') return `Math.sqrt(${product})`;
+        if (name === 'distance')
+          return `Math.sqrt(${Array.from({ length: count }, (_, i) => `(${at(0, i)}-${at(1, i)})**2`).join('+')})`;
+        let parts: string[];
+        if (name === 'normalize')
+          parts = Array.from({ length: count }, (_, i) => `${at(0, i)}/Math.sqrt(${product})`);
+        else if (name === 'reflect')
+          parts = Array.from({ length: count }, (_, i) => `${at(0, i)}-2*(${product})*${at(1, i)}`);
+        else if (name === 'cross')
+          parts = [0, 1, 2].map(
+            (i) =>
+              `${at(0, (i + 1) % 3)}*${at(1, (i + 2) % 3)}-${at(0, (i + 2) % 3)}*${at(1, (i + 1) % 3)}`,
+          );
+        else
+          parts = Array.from({ length: count }, (_, i) =>
+            this.emitCall(
+              name,
+              [],
+              args.map((arg, j) =>
+                snip(
+                  at(j, i),
+                  scalar(arg.dataType).startsWith('vec') ? d.f32 : (arg.dataType as d.BaseData),
+                  'runtime',
+                  false,
+                ),
+              ),
+            ),
+          );
+        return this.#vector(schema, parts);
+      }
       const letters = args.map((_, i) => `a${i}`);
       const component = (index: number, i: number) =>
         scalar(args[index]!.dataType).startsWith('vec')

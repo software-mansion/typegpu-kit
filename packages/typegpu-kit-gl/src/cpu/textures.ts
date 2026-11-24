@@ -3,7 +3,7 @@ import { vector } from './values.ts';
 
 type Texels = Uint8Array | Int8Array | Uint16Array | Float32Array | Uint32Array | Int32Array;
 
-export function decodeHalf(word: number): number {
+function decodeHalfBits(word: number): number {
   const sign = word & 0x8000 ? -1 : 1;
   const exponent = (word >>> 10) & 31;
   const fraction = word & 1023;
@@ -12,6 +12,11 @@ export function decodeHalf(word: number): number {
       ? NaN
       : sign * Infinity
     : sign * (exponent === 0 ? fraction * 2 ** -24 : (1 + fraction / 1024) * 2 ** (exponent - 15));
+}
+
+const halfValues = Float32Array.from({ length: 65536 }, (_, word) => decodeHalfBits(word));
+export function decodeHalf(word: number): number {
+  return halfValues[word & 65535]!;
 }
 
 const round = (n: number) => {
@@ -32,18 +37,30 @@ export function encodeHalf(value: number): number {
   return sign | ((exponent + 14) * 1024 + significand);
 }
 
-function formatOf(format: string) {
+interface Format {
+  channels: number;
+  bits: number;
+  kind: string;
+  bgra: boolean;
+  srgb: boolean;
+}
+const formats = new Map<string, Format>();
+function formatOf(format: string): Format {
+  const known = formats.get(format);
+  if (known) return known;
   if (format.startsWith('depth'))
     return { channels: 1, bits: 32, kind: 'float', bgra: false, srgb: false };
   const match = /^(r|rg|rgba|bgra)(8|16|32)(uint|sint|float|unorm|snorm)(-srgb)?$/.exec(format);
   if (!match) throw new Error(`@typegpu/kit-gl CPU: unsupported texture format ${format}`);
-  return {
+  const value = {
     channels: match[1]!.length === 4 ? 4 : match[1]!.length,
     bits: Number(match[2]),
     kind: match[3]!,
     bgra: match[1] === 'bgra',
     srgb: !!match[4],
   };
+  formats.set(format, value);
+  return value;
 }
 
 function texel(

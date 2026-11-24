@@ -81,7 +81,7 @@ async function privateBarriers(root: TgpuRoot): Promise<number[]> {
     std.workgroupBarrier();
     privateState.$ *= d.u32(3);
     std.workgroupBarrier();
-    output.$[id.x] = privateState.$;
+    output.$[id.x] = d.vec2u(privateState.$);
   });
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(2);
   return (await output.read()).flatMap((v) => [v.x, v.y]);

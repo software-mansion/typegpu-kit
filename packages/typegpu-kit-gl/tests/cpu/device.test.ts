@@ -86,3 +86,17 @@ it('scopes buffer address aliases to their declaring helper', async () => {
   ]);
   root.destroy();
 });
+
+it('preserves TypeGPU reference assignment validation', () => {
+  const root = cpuRoot();
+  const privateState = tgpu.privateVar(d.vec2u);
+  const output = root.createMutable(d.vec2u);
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    output.$ = privateState.$;
+  });
+  expect(() => root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1)).toThrow(
+    'references cannot be assigned',
+  );
+  root.destroy();
+});
