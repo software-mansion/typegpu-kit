@@ -272,6 +272,19 @@ Constant vector indexing takes this same path: `state.$[0]` becomes a `Swizzle` 
 
 **Workaround.** `CpuGenerator.#lowerSwizzle` clones the original Swizzle instance and uses `makeResolvable` to change only its emitted code. This retains readonly and nested-swizzle validation while lowering components to JavaScript indices.
 
+### 22. Whether a local is reassigned is decided after its declaration is generated
+
+A `let` whose reassignment may sit in a pruned branch reaches `_emitVarDecl` with a placeholder keyword, `#VAR_n#`, which the function scope replaces once the body is done; a JavaScript `const` that holds a struct copy gets one too. A generator that wants to know whether a variable keeps its first value, such as the GPU compute form deciding whether `view.cursor` still holds a uniform's value at a condition, cannot ask at that point.
+
+```ts
+const view = View(layout.$.view); // `#VAR_0# view_1 = …`: let or var is decided later
+if (id.x === d.u32(view.cursor.x)) pick.$ = …;
+```
+
+**Upstream.** Pass the generator the variable's final mutability, or a hook called when placeholders are resolved, with each variable and whether it was reassigned. In `tgsl/wgslGenerator.ts` and the function scope in `resolutionCtx.ts`.
+
+**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` records every assignment's root name per function and rejects the kernel at the function's end when a choice of invocation read a variable that was reassigned.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
