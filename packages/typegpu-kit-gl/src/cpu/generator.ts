@@ -42,6 +42,8 @@ export class CpuGenerator extends WgslGenerator {
     return name;
   }
   #parts(snippet: Snippet): string[] | undefined {
+    if (typeof snippet.dataType === 'symbol' || !scalar(snippet.dataType).startsWith('vec'))
+      return undefined;
     const code = this.ctx.resolveSnippet(snippet).value;
     const components = this.#components(code);
     if (components) return components;
@@ -59,10 +61,11 @@ export class CpuGenerator extends WgslGenerator {
 
   #value(snippet: Snippet): string {
     const code = this.ctx.resolveSnippet(snippet).value;
-    const components = this.#components(code);
+    const type = typeof snippet.dataType === 'symbol' ? '' : scalar(snippet.dataType);
+    const components = type.startsWith('vec') ? this.#components(code) : undefined;
     if (components) return `$vector([${components.join(',')}])`;
     const address = this.#addresses.get(code);
-    return address ? readAddress(address) : code;
+    return address && address.layout.type === type ? readAddress(address) : code;
   }
   #fresh(code: string): boolean {
     if (
@@ -85,7 +88,9 @@ export class CpuGenerator extends WgslGenerator {
       result.origin !== 'constant'
     ) {
       const code = this.ctx.resolveSnippet(result).value;
-      const components = this.#components(code);
+      const components = scalar(result.dataType).startsWith('vec')
+        ? this.#components(code)
+        : undefined;
       if (components)
         return snip(
           this.#vector(result.dataType, components),
@@ -94,7 +99,11 @@ export class CpuGenerator extends WgslGenerator {
           result.possibleSideEffects,
         );
       const address = this.#addresses.get(code);
-      if (address && !/^cpuAddress(?:_\d+)?$/.test(code)) {
+      if (
+        address &&
+        address.layout.type === scalar(result.dataType) &&
+        !/^cpuAddress(?:_\d+)?$/.test(code)
+      ) {
         const name = this.ctx.makeUniqueIdentifier('cpuAddress', 'global');
         this.#addresses.set(name, address);
         return snip(name, result.dataType, result.origin, result.possibleSideEffects);

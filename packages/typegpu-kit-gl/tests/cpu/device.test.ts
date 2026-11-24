@@ -125,3 +125,21 @@ it('keeps address expressions distinct in sibling blocks', async () => {
   ]);
   root.destroy();
 });
+
+it('does not substitute vector aliases into scalar helper parameters', async () => {
+  const root = cpuRoot();
+  const output = root.createMutable(d.vec3f);
+  const kernel = tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    for (let i = 0; i < 1; i++) {
+      const b = d.vec3f(d.f32(id.x));
+      output.$ = b * 2;
+    }
+    output.$ = d.vec3f(id) + 3;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  expect([...(await output.read())]).toEqual([3, 3, 3]);
+  root.destroy();
+});
