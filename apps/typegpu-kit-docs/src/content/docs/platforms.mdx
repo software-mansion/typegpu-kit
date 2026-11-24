@@ -19,6 +19,8 @@ Safari compiles pipelines one at a time and builds Metal state at the first draw
 
 Reuse texture views and bind groups across frames because Firefox retains them until garbage collection.
 
+Firefox loses the device on a submit of 2048 or more render and compute passes, counted across its command buffers. A pass per layer and mip level of a texture array reaches that quickly, so fill array levels in a compute pass, as [mipmaps](/kit/mipmaps/) do for a texture with `storage` usage, or split the work across submits.
+
 ## React Native on iOS and Android
 
 Use `react-native-webgpu`. [Setting up a project](/getting-started/#setting-up-a-project) gives the versions, and the Babel, Metro and worklets configuration for [hosted scenes](/kit/hosting/#on-react-native).

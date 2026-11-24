@@ -78,11 +78,11 @@ describeExample(
     features: ['indirect-first-instance'],
     gap: 0.05,
     // While loading, the ground's bake, and four captures, each of four kernels fitting the
-    // sphere, one drawing the views and two making the mipmaps; the ground's noise cache; the
+    // sphere, one drawing the views and three making the mipmaps; the ground's noise cache; the
     // ground; for the meshes everywhere and for the near ones, colour, shadow and four kernels;
     // for each model's cards those and a depth pass; three bloom passes and the final. The models
     // are two-sided, and every renderer of the pool compiles that look too, beside the cards'
     // one-sided one.
-    pipelines: 1 + 4 * (5 + 2) + 1 + 2 + (6 + 2) * 2 + (7 + 3) * 4 + 3 + 1,
+    pipelines: 1 + 4 * (5 + 3) + 1 + 2 + (6 + 2) * 2 + (7 + 3) * 4 + 3 + 1,
   },
 );
