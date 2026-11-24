@@ -480,6 +480,118 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
   });
 });
 
+/** Writes one half of a buffer from the other, as the uniform's `x` picks. */
+const halves = (source: number) => {
+  const layout = tgpu
+    .bindGroupLayout({
+      cells: { storage: d.arrayOf(d.u32, 128), access: 'mutable' },
+      pass: { uniform: d.vec2u },
+    })
+    .$idx(0);
+  return expectSame({
+    layout,
+    kernel: tgpu.computeFn({ workgroupSize: [8, 4], in: gid })(({ gid: id }) => {
+      'use gpu';
+      if (id.x >= 8 || id.y >= 6) return;
+      const from = layout.$.pass.x;
+      const here = id.y * 8 + id.x;
+      const left = layout.$.cells[here + from * 64] as number;
+      const next = layout.$.cells[((here + 1) % 48) + from * 64] as number;
+      layout.$.cells[here + (1 - from) * 64] = left * 3 + next + layout.$.pass.y;
+    }),
+    workgroups: [1, 2, 1],
+    inputs: {
+      cells: { kind: 'buffer', schema: d.arrayOf(d.u32, 128), value: range(128, (i) => i * 7) },
+      pass: { kind: 'buffer', schema: d.vec2u, value: d.vec2u(source, 5), uniform: true },
+    },
+  });
+};
+
+describe('GPU forms with offsets and strides run as WebGPU runs them', () => {
+  it('writes one half of a buffer from the other', () => halves(0));
+  it('writes the other half when the uniform flips', () => halves(1));
+
+  it('writes every third element from a constant phase', async () => {
+    const layout = tgpu
+      .bindGroupLayout({ out: { storage: d.arrayOf(d.f32, 200), access: 'mutable' } })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const at = id.x * 3 + 2;
+        layout.$.out[at] = (layout.$.out[at] as number) * 2 + (layout.$.out[at - 1] as number);
+      }),
+      workgroups: [1, 1, 1],
+      inputs: {
+        out: { kind: 'buffer', schema: d.arrayOf(d.f32, 200), value: range(200, (i) => i - 50) },
+      },
+    });
+  });
+
+  it('writes every other element from a phase a uniform masks', async () => {
+    const layout = tgpu
+      .bindGroupLayout({
+        out: { storage: d.arrayOf(d.u32, 130), access: 'mutable' },
+        parity: { uniform: d.u32 },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        layout.$.out[id.x * 2 + (layout.$.parity & 1)] = id.x + 1000;
+      }),
+      workgroups: [1, 1, 1],
+      inputs: {
+        out: { kind: 'buffer', schema: d.arrayOf(d.u32, 130), value: range(130, (i) => i) },
+        parity: { kind: 'buffer', schema: d.u32, value: 3, uniform: true },
+      },
+    });
+  });
+
+  for (const parity of [0, 1]) {
+    it(`sweeps the ${parity ? 'black' : 'red'} cells of a 3d grid`, async () => {
+      const layout = tgpu
+        .bindGroupLayout({
+          value: { storageTexture: d.textureStorage3d('r32float', 'read-write') },
+        })
+        .$idx(0);
+      await expectSame({
+        layout,
+        kernel: tgpu.computeFn({ workgroupSize: [2, 4, 2], in: gid })(({ gid: id }) => {
+          'use gpu';
+          const size = d.vec3i(std.textureDimensions(layout.$.value));
+          const cell = d.vec3i(
+            d.i32(id.x * 2 + ((id.y + id.z + parity) & 1)),
+            d.i32(id.y),
+            d.i32(id.z),
+          );
+          if (cell.x >= size.x || cell.y >= size.y || cell.z >= size.z) return;
+          let around = d.f32(0);
+          if (cell.x > 0) around += std.textureLoad(layout.$.value, cell - d.vec3i(1, 0, 0)).x;
+          if (cell.x < size.x - 1) {
+            around += std.textureLoad(layout.$.value, cell + d.vec3i(1, 0, 0)).x;
+          }
+          const was = std.textureLoad(layout.$.value, cell).x;
+          std.textureStore(layout.$.value, cell, d.vec4f(was * 0.5 + around * 0.25, 0, 0, 0));
+        }),
+        workgroups: [2, 1, 2],
+        inputs: {
+          value: {
+            kind: 'texture',
+            format: 'r32float',
+            dimension: '3d',
+            size: [7, 4, 4],
+            data: new Float32Array(range(112, (i) => (i * 13) % 17)),
+            storage: true,
+          },
+        },
+      });
+    });
+  }
+});
+
 describe('GPU forms with one chosen writer run as WebGPU runs them', () => {
   const Pick = d.struct({ hit: d.u32, at: d.vec2f, count: d.atomic(d.u32) });
   const View = d.struct({ cursor: d.vec2f, size: d.vec2u });

@@ -7,7 +7,8 @@
  * ## How a dispatch runs
  *
  * Each invocation of a kernel the GPU form accepts writes only its own cell of the resources it
- * writes: element `global_invocation_id.x` of one array in a storage buffer, or texel
+ * writes: element `global_invocation_id.x` of one array in a storage buffer (or, with strides and
+ * offsets every invocation shares, an element no other invocation's index reaches), or texel
  * `global_invocation_id.xy` (`.xyz` for 2d-array and 3d) of a storage texture, or, in a form whose
  * `grid` is 2, the column of a 2d-array or 3d texture at `global_invocation_id.xy`, every layer or
  * slice of it. A buffer target may also be a whole binding that at most one invocation writes, as

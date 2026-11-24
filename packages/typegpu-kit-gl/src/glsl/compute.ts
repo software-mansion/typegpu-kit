@@ -55,6 +55,13 @@ export class Ineligible extends Error {
 export interface Layout {
   readonly width?: number;
   readonly height?: number;
+  /**
+   * Present when the index is that count times `stride`, plus a phase below the stride, so only
+   * every `stride`-th element is the invocation's.
+   */
+  readonly stride?: number;
+  /** GLSL `uint` text added to the index: every invocation sees it alike. */
+  readonly phase?: string;
 }
 
 /** A buffer a kernel writes. */
@@ -78,7 +85,36 @@ export interface ComputePlan {
   readonly textures: ReadonlySet<string>;
   /** The written 3d and 2d-array textures whose invocations own the column at their `xy`. */
   readonly columns: ReadonlySet<string>;
+  /** The written textures whose cells are not plainly the invocation's, by their texel maps. */
+  readonly maps: ReadonlyMap<string, TexelMap>;
 }
+
+/**
+ * How a texture's cells map to invocations, coordinate by coordinate: coordinate `i` of the cell
+ * invocation `gid` owns is `step * gid[i]`, plus `r.of & r.mask` when there is a residue, which
+ * stays below `step` and does not depend on `gid[i]`.
+ */
+type TexelMap = readonly { readonly step: number; readonly r?: Affine['r'] }[];
+
+/** The texel map own coordinates give, if every cell belongs to at most one invocation. */
+function texelMapOf(own: Own): TexelMap | undefined {
+  const map: { step: number; r?: Affine['r'] }[] = [];
+  let residues = 0;
+  for (const [i, each] of own.entries()) {
+    const name = AXES[i] as 'x' | 'y' | 'z';
+    const step = each[name];
+    const others = [...AXES].filter((c) => c !== name) as ('x' | 'y' | 'z')[];
+    if (step < 1 || each.k !== 0 || each.s || others.some((c) => each[c] !== 0)) return undefined;
+    if (each.r) {
+      if (each.r.mask >= step || dependsOn(each.r.of, name) || each.r.of.s) return undefined;
+      residues++;
+    }
+    map.push({ step, ...(each.r && { r: each.r }) });
+  }
+  return residues <= 1 ? map : undefined;
+}
+
+const plainMap = (map: TexelMap) => map.every(({ step, r }) => step === 1 && !r);
 
 const GID = 'kit_gid';
 const BEGIN = 'kit_begin';
@@ -123,81 +159,204 @@ const ATOMICS: Record<string, string> = {
   atomicExchange: 'v',
 };
 
-/** `x * gid.x + y * gid.y + z * gid.z + k`, in integers. */
+/** A term of an index that every invocation sees alike, as GLSL, added or subtracted. */
+interface Term {
+  readonly text: string;
+  readonly sign: 1 | -1;
+  /** The settled variables it reads, which must then never be reassigned. */
+  readonly from: readonly string[];
+}
+
+/**
+ * `x * gid.x + y * gid.y + z * gid.z + k`, in integers, plus `s`, terms every invocation sees
+ * alike, and `r`, `of & mask`, a residue below `mask + 1` of another such form.
+ */
 interface Affine {
   readonly x: number;
   readonly y: number;
   readonly z: number;
   readonly k: number;
+  readonly s?: readonly Term[];
+  readonly r?: { readonly of: Affine; readonly mask: number };
 }
 
 /** A value that provably derives from `global_invocation_id`: one affine form per component. */
 type Own = readonly Affine[];
 
+/** A value every invocation sees alike, as the GLSL text it was read from. */
+interface Shared {
+  readonly shared: string;
+  readonly from: readonly string[];
+  /** Present when the value is known to stay below this, as a mask leaves it. */
+  readonly below?: number;
+}
+
+/** The settled variables an own value's shared terms read. */
+function fromOf(own: Own): string[] {
+  return own.flatMap((each) => [
+    ...(each.s ?? []).flatMap((term) => term.from),
+    ...(each.r ? fromOf([each.r.of]) : []),
+  ]);
+}
+
 const constant = (k: number): Affine => ({ x: 0, y: 0, z: 0, k });
 const axis = (name: 'x' | 'y' | 'z'): Affine => ({ ...constant(0), [name]: 1 });
 const ID: Own = [axis('x'), axis('y'), axis('z')];
+const plain = (a: Affine) => a.s === undefined && a.r === undefined;
 
 /** The axes an own value is, component by component, such as `xy`, when each is one plain axis. */
 function axesOf(own: Own | undefined): string | undefined {
   if (!own) return undefined;
   let axes = '';
-  for (const { x, y, z, k } of own) {
-    if (k !== 0 || x + y + z !== 1 || [x, y, z].some((c) => c !== 0 && c !== 1)) return undefined;
+  for (const each of own) {
+    const { x, y, z, k } = each;
+    if (!plain(each) || k !== 0 || x + y + z !== 1 || [x, y, z].some((c) => c !== 0 && c !== 1)) {
+      return undefined;
+    }
     axes += x ? 'x' : y ? 'y' : 'z';
   }
   return axes;
 }
 
-/** The layout an own array index is, if it gives each invocation one element. */
-function layoutOf(own: Own | undefined): Layout | undefined {
-  if (own?.length !== 1) return undefined;
-  const { x, y, z, k } = own[0] as Affine;
-  if (x !== 1 || k !== 0 || y < 0 || z < 0) return undefined;
-  if (y === 0) return z === 0 ? {} : undefined;
-  if (z === 0) return { width: y };
-  return z % y === 0 ? { width: y, height: z / y } : undefined;
+/** An affine form over `gid` as GLSL `uint`. */
+function affineText(a: Affine, gid: string): string {
+  const parts: string[] = [];
+  for (const [c, n] of [
+    ['x', a.x],
+    ['y', a.y],
+    ['z', a.z],
+  ] as const) {
+    if (n === 0) continue;
+    if (n < 0) return '';
+    parts.push(n === 1 ? `${gid}.${c}` : `${gid}.${c} * ${n}u`);
+  }
+  let text = parts.length > 0 ? parts.join(' + ') : '0u';
+  if (a.k > 0) text += ` + ${a.k}u`;
+  if (a.k < 0) text += ` - ${-a.k}u`;
+  for (const term of a.s ?? []) text += ` ${term.sign > 0 ? '+' : '-'} uint(${term.text})`;
+  if (a.r) text += ` + ((${affineText(a.r.of, gid)}) & ${a.r.mask}u)`;
+  return `(${text})`;
 }
 
-const sameLayout = (a: Layout, b: Layout) => a.width === b.width && a.height === b.height;
+/** Whether an affine form depends on an axis of the invocation, through its residue too. */
+function dependsOn(a: Affine, on: 'x' | 'y' | 'z'): boolean {
+  return a[on] !== 0 || (a.r !== undefined && dependsOn(a.r.of, on));
+}
+
+/** The layout an own array index is, if it gives each invocation its own element. */
+function layoutOf(own: Own | undefined): Layout | undefined {
+  if (own?.length !== 1) return undefined;
+  const a = own[0] as Affine;
+  const { x: stride, y, z, k } = a;
+  if (stride < 1 || y < 0 || z < 0 || y % stride !== 0) return undefined;
+  if (a.r && (dependsOn(a.r.of, 'x') || dependsOn(a.r.of, 'y') || dependsOn(a.r.of, 'z'))) {
+    return undefined;
+  }
+  // With a stride, the phase must stay below it, so no two invocations meet
+  if (stride > 1) {
+    const residue = a.r && a.r.mask < stride && k === 0;
+    const offset = !a.r && k >= 0 && k < stride;
+    if (a.s || !(residue || offset)) return undefined;
+  }
+  const phase = affineText({ ...a, x: 0, y: 0, z: 0 }, '');
+  const shape: { stride?: number; phase?: string } = {
+    ...(stride > 1 && { stride }),
+    ...(phase !== '(0u)' && { phase }),
+  };
+  if (y === 0) return z === 0 ? shape : undefined;
+  const width = y / stride;
+  if (z === 0) return { width, ...shape };
+  return z % y === 0 ? { width, height: z / y, ...shape } : undefined;
+}
+
+const sameLayout = (a: Layout, b: Layout) =>
+  a.width === b.width && a.height === b.height && a.stride === b.stride && a.phase === b.phase;
 
 /** The element index a layout gives the invocation `gid` stands for, as GLSL. */
 function linear(layout: Layout, gid: string): string {
-  if (layout.width === undefined) return `${gid}.x`;
-  const rows = `${gid}.y * ${layout.width}u`;
-  if (layout.height === undefined) return `(${gid}.x + ${rows})`;
-  return `(${gid}.x + ${rows} + ${gid}.z * ${layout.width * layout.height}u)`;
+  let index: string;
+  if (layout.width === undefined) index = `${gid}.x`;
+  else {
+    const rows = `${gid}.y * ${layout.width}u`;
+    index =
+      layout.height === undefined
+        ? `(${gid}.x + ${rows})`
+        : `(${gid}.x + ${rows} + ${gid}.z * ${layout.width * layout.height}u)`;
+  }
+  if (layout.stride !== undefined) index = `(${index} * ${layout.stride}u)`;
+  return layout.phase === undefined ? index : `(${index} + ${layout.phase})`;
 }
 
-/** The invocation an element belongs to under a layout, as GLSL. */
-function invocationOf(layout: Layout, element: string): string {
+/** The invocation an element's index counts, without stride or phase, as GLSL. */
+function counted(layout: Layout, element: string): string {
   const { width, height } = layout;
   if (width === undefined) return `uvec3(${element}, 0u, 0u)`;
   if (height === undefined) return `uvec3(${element} % ${width}u, ${element} / ${width}u, 0u)`;
   return `uvec3(${element} % ${width}u, (${element} / ${width}u) % ${height}u, ${element} / ${width * height}u)`;
 }
 
-type Value = Own | number;
-
-function scale(value: Value, by: number): Value {
-  if (typeof value === 'number') return value * by;
-  return value.map(({ x, y, z, k }) => ({ x: x * by, y: y * by, z: z * by, k: k * by }));
+/**
+ * The invocation an element belongs to under a layout, as GLSL, or one past every dispatch when
+ * no invocation owns it.
+ */
+function invocationOf(layout: Layout, element: string): string {
+  // Wrapping like the kernel's own index arithmetic
+  const local = layout.phase === undefined ? element : `(${element} - ${layout.phase})`;
+  if (layout.stride === undefined) return counted(layout, local);
+  return `((${local}) % ${layout.stride}u == 0u ? ${counted(layout, `((${local}) / ${layout.stride}u)`)} : uvec3(0xFFFFFFFFu))`;
 }
 
-function add(a: Value, b: Value): Value | undefined {
-  if (typeof a === 'number' && typeof b === 'number') return a + b;
-  const left = typeof a === 'number' ? undefined : a;
-  const right = typeof b === 'number' ? undefined : b;
-  if (left && right) {
-    if (left.length !== right.length) return undefined;
-    return left.map((each, i) => {
-      const other = right[i] as Affine;
-      return { x: each.x + other.x, y: each.y + other.y, z: each.z + other.z, k: each.k + other.k };
+type Value = Own | number | Shared;
+
+const isShared = (value: Value): value is Shared => typeof value === 'object' && 'shared' in value;
+
+/** A value as an own one, a shared value becoming a term. */
+function ownOf(value: Own | number | Shared): Own {
+  if (typeof value === 'number') return [constant(value)];
+  if (isShared(value)) {
+    const term: Affine = { ...constant(0), s: [{ text: value.shared, sign: 1, from: value.from }] };
+    return value.below === undefined
+      ? [term]
+      : [{ ...constant(0), r: { of: term, mask: value.below - 1 } }];
+  }
+  return value;
+}
+
+function scale(value: Own, by: number): Own | undefined {
+  if (by === 1) return value;
+  const scaled: Affine[] = [];
+  for (const each of value) {
+    if (each.r) return undefined;
+    if (each.s && by !== -1) return undefined;
+    scaled.push({
+      x: each.x * by,
+      y: each.y * by,
+      z: each.z * by,
+      k: each.k * by,
+      ...(each.s && { s: each.s.map((term) => ({ ...term, sign: -term.sign as 1 | -1 })) }),
     });
   }
-  const own = (left ?? right) as Own;
-  const k = (typeof a === 'number' ? a : b) as number;
-  return own.length === 1 ? [{ ...(own[0] as Affine), k: (own[0] as Affine).k + k }] : undefined;
+  return scaled;
+}
+
+function add(left: Own, right: Own): Own | undefined {
+  if (left.length !== right.length) return undefined;
+  const sum: Affine[] = [];
+  for (const [i, each] of left.entries()) {
+    const other = right[i] as Affine;
+    if (each.r && other.r) return undefined;
+    const s = [...(each.s ?? []), ...(other.s ?? [])];
+    const r = each.r ?? other.r;
+    sum.push({
+      x: each.x + other.x,
+      y: each.y + other.y,
+      z: each.z + other.z,
+      k: each.k + other.k,
+      ...(s.length > 0 && { s }),
+      ...(r && { r }),
+    });
+  }
+  return sum;
 }
 
 /** GLSL text with the settled variables of `frame` it names replaced by their values. */
@@ -258,16 +417,23 @@ function unwrap(text: string): string {
 
 /**
  * Reads GLSL integer arithmetic over `names` into affine forms: sums, differences, products with
- * constants, casts and vector constructors. Anything else is not provably own.
+ * constants, masks with constants, casts and vector constructors, and values `shared` accepts,
+ * which every invocation sees alike. Anything else is not provably own.
  */
 class Arithmetic {
   readonly #text: string;
   readonly #names: ReadonlyMap<string, Own>;
+  readonly #shared: ((text: string) => readonly string[] | undefined) | undefined;
   #at = 0;
 
-  constructor(text: string, names: ReadonlyMap<string, Own>) {
+  constructor(
+    text: string,
+    names: ReadonlyMap<string, Own>,
+    shared?: (text: string) => readonly string[] | undefined,
+  ) {
     this.#text = text;
     this.#names = names;
+    this.#shared = shared;
   }
 
   read(): Value | undefined {
@@ -279,30 +445,45 @@ class Arithmetic {
     return this.#text[this.#at];
   }
 
+  /** The value of the text from `start`, read whole, when neither part is own. */
+  #whole(start: number, a: Value, b: Value, combine: (a: number, b: number) => number): Value {
+    if (typeof a === 'number' && typeof b === 'number') return combine(a, b);
+    const from = [a, b].flatMap((each) => (isShared(each) ? each.from : []));
+    return { shared: this.#text.slice(start, this.#at), from };
+  }
+
   #sum(): Value | undefined {
+    const start = this.#at;
     let value = this.#product();
     while (value !== undefined && (this.#peek() === '+' || this.#peek() === '-')) {
       const sign = this.#text[this.#at++] === '+' ? 1 : -1;
       const other = this.#product();
-      value = other === undefined ? undefined : add(value, scale(other, sign));
+      if (other === undefined) return undefined;
+      if (Array.isArray(value) || Array.isArray(other)) {
+        const right = scale(ownOf(other), sign);
+        value = right && add(ownOf(value), right);
+      } else value = this.#whole(start, value, other, (a, b) => a + sign * b);
     }
     return value;
   }
 
   #product(): Value | undefined {
+    const start = this.#at;
     let value = this.#factor();
     while (value !== undefined && this.#peek() === '*') {
       this.#at++;
       const other = this.#factor();
       if (other === undefined) return undefined;
-      if (typeof value === 'number') value = scale(other, value);
-      else if (typeof other === 'number') value = scale(value, other);
-      else return undefined;
+      if (Array.isArray(value) && typeof other === 'number') value = scale(value, other);
+      else if (Array.isArray(other) && typeof value === 'number') value = scale(other, value);
+      else if (Array.isArray(value) || Array.isArray(other)) return undefined;
+      else value = this.#whole(start, value, other, (a, b) => a * b);
     }
     return value;
   }
 
   #factor(): Value | undefined {
+    const start = this.#at;
     const rest = this.#text.slice(this.#at);
     const number = /^(\d+)u?(?![\w.])/.exec(rest);
     if (number) {
@@ -312,6 +493,13 @@ class Arithmetic {
     if (rest.startsWith('(')) {
       this.#at++;
       const value = this.#sum();
+      if (value !== undefined && this.#peek() === '&') {
+        this.#at++;
+        const mask = this.#sum();
+        if (this.#peek() !== ')') return undefined;
+        this.#at++;
+        return this.#masked(start, value, mask);
+      }
       if (this.#peek() !== ')') return undefined;
       this.#at++;
       return value;
@@ -329,20 +517,77 @@ class Arithmetic {
       }
       if (this.#peek() !== ')') return undefined;
       this.#at++;
-      if (call[1] === 'uint' || call[1] === 'int') return parts.length === 1 ? parts[0] : undefined;
-      const own = parts.flatMap((part) => (typeof part === 'number' ? [constant(part)] : part));
+      if (call[1] === 'uint' || call[1] === 'int') {
+        if (parts.length !== 1) return undefined;
+        const [part] = parts as [Value];
+        return isShared(part)
+          ? { shared: this.#text.slice(start, this.#at), from: part.from }
+          : part;
+      }
+      if (parts.every((part) => !Array.isArray(part))) {
+        return this.#atom(start, this.#text.slice(start, this.#at));
+      }
+      const own = parts.flatMap(ownOf);
       return own.length === Number(call[1]?.at(-1)) ? own : undefined;
     }
-    const name = /^([A-Za-z_]\w*)(?:\.([xyzw]+))?/.exec(rest);
-    if (name) {
-      const own = this.#names.get(name[1] as string);
-      if (!own) return undefined;
+    const name = /^([A-Za-z_]\w*)(?:\.([xyzw]+))?(?![\w(.[])/.exec(rest);
+    const own = name && this.#names.get(name[1] as string);
+    if (name && own) {
       this.#at += name[0].length;
       if (!name[2]) return own;
       const picked = [...name[2]].map((c) => own['xyzw'.indexOf(c)]);
       return picked.every(Boolean) ? (picked as Affine[]) : undefined;
     }
-    return undefined;
+    const length = atomLength(rest);
+    if (length === 0) return undefined;
+    this.#at += length;
+    return this.#atom(start, rest.slice(0, length));
+  }
+
+  /** A value of the text that is not own: shared when `shared` accepts it. */
+  #atom(start: number, text: string): Value | undefined {
+    const from = this.#shared?.(text);
+    if (!from) {
+      this.#at = start;
+      return undefined;
+    }
+    return { shared: text, from };
+  }
+
+  /** `(value & mask)`: a residue below `mask + 1`, when the mask is one less than a power of two. */
+  #masked(start: number, value: Value, mask: Value | undefined): Value | undefined {
+    if (typeof mask !== 'number' || mask < 0 || (mask & (mask + 1)) !== 0) return undefined;
+    if (typeof value === 'number') return value & mask;
+    if (isShared(value)) {
+      return { shared: this.#text.slice(start, this.#at), from: value.from, below: mask + 1 };
+    }
+    if (value.length !== 1) return undefined;
+    const of = value[0] as Affine;
+    if (of.r) return undefined;
+    return [{ ...constant(0), r: { of, mask } }];
+  }
+}
+
+/** The length of an identifier with the calls, members and indices after it, or 0. */
+function atomLength(text: string): number {
+  const name = /^[A-Za-z_]\w*/.exec(text);
+  if (!name) return 0;
+  let at = name[0].length;
+  for (;;) {
+    const c = text[at];
+    if (c === '(' || c === '[') {
+      let depth = 0;
+      for (; at < text.length; at++) {
+        if (text[at] === '(' || text[at] === '[') depth++;
+        else if ((text[at] === ')' || text[at] === ']') && --depth === 0) break;
+      }
+      if (depth !== 0) return 0;
+      at++;
+    } else if (c === '.') {
+      const member = /^\.[A-Za-z_]\w*/.exec(text.slice(at));
+      if (!member) return at;
+      at += member[0].length;
+    } else return at;
   }
 }
 
@@ -383,7 +628,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #buffers = new Map<string, WrittenBuffer>();
   readonly #textures = new Map<string, TextureInfo>();
   readonly #columns = new Set<string>();
+  readonly #maps = new Map<string, TexelMap>();
   readonly #functions = new Set<string>();
+  /** Functions without parameters that read only what every invocation sees alike. */
+  readonly #pure = new Set<string>();
   /** The conditions around the statement being generated that choose one invocation by axis. */
   readonly #chosen: {
     readonly frame: Frame;
@@ -451,6 +699,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ),
       textures: new Set(this.#textures.keys()),
       columns: new Set(this.#columns),
+      maps: new Map(this.#maps),
     };
   }
 
@@ -496,12 +745,33 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     } catch {
       return undefined;
     }
-    const value = new Arithmetic(text.replace(/\s+/g, ''), frame.names).read();
-    return typeof value === 'object' ? value : undefined;
+    const value = new Arithmetic(text.replace(/\s+/g, ''), frame.names, (part) =>
+      this.#shared(part, frame),
+    ).read();
+    if (!Array.isArray(value)) return undefined;
+    return value.map((each) => ({
+      ...each,
+      ...(each.s && {
+        s: each.s.map((term: Term) => ({ ...term, text: inlined(term.text, frame) })),
+      }),
+      ...(each.r?.of.s && {
+        r: {
+          ...each.r,
+          of: {
+            ...each.r.of,
+            s: each.r.of.s.map((term: Term) => ({ ...term, text: inlined(term.text, frame) })),
+          },
+        },
+      }),
+    }));
   }
 
   protected override ownIndex(index: Snippet): unknown {
-    return layoutOf(this.#own(index));
+    const own = this.#own(index);
+    const layout = layoutOf(own);
+    // A phase read through a settled variable holds only while it is never reassigned
+    if (layout?.phase && own) for (const name of fromOf(own)) this.#frame?.choosing.add(name);
+    return layout;
   }
 
   /**
@@ -668,7 +938,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       if (sides.length !== 2) continue;
       for (const [own, other] of [sides, sides.toReversed()] as [string, string][]) {
         const value = new Arithmetic(own, frame.names).read();
-        const named = typeof value === 'object' ? axesOf(value) : undefined;
+        const named = Array.isArray(value) ? axesOf(value) : undefined;
         const settled = named?.length === 1 ? this.#shared(other, frame) : undefined;
         if (!settled) continue;
         axes.set('xyz'.indexOf(named as string), inlined(other, frame));
@@ -684,7 +954,22 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
    * if so, which must then not be reassigned.
    */
   #shared(text: string, frame: Frame): string[] | undefined {
-    if (/texel|texture/.test(text)) return undefined;
+    if (this.#varies(text)) return undefined;
+    const settled: string[] = [];
+    for (const [name] of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+      if (frame.locals.has(name) || frame.names.has(name)) return undefined;
+      const known = frame.settled.get(name);
+      if (known) settled.push(name, ...known.from);
+    }
+    return settled;
+  }
+
+  /**
+   * Whether GLSL text reads what may differ between invocations, other than locals: the
+   * invocation, private variables, written resources, or functions that may.
+   */
+  #varies(text: string): boolean {
+    if (/texel|texture/.test(text)) return true;
     const varying = new Set([
       GID,
       ...this.#privates.map((each) => each.id),
@@ -692,16 +977,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ...this.#textures.keys(),
       ...(this.#plan ? [...this.#plan.buffers.keys(), ...this.#plan.textures] : []),
     ]);
-    const settled: string[] = [];
     for (const [name] of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
-      if (frame.locals.has(name) || frame.names.has(name) || this.#functions.has(name)) {
-        return undefined;
-      }
-      if (varying.has(name) || name.startsWith('kit_shadow')) return undefined;
-      const known = frame.settled.get(name);
-      if (known) settled.push(name, ...known.from);
+      if (varying.has(name) || name.startsWith('kit_shadow')) return true;
+      if (this.#functions.has(name) && !this.#pure.has(name)) return true;
     }
-    return settled;
+    return false;
   }
 
   /**
@@ -925,7 +1205,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         ? coords === 'xy'
         : dimension === '3d' && this.#ownsColumn(args[1]));
     if (column) this.#columns.add(texture.id);
-    if (!owns && !column) {
+    const strided = !owns && !column && dimension !== '1d' && this.#strided(texture, args);
+    if (!owns && !column && !strided) {
       const frame = this.#frame;
       if (!frame?.entry && !frame?.names.size) {
         throw new Ineligible(`a helper function stores to '${texture.id}'`);
@@ -939,9 +1220,40 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     this.#textures.set(texture.id, texture);
     const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
     const shadow = this.#textureShadow(texture);
+    if (owns && this.#maps.has(texture.id)) {
+      throw new Ineligible(`stores to '${texture.id}' at texels of two shapes`);
+    }
     if (!this.#plan?.columns.has(texture.id)) return `${shadow} = ${value}`;
     const layer = dimension === '3d' ? `${this.ivecOf(args[1], 3)}.z` : this.intOf(args[2]);
     return `${shadow} = (${layer}) == ${LAYER} ? ${value} : ${shadow}`;
+  }
+
+  /** Whether a store's coordinates own a cell through a texel map; records the map if so. */
+  #strided(texture: TextureInfo, args: readonly Snippet[]): boolean {
+    const coords = this.#own(args[1]);
+    const layer = texture.kind.dimension === '2d-array' ? this.#own(args[2]) : [];
+    const map = coords && layer && texelMapOf([...coords, ...layer]);
+    if (!map || plainMap(map)) return false;
+    const known = this.#maps.get(texture.id);
+    if (
+      (known && JSON.stringify(known) !== JSON.stringify(map)) ||
+      (this.#textures.has(texture.id) && !known)
+    ) {
+      throw new Ineligible(`stores to '${texture.id}' at texels of two shapes`);
+    }
+    this.#maps.set(texture.id, map);
+    return true;
+  }
+
+  /** The cell a texture's invocation `gid` owns, as `texelFetch` takes it. */
+  #ownCell(texture: TextureInfo, gid: string): string {
+    const map = this.#plan?.maps.get(texture.id) ?? this.#maps.get(texture.id);
+    if (!map) return this.#cellOf(texture, gid);
+    const parts = map.map(({ step, r }, i) => {
+      const base = step === 1 ? `${gid}.${AXES[i]}` : `${gid}.${AXES[i]} * ${step}u`;
+      return `int(${base}${r ? ` + ((${affineText(r.of, gid)}) & ${r.mask}u)` : ''})`;
+    });
+    return map.length === 2 ? `ivec2(${parts.join(', ')})` : `ivec3(${parts.join(', ')})`;
   }
 
   /** Whether a 3d texel coordinate is `uvec3(xy, z)` with `xy` the invocation's own, any `z`. */
@@ -967,7 +1279,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     parts.push(inner.slice(start));
     const own = (part: string) => {
       const value = new Arithmetic(part, frame.names).read();
-      return typeof value === 'object' ? axesOf(value) : undefined;
+      return Array.isArray(value) ? axesOf(value) : undefined;
     };
     if (parts.length === 2) return own(parts[0] as string) === 'xy';
     if (parts.length === 3) return own(`uvec2(${parts[0]},${parts[1]})`) === 'xy';
@@ -985,7 +1297,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       if (this.#isStorage(texture)) this.#loaded.add(texture.id);
       if (this.#isStorage(texture) && this.#plan?.textures.has(texture.id)) {
         const cell = this.#cellIn(texture, args);
-        const own = this.#cellOf(texture, GID);
+        const own = this.#ownCell(texture, GID);
         const old = `texelFetch(${this.samplerUniform(texture)}, ${cell}, 0)`;
         return `(all(equal(${cell}, ${own})) ? ${this.#textureShadow(texture)} : ${old})`;
       }
@@ -1028,9 +1340,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#frames.pop();
     }
     if (frame.relies) this.#relies.add(options.name);
+    const body = code.slice(code.indexOf('{'));
+    if (options.functionType === 'normal' && options.args.length === 0 && !this.#varies(body)) {
+      this.#pure.add(options.name);
+    }
     for (const name of frame.choosing) {
       if (frame.assigned.has(name)) {
-        throw new Ineligible(`chooses an invocation by '${name}', which it reassigns`);
+        throw new Ineligible(`finds its cells through '${name}', which it reassigns`);
       }
     }
     const stale = code.indexOf(STALE);
@@ -1136,7 +1452,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   /** `kit_begin(gid)`: starts an invocation, with fresh private variables and own cells. */
   #begin(): string {
-    const lines = [`  ${GID} = gid;`];
+    const lines = [`  ${GID} = kit_g;`];
     for (const { id, dataType, init } of this.#privates) {
       lines.push(
         `  ${id} = ${init ?? this.ctx.resolveSnippet(this.typeInstantiation(dataType, [])).value};`,
@@ -1152,17 +1468,17 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       }
       const element = (array as d.WgslArray).elementType as d.BaseData;
       const stride = wordsOf(strideOf(element));
-      const address = `${buffer.base} + ${offset}u + ${linear(layout, 'gid')} * ${stride}u`;
+      const address = `${buffer.base} + ${offset}u + ${linear(layout, 'kit_g')} * ${stride}u`;
       lines.push(`  ${shadow} = ${this.load(buffer.source, address, element, buffer.id)};`);
     }
     for (const texture of this.#textures.values()) {
       const old = this.samplerUniform(texture);
       const cell = this.#columns.has(texture.id)
-        ? `ivec3(ivec2(gid.xy), ${LAYER})`
-        : this.#cellOf(texture, 'gid');
+        ? `ivec3(ivec2(kit_g.xy), ${LAYER})`
+        : this.#ownCell(texture, 'kit_g');
       lines.push(`  ${this.#textureShadow(texture)} = texelFetch(${old}, ${cell}, 0);`);
     }
-    return `${CHUNK} shared ${BEGIN}\nvoid ${BEGIN}(uvec3 gid) {\n${lines.join('\n')}\n}`;
+    return `${CHUNK} shared ${BEGIN}\nvoid ${BEGIN}(uvec3 kit_g) {\n${lines.join('\n')}\n}`;
   }
 
   #bufferPass(written: WrittenBuffer, index: number, kernel: string): string {
@@ -1198,35 +1514,36 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ? `uvec3(${[0, 1, 2].map((i) => chosen[i] ?? '0u').join(', ')})`
       : written.whole
         ? 'uvec3(0u)'
-        : invocationOf(layout, 'element');
+        : invocationOf(layout, 'kit_element');
+    // Locals start with `kit_`, so the kernel's functions and globals keep their names here
     return `${CHUNK} pass${index} main
 ${target}
 layout(location = 0) out uvec4 ${RESULT};
 void main() {
-  ivec2 texel = ivec2(gl_FragCoord.xy);
-  uvec4 old = texelFetch(${buffer.id}, texel, 0);
-  uvec4 result = old;
-  uint first = ${range}.x + ${offset}u;
-  uint end = ${range}.x + ${range}.y / 4u;
-  uint count = ${count};
-  uint base = (uint(texel.y) * uint(textureSize(${buffer.id}, 0).x) + uint(texel.x)) * 4u;
-  uint current = 0xFFFFFFFFu;
-  for (int k = 0; k < 4; k++) {
-    uint word = base + uint(k);
-    if (word < first || word >= end) continue;
-    uint element = (word - first) / ${stride}u;
-    uint inner = word - first - element * ${stride}u;
-    if (element >= count || inner >= ${size}u) continue;
-    uvec3 gid = ${gid};
-    if (any(greaterThanEqual(gid, ${INVOCATIONS}))) continue;
-    if (element != current) {
-      ${BEGIN}(gid);
+  ivec2 kit_frag = ivec2(gl_FragCoord.xy);
+  uvec4 kit_old = texelFetch(${buffer.id}, kit_frag, 0);
+  uvec4 kit_new = kit_old;
+  uint kit_first = ${range}.x + ${offset}u;
+  uint kit_end = ${range}.x + ${range}.y / 4u;
+  uint kit_count = ${count};
+  uint kit_base = (uint(kit_frag.y) * uint(textureSize(${buffer.id}, 0).x) + uint(kit_frag.x)) * 4u;
+  uint kit_last = 0xFFFFFFFFu;
+  for (int kit_k = 0; kit_k < 4; kit_k++) {
+    uint kit_at = kit_base + uint(kit_k);
+    if (kit_at < kit_first || kit_at >= kit_end) continue;
+    uint kit_element = (kit_at - kit_first) / ${stride}u;
+    uint kit_inner = kit_at - kit_first - kit_element * ${stride}u;
+    if (kit_element >= kit_count || kit_inner >= ${size}u) continue;
+    uvec3 kit_g = ${gid};
+    if (any(greaterThanEqual(kit_g, ${INVOCATIONS}))) continue;
+    if (kit_element != kit_last) {
+      ${BEGIN}(kit_g);
       ${kernel}();
-      current = element;
+      kit_last = kit_element;
     }
-    result[k] = ${pack}(${shadow}, inner, old[k]);
+    kit_new[kit_k] = ${pack}(${shadow}, kit_inner, kit_old[kit_k]);
   }
-  ${RESULT} = result;
+  ${RESULT} = kit_new;
 }`;
   }
 
@@ -1243,16 +1560,39 @@ void main() {
       texture.kind.dimension,
       format,
     ].join(' ');
+    const map = this.#maps.get(texture.id);
+    const cell = `uvec3(uvec2(gl_FragCoord.xy), uint(${LAYER}))`;
+    const owner: string[] = [];
+    if (map) {
+      // A coordinate with a residue depends on the others, so it comes last
+      const order = [...map.keys()].toSorted((a, b) => Number(!!map[a]?.r) - Number(!!map[b]?.r));
+      for (const i of order) {
+        const { step, r } = map[i] as TexelMap[number];
+        const c = AXES[i];
+        const local = r
+          ? `(kit_cell.${c} - ((${affineText(r.of, 'kit_g')}) & ${r.mask}u))`
+          : `kit_cell.${c}`;
+        owner.push(`  kit_mine = kit_mine && ${local} % ${step}u == 0u;`);
+        owner.push(`  kit_g.${c} = ${local} / ${step}u;`);
+      }
+    }
+    const gid = column ? 'uvec3(kit_cell.xy, 0u)' : map ? 'uvec3(0u)' : 'kit_cell';
+    const fallback = column
+      ? `ivec3(ivec2(kit_cell.xy), ${LAYER})`
+      : this.#cellOf(texture, 'kit_cell');
     return `${CHUNK} pass${index} main
 ${target}
 layout(location = 0) out ${this.#texelType(texture)} ${RESULT};
 void main() {
-  uvec3 gid = uvec3(uvec2(gl_FragCoord.xy), ${column ? '0u' : `uint(${LAYER})`});
-  if (any(greaterThanEqual(gid, ${INVOCATIONS}))) {
-    ${RESULT} = texelFetch(${old}, ${column ? `ivec3(ivec2(gid.xy), ${LAYER})` : this.#cellOf(texture, 'gid')}, 0);
+  uvec3 kit_cell = ${cell};
+  uvec3 kit_g = ${gid};
+  bool kit_mine = true;
+${owner.join('\n')}
+  if (!kit_mine || any(greaterThanEqual(kit_g, ${INVOCATIONS}))) {
+    ${RESULT} = texelFetch(${old}, ${fallback}, 0);
     return;
   }
-  ${BEGIN}(gid);
+  ${BEGIN}(kit_g);
   ${kernel}();
   ${RESULT} = ${this.#textureShadow(texture)};
 }`;

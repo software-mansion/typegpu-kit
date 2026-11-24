@@ -199,7 +199,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         }
       });
     },
-    "chooses an invocation by 'at', which it reassigns",
+    "finds its cells through 'at', which it reassigns",
   ],
   [
     'chooses on fewer axes than its workgroup',
@@ -263,7 +263,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x + 1] = 1;
       });
     },
-    "writes an element of 'out",
+    1,
   ],
   [
     'writes in a loop',
@@ -488,7 +488,85 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x * 3 + 1] = 1;
       });
     },
+    1,
+  ],
+  [
+    'writes at a stride past its phase',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 192));
+      return line(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x * 2 + 3] = 1;
+      });
+    },
     "writes an element of 'out",
+  ],
+  [
+    'writes its own element past an offset a uniform holds',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const half = root.createUniform(d.u32);
+      return line(({ gid: id }) => {
+        'use gpu';
+        const from = half.$;
+        out.$[id.x + (1 - from) * 64] = out.$[id.x + from * 64] as number;
+      });
+    },
+    1,
+  ],
+  [
+    'writes at an offset it reads from what it writes',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      return line(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x + (out.$[0] as number)] = 1;
+      });
+    },
+    "writes an element of 'out",
+  ],
+  [
+    'writes at an offset it reassigns',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const half = root.createUniform(d.u32);
+      return line(({ gid: id }) => {
+        'use gpu';
+        let from = half.$;
+        if (id.x > 3) from = d.u32(2);
+        out.$[id.x + from] = 1;
+      });
+    },
+    "finds its cells through 'from",
+  ],
+  [
+    'stores red cells of a red-black grid',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        volume: { storageTexture: d.textureStorage3d('r32float', 'read-write') },
+      });
+      return tgpu.computeFn({ workgroupSize: [4, 4, 4], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const cell = d.vec3i(d.i32(id.x * 2 + ((id.y + id.z + 1) & 1)), d.i32(id.y), d.i32(id.z));
+        const was = std.textureLoad(layout.$.volume, cell).x;
+        const left = std.textureLoad(layout.$.volume, cell - d.vec3i(1, 0, 0)).x;
+        std.textureStore(layout.$.volume, cell, d.vec4f(was * 0.5 + left, 0, 0, 0));
+      });
+    },
+    3,
+  ],
+  [
+    'stores at a residue of its own axis',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        target: { storageTexture: d.textureStorage2d('r32float', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.textureStore(layout.$.target, d.vec2u(id.x * 2 + (id.x & 1), id.y), d.vec4f(1));
+      });
+    },
+    "stores to a texel of 'target",
   ],
   [
     'writes a flattened index of a width it reads from a uniform',

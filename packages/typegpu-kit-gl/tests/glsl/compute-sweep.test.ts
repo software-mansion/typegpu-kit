@@ -105,5 +105,5 @@ it.each(examples.map((example) => example.key))('%s', async (key) => {
   const failures = reports.flatMap((each, i) =>
     problems(each).map((line) => `${passes[i]?.name}: ${line.split('\n').slice(0, 3).join(' | ')}`),
   );
-  expect(failures).toEqual([]);
+  expect(failures.join('\n')).toBe('');
 });
