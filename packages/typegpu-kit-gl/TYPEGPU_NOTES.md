@@ -285,6 +285,21 @@ if (id.x === d.u32(view.cursor.x)) pick.$ = …;
 
 **Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` records every assignment's root name per function and rejects the kernel at the function's end when a choice of invocation read a variable that was reassigned.
 
+### 23. A generator cannot ask what a function reads
+
+An accessor filled with a function, such as `tgpu.accessor(Pass, () => Pass(layout.$.pass))`, reaches a kernel as a call to a generated function. A generator that needs to know whether a value is the same for every invocation, as the GPU compute form does for an offset like `cells[own + (1 - current.$.source) * n]`, sees only the call. TypeGPU records which bindings a resolution reaches (`bindingUseProbe`) but not per function, nor whether a function reads private variables or the invocation's builtins.
+
+```ts
+const current = tgpu.accessor(Pass, () => {
+  'use gpu';
+  return Pass(layout.$.pass); // reads a uniform only, but the caller sees `current()`
+});
+```
+
+**Upstream.** Record, per generated function, the bindings, private variables and builtins it reads, transitively, and expose it to generators beside the function's snippet. In `core/function/fnCore.ts` and `resolutionCtx.ts`.
+
+**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` marks a function as shared when it has no parameters and its generated body names no private variable, written resource, invocation id or function that is not shared itself.
+
 ## Roots and devices
 
 ### 8. `root.configureContext` assumes a WebGPU canvas context
