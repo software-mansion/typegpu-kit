@@ -39,7 +39,7 @@ const sections = [
   <div class="search">
     <AlbumButton />
     <Search />
-    <a class="social" href={DISCORD} target="_blank" rel="noreferrer" aria-label="Join the TypeGPU Discord"
+    <a class="social" href={DISCORD} target="_blank" rel="noreferrer" aria-label="TypeGPU on Discord"
       ><Icon name="discord" size="20px" /></a
     >
     <a class="social" href={REPO} target="_blank" rel="noreferrer" aria-label="TypeGPU Kit on GitHub"
@@ -225,6 +225,11 @@ const sections = [
 
     .sections a {
       padding: 6px 8px;
+    }
+
+    /* No room beside the album, search and menu, as on TypeGPU's site. */
+    .social {
+      display: none;
     }
   }
   @media (max-width: 25em) {
