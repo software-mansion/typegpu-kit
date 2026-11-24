@@ -141,7 +141,7 @@ export class CpuGenerator extends WgslGenerator {
     }
     if (
       Array.isArray(expression) &&
-      expression[0] === NODE.memberAccess &&
+      (expression[0] === NODE.memberAccess || expression[0] === NODE.indexAccess) &&
       typeof result.dataType !== 'symbol' &&
       result.origin !== 'constant'
     ) {
