@@ -1,6 +1,8 @@
 // Opens every example page of a running docs server on the WebGL fallback and on WebGPU, and
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
-// [--out dir] [--backend webgl|webgpu|both] [--timeout seconds] [--reference dir] [example ...]`.
+// [--out dir] [--backend webgl|webgpu|both|nogpu] [--timeout seconds] [--reference dir]
+// [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
+// the page first, as a browser without it, so the page must fall back by itself.
 // With `--reference`, it also scores each screenshot against the one of the same name there.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -116,6 +118,14 @@ for (const example of keys) {
       viewport: { width: 800, height: 600 },
       deviceScaleFactor: 1,
     });
+    if (backend === 'nogpu') {
+      await context.addInitScript(() => {
+        delete (Navigator.prototype as { gpu?: unknown }).gpu;
+        for (const name of Object.getOwnPropertyNames(globalThis)) {
+          if (name.startsWith('GPU')) delete (globalThis as Record<string, unknown>)[name];
+        }
+      });
+    }
     const page = await context.newPage();
     const errors: string[] = [];
     page.on('console', (message) => {
