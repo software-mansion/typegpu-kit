@@ -208,7 +208,7 @@ function readThroughShader(
   y: number,
   width: number,
   height: number,
-): Float32Array {
+): { values: Float32Array; stride: number } {
   const { gl, state } = ctx;
   if (!ctx.ext.colorBufferFloat) {
     throw new Error(
@@ -239,7 +239,9 @@ function readThroughShader(
 
   const target = gl.createTexture();
   state.scratchTexture(gl.TEXTURE_2D, target);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, width, height);
+  // One channel reads back a quarter of the bytes where the driver reads R32F as RED
+  const single = texture.info.components === 1 && texture.info.format !== 'rgb9e5ufloat';
+  gl.texStorage2D(gl.TEXTURE_2D, 1, single ? gl.R32F : gl.RGBA32F, width, height);
   state.scratchTexture(gl.TEXTURE_2D, source.texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, sourceLevel);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, sourceLevel);
@@ -277,14 +279,19 @@ function readThroughShader(
   state.colorMask(0, 0xf);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  const out = new Float32Array(width * height * 4);
   state.readFramebuffer(ctx.scratch.draw);
   gl.readBuffer(gl.COLOR_ATTACHMENT0);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, out);
+  const red =
+    single &&
+    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RED &&
+    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.FLOAT;
+  const stride = red ? 1 : 4;
+  const out = new Float32Array(width * height * stride);
+  gl.readPixels(0, 0, width, height, red ? gl.RED : gl.RGBA, gl.FLOAT, out);
   gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
   gl.deleteTexture(target);
   if (temporary) gl.deleteTexture(temporary);
-  return out;
+  return { values: out, stride };
 }
 
 /** Reads a region of one level and layer from GL in the format's own layout. */
@@ -306,7 +313,8 @@ function readFromGl(
   }
   const out = texelArray(info, width * height);
   if (!info.renderable || info.hasDepth || info.kind === 'snorm') {
-    packTexels(info, readThroughShader(ctx, texture, level, layer, x, y, width, height), out);
+    const { values, stride } = readThroughShader(ctx, texture, level, layer, x, y, width, height);
+    packTexels(info, values, out, stride);
     return out;
   }
   state.readFramebuffer(ctx.scratch.read);

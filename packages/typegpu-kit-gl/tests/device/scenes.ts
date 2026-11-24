@@ -6,7 +6,7 @@
 import { frames } from '@typegpu/kit';
 import { offscreenSurface } from '@typegpu/kit/testing';
 import type { TgpuRoot } from 'typegpu';
-import type { Loading } from '../../../typegpu-kit-examples/src/contract.ts';
+import { loading } from '../../../../apps/typegpu-kit-docs/src/examples/files.ts';
 import { begin, filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
 import { exampleOf } from '../../../typegpu-kit-examples/src/index.ts';
 import { type Readback, readTexture } from './compare.ts';
@@ -19,15 +19,6 @@ export interface SceneRun {
   readonly frameTime: number;
 }
 
-const unavailable = (what: string) => () =>
-  Promise.reject(new Error(`${what} is not available in this test`));
-
-const loading: Loading = {
-  read: unavailable('reading files'),
-  font: unavailable('fonts'),
-  decode: unavailable('image decoding'),
-  draco: unavailable('Draco'),
-} as unknown as Loading;
 
 /**
  * Creates the example's scene on an offscreen surface, runs frames 1/25 s apart until it is ready
@@ -47,7 +38,7 @@ export async function runScene(
   let frameTime = 0;
   try {
     const { createScene } = await exampleOf(key).scene();
-    const files = await filesOf(key, loading);
+    const files = await filesOf(key, loading());
     const scene = await begin(await createScene(root, surface, files));
     destroy = () => scene.destroy?.();
     const state = { ready: scene.ready === undefined };

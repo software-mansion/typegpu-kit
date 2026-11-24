@@ -152,8 +152,9 @@ export function packTexels(
   info: FormatInfo,
   rgba: Uint8Array | Float32Array | Uint32Array | Int32Array,
   out: TexelArray,
+  stride = 4,
 ): void {
-  const count = rgba.length / 4;
+  const count = rgba.length / stride;
   const n = info.components;
   const { format } = info;
   if (format === 'rg11b10ufloat') {
@@ -189,7 +190,7 @@ export function packTexels(
   for (let i = 0; i < count; i++) {
     for (let c = 0; c < n; c++) {
       const source = info.bgra && c < 3 ? 2 - c : c;
-      const value = rgba[i * 4 + source]!;
+      const value = rgba[i * stride + source]!;
       out[i * n + c] = convert ? convert(value) : value;
     }
   }
