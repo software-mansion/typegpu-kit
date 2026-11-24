@@ -13,6 +13,7 @@ import {
   type TextureImpl,
   type ViewImpl,
   viewImpl,
+  writeEverything,
 } from './texture.ts';
 
 export interface ColorTarget {
@@ -173,7 +174,7 @@ export function endRender(pass: RenderPass): void {
       state.readFramebuffer(pass.fbo);
       gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
       state.drawFramebuffer(resolve);
-      state.enable(gl.SCISSOR_TEST, false);
+      writeEverything(ctx);
       gl.blitFramebuffer(
         0,
         0,

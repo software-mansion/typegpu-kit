@@ -324,6 +324,16 @@ export function framebuffer(
   return fbo;
 }
 
+/** Clears the masks and scissor that WebGL applies to clears and `blitFramebuffer` too. */
+export function writeEverything(ctx: Ctx): void {
+  const { gl, state } = ctx;
+  state.enable(gl.SCISSOR_TEST, false);
+  state.enable(gl.RASTERIZER_DISCARD, false);
+  state.colorMaskAll(0xf);
+  state.depthMask(true);
+  state.stencilWriteMask(0xff);
+}
+
 /** Copies one level and layer between textures with `blitFramebuffer`, both on GL. */
 export function blitLevel(
   ctx: Ctx,
@@ -355,8 +365,7 @@ export function blitLevel(
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
   }
-  state.enable(gl.SCISSOR_TEST, false);
-  state.enable(gl.RASTERIZER_DISCARD, false);
+  writeEverything(ctx);
   gl.blitFramebuffer(
     source.x,
     source.y,

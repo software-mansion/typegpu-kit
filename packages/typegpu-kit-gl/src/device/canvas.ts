@@ -5,7 +5,7 @@
  */
 
 import { type Ctx, TEXTURE_USAGE } from './context.ts';
-import { attachLevel, textureImpl } from './texture.ts';
+import { attachLevel, textureImpl, writeEverything } from './texture.ts';
 
 export interface Presenter {
   configure(
@@ -62,8 +62,11 @@ export function createPresenter(
     attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, 0, 0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     state.drawFramebuffer(null);
-    state.enable(gl.SCISSOR_TEST, false);
-    state.enable(gl.RASTERIZER_DISCARD, false);
+    writeEverything(ctx);
+    // A fresh drawing buffer is cleared lazily by the next clear or draw, not by a blit, so clear
+    // it now rather than after the blit
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     // Texture rows run top to bottom and the default framebuffer's bottom to top
     gl.blitFramebuffer(0, 0, width, height, 0, height, width, 0, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);

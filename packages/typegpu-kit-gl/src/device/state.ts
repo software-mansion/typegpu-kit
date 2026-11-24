@@ -36,7 +36,7 @@ export interface GLState {
   enable(cap: number, on: boolean): void;
   blend(index: number, state: BlendState): void;
   colorMask(index: number, mask: number): void;
-  /** Sets every draw buffer's mask; used before clears. */
+  /** Sets every draw buffer's mask, of the default framebuffer too, which ignores indexed masks. */
   colorMaskAll(mask: number): void;
   depthFunc(func: number): void;
   depthMask(on: boolean): void;
@@ -242,11 +242,8 @@ export function createState(gl: WebGL2RenderingContext, ext: Extensions): GLStat
     colorMask,
 
     colorMaskAll(mask) {
-      if (indexed) {
-        for (let i = 0; i < maxDrawBuffers; i++) colorMask(i, mask);
-      } else {
-        colorMask(0, mask);
-      }
+      gl.colorMask((mask & 1) !== 0, (mask & 2) !== 0, (mask & 4) !== 0, (mask & 8) !== 0);
+      masks = Array.from({ length: maxDrawBuffers }, () => mask);
     },
 
     depthFunc(value) {
