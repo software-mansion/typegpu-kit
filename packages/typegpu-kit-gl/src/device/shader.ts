@@ -42,6 +42,9 @@ export type ModuleImpl =
   | { readonly kind: 'error'; readonly message: string; readonly label: string };
 
 /** A descriptor key that carries a module built by hand instead of `code`. */
+/** The dispatch conditions `runGpu` checks, so GPU forms that need them parse. */
+const CONDITIONS = ['limits', 'single'] as const;
+
 export const PREBUILT: unique symbol = Symbol('@typegpu/kit-gl/prebuilt');
 
 export function moduleImpl(module: GPUShaderModule): ModuleImpl {
@@ -188,7 +191,7 @@ function build(
     if (isCpuModule(code)) {
       const module = compile(code);
       try {
-        const gpu = parseCompute(code, { defines: ctx.defines });
+        const gpu = parseCompute(code, { defines: ctx.defines, conditions: CONDITIONS });
         const reason = cpuOnlyReason(code);
         return {
           kind: 'compute',

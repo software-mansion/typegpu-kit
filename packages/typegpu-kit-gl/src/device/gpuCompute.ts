@@ -149,6 +149,18 @@ export function runGpu(
   const invocations = [x * wx, y * wy, z * wz] as const;
   if (module.grid < 2 && invocations[1] !== 1) return 'the dispatch spans y';
   if (module.grid < 3 && invocations[2] !== 1) return 'the dispatch spans z';
+  if (module.single && invocations[0] * invocations[1] * invocations[2] !== 1) {
+    return 'the form needs a dispatch of one invocation';
+  }
+  for (const { target } of gpu.passes) {
+    if (target.kind !== 'buffer') continue;
+    if (target.width !== undefined && invocations[0] > target.width) {
+      return `the dispatch is wider than ${target.width} invocations`;
+    }
+    if (target.height !== undefined && invocations[1] > target.height) {
+      return `the dispatch is taller than ${target.height} invocations`;
+    }
+  }
 
   const resolved: Resolved[] = [];
   const targets = new Set<BufferImpl | TextureImpl>();

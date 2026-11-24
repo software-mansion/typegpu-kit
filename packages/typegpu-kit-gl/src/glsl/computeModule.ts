@@ -140,7 +140,7 @@ export interface ComputeModule extends Bindings {
    * True when one invocation owns whole bindings: the form may run only when the dispatch is
    * exactly one invocation, all three counts 1.
    */
-  readonly single: boolean;
+  readonly single?: boolean;
 }
 
 /**
