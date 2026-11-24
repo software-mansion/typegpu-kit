@@ -112,6 +112,63 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     3,
   ],
   [
+    'writes a column of a 3d texture per invocation',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        volume: { storageTexture: d.textureStorage3d('rgba16float', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < 4; k++) {
+          std.textureStore(layout.$.volume, d.vec3u(id.xy, k), d.vec4f(d.f32(k)));
+        }
+      });
+    },
+    2,
+  ],
+  [
+    'writes a column of a 2d-array texture per invocation',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        layers: { storageTexture: d.textureStorage2dArray('rgba8unorm', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.textureStore(layout.$.layers, id.xy, id.x % 3, d.vec4f(1));
+      });
+    },
+    2,
+  ],
+  [
+    'reads back the column it writes',
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        volume: { storageTexture: d.textureStorage3d('r32float', 'read-write') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(1); k < 4; k++) {
+          const below = std.textureLoad(layout.$.volume, d.vec3u(id.xy, k - 1));
+          std.textureStore(layout.$.volume, d.vec3u(id.xy, k), below + 1);
+        }
+      });
+    },
+    "loads from 'volume', of which an invocation writes a whole column",
+  ],
+  [
+    "writes another invocation's column",
+    () => {
+      const layout = tgpu.bindGroupLayout({
+        volume: { storageTexture: d.textureStorage3d('rgba16float', 'write-only') },
+      });
+      return tgpu.computeFn({ workgroupSize: [8, 8], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.textureStore(layout.$.volume, d.vec3u(id.yx, 0), d.vec4f(1));
+      });
+    },
+    "stores to a texel of 'volume' that is not the invocation's own",
+  ],
+  [
     'reads its position from other builtins',
     (root) => {
       const out = root.createMutable(d.arrayOf(d.u32, 256));

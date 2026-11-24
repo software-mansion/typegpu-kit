@@ -71,6 +71,8 @@ export interface ComputePlan {
   readonly buffers: ReadonlyMap<string, WrittenPlan>;
   /** Each written storage texture's id. */
   readonly textures: ReadonlySet<string>;
+  /** The written 3d and 2d-array textures whose invocations own the column at their `xy`. */
+  readonly columns: ReadonlySet<string>;
 }
 
 const GID = 'kit_gid';
@@ -308,6 +310,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #plan: ComputePlan | undefined;
   readonly #buffers = new Map<string, WrittenBuffer>();
   readonly #textures = new Map<string, TextureInfo>();
+  readonly #columns = new Set<string>();
+  /** Storage textures the kernel loads from. */
+  readonly #loaded = new Set<string>();
   readonly #shadows = new Map<string, string>();
   readonly #privates: { id: string; dataType: d.BaseData; init: string | undefined }[] = [];
   readonly #frames: Frame[] = [];
@@ -363,6 +368,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         ]),
       ),
       textures: new Set(this.#textures.keys()),
+      columns: new Set(this.#columns),
     };
   }
 
@@ -707,7 +713,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       dimension === '2d-array'
         ? coords === 'xy' && axesOf(this.#own(args[2])) === 'z'
         : coords === { '1d': 'x', '2d': 'xy', '3d': 'xyz' }[dimension as string];
-    if (!owns) {
+    const column =
+      !owns &&
+      (dimension === '2d-array'
+        ? coords === 'xy'
+        : dimension === '3d' && this.#ownsColumn(args[1]));
+    if (column) this.#columns.add(texture.id);
+    if (!owns && !column) {
       const frame = this.#frame;
       if (!frame?.entry && !frame?.names.size) {
         throw new Ineligible(`a helper function stores to '${texture.id}'`);
@@ -719,8 +731,41 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     this.#relyOnOwn();
     this.#textures.set(texture.id, texture);
-    const value = args[dimension === '2d-array' ? 3 : 2];
-    return `${this.#textureShadow(texture)} = ${this.valueOf(value)}`;
+    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    const shadow = this.#textureShadow(texture);
+    if (!this.#plan?.columns.has(texture.id)) return `${shadow} = ${value}`;
+    const layer = dimension === '3d' ? `${this.ivecOf(args[1], 3)}.z` : this.intOf(args[2]);
+    return `${shadow} = (${layer}) == ${LAYER} ? ${value} : ${shadow}`;
+  }
+
+  /** Whether a 3d texel coordinate is `uvec3(xy, z)` with `xy` the invocation's own, any `z`. */
+  #ownsColumn(coordinate: Snippet | undefined): boolean {
+    const frame = this.#frame;
+    if (!coordinate || !frame || frame.names.size === 0) return false;
+    const text = this.ctx.resolveSnippet(coordinate).value.replace(/\s+/g, '');
+    const inner = /^[iu]vec3\((.*)\)$/.exec(text)?.[1];
+    if (inner === undefined) return false;
+    const parts: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < inner.length; i++) {
+      const c = inner[i];
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+      else if (c === ',' && depth === 0) {
+        parts.push(inner.slice(start, i));
+        start = i + 1;
+      }
+      if (depth < 0) return false;
+    }
+    parts.push(inner.slice(start));
+    const own = (part: string) => {
+      const value = new Arithmetic(part, frame.names).read();
+      return typeof value === 'object' ? axesOf(value) : undefined;
+    };
+    if (parts.length === 2) return own(parts[0] as string) === 'xy';
+    if (parts.length === 3) return own(`uvec2(${parts[0]},${parts[1]})`) === 'xy';
+    return false;
   }
 
   override emitCall(
@@ -731,6 +776,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (name === 'textureStore') return this.#store(args);
     if (name === 'textureLoad' && args[0]) {
       const texture = this.textureOf(args[0]);
+      if (this.#isStorage(texture)) this.#loaded.add(texture.id);
       if (this.#isStorage(texture) && this.#plan?.textures.has(texture.id)) {
         const cell = this.#cellIn(texture, args);
         const own = this.#cellOf(texture, GID);
@@ -819,6 +865,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
       if (buffers.length + this.#textures.size === 0) throw new Ineligible('writes nothing');
+      for (const id of this.#columns) {
+        if (this.#loaded.has(id)) {
+          throw new Ineligible(`loads from '${id}', of which an invocation writes a whole column`);
+        }
+      }
       for (const { layout, whole } of buffers) {
         if (whole) continue;
         const covered = layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3;
@@ -841,8 +892,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
           ...buffers.map(({ layout }) =>
             layout.width === undefined ? 1 : layout.height === undefined ? 2 : 3,
           ),
-          ...[...this.#textures.values()].map(
-            (texture) => ({ '1d': 1, '2d': 2 })[texture.kind.dimension as string] ?? 3,
+          ...[...this.#textures.values()].map((texture) =>
+            this.#columns.has(texture.id)
+              ? 2
+              : ({ '1d': 1, '2d': 2 }[texture.kind.dimension as string] ?? 3),
           ),
         );
     return [
@@ -879,9 +932,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     for (const texture of this.#textures.values()) {
       const old = this.samplerUniform(texture);
-      lines.push(
-        `  ${this.#textureShadow(texture)} = texelFetch(${old}, ${this.#cellOf(texture, 'gid')}, 0);`,
-      );
+      const cell = this.#columns.has(texture.id)
+        ? `ivec3(ivec2(gid.xy), ${LAYER})`
+        : this.#cellOf(texture, 'gid');
+      lines.push(`  ${this.#textureShadow(texture)} = texelFetch(${old}, ${cell}, 0);`);
     }
     return `${CHUNK} shared ${BEGIN}\nvoid ${BEGIN}(uvec3 gid) {\n${lines.join('\n')}\n}`;
   }
@@ -962,7 +1016,7 @@ void main() {
 ${target}
 layout(location = 0) out ${this.#texelType(texture)} ${RESULT};
 void main() {
-  uvec3 gid = uvec3(uvec2(gl_FragCoord.xy), uint(${LAYER}));
+  uvec3 gid = uvec3(uvec2(gl_FragCoord.xy), ${this.#columns.has(texture.id) ? '0u' : `uint(${LAYER})`});
   if (any(greaterThanEqual(gid, ${INVOCATIONS}))) {
     ${RESULT} = texelFetch(${old}, ${this.#cellOf(texture, 'gid')}, 0);
     return;

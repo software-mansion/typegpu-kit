@@ -437,6 +437,47 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
       },
     });
   });
+  it('sums a 3d texture along z, a column per invocation', async () => {
+    const layout = tgpu
+      .bindGroupLayout({
+        source: { texture: d.texture3d(), sampleType: 'unfilterable-float' },
+        summed: { storageTexture: d.textureStorage3d('rgba32float', 'write-only') },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [4, 2, 1], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x >= 3) return;
+        let total = d.vec4f();
+        for (let k = d.u32(0); k < 5; k++) {
+          total += std.textureLoad(layout.$.source, d.vec3u(id.xy, k), 0);
+          if (k % 2 === 0 || id.y === 1) {
+            std.textureStore(layout.$.summed, d.vec3u(id.xy, k), total);
+          }
+        }
+      }),
+      workgroups: [1, 2, 1],
+      inputs: {
+        source: {
+          kind: 'texture',
+          format: 'rgba32float',
+          dimension: '3d',
+          size: [4, 4, 5],
+          data: new Float32Array(range(320, (i) => (i % 7) - 2)),
+          storage: false,
+        },
+        summed: {
+          kind: 'texture',
+          format: 'rgba32float',
+          dimension: '3d',
+          size: [4, 4, 5],
+          data: new Float32Array(range(320, (i) => -i)),
+          storage: true,
+        },
+      },
+    });
+  });
 });
 
 describe('GPU forms of wider kernels run as WebGPU runs them', () => {
