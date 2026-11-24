@@ -140,10 +140,11 @@ function samplesFor(ctx: Ctx, info: FormatInfo, requested: number): number {
 
 function freeFramebuffers(ctx: Ctx, texture: TextureImpl): void {
   for (const key of texture.framebuffers) {
-    const fbo = framebuffersOf(ctx).get(key);
-    if (fbo) {
-      ctx.gl.deleteFramebuffer(fbo);
+    const entry = framebuffersOf(ctx).get(key);
+    if (entry) {
+      ctx.gl.deleteFramebuffer(entry.fbo);
       framebuffersOf(ctx).delete(key);
+      for (const other of entry.textures) if (other !== texture) other.framebuffers.delete(key);
     }
   }
   texture.framebuffers.clear();
@@ -270,9 +271,20 @@ export interface Attachment {
   readonly layer: number;
 }
 
-const framebufferCaches = new WeakMap<Ctx, Map<string, WebGLFramebuffer>>();
+interface CachedFramebuffer {
+  readonly fbo: WebGLFramebuffer;
+  readonly textures: readonly TextureImpl[];
+}
 
-function framebuffersOf(ctx: Ctx): Map<string, WebGLFramebuffer> {
+/**
+ * Framebuffers kept, the least recently used freed first: a bake that renders each layer of a
+ * texture once would otherwise keep one per layer for as long as the texture lives.
+ */
+const KEPT_FRAMEBUFFERS = 256;
+
+const framebufferCaches = new WeakMap<Ctx, Map<string, CachedFramebuffer>>();
+
+function framebuffersOf(ctx: Ctx): Map<string, CachedFramebuffer> {
   let cache = framebufferCaches.get(ctx);
   if (!cache) {
     cache = new Map();
@@ -282,6 +294,26 @@ function framebuffersOf(ctx: Ctx): Map<string, WebGLFramebuffer> {
 }
 
 const keyOf = (a: Attachment | null) => (a ? `${a.texture.id}.${a.level}.${a.layer}` : '-');
+
+/**
+ * Whether GL is sure to find these attachments complete, which spares asking it: every format
+ * renders and every attachment has the same size and one sample. Multisampled renderbuffers may
+ * round their sample counts apart, so GL checks those.
+ */
+function plainlyComplete(attachments: readonly Attachment[]): boolean {
+  const [first] = attachments;
+  if (!first) return false;
+  const [width, height] = mipSize(first.texture, first.level);
+  return attachments.every(({ texture, level }) => {
+    const [w, h] = mipSize(texture, level);
+    return (
+      (texture.info.renderable || texture.info.hasDepth || texture.info.hasStencil) &&
+      w === width &&
+      h === height &&
+      texture.sampleCount === 1
+    );
+  });
+}
 
 /** A framebuffer with these attachments, made once and kept until a texture in it is freed. */
 export function framebuffer(
@@ -293,7 +325,17 @@ export function framebuffer(
   const key = `${colors.map(keyOf).join(',')}|${keyOf(depth)}`;
   const cache = framebuffersOf(ctx);
   const cached = cache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached.fbo;
+  }
+  if (cache.size >= KEPT_FRAMEBUFFERS) {
+    const [oldest, entry] = cache.entries().next().value!;
+    cache.delete(oldest);
+    gl.deleteFramebuffer(entry.fbo);
+    for (const texture of entry.textures) texture.framebuffers.delete(oldest);
+  }
 
   const fbo = gl.createFramebuffer();
   state.drawFramebuffer(fbo);
@@ -326,7 +368,11 @@ export function framebuffer(
     );
   }
   state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
-  const status = gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER);
+  const attachments = [...colors, depth].filter((a): a is Attachment => a !== null);
+  // Asking GL waits for its GPU process, which costs most of a framebuffer's making
+  const status = plainlyComplete(attachments)
+    ? gl.FRAMEBUFFER_COMPLETE
+    : gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
     ctx.errors.report(
       'validation',
@@ -336,8 +382,8 @@ export function framebuffer(
         .join(', ')}) do not make a complete WebGL framebuffer (status 0x${status.toString(16)}).`,
     );
   }
-  cache.set(key, fbo);
-  for (const attachment of [...colors, depth]) attachment?.texture.framebuffers.add(key);
+  cache.set(key, { fbo, textures: attachments.map((a) => a.texture) });
+  for (const { texture } of attachments) texture.framebuffers.add(key);
   return fbo;
 }
 

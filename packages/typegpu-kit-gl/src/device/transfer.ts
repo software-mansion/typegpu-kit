@@ -281,10 +281,7 @@ function readThroughShader(
 
   state.readFramebuffer(ctx.scratch.draw);
   state.readBuffer(gl.COLOR_ATTACHMENT0);
-  const red =
-    single &&
-    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RED &&
-    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.FLOAT;
+  const red = single && readsAs(ctx, gl.R32F, gl.RED, gl.FLOAT);
   const stride = red ? 1 : 4;
   const out = new Float32Array(width * height * stride);
   gl.readPixels(0, 0, width, height, red ? gl.RED : gl.RGBA, gl.FLOAT, out);
@@ -294,12 +291,25 @@ function readThroughShader(
   return { values: out, stride };
 }
 
-/** Whether the bound read framebuffer reads back as RGBA half floats, which need no conversion. */
-function readsHalves(gl: WebGL2RenderingContext): boolean {
-  return (
-    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RGBA &&
-    gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.HALF_FLOAT
-  );
+const readFormats = new WeakMap<Ctx, Map<string, boolean>>();
+
+/**
+ * Whether the bound read framebuffer, whose attachment has the `internal` format, reads back in
+ * `format` and `type`. Asked once per format: the query waits for the GPU in some browsers.
+ */
+function readsAs(ctx: Ctx, internal: number, format: number, type: number): boolean {
+  const { gl } = ctx;
+  let known = readFormats.get(ctx);
+  if (!known) readFormats.set(ctx, (known = new Map()));
+  const key = `${internal}:${format}:${type}`;
+  let reads = known.get(key);
+  if (reads === undefined) {
+    reads =
+      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === format &&
+      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === type;
+    known.set(key, reads);
+  }
+  return reads;
 }
 
 /** Reads a region of one level and layer from GL in the format's own layout. */
@@ -335,7 +345,7 @@ function readFromGl(
     const rgba = new Uint8Array(count);
     gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     packTexels(info, rgba, out);
-  } else if (info.array === 'f16' && readsHalves(gl)) {
+  } else if (info.array === 'f16' && readsAs(ctx, info.internal, gl.RGBA, gl.HALF_FLOAT)) {
     const rgba = new Uint16Array(count);
     gl.readPixels(x, y, width, height, gl.RGBA, gl.HALF_FLOAT, rgba);
     const n = info.components;
