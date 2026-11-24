@@ -81,7 +81,16 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   };
 
   try {
+    const start = performance.now();
     module.dispatch(x, y, z, resources);
+    const kernel = ctx.stats.kernels.get(pipeline.label);
+    const ms = performance.now() - start;
+    if (kernel) {
+      kernel.ms += ms;
+      kernel.dispatches++;
+    } else {
+      ctx.stats.kernels.set(pipeline.label, { ms, dispatches: 1 });
+    }
   } catch (error) {
     ctx.errors.report(
       'internal',

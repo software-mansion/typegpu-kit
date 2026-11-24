@@ -5,6 +5,31 @@ import type { Extensions } from './extensions.ts';
 import type { FormatTable } from './formats.ts';
 import type { GLState } from './state.ts';
 
+/** Where the device spent its time since the last `reset`, for finding slow frames. */
+export interface DeviceStats {
+  /** Milliseconds and dispatches per compute pipeline, by label. */
+  readonly kernels: Map<string, { ms: number; dispatches: number }>;
+  /** Texture reads from GL into CPU copies for kernels. */
+  readonly readback: { ms: number; textures: number };
+  /** Uploads of the CPU copies kernels wrote, before GL uses them. */
+  readonly upload: { ms: number; textures: number };
+  reset(): void;
+}
+
+export function createStats(): DeviceStats {
+  const stats: DeviceStats = {
+    kernels: new Map(),
+    readback: { ms: 0, textures: 0 },
+    upload: { ms: 0, textures: 0 },
+    reset() {
+      stats.kernels.clear();
+      Object.assign(stats.readback, { ms: 0, textures: 0 });
+      Object.assign(stats.upload, { ms: 0, textures: 0 });
+    },
+  };
+  return stats;
+}
+
 export interface Ctx {
   readonly gl: WebGL2RenderingContext;
   readonly canvas: HTMLCanvasElement | OffscreenCanvas;
@@ -28,6 +53,7 @@ export interface Ctx {
   track(free: () => void): () => void;
   /** Called after a submit wrote to a canvas texture, to present it. */
   presented(texture: object): void;
+  readonly stats: DeviceStats;
   lost: boolean;
 }
 

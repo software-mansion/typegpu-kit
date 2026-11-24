@@ -7,7 +7,9 @@ import { CLIP_ZERO_TO_ONE, type RenderModule } from '../glsl/renderModule.ts';
 import { makeGroup, makeLayout, makePipelineLayout } from './binding.ts';
 import { bufferImpl, createBuffer, writeBytes } from './buffer.ts';
 import { createPresenter } from './canvas.ts';
-import type { Ctx } from './context.ts';
+import { createStats, type Ctx, type DeviceStats } from './context.ts';
+
+export type { DeviceStats } from './context.ts';
 import {
   commandBufferImpl,
   createCommandEncoder,
@@ -58,6 +60,8 @@ export interface BackendInfo {
 
 export interface GLDevice extends GPUDevice {
   readonly gl: WebGL2RenderingContext;
+  /** Time spent in CPU kernels, readback and uploads since `stats.reset()`. */
+  readonly stats: DeviceStats;
   readonly [BACKEND]: BackendInfo;
 }
 
@@ -150,6 +154,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
       return () => frees.delete(free);
     },
     presented: (record) => presentRecord?.(record),
+    stats: createStats(),
     lost: false,
   };
 
@@ -267,6 +272,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     __brand: 'GPUDevice',
     label: '',
     gl,
+    stats: ctx.stats,
     [BACKEND]: backend,
     features: featuresOf(ext, formats),
     limits: limitsOf(gl),

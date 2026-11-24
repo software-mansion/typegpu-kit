@@ -48,6 +48,7 @@ describe('compute and passes', () => {
     device.queue.writeBuffer(values, 0, new Float32Array([0.25, 0.125, 0, 0.5]));
     const kernel = await device.createComputePipelineAsync({
       layout: 'auto',
+      label: 'doubler',
       compute: { module: shaderModuleFrom(device, doubler) },
     });
     const shader = module(device, {
@@ -111,6 +112,7 @@ describe('compute and passes', () => {
     after.end();
     device.queue.submit([encoder.finish()]);
     expect(pixel(await readTexture(device, copy), 0, 0)).toEqual([64, 32, 0, 128]);
+    expect(device.stats.kernels.get('doubler')?.dispatches).toBe(1);
     expect(pixel(await readTexture(device, texture), 0, 0)).toEqual([128, 64, 0, 255]);
 
     const staging = device.createBuffer({

@@ -361,6 +361,7 @@ export function readTexels(
 /** The texture's CPU copy, current: every level, rows top to bottom, layers in order. */
 export function cpuLevels(ctx: Ctx, texture: TextureImpl): CpuLevelCopy[] {
   if (texture.cpu && texture.home !== 'gl') return texture.cpu;
+  const start = performance.now();
   const levels: CpuLevelCopy[] = [];
   for (let level = 0; level < texture.mipLevelCount; level++) {
     const [width, height, layers] = mipSize(texture, level);
@@ -375,12 +376,15 @@ export function cpuLevels(ctx: Ctx, texture: TextureImpl): CpuLevelCopy[] {
   }
   texture.cpu = levels;
   texture.home = 'both';
+  ctx.stats.readback.ms += performance.now() - start;
+  ctx.stats.readback.textures++;
   return levels;
 }
 
 installCpuUpload((ctx, texture) => {
   const levels = texture.cpu;
   if (!levels) return;
+  const start = performance.now();
   texture.home = 'both';
   levels.forEach((copy, level) => {
     const bytes = new Uint8Array(copy.data.buffer, copy.data.byteOffset, copy.data.byteLength);
@@ -402,6 +406,8 @@ installCpuUpload((ctx, texture) => {
     );
   });
   texture.home = 'both';
+  ctx.stats.upload.ms += performance.now() - start;
+  ctx.stats.upload.textures++;
 });
 
 export function copyTextureToBuffer(
