@@ -2,8 +2,7 @@
  * A `GPUDevice` implemented on a `WebGL2RenderingContext`, for TypeGPU to run on unchanged.
  */
 
-import type { CpuModule } from '../cpu/types.ts';
-import { CLIP_ZERO_TO_ONE, type RenderModule } from '../glsl/renderModule.ts';
+import { CLIP_ZERO_TO_ONE } from '../glsl/renderModule.ts';
 import { makeGroup, makeLayout, makePipelineLayout } from './binding.ts';
 import { bufferImpl, createBuffer, writeBytes } from './buffer.ts';
 import { createPresenter } from './canvas.ts';
@@ -26,7 +25,9 @@ import {
   createRenderPipelineAsync,
 } from './pipeline.ts';
 import { createSampler } from './sampler.ts';
-import { createShaderModule, PREBUILT } from './shader.ts';
+import { createShaderModule, type Prebuilt, PREBUILT } from './shader.ts';
+
+export type { Prebuilt } from './shader.ts';
 import { createState } from './state.ts';
 import { createTexture, textureImpl } from './texture.ts';
 import { copyExternalImageToTexture, importExternalTexture, writeTexture } from './transfer.ts';
@@ -77,7 +78,7 @@ export function isSupported(): boolean {
  */
 export function shaderModuleFrom(
   device: GPUDevice,
-  module: RenderModule | CpuModule,
+  module: Prebuilt,
   label?: string,
 ): GPUShaderModule {
   return device.createShaderModule({

@@ -6,6 +6,7 @@
 
 import { compile, isCpuModule } from '../cpu/index.ts';
 import type { CpuModule } from '../cpu/types.ts';
+import { type ComputeModule, parseCompute } from '../glsl/computeModule.ts';
 import {
   type BlockBinding,
   type BufferBinding,
@@ -29,7 +30,15 @@ export interface Stages {
 
 export type ModuleImpl =
   | { readonly kind: 'render'; readonly stages: Stages; readonly label: string }
-  | { readonly kind: 'compute'; readonly module: CpuModule; readonly label: string }
+  | {
+      readonly kind: 'compute';
+      readonly module: CpuModule;
+      /** The kernel as fragment passes, when the generator could write it so. */
+      readonly gpu: ComputeModule | undefined;
+      /** Why the GPU form failed to parse. */
+      readonly gpuError?: string;
+      readonly label: string;
+    }
   | { readonly kind: 'error'; readonly message: string; readonly label: string };
 
 /** A descriptor key that carries a module built by hand instead of `code`. */
@@ -152,23 +161,49 @@ function stagesOf(module: RenderModule): Stages {
   };
 }
 
+/** A module built by hand: a render module, or a CPU module with an optional GPU form. */
+export type Prebuilt =
+  | RenderModule
+  | CpuModule
+  | { readonly cpu: CpuModule; readonly gpu: ComputeModule };
+
 function build(
   ctx: Ctx,
-  descriptor: GPUShaderModuleDescriptor & { [PREBUILT]?: RenderModule | CpuModule },
+  descriptor: GPUShaderModuleDescriptor & { [PREBUILT]?: Prebuilt },
 ): ModuleImpl {
   const label = descriptor.label ?? '';
   const prebuilt = descriptor[PREBUILT];
   if (prebuilt) {
+    if ('cpu' in prebuilt)
+      return { kind: 'compute', module: prebuilt.cpu, gpu: prebuilt.gpu, label };
     return prebuilt.kind === 'render'
       ? { kind: 'render', stages: stagesOf(prebuilt), label }
-      : { kind: 'compute', module: prebuilt, label };
+      : { kind: 'compute', module: prebuilt, gpu: undefined, label };
   }
   const { code } = descriptor;
   try {
     if (isRenderModule(code)) {
       return { kind: 'render', stages: stagesOf(parse(code, { defines: ctx.defines })), label };
     }
-    if (isCpuModule(code)) return { kind: 'compute', module: compile(code), label };
+    if (isCpuModule(code)) {
+      const module = compile(code);
+      try {
+        return {
+          kind: 'compute',
+          module,
+          gpu: parseCompute(code, { defines: ctx.defines }),
+          label,
+        };
+      } catch (error) {
+        return {
+          kind: 'compute',
+          module,
+          gpu: undefined,
+          gpuError: (error as Error).message,
+          label,
+        };
+      }
+    }
   } catch (error) {
     return {
       kind: 'error',
@@ -187,7 +222,7 @@ function build(
 
 export function createShaderModule(
   ctx: Ctx,
-  descriptor: GPUShaderModuleDescriptor & { [PREBUILT]?: RenderModule | CpuModule },
+  descriptor: GPUShaderModuleDescriptor & { [PREBUILT]?: Prebuilt },
 ): GPUShaderModule {
   const impl = build(ctx, descriptor);
   if (impl.kind === 'error') ctx.errors.report('validation', impl.message);

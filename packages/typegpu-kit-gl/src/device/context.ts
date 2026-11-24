@@ -13,6 +13,8 @@ export interface DeviceStats {
   readonly readback: { ms: number; textures: number };
   /** Uploads of the CPU copies kernels wrote, before GL uses them. */
   readonly upload: { ms: number; textures: number };
+  /** Why a compute pipeline last ran a dispatch on the CPU despite carrying a GPU form, by label. */
+  readonly fallbacks: Map<string, string>;
   reset(): void;
 }
 
@@ -21,8 +23,10 @@ export function createStats(): DeviceStats {
     kernels: new Map(),
     readback: { ms: 0, textures: 0 },
     upload: { ms: 0, textures: 0 },
+    fallbacks: new Map(),
     reset() {
       stats.kernels.clear();
+      stats.fallbacks.clear();
       Object.assign(stats.readback, { ms: 0, textures: 0 });
       Object.assign(stats.upload, { ms: 0, textures: 0 });
     },

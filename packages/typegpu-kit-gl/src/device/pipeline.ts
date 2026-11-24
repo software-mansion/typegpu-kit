@@ -7,6 +7,7 @@ import { type Ctx, IMPL, SHADER_STAGE } from './context.ts';
 import { formatInfo, vertexFormatInfo } from './formats.ts';
 import { type Linked, link, linkAsync, type Program } from './program.ts';
 import { compareFunc } from './sampler.ts';
+import { type GpuCompute, prepareGpu } from './gpuCompute.ts';
 import { moduleImpl, type Stages } from './shader.ts';
 import type { BlendState, StencilFace } from './state.ts';
 import {
@@ -75,6 +76,8 @@ export interface ComputePipelineImpl {
   readonly label: string;
   readonly module: CpuModule | undefined;
   readonly error: string | undefined;
+  /** The kernel as fragment passes, when its module carries a GPU form that links. */
+  readonly gpu: GpuCompute | undefined;
 }
 
 export function renderPipelineImpl(pipeline: GPURenderPipeline): RenderPipelineImpl {
@@ -504,10 +507,17 @@ export function createComputePipeline(
   else if (module.kind === 'error') error = module.message;
   else error = `The compute pipeline '${label}' was given a render module.`;
   if (error) ctx.errors.report('validation', error);
+  let gpu: GpuCompute | undefined;
+  if (module.kind === 'compute' && module.gpuError) ctx.stats.fallbacks.set(label, module.gpuError);
+  if (module.kind === 'compute' && module.gpu) {
+    const prepared = prepareGpu(ctx, label, module.module, module.gpu);
+    if (typeof prepared === 'string') ctx.stats.fallbacks.set(label, prepared);
+    else gpu = prepared;
+  }
   const explicit =
     descriptor.layout === 'auto' ? undefined : pipelineLayoutGroups(descriptor.layout);
   return {
-    [IMPL]: { label, module: cpu, error } satisfies ComputePipelineImpl,
+    [IMPL]: { label, module: cpu, error, gpu } satisfies ComputePipelineImpl,
     __brand: 'GPUComputePipeline',
     label,
     getBindGroupLayout(index: number): GPUBindGroupLayout {

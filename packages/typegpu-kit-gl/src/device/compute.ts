@@ -4,6 +4,7 @@ import type { CpuResources, CpuTexture, CpuTextureLevel } from '../cpu/types.ts'
 import { type Bound, bufferEntry } from './binding.ts';
 import { type BufferImpl, written } from './buffer.ts';
 import type { Ctx } from './context.ts';
+import { runGpu } from './gpuCompute.ts';
 import type { ComputePipelineImpl } from './pipeline.ts';
 import { cpuWritten, type TextureImpl, type ViewImpl } from './texture.ts';
 import { cpuLevels } from './transfer.ts';
@@ -43,6 +44,16 @@ function cpuTexture(ctx: Ctx, view: ViewImpl): CpuTexture {
   };
 }
 
+function count(ctx: Ctx, label: string, ms: number): void {
+  const kernel = ctx.stats.kernels.get(label);
+  if (kernel) {
+    kernel.ms += ms;
+    kernel.dispatches++;
+  } else {
+    ctx.stats.kernels.set(label, { ms, dispatches: 1 });
+  }
+}
+
 export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: number): void {
   const pipeline = pass.pipeline;
   const module = pipeline?.module;
@@ -51,6 +62,15 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
     return;
   }
   if (x === 0 || y === 0 || z === 0) return;
+  if (pipeline.gpu) {
+    const start = performance.now();
+    const reason = runGpu(ctx, pipeline.gpu, pass.groups, x, y, z);
+    if (reason === undefined) {
+      count(ctx, `${pipeline.label} (gpu)`, performance.now() - start);
+      return;
+    }
+    ctx.stats.fallbacks.set(pipeline.label, reason);
+  }
   const buffers = new Map<string, { buffer: BufferImpl; offset: number; size: number }>();
   const textures = new Map<string, TextureImpl>();
 
@@ -84,14 +104,7 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   try {
     const start = performance.now();
     module.dispatch(x, y, z, resources);
-    const kernel = ctx.stats.kernels.get(pipeline.label);
-    const ms = performance.now() - start;
-    if (kernel) {
-      kernel.ms += ms;
-      kernel.dispatches++;
-    } else {
-      ctx.stats.kernels.set(pipeline.label, { ms, dispatches: 1 });
-    }
+    count(ctx, pipeline.label, performance.now() - start);
   } catch (error) {
     ctx.errors.report(
       'internal',
