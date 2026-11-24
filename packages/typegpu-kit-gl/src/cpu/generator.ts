@@ -390,7 +390,29 @@ export class CpuGenerator extends WgslGenerator {
       const convert = (value: string) =>
         type.endsWith('u') ? `((${value})>>>0)` : type.endsWith('i') ? `((${value})|0)` : value;
       this.ctx.addDeclaration(
-        `function ${name}(...args) { const value = args.length === 1 && typeof args[0] !== 'number' ? args[0] : args; return $vector([${Array.from({ length: count }, (_, i) => convert(`(value[${i}] ?? (value.length===1 ? value[0] : 0))`)).join(',')}]); }`,
+        `function ${name}(...args) { const value = args.length === 1 && typeof args[0] !== 'number' ? (args[0] ?? []) : args; return $vector([${Array.from({ length: count }, (_, i) => convert(`(value[${i}] ?? (value.length===1 ? value[0] : 0))`)).join(',')}]); }`,
+        name,
+      );
+      return name;
+    }
+    if (schema.type === 'struct') {
+      const entries = Object.entries((schema as d.WgslStruct).propTypes);
+      const copied = entries.map(([key, field]) => {
+        const fieldType = this.emitTypeAnnotation(field);
+        const input = `value?.[${JSON.stringify(key)}]`;
+        const copy = fieldType.startsWith('cpuType')
+          ? `${fieldType}(${input})`
+          : fieldType === 'u32'
+            ? `((${input})>>>0)`
+            : fieldType === 'i32'
+              ? `((${input})|0)`
+              : fieldType === 'bool'
+                ? `Boolean(${input})`
+                : `Number(${input}??0)`;
+        return `${JSON.stringify(key)}:${copy}`;
+      });
+      this.ctx.addDeclaration(
+        `function ${name}(value) { return {${copied.join(',')}}; }\n${name}.fields=(...args)=>${name}({${entries.map(([key], i) => `${JSON.stringify(key)}:args[${i}]`).join(',')}});`,
         name,
       );
       return name;

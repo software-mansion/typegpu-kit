@@ -135,6 +135,68 @@ function cubeDirection(face: number, u: number, v: number): number[] {
   ][face]!;
 }
 
+function sampleDepth(
+  texture: CpuTexture,
+  sampler: GPUSamplerDescriptor,
+  coords: number[],
+  layer: number,
+  requested: number,
+  compare?: number,
+): number {
+  const lod = Math.min(
+    Math.max(requested, sampler.lodMinClamp ?? 0),
+    sampler.lodMaxClamp ?? 32,
+    texture.levels.length - 1,
+  );
+  const sample = (index: number) => {
+    const level = texture.levels[index]!;
+    const at = (x: number, y: number) => {
+      const value =
+        (level.data as Float32Array)[
+          (layer * level.height + wrap(y, level.height, sampler.addressModeV)) * level.width +
+            wrap(x, level.width, sampler.addressModeU)
+        ] ?? 0;
+      if (compare === undefined) return value;
+      switch (sampler.compare) {
+        case 'always':
+          return 1;
+        case 'never':
+          return 0;
+        case 'less':
+          return Number(compare < value);
+        case 'less-equal':
+          return Number(compare <= value);
+        case 'greater':
+          return Number(compare > value);
+        case 'greater-equal':
+          return Number(compare >= value);
+        case 'equal':
+          return Number(compare === value);
+        default:
+          return Number(compare !== value);
+      }
+    };
+    const x = coords[0]! * level.width,
+      y = coords[1]! * level.height;
+    if ((lod <= 0 ? sampler.magFilter : sampler.minFilter) !== 'linear')
+      return at(Math.floor(x), Math.floor(y));
+    const bx = Math.floor(x - 0.5),
+      by = Math.floor(y - 0.5),
+      fx = x - 0.5 - bx,
+      fy = y - 0.5 - by;
+    return (
+      (at(bx, by) * (1 - fx) + at(bx + 1, by) * fx) * (1 - fy) +
+      (at(bx, by + 1) * (1 - fx) + at(bx + 1, by + 1) * fx) * fy
+    );
+  };
+  if (sampler.mipmapFilter !== 'linear') return sample(Math.round(lod));
+  const low = Math.floor(lod),
+    fraction = lod - low;
+  return (
+    sample(low) * (1 - fraction) + sample(Math.min(low + 1, texture.levels.length - 1)) * fraction
+  );
+}
+
 export const textureOps = {
   textureSampleCompareLevel(
     texture: CpuTexture,
@@ -220,6 +282,18 @@ export const textureOps = {
   ): number[] | number {
     if (!['2d', '2d-array', '3d', 'cube', 'cube-array'].includes(texture.dimension))
       throw new Error(`@typegpu/kit-gl CPU: unsupported sampled dimension ${texture.dimension}`);
+    if (
+      texture.format.startsWith('depth') &&
+      (texture.dimension === '2d' || texture.dimension === '2d-array')
+    )
+      return sampleDepth(
+        texture,
+        sampler,
+        coords,
+        texture.dimension === '2d-array' ? Math.round(layerOrLod) : 0,
+        texture.dimension === '2d-array' ? arrayLod! : layerOrLod,
+        compare,
+      );
     const cube = texture.dimension.startsWith('cube');
     const array = texture.dimension === '2d-array' || texture.dimension === 'cube-array';
     const face = cube ? cubeFace(coords) : undefined;

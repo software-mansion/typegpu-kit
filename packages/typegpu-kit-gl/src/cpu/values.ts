@@ -73,7 +73,7 @@ export function construct(layout: Layout, ...args: Value[]): Value {
   }
   const result: Value[] = [];
   for (let i = 0; i < layout.count!; i++) {
-    const input = args.length === 1 ? (args[0] as Value[])[i] : args[i];
+    const input = args.length === 1 ? ((args[0] ?? []) as Value[])[i] : args[i];
     result.push(construct(layout.element!, ...(input === undefined ? [] : [input])));
   }
   return result;

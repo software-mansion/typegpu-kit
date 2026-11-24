@@ -79,7 +79,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
       session?.connect();
       if (session) {
         await session.post('Profiler.enable');
-        await session.post('Profiler.start');
+        if (process.env.CPU_PROFILE_PHASE !== 'steady') await session.post('Profiler.start');
       }
       const root =
         process.env.CPU_EXECUTE === '1'
@@ -148,6 +148,8 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         const driver = driven(loop, scene.ready);
         await driver.warmUp();
         steady = true;
+        if (session && process.env.CPU_PROFILE_PHASE === 'steady')
+          await session.post('Profiler.start');
         await driver.run(2);
         steady = false;
         const rawCompute = recording.log.shaders.find(
@@ -176,6 +178,9 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
+                unexecutedEntries: modules
+                  .filter((code) => !dispatched.has(code))
+                  .map((code) => JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name),
                 perFrame: {
                   dispatches: steadyDispatches.calls / 2,
                   invocations: steadyDispatches.invocations / 2,
