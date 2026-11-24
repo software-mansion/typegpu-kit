@@ -184,6 +184,8 @@ export interface Place {
   readonly schema: d.BaseData;
   /** Words from the bound range's start, while no index has made the address dynamic. */
   readonly offset?: number;
+  /** The GLSL access from the buffer's value to the place, while no index has been taken. */
+  readonly path?: string;
   /** Set inside an element of the outermost array of the buffer. */
   readonly element?: Element;
 }
@@ -195,8 +197,12 @@ export interface Element {
   readonly array: d.WgslArray;
   /** A GLSL `uint` expression: the element's index. */
   readonly index: string;
-  /** Whether the index is the invocation's own, as `indexIsOwn` proved. */
+  /** Whether the index is the invocation's own, as `ownIndex` proved. */
   readonly own: boolean;
+  /** How the index is the invocation's own, as `ownIndex` gave it. */
+  readonly ownership?: unknown;
+  /** The GLSL access from the buffer's value to the array, such as `.items`. */
+  readonly arrayPath: string;
   /** The GLSL access from the element to the place, such as `.position.x`. */
   readonly path: string;
 }
@@ -527,7 +533,13 @@ export class KitGlslGenerator extends GlslGenerator {
         base: `${range}.x`,
       };
     }
-    const root = this.placeSnippet({ buffer, address: buffer.base, schema: dataType, offset: 0 });
+    const root = this.placeSnippet({
+      buffer,
+      address: buffer.base,
+      schema: dataType,
+      offset: 0,
+      path: '',
+    });
     return snip(root.value as string, dataType, access) as ResolvedSnippet;
   }
 
@@ -680,9 +692,12 @@ export class KitGlslGenerator extends GlslGenerator {
     return load;
   }
 
-  /** Whether an array index is provably the invocation's own. Only compute kernels have one. */
-  protected indexIsOwn(_index: Snippet): boolean {
-    return false;
+  /**
+   * How an array index is provably the invocation's own, or undefined. Only compute kernels have
+   * an invocation.
+   */
+  protected ownIndex(_index: Snippet): unknown {
+    return undefined;
   }
 
   /** The buffer place a snippet stands for, when it reads a buffer the generator declared. */
@@ -729,6 +744,7 @@ export class KitGlslGenerator extends GlslGenerator {
           address: plus(place.address, words),
           schema: member.type,
           ...(place.offset !== undefined && { offset: place.offset + words }),
+          ...(place.path !== undefined && { path: `${place.path}.${memberName(prop)}` }),
           ...(place.element && {
             element: { ...place.element, path: `${place.element.path}.${memberName(prop)}` },
           }),
@@ -742,13 +758,16 @@ export class KitGlslGenerator extends GlslGenerator {
       const stride = wordsOf(strideOf(schema.elementType as d.BaseData));
       const offset = stride === 1 ? this.uintOf(index) : `${this.uintOf(index)} * ${stride}u`;
       const address = `${place.address} + ${offset}`;
+      const ownership = place.element ? undefined : this.ownIndex(index);
       const element: Element = place.element
         ? { ...place.element, path: `${place.element.path}[${this.uintOf(index)}]` }
         : {
             offset: place.offset ?? 0,
             array: schema,
             index: this.uintOf(index),
-            own: this.indexIsOwn(index),
+            own: ownership !== undefined,
+            ...(ownership !== undefined && { ownership }),
+            arrayPath: place.path ?? '',
             path: '',
           };
       return this.placeSnippet(

@@ -184,8 +184,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return undefined;
   }
 
-  protected override indexIsOwn(index: Snippet): boolean {
-    return this.#own(index) === 'x';
+  protected override ownIndex(index: Snippet): unknown {
+    return this.#own(index) === 'x' ? 'x' : undefined;
   }
 
   /**
