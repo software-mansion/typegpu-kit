@@ -287,6 +287,27 @@ describe('GPU forms run as WebGPU runs their kernels', () => {
     });
   });
 
+  it('writes an array that follows a header in its buffer', async () => {
+    const Pool = d.struct({ count: d.u32, scale: d.f32, items: d.arrayOf(d.vec2f, 24) });
+    const layout = tgpu.bindGroupLayout({ pool: { storage: Pool, access: 'mutable' } }).$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x >= layout.$.pool.count) return;
+        layout.$.pool.items[id.x] = (layout.$.pool.items[id.x] as d.v2f) * layout.$.pool.scale;
+      }),
+      workgroups: [1, 1, 1],
+      inputs: {
+        pool: {
+          kind: 'buffer',
+          schema: Pool,
+          value: { count: 20, scale: 3, items: range(24, (i) => d.vec2f(i, -i)) },
+        },
+      },
+    });
+  });
+
   it('diffuses one 2d texture into another', async () => {
     const layout = tgpu
       .bindGroupLayout({
