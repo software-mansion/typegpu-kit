@@ -9,6 +9,7 @@ import type {
   VariableDefinitionOptions,
 } from 'typegpu/~internal';
 import { CpuGenerator } from './cpu/generator.ts';
+import { attachComputeForm } from './glsl/compute.ts';
 import { KitGlslGenerator } from './glsl/generator.ts';
 
 type Call = Parameters<ShaderGenerator['call']>;
@@ -16,7 +17,8 @@ type Call = Parameters<ShaderGenerator['call']>;
 /**
  * The generator a fallback root resolves every pipeline with. TypeGPU creates one per pipeline and
  * says nothing about the pipeline's kind, so this waits for the entry function: a compute entry
- * goes to the CPU generator, anything else to GLSL.
+ * goes to the CPU generator, anything else to GLSL. A compute module then gets a GPU form too, as
+ * `glsl/computeModule.ts` describes.
  */
 export class KitGenerator implements ShaderGenerator {
   #ctx: ResolutionCtx | undefined;
@@ -46,6 +48,8 @@ export class KitGenerator implements ShaderGenerator {
   initGenerator(ctx: ResolutionCtx): void {
     this.#ctx = ctx;
     this.#backend?.initGenerator(ctx);
+    // A compute module also carries the kernel as fragment passes when it can run that way
+    attachComputeForm(ctx, () => this.#backend instanceof CpuGenerator);
   }
 
   functionDefinition(options: FunctionDefinitionOptions): string {
