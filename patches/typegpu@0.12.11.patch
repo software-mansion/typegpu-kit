@@ -78,6 +78,855 @@ index 9ab2f42357588765e537895e3a8421a9e9af648f..19b40232a4b39292de91873ae049a973
      }
      // Created once, since shader code can access a view many times
      #valueProxy;
+diff --git a/std/boolean.js b/std/boolean.js
+index 3d5df15ea4b6c4c01d6261dba37c32f5c1a1393d..b24bb529f51027280e41adbb0d9ff169db26f842 100644
+--- a/std/boolean.js
++++ b/std/boolean.js
+@@ -230,7 +230,7 @@ export const all = dualImpl({
+     name: 'all',
+     signature: (...argTypes) => ({ argTypes, returnType: bool }),
+     normalImpl: cpuAll,
+-    codegenImpl: (_ctx, [value]) => stitch `all(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('all', [], [value]),
+     sideEffects: false,
+ });
+ /**
+@@ -243,7 +243,7 @@ export const any = dualImpl({
+     name: 'any',
+     signature: (...argTypes) => ({ argTypes, returnType: bool }),
+     normalImpl: (value) => !cpuAll(cpuNot(value)),
+-    codegenImpl: (_ctx, [arg]) => stitch `any(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('any', [], [arg]),
+     sideEffects: false,
+ });
+ // other
+diff --git a/std/derivative.js b/std/derivative.js
+index b3385e0e9e71e616361eb073051eb6332b577bcf..83fc9eabdd0ddf87b93df1486cf21a70e234ab7a 100644
+--- a/std/derivative.js
++++ b/std/derivative.js
+@@ -17,14 +17,14 @@ export const dpdxCoarse = dualImpl({
+     name: 'dpdxCoarse',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `dpdxCoarse(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('dpdxCoarse', [], [value]),
+     sideEffects: false,
+ });
+ export const dpdxFine = dualImpl({
+     name: 'dpdxFine',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `dpdxFine(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('dpdxFine', [], [value]),
+     sideEffects: false,
+ });
+ export const dpdy = dualImpl({
+@@ -38,14 +38,14 @@ export const dpdyCoarse = dualImpl({
+     name: 'dpdyCoarse',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `dpdyCoarse(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('dpdyCoarse', [], [value]),
+     sideEffects: false,
+ });
+ export const dpdyFine = dualImpl({
+     name: 'dpdyFine',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `dpdyFine(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('dpdyFine', [], [value]),
+     sideEffects: false,
+ });
+ export const fwidth = dualImpl({
+@@ -59,13 +59,13 @@ export const fwidthCoarse = dualImpl({
+     name: 'fwidthCoarse',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `fwidthCoarse(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('fwidthCoarse', [], [value]),
+     sideEffects: false,
+ });
+ export const fwidthFine = dualImpl({
+     name: 'fwidthFine',
+     normalImpl: derivativeNormalError,
+     signature: derivativeSignature,
+-    codegenImpl: (_ctx, [value]) => stitch `fwidthFine(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('fwidthFine', [], [value]),
+     sideEffects: false,
+ });
+diff --git a/std/numeric.js b/std/numeric.js
+index 4d8f5dbde3c49920a9c61367189a6e7b52feda20..0325dab31cffe0db25343c09480aabcbdc154587 100644
+--- a/std/numeric.js
++++ b/std/numeric.js
+@@ -73,7 +73,7 @@ export const abs = dualImpl({
+     name: 'abs',
+     signature: unaryIdentitySignature,
+     normalImpl: cpuAbs,
+-    codegenImpl: (_ctx, [value]) => stitch `abs(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('abs', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAcos(value) {
+@@ -84,7 +84,7 @@ export const acos = dualImpl({
+     name: 'acos',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAcos,
+-    codegenImpl: (_ctx, [value]) => stitch `acos(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('acos', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAcosh(value) {
+@@ -95,7 +95,7 @@ export const acosh = dualImpl({
+     name: 'acosh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAcosh,
+-    codegenImpl: (_ctx, [value]) => stitch `acosh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('acosh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAsin(value) {
+@@ -106,7 +106,7 @@ export const asin = dualImpl({
+     name: 'asin',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAsin,
+-    codegenImpl: (_ctx, [value]) => stitch `asin(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('asin', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAsinh(value) {
+@@ -117,7 +117,7 @@ export const asinh = dualImpl({
+     name: 'asinh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAsinh,
+-    codegenImpl: (_ctx, [value]) => stitch `asinh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('asinh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAtan(value) {
+@@ -128,7 +128,7 @@ export const atan = dualImpl({
+     name: 'atan',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAtan,
+-    codegenImpl: (_ctx, [value]) => stitch `atan(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('atan', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAtanh(value) {
+@@ -139,7 +139,7 @@ export const atanh = dualImpl({
+     name: 'atanh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAtanh,
+-    codegenImpl: (_ctx, [value]) => stitch `atanh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('atanh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuAtan2(y, x) {
+@@ -151,7 +151,7 @@ export const atan2 = dualImpl({
+     name: 'atan2',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuAtan2,
+-    codegenImpl: (_ctx, [y, x]) => stitch `atan2(${y}, ${x})`,
++    codegenImpl: (ctx, [y, x]) => ctx.gen.emitCall('atan2', [], [y, x]),
+     sideEffects: false,
+ });
+ function cpuCeil(value) {
+@@ -162,7 +162,7 @@ export const ceil = dualImpl({
+     name: 'ceil',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuCeil,
+-    codegenImpl: (_ctx, [value]) => stitch `ceil(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('ceil', [], [value]),
+     sideEffects: false,
+ });
+ function cpuClamp(value, low, high) {
+@@ -174,7 +174,7 @@ export const clamp = dualImpl({
+     name: 'clamp',
+     signature: variadicUnifySignature,
+     normalImpl: cpuClamp,
+-    codegenImpl: (_ctx, [value, low, high]) => stitch `clamp(${value}, ${low}, ${high})`,
++    codegenImpl: (ctx, [value, low, high]) => ctx.gen.emitCall('clamp', [], [value, low, high]),
+     sideEffects: false,
+ });
+ function cpuCos(value) {
+@@ -185,7 +185,7 @@ export const cos = dualImpl({
+     name: 'cos',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuCos,
+-    codegenImpl: (_ctx, [value]) => stitch `cos(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('cos', [], [value]),
+     sideEffects: false,
+ });
+ function cpuCosh(value) {
+@@ -196,7 +196,7 @@ export const cosh = dualImpl({
+     name: 'cosh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuCosh,
+-    codegenImpl: (_ctx, [value]) => stitch `cosh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('cosh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuCountLeadingZeros(_value) {
+@@ -206,7 +206,7 @@ export const countLeadingZeros = dualImpl({
+     name: 'countLeadingZeros',
+     signature: unifyRestrictedSignature(anyConcreteInteger),
+     normalImpl: 'CPU implementation for countLeadingZeros not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `countLeadingZeros(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('countLeadingZeros', [], [value]),
+     sideEffects: false,
+ });
+ function cpuCountOneBits(_value) {
+@@ -216,7 +216,7 @@ export const countOneBits = dualImpl({
+     name: 'countOneBits',
+     signature: unifyRestrictedSignature(anyConcreteInteger),
+     normalImpl: 'CPU implementation for countOneBits not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `countOneBits(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('countOneBits', [], [value]),
+     sideEffects: false,
+ });
+ function cpuCountTrailingZeros(_value) {
+@@ -226,7 +226,7 @@ export const countTrailingZeros = dualImpl({
+     name: 'countTrailingZeros',
+     signature: unifyRestrictedSignature(anyConcreteInteger),
+     normalImpl: 'CPU implementation for countTrailingZeros not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `countTrailingZeros(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('countTrailingZeros', [], [value]),
+     sideEffects: false,
+ });
+ export const cross = dualImpl({
+@@ -237,7 +237,7 @@ export const cross = dualImpl({
+         assertEqualKinds(a, b);
+         return VectorOps.cross[a.kind](a, b);
+     },
+-    codegenImpl: (_ctx, [a, b]) => stitch `cross(${a}, ${b})`,
++    codegenImpl: (ctx, [a, b]) => ctx.gen.emitCall('cross', [], [a, b]),
+     sideEffects: false,
+ });
+ function cpuDegrees(value) {
+@@ -251,7 +251,7 @@ export const degrees = dualImpl({
+     name: 'degrees',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuDegrees,
+-    codegenImpl: (_ctx, [value]) => stitch `degrees(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('degrees', [], [value]),
+     sideEffects: false,
+ });
+ export const determinant = dualImpl({
+@@ -263,7 +263,7 @@ export const determinant = dualImpl({
+         return { argTypes: [arg], returnType: f32 };
+     },
+     normalImpl: 'CPU implementation for determinant not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `determinant(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('determinant', [], [value]),
+     sideEffects: false,
+ });
+ function cpuDistance(a, b) {
+@@ -287,7 +287,7 @@ export const distance = dualImpl({
+         };
+     },
+     normalImpl: cpuDistance,
+-    codegenImpl: (_ctx, [a, b]) => stitch `distance(${a}, ${b})`,
++    codegenImpl: (ctx, [a, b]) => ctx.gen.emitCall('distance', [], [a, b]),
+     sideEffects: false,
+ });
+ export const dot = dualImpl({
+@@ -301,21 +301,21 @@ export const dot = dualImpl({
+         assertEqualKinds(lhs, rhs);
+         return VectorOps.dot[lhs.kind](lhs, rhs);
+     },
+-    codegenImpl: (_ctx, [lhs, rhs]) => stitch `dot(${lhs}, ${rhs})`,
++    codegenImpl: (ctx, [lhs, rhs]) => ctx.gen.emitCall('dot', [], [lhs, rhs]),
+     sideEffects: false,
+ });
+ export const dot4U8Packed = dualImpl({
+     name: 'dot4U8Packed',
+     signature: { argTypes: [u32, u32], returnType: u32 },
+     normalImpl: 'CPU implementation for dot4U8Packed not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e1, e2]) => stitch `dot4U8Packed(${e1}, ${e2})`,
++    codegenImpl: (ctx, [e1, e2]) => ctx.gen.emitCall('dot4U8Packed', [], [e1, e2]),
+     sideEffects: false,
+ });
+ export const dot4I8Packed = dualImpl({
+     name: 'dot4I8Packed',
+     signature: { argTypes: [u32, u32], returnType: i32 },
+     normalImpl: 'CPU implementation for dot4I8Packed not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e1, e2]) => stitch `dot4I8Packed(${e1}, ${e2})`,
++    codegenImpl: (ctx, [e1, e2]) => ctx.gen.emitCall('dot4I8Packed', [], [e1, e2]),
+     sideEffects: false,
+ });
+ function cpuExp(value) {
+@@ -326,7 +326,7 @@ export const exp = dualImpl({
+     name: 'exp',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuExp,
+-    codegenImpl: (_ctx, [value]) => stitch `exp(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('exp', [], [value]),
+     sideEffects: false,
+ });
+ function cpuExp2(value) {
+@@ -337,7 +337,7 @@ export const exp2 = dualImpl({
+     name: 'exp2',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuExp2,
+-    codegenImpl: (_ctx, [value]) => stitch `exp2(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('exp2', [], [value]),
+     sideEffects: false,
+ });
+ function cpuExtractBits(_e, _offset, _count) {
+@@ -356,14 +356,14 @@ export const extractBits = dualImpl({
+         };
+     },
+     normalImpl: 'CPU implementation for extractBits not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e, offset, count]) => stitch `extractBits(${e}, ${offset}, ${count})`,
++    codegenImpl: (ctx, [e, offset, count]) => ctx.gen.emitCall('extractBits', [], [e, offset, count]),
+     sideEffects: false,
+ });
+ export const faceForward = dualImpl({
+     name: 'faceForward',
+     signature: unifyRestrictedSignature(anyFloatVec),
+     normalImpl: 'CPU implementation for faceForward not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e1, e2, e3]) => stitch `faceForward(${e1}, ${e2}, ${e3})`,
++    codegenImpl: (ctx, [e1, e2, e3]) => ctx.gen.emitCall('faceForward', [], [e1, e2, e3]),
+     sideEffects: false,
+ });
+ function cpuFirstLeadingBit(_value) {
+@@ -373,7 +373,7 @@ export const firstLeadingBit = dualImpl({
+     name: 'firstLeadingBit',
+     signature: unaryIdentitySignature,
+     normalImpl: 'CPU implementation for firstLeadingBit not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `firstLeadingBit(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('firstLeadingBit', [], [value]),
+     sideEffects: false,
+ });
+ function cpuFirstTrailingBit(_value) {
+@@ -383,7 +383,7 @@ export const firstTrailingBit = dualImpl({
+     name: 'firstTrailingBit',
+     signature: unifyRestrictedSignature(anyConcreteInteger),
+     normalImpl: 'CPU implementation for firstTrailingBit not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `firstTrailingBit(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('firstTrailingBit', [], [value]),
+     sideEffects: false,
+ });
+ function cpuFloor(value) {
+@@ -394,7 +394,7 @@ export const floor = dualImpl({
+     name: 'floor',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuFloor,
+-    codegenImpl: (_ctx, [arg]) => stitch `floor(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('floor', [], [arg]),
+     sideEffects: false,
+ });
+ function cpuFma(e1, e2, e3) {
+@@ -409,7 +409,7 @@ export const fma = dualImpl({
+     name: 'fma',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuFma,
+-    codegenImpl: (_ctx, [e1, e2, e3]) => stitch `fma(${e1}, ${e2}, ${e3})`,
++    codegenImpl: (ctx, [e1, e2, e3]) => ctx.gen.emitCall('fma', [], [e1, e2, e3]),
+     sideEffects: false,
+ });
+ function cpuFract(value) {
+@@ -420,7 +420,7 @@ export const fract = dualImpl({
+     name: 'fract',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuFract,
+-    codegenImpl: (_ctx, [a]) => stitch `fract(${a})`,
++    codegenImpl: (ctx, [a]) => ctx.gen.emitCall('fract', [], [a]),
+     sideEffects: false,
+ });
+ const FrexpResults = {
+@@ -444,7 +444,7 @@ export const frexp = dualImpl({
+         }
+         return { argTypes: [value], returnType };
+     },
+-    codegenImpl: (_ctx, [value]) => stitch `frexp(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('frexp', [], [value]),
+     sideEffects: false,
+ });
+ function cpuInsertBits(_e, _newbits, _offset, _count) {
+@@ -463,7 +463,7 @@ export const insertBits = dualImpl({
+         };
+     },
+     normalImpl: 'CPU implementation for insertBits not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e, newbits, offset, count]) => stitch `insertBits(${e}, ${newbits}, ${offset}, ${count})`,
++    codegenImpl: (ctx, [e, newbits, offset, count]) => ctx.gen.emitCall('insertBits', [], [e, newbits, offset, count]),
+     sideEffects: false,
+ });
+ function cpuInverseSqrt(value) {
+@@ -506,7 +506,7 @@ export const ldexp = dualImpl({
+         }
+     },
+     normalImpl: 'CPU implementation for ldexp not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e1, e2]) => stitch `ldexp(${e1}, ${e2})`,
++    codegenImpl: (ctx, [e1, e2]) => ctx.gen.emitCall('ldexp', [], [e1, e2]),
+     sideEffects: false,
+ });
+ function cpuLength(value) {
+@@ -529,7 +529,7 @@ export const length = dualImpl({
+         };
+     },
+     normalImpl: cpuLength,
+-    codegenImpl: (_ctx, [arg]) => stitch `length(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('length', [], [arg]),
+     sideEffects: false,
+ });
+ function cpuLog(value) {
+@@ -540,7 +540,7 @@ export const log = dualImpl({
+     name: 'log',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuLog,
+-    codegenImpl: (_ctx, [value]) => stitch `log(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('log', [], [value]),
+     sideEffects: false,
+ });
+ function cpuLog2(value) {
+@@ -551,7 +551,7 @@ export const log2 = dualImpl({
+     name: 'log2',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuLog2,
+-    codegenImpl: (_ctx, [value]) => stitch `log2(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('log2', [], [value]),
+     sideEffects: false,
+ });
+ function cpuMax(a, b) {
+@@ -605,7 +605,7 @@ export const mix = dualImpl({
+         return { argTypes: uargs, returnType: uargs[0] };
+     },
+     normalImpl: cpuMix,
+-    codegenImpl: (_ctx, [e1, e2, e3]) => stitch `mix(${e1}, ${e2}, ${e3})`,
++    codegenImpl: (ctx, [e1, e2, e3]) => ctx.gen.emitCall('mix', [], [e1, e2, e3]),
+     sideEffects: false,
+ });
+ const ModfResult = {
+@@ -632,7 +632,7 @@ export const modf = dualImpl({
+         return { argTypes: [e], returnType };
+     },
+     normalImpl: 'CPU implementation for modf not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `modf(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('modf', [], [value]),
+     sideEffects: false,
+ });
+ export const normalize = dualImpl({
+@@ -643,7 +643,7 @@ export const normalize = dualImpl({
+         const len = length(v);
+         return generalizeFn((e) => e / len, [v]);
+     },
+-    codegenImpl: (_ctx, [value]) => stitch `normalize(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('normalize', [], [value]),
+     sideEffects: false,
+ });
+ function powCpu(base, exponent) {
+@@ -655,7 +655,7 @@ export const pow = dualImpl({
+     name: 'pow',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: powCpu,
+-    codegenImpl: (_ctx, [lhs, rhs]) => stitch `pow(${lhs}, ${rhs})`,
++    codegenImpl: (ctx, [lhs, rhs]) => ctx.gen.emitCall('pow', [], [lhs, rhs]),
+     sideEffects: false,
+ });
+ export const powOperator = dualImpl({
+@@ -704,7 +704,7 @@ export const quantizeToF16 = dualImpl({
+         return { argTypes: [uarg], returnType: uarg };
+     },
+     normalImpl: 'CPU implementation for quantizeToF16 not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `quantizeToF16(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('quantizeToF16', [], [value]),
+     sideEffects: false,
+ });
+ function cpuRadians(value) {
+@@ -718,7 +718,7 @@ export const radians = dualImpl({
+     name: 'radians',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuRadians,
+-    codegenImpl: (_ctx, [value]) => stitch `radians(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('radians', [], [value]),
+     sideEffects: false,
+ });
+ export const reflect = dualImpl({
+@@ -738,13 +738,13 @@ export const reflect = dualImpl({
+         assertEqualKinds(e1, e2);
+         return sub(e1, mul(2 * dot(e2, e1), e2));
+     },
+-    codegenImpl: (_ctx, [e1, e2]) => stitch `reflect(${e1}, ${e2})`,
++    codegenImpl: (ctx, [e1, e2]) => ctx.gen.emitCall('reflect', [], [e1, e2]),
+     sideEffects: false,
+ });
+ export const refract = dualImpl({
+     name: 'refract',
+     normalImpl: 'CPU implementation for refract not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [e1, e2, e3]) => stitch `refract(${e1}, ${e2}, ${e3})`,
++    codegenImpl: (ctx, [e1, e2, e3]) => ctx.gen.emitCall('refract', [], [e1, e2, e3]),
+     signature: (e1, e2, _e3) => ({
+         argTypes: [e1, e2, isHalfPrecisionSchema(e1) ? f16 : f32],
+         returnType: e1,
+@@ -758,7 +758,7 @@ export const reverseBits = dualImpl({
+     name: 'reverseBits',
+     signature: unifyRestrictedSignature(anyConcreteInteger),
+     normalImpl: 'CPU implementation for reverseBits not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `reverseBits(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('reverseBits', [], [value]),
+     sideEffects: false,
+ });
+ function cpuRound(value) {
+@@ -779,7 +779,7 @@ export const round = dualImpl({
+     name: 'round',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuRound,
+-    codegenImpl: (_ctx, [value]) => stitch `round(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('round', [], [value]),
+     sideEffects: false,
+ });
+ function cpuSaturate(value) {
+@@ -808,7 +808,7 @@ export const sign = dualImpl({
+         return { argTypes: [uarg], returnType: uarg };
+     },
+     normalImpl: cpuSign,
+-    codegenImpl: (_ctx, [e]) => stitch `sign(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('sign', [], [e]),
+     sideEffects: false,
+ });
+ function cpuSin(value) {
+@@ -819,7 +819,7 @@ export const sin = dualImpl({
+     name: 'sin',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuSin,
+-    codegenImpl: (_ctx, [value]) => stitch `sin(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('sin', [], [value]),
+     sideEffects: false,
+ });
+ function cpuSinh(value) {
+@@ -830,7 +830,7 @@ export const sinh = dualImpl({
+     name: 'sinh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuSinh,
+-    codegenImpl: (_ctx, [value]) => stitch `sinh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('sinh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuSmoothstep(edge0, edge1, x) {
+@@ -842,7 +842,7 @@ export const smoothstep = dualImpl({
+     name: 'smoothstep',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuSmoothstep,
+-    codegenImpl: (_ctx, [edge0, edge1, x]) => stitch `smoothstep(${edge0}, ${edge1}, ${x})`,
++    codegenImpl: (ctx, [edge0, edge1, x]) => ctx.gen.emitCall('smoothstep', [], [edge0, edge1, x]),
+     sideEffects: false,
+ });
+ function cpuSqrt(value) {
+@@ -853,7 +853,7 @@ export const sqrt = dualImpl({
+     name: 'sqrt',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuSqrt,
+-    codegenImpl: (_ctx, [value]) => stitch `sqrt(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('sqrt', [], [value]),
+     sideEffects: false,
+ });
+ function cpuStep(edge, x) {
+@@ -868,7 +868,7 @@ export const step = dualImpl({
+     name: 'step',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuStep,
+-    codegenImpl: (_ctx, [edge, x]) => stitch `step(${edge}, ${x})`,
++    codegenImpl: (ctx, [edge, x]) => ctx.gen.emitCall('step', [], [edge, x]),
+     sideEffects: false,
+ });
+ function cpuTan(value) {
+@@ -882,7 +882,7 @@ export const tan = dualImpl({
+     name: 'tan',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuTan,
+-    codegenImpl: (_ctx, [value]) => stitch `tan(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('tan', [], [value]),
+     sideEffects: false,
+ });
+ function cpuTanh(value) {
+@@ -893,7 +893,7 @@ export const tanh = dualImpl({
+     name: 'tanh',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: cpuTanh,
+-    codegenImpl: (_ctx, [value]) => stitch `tanh(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('tanh', [], [value]),
+     sideEffects: false,
+ });
+ function cpuTranspose(value) {
+@@ -953,7 +953,7 @@ export const transpose = dualImpl({
+     name: 'transpose',
+     signature: unaryIdentitySignature,
+     normalImpl: cpuTranspose,
+-    codegenImpl: (_ctx, [e]) => stitch `transpose(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('transpose', [], [e]),
+     sideEffects: false,
+ });
+ function cpuTrunc(_value) {
+@@ -963,7 +963,7 @@ export const trunc = dualImpl({
+     name: 'trunc',
+     signature: unifyRestrictedSignature(anyFloat),
+     normalImpl: 'CPU implementation for trunc not implemented yet. Please submit an issue at https://github.com/software-mansion/TypeGPU/issues',
+-    codegenImpl: (_ctx, [value]) => stitch `trunc(${value})`,
++    codegenImpl: (ctx, [value]) => ctx.gen.emitCall('trunc', [], [value]),
+     sideEffects: false,
+ });
+ function cpuIntdiv(lhs, rhs) {
+diff --git a/std/packing.js b/std/packing.js
+index 7888cc95e6245a8d8cc0d94b4c51a66351d8a8fc..a7e35450160a95e478ca43759a7d5557b83bdf2f 100644
+--- a/std/packing.js
++++ b/std/packing.js
+@@ -32,7 +32,7 @@ export const unpack2x16float = dualImpl({
+         return vec2f(readFloat16(reader), readFloat16(reader));
+     },
+     signature: { argTypes: [u32], returnType: vec2f },
+-    codegenImpl: (_ctx, [e]) => stitch `unpack2x16float(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('unpack2x16float', [], [e]),
+     sideEffects: false,
+ });
+ /**
+@@ -46,7 +46,7 @@ export const pack2x16float = dualImpl({
+         writeFloat16(writer, e.y);
+     }),
+     signature: { argTypes: [vec2f], returnType: u32 },
+-    codegenImpl: (_ctx, [e]) => stitch `pack2x16float(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('pack2x16float', [], [e]),
+     sideEffects: false,
+ });
+ /**
+@@ -64,7 +64,7 @@ export const pack2x16snorm = dualImpl({
+         });
+     },
+     signature: { argTypes: [vec2f], returnType: u32 },
+-    codegenImpl: (_ctx, [e]) => stitch `pack2x16snorm(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('pack2x16snorm', [], [e]),
+     sideEffects: false,
+ });
+ /**
+@@ -82,7 +82,7 @@ export const pack2x16unorm = dualImpl({
+         });
+     },
+     signature: { argTypes: [vec2f], returnType: u32 },
+-    codegenImpl: (_ctx, [e]) => stitch `pack2x16unorm(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('pack2x16unorm', [], [e]),
+     sideEffects: false,
+ });
+ /**
+@@ -152,7 +152,7 @@ export const unpack2x16snorm = dualImpl({
+         return vec2f(Math.max(reader.readInt16() / 32767, -1), Math.max(reader.readInt16() / 32767, -1));
+     },
+     signature: { argTypes: [u32], returnType: vec2f },
+-    codegenImpl: (_ctx, [e]) => stitch `unpack2x16snorm(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('unpack2x16snorm', [], [e]),
+     sideEffects: false,
+ });
+ /**
+@@ -166,7 +166,7 @@ export const unpack2x16unorm = dualImpl({
+         return vec2f(reader.readUint16() / 65535, reader.readUint16() / 65535);
+     },
+     signature: { argTypes: [u32], returnType: vec2f },
+-    codegenImpl: (_ctx, [e]) => stitch `unpack2x16unorm(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('unpack2x16unorm', [], [e]),
+     sideEffects: false,
+ });
+ /**
+diff --git a/std/subgroup.js b/std/subgroup.js
+index 13f874082709d01c92df34d9b4aeebf68cc27b7d..4dbf044727b82312d80222773d36f361b9fd6f66 100644
+--- a/std/subgroup.js
++++ b/std/subgroup.js
+@@ -8,49 +8,49 @@ export const subgroupAdd = dualImpl({
+     name: 'subgroupAdd',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupAdd(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupAdd', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupExclusiveAdd = dualImpl({
+     name: 'subgroupExclusiveAdd',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupExclusiveAdd(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupExclusiveAdd', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupInclusiveAdd = dualImpl({
+     name: 'subgroupInclusiveAdd',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupInclusiveAdd(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupInclusiveAdd', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupAll = dualImpl({
+     name: 'subgroupAll',
+     signature: { argTypes: [bool], returnType: bool },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupAll(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupAll', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupAnd = dualImpl({
+     name: 'subgroupAnd',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupAnd(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupAnd', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupAny = dualImpl({
+     name: 'subgroupAny',
+     signature: { argTypes: [bool], returnType: bool },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupAny(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupAny', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupBallot = dualImpl({
+     name: 'subgroupBallot',
+     signature: { argTypes: [bool], returnType: vec4u },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupBallot(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupBallot', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupBroadcast = dualImpl({
+@@ -63,14 +63,14 @@ export const subgroupBroadcast = dualImpl({
+         return { argTypes: [args[0], id[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, index]) => stitch `subgroupBroadcast(${e}, ${index})`,
++    codegenImpl: (ctx, [e, index]) => ctx.gen.emitCall('subgroupBroadcast', [], [e, index]),
+     sideEffects: false,
+ });
+ export const subgroupBroadcastFirst = dualImpl({
+     name: 'subgroupBroadcastFirst',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupBroadcastFirst(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupBroadcastFirst', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupElect = dualImpl({
+@@ -84,42 +84,42 @@ export const subgroupMax = dualImpl({
+     name: 'subgroupMax',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupMax(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupMax', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupMin = dualImpl({
+     name: 'subgroupMin',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupMin(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupMin', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupMul = dualImpl({
+     name: 'subgroupMul',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupMul(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupMul', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupExclusiveMul = dualImpl({
+     name: 'subgroupExclusiveMul',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupExclusiveMul(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupExclusiveMul', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupInclusiveMul = dualImpl({
+     name: 'subgroupInclusiveMul',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [arg]) => stitch `subgroupInclusiveMul(${arg})`,
++    codegenImpl: (ctx, [arg]) => ctx.gen.emitCall('subgroupInclusiveMul', [], [arg]),
+     sideEffects: false,
+ });
+ export const subgroupOr = dualImpl({
+     name: 'subgroupOr',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupOr(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupOr', [], [e]),
+     sideEffects: false,
+ });
+ export const subgroupShuffle = dualImpl({
+@@ -132,7 +132,7 @@ export const subgroupShuffle = dualImpl({
+         return { argTypes: [args[0], id[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, index]) => stitch `subgroupShuffle(${e}, ${index})`,
++    codegenImpl: (ctx, [e, index]) => ctx.gen.emitCall('subgroupShuffle', [], [e, index]),
+     sideEffects: false,
+ });
+ export const subgroupShuffleDown = dualImpl({
+@@ -145,7 +145,7 @@ export const subgroupShuffleDown = dualImpl({
+         return { argTypes: [args[0], delta[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, delta]) => stitch `subgroupShuffleDown(${e}, ${delta})`,
++    codegenImpl: (ctx, [e, delta]) => ctx.gen.emitCall('subgroupShuffleDown', [], [e, delta]),
+     sideEffects: false,
+ });
+ export const subgroupShuffleUp = dualImpl({
+@@ -158,7 +158,7 @@ export const subgroupShuffleUp = dualImpl({
+         return { argTypes: [args[0], delta[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, delta]) => stitch `subgroupShuffleUp(${e}, ${delta})`,
++    codegenImpl: (ctx, [e, delta]) => ctx.gen.emitCall('subgroupShuffleUp', [], [e, delta]),
+     sideEffects: false,
+ });
+ export const subgroupShuffleXor = dualImpl({
+@@ -171,14 +171,14 @@ export const subgroupShuffleXor = dualImpl({
+         return { argTypes: [args[0], mask[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, mask]) => stitch `subgroupShuffleXor(${e}, ${mask})`,
++    codegenImpl: (ctx, [e, mask]) => ctx.gen.emitCall('subgroupShuffleXor', [], [e, mask]),
+     sideEffects: false,
+ });
+ export const subgroupXor = dualImpl({
+     name: 'subgroupXor',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `subgroupXor(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('subgroupXor', [], [e]),
+     sideEffects: false,
+ });
+ export const quadBroadcast = dualImpl({
+@@ -191,27 +191,27 @@ export const quadBroadcast = dualImpl({
+         return { argTypes: [args[0], id[0]], returnType: args[0] };
+     },
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e, id]) => stitch `quadBroadcast(${e}, ${id})`,
++    codegenImpl: (ctx, [e, id]) => ctx.gen.emitCall('quadBroadcast', [], [e, id]),
+     sideEffects: false,
+ });
+ export const quadSwapDiagonal = dualImpl({
+     name: 'quadSwapDiagonal',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `quadSwapDiagonal(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('quadSwapDiagonal', [], [e]),
+     sideEffects: false,
+ });
+ export const quadSwapX = dualImpl({
+     name: 'quadSwapX',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `quadSwapX(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('quadSwapX', [], [e]),
+     sideEffects: false,
+ });
+ export const quadSwapY = dualImpl({
+     name: 'quadSwapY',
+     signature: (arg) => ({ argTypes: [arg], returnType: arg }),
+     normalImpl: errorMessage,
+-    codegenImpl: (_ctx, [e]) => stitch `quadSwapY(${e})`,
++    codegenImpl: (ctx, [e]) => ctx.gen.emitCall('quadSwapY', [], [e]),
+     sideEffects: false,
+ });
 diff --git a/std/texture.js b/std/texture.js
 index f8f7572ad1814e9899c02596a6ed1f5eb7ae4c59..9c42f1cdb807d78ac9941d3ee275caba3bf466b7 100644
 --- a/std/texture.js
@@ -177,3 +1026,26 @@ index f8f7572ad1814e9899c02596a6ed1f5eb7ae4c59..9c42f1cdb807d78ac9941d3ee275caba
      signature: (...args) => ({
          argTypes: args,
          returnType: vec4f,
+diff --git a/tgsl/wgslGenerator.js b/tgsl/wgslGenerator.js
+index 2a751a8478e465f203cdb62b8bd2c0c3fda463a5..7ea71b57f447815af8fbd86df38b19cc68834309 100644
+--- a/tgsl/wgslGenerator.js
++++ b/tgsl/wgslGenerator.js
+@@ -1385,7 +1385,8 @@ ${this.ctx.pre}else ${alternate}`,
+                 }
+                 this.#unrollingChain = [];
+                 const index = this.ctx.makeUniqueIdentifier('i', 'block');
+-                const forHeaderStr = stitch `${this.ctx.pre}for (var ${index} = ${range.start}; ${index} ${range.comparison} ${range.end}; ${index} += ${range.step})`;
++                const indexDeclStr = this.ctx.withResetIndentLevel(() => this._emitVarDecl('var', index, concretize(range.start.dataType), this.ctx.resolveSnippet(range.start).value)).slice(0, -1);
++                const forHeaderStr = stitch `${this.ctx.pre}for (${indexDeclStr}; ${index} ${range.comparison} ${range.end}; ${index} += ${range.step})`;
+                 let bodyStr = '';
+                 if (isTgpuRange(iterableSnippet.value)) {
+                     bodyStr = this._block(blockified, /* allowInlining */ false, {
+@@ -1399,7 +1400,7 @@ ${this.ctx.pre}else ${alternate}`,
+                     const elementSnippet = forOfUtils.getElementSnippet(iterableSnippet, snip(index, u32, 'runtime'));
+                     const loopVarKind = forOfUtils.getLoopVarKind(elementSnippet);
+                     const elementType = forOfUtils.getElementType(elementSnippet, iterableSnippet);
+-                    const loopVarDeclStr = stitch `${this.ctx.pre}${loopVarKind} ${loopVarName} = ${tryConvertSnippet(this.ctx, elementSnippet, elementType, false)};`;
++                    const loopVarDeclStr = this._emitVarDecl(loopVarKind, loopVarName, elementType, this.ctx.resolveSnippet(tryConvertSnippet(this.ctx, elementSnippet, elementType, false)).value);
+                     bodyStr = `{\n${loopVarDeclStr}\n${this._blockStatement(blockified, {
+                         [originalLoopVarName]: snip(loopVarName, elementType, elementSnippet.origin, false),
+                     }).code}\n`;

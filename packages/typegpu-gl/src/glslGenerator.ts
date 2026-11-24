@@ -213,6 +213,24 @@ const reservedKeywords = [
   'cast',
   'namespace',
   'using',
+  //
+  // Built-in functions, which user functions cannot redeclare
+  //
+  ...[
+    'radians', 'degrees', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh',
+    'asinh', 'acosh', 'atanh', 'pow', 'exp', 'log', 'exp2', 'log2', 'sqrt', 'inversesqrt', 'abs',
+    'sign', 'floor', 'trunc', 'round', 'roundEven', 'ceil', 'fract', 'mod', 'modf', 'min', 'max',
+    'clamp', 'mix', 'step', 'smoothstep', 'isnan', 'isinf', 'floatBitsToInt', 'floatBitsToUint',
+    'intBitsToFloat', 'uintBitsToFloat', 'packSnorm2x16', 'unpackSnorm2x16', 'packUnorm2x16',
+    'unpackUnorm2x16', 'packHalf2x16', 'unpackHalf2x16', 'length', 'distance', 'dot', 'cross',
+    'normalize', 'faceforward', 'reflect', 'refract', 'matrixCompMult', 'outerProduct',
+    'transpose', 'determinant', 'inverse', 'lessThan', 'lessThanEqual', 'greaterThan',
+    'greaterThanEqual', 'equal', 'notEqual', 'any', 'all', 'not', 'textureSize', 'texture',
+    'textureProj', 'textureLod', 'textureOffset', 'texelFetch', 'texelFetchOffset',
+    'textureProjOffset', 'textureLodOffset', 'textureProjLod', 'textureProjLodOffset',
+    'textureGrad', 'textureGradOffset', 'textureProjGrad', 'textureProjGradOffset', 'dFdx', 'dFdy',
+    'fwidth', 'main',
+  ],
 ];
 
 // ----------
@@ -273,21 +291,6 @@ ${Object.entries(struct.propTypes)
 };`);
 
   return id;
-}
-
-function correspondingBooleanVectorSchema(dataType: d.BaseData) {
-  if (dataType.type.includes('2')) {
-    return d.vec2b;
-  }
-  if (dataType.type.includes('3')) {
-    return d.vec3b;
-  }
-  if (dataType.type.includes('4')) {
-    return d.vec4b;
-  }
-  throw new Error(
-    `Internal error: schema of type '${dataType.type}' does not have a corresponding boolean vector.`,
-  );
 }
 
 function resolveArraySizeSuffix(_ctx: ResolutionCtx, schema: d.BaseData | UnknownData) {
@@ -387,6 +390,14 @@ export function getCrossShaderStageState(ctx: ResolutionCtx) {
   return state;
 }
 
+function isIntegerVector(schema: d.BaseData | UnknownData): boolean {
+  return (
+    schema !== UnknownData &&
+    schema.type.startsWith('vec') &&
+    ((schema as d.Vec2i).primitive?.type === 'i32' || (schema as d.Vec2u).primitive?.type === 'u32')
+  );
+}
+
 function isF32VecfSchema(
   schema: d.BaseData | UnknownData,
 ): schema is d.F32 | d.Vec2f | d.Vec3f | d.Vec4f {
@@ -398,6 +409,124 @@ function isF32VecfSchema(
       schema.type === 'vec4f')
   );
 }
+
+/**
+ * WGSL builtins GLSL ES 3.00 has under another name, with the same arguments and results.
+ */
+const RENAMED_BUILTINS: Record<string, string> = {
+  atan2: 'atan',
+  inverseSqrt: 'inversesqrt',
+  dpdx: 'dFdx',
+  dpdxCoarse: 'dFdx',
+  dpdxFine: 'dFdx',
+  dpdy: 'dFdy',
+  dpdyCoarse: 'dFdy',
+  dpdyFine: 'dFdy',
+  fwidthCoarse: 'fwidth',
+  fwidthFine: 'fwidth',
+  faceForward: 'faceforward',
+  // WGSL rounds half to even, which GLSL's `round` leaves to the implementation
+  round: 'roundEven',
+  pack2x16snorm: 'packSnorm2x16',
+  unpack2x16snorm: 'unpackSnorm2x16',
+  pack2x16unorm: 'packUnorm2x16',
+  unpack2x16unorm: 'unpackUnorm2x16',
+  pack2x16float: 'packHalf2x16',
+  unpack2x16float: 'unpackHalf2x16',
+};
+
+const countOneBits = (value: number): number => {
+  'use gpu';
+  let v = d.u32(value);
+  v = v - ((v >>> 1) & 0x55555555);
+  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+  return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+};
+
+const countLeadingZeros = (value: number): number => {
+  'use gpu';
+  let v = d.u32(value);
+  if (v === 0) {
+    return d.u32(32);
+  }
+  let n = d.u32(0);
+  if ((v & 0xffff0000) === 0) {
+    n += 16;
+    v = v << 16;
+  }
+  if ((v & 0xff000000) === 0) {
+    n += 8;
+    v = v << 8;
+  }
+  if ((v & 0xf0000000) === 0) {
+    n += 4;
+    v = v << 4;
+  }
+  if ((v & 0xc0000000) === 0) {
+    n += 2;
+    v = v << 2;
+  }
+  if ((v & 0x80000000) === 0) {
+    n += 1;
+  }
+  return n;
+};
+
+const countTrailingZeros = (value: number): number => {
+  'use gpu';
+  const v = d.u32(value);
+  if (v === 0) {
+    return d.u32(32);
+  }
+  return countOneBits((v & (~v + 1)) - 1);
+};
+
+/**
+ * Bit counting builtins GLSL ES 3.00 lacks, on one 32-bit component. They read the bits of an
+ * `i32` as a `u32`, and the caller converts the result back.
+ */
+const BIT_POLYFILLS: Record<string, (value: number) => number> = {
+  countOneBits,
+  countLeadingZeros,
+  countTrailingZeros,
+  firstTrailingBit: (value: number): number => {
+    'use gpu';
+    const v = d.u32(value);
+    return std.select(countTrailingZeros(v), d.u32(0xffffffff), v === 0);
+  },
+  reverseBits: (value: number): number => {
+    'use gpu';
+    let v = d.u32(value);
+    v = ((v >>> 1) & 0x55555555) | ((v & 0x55555555) << 1);
+    v = ((v >>> 2) & 0x33333333) | ((v & 0x33333333) << 2);
+    v = ((v >>> 4) & 0x0f0f0f0f) | ((v & 0x0f0f0f0f) << 4);
+    v = ((v >>> 8) & 0x00ff00ff) | ((v & 0x00ff00ff) << 8);
+    return (v >>> 16) | (v << 16);
+  },
+};
+
+/**
+ * `select` for every type a WGSL `select` takes, as the WGSL generator writes it for ternaries.
+ * Like WGSL's, it evaluates both branches.
+ */
+const SELECT_OVERLOADS = [
+  ...['float', 'int', 'uint', 'bool'].flatMap((scalar) => {
+    const prefix = { float: '', int: 'i', uint: 'u', bool: 'b' }[scalar];
+    return [
+      `${scalar} select(${scalar} f, ${scalar} t, bool c) { return c ? t : f; }`,
+      ...[2, 3, 4].flatMap((n) => {
+        const vec = `${prefix}vec${n}`;
+        const parts = ['x', 'y', 'z', 'w'].slice(0, n).map((c) => `c.${c} ? t.${c} : f.${c}`);
+        return [
+          `${vec} select(${vec} f, ${vec} t, bool c) { return c ? t : f; }`,
+          scalar === 'float'
+            ? `${vec} select(${vec} f, ${vec} t, bvec${n} c) { return mix(f, t, c); }`
+            : `${vec} select(${vec} f, ${vec} t, bvec${n} c) { return ${vec}(${parts.join(', ')}); }`,
+        ];
+      }),
+    ];
+  }),
+].join('\n');
 
 const HELPERS = {
   // TODO(#2821): Make signature more accurate when std.sign and std.abs
@@ -635,8 +764,9 @@ export class GlslGenerator extends WgslGenerator {
     }
 
     if (d.isWgslArray(data)) {
-      // The array size suffix is handled elsewhere
-      return this.emitTypeAnnotation(data.elementType);
+      // The array size suffix is handled elsewhere. Resolving through the context declares a
+      // struct element once.
+      return this.ctx.resolve(data.elementType).value;
     }
 
     if (d.isWgslStruct(data)) {
@@ -698,19 +828,99 @@ export class GlslGenerator extends WgslGenerator {
     return newArgs;
   }
 
+  readonly #declaredHelpers = new Set<string>();
+
+  /**
+   * Declares GLSL code the generator's output relies on, once per resolution. `name` is what the
+   * code defines.
+   */
+  protected _declareHelper(name: string, code: string): void {
+    if (this.#declaredHelpers.has(name)) {
+      return;
+    }
+    this.#declaredHelpers.add(name);
+    this.ctx.addDeclaration(code);
+  }
+
+  /** Applies `scalar` to each component of a vector, or to the value itself. */
+  #componentwise(arg: Snippet | undefined, scalar: (component: Snippet) => string): string {
+    if (!arg || arg.dataType === UnknownData) {
+      throw new Error(`Invalid argument passed to a bit builtin`);
+    }
+    const type = arg.dataType as d.Vec2u;
+    if (!type.type.startsWith('vec')) {
+      return scalar(arg);
+    }
+    const value = this.ctx.resolveSnippet(arg).value;
+    const components = ['x', 'y', 'z', 'w']
+      .slice(0, type.componentCount)
+      .map((c) => scalar(snip(`${value}.${c}`, type.primitive, 'runtime')));
+    return `${this.ctx.resolve(type).value}(${components.join(', ')})`;
+  }
+
+  protected override _expression(expression: Expression): Snippet {
+    const result = super._expression(expression);
+    if (
+      Array.isArray(expression) &&
+      expression[0] === NODE.conditionalExpr &&
+      typeof result.value === 'string' &&
+      result.value.startsWith('select(')
+    ) {
+      // The WGSL generator writes ternaries as WGSL's `select`
+      this._declareHelper('select', SELECT_OVERLOADS);
+    }
+    return result;
+  }
+
   override emitCall(
     name: string,
     templateParams: readonly Snippet[],
     args: readonly Snippet[],
   ): string {
-    if (name === 'inverseSqrt') {
-      return super.emitCall('inversesqrt', templateParams, args);
+    const renamed = RENAMED_BUILTINS[name];
+    if (renamed) {
+      return super.emitCall(renamed, templateParams, args);
     }
-    if (name === 'dpdx') {
-      return super.emitCall('dFdx', templateParams, args);
+    if (name === 'fma') {
+      const [a, b, c] = args.map((arg) => this.ctx.resolveSnippet(arg).value);
+      return `((${a} * ${b}) + ${c})`;
     }
-    if (name === 'dpdy') {
-      return super.emitCall('dFdy', templateParams, args);
+    const polyfill = BIT_POLYFILLS[name];
+    if (polyfill) {
+      return this.#componentwise(args[0], (component) => {
+        const result = this._callShellless(polyfill, [component]);
+        if (!result) {
+          throw new Error(`Invalid argument passed to ${name}()`);
+        }
+        return component.dataType === d.i32 ? `int(${result.value})` : result.value;
+      });
+    }
+    if (name === 'firstLeadingBit') {
+      return this.#componentwise(args[0], (component) => {
+        // For a negative i32, WGSL finds the highest 0 bit, which is the highest 1 bit of its complement
+        const bits =
+          component.dataType === d.i32
+            ? snip(`uint(${component.value} < 0 ? ~${component.value} : ${component.value})`, d.u32, 'runtime')
+            : component;
+        const leading = this._callShellless(countLeadingZeros, [bits])?.value;
+        const result = `(${this.ctx.resolveSnippet(bits).value} == 0u ? 0xFFFFFFFFu : 31u - ${leading})`;
+        return component.dataType === d.i32 ? `int(${result})` : result;
+      });
+    }
+    if (name === 'extractBits' || name === 'insertBits') {
+      throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
+    }
+    if (name === 'dot' && args[0] && isIntegerVector(args[0].dataType)) {
+      const [a, b] = args.map((arg) => this.ctx.resolveSnippet(arg).value);
+      const size = (args[0].dataType as d.Vec2i).componentCount;
+      const terms = ['x', 'y', 'z', 'w'].slice(0, size).map((c) => `${a}.${c} * ${b}.${c}`);
+      return `(${terms.join(' + ')})`;
+    }
+    if (name === 'abs' && args[0] && args[0].dataType !== UnknownData) {
+      const type = args[0].dataType as d.BaseData & { primitive?: d.BaseData };
+      if (type.type === 'u32' || type.primitive?.type === 'u32') {
+        return this.ctx.resolveSnippet(args[0]).value;
+      }
     }
     if (
       name === 'pack4x8unorm' ||
@@ -838,21 +1048,16 @@ export class GlslGenerator extends WgslGenerator {
         throw new Error(`Invalid number of arguments for 'select'`);
       }
 
-      if (falsy.dataType !== UnknownData && falsy.dataType.type.startsWith('vec')) {
-        if (cond.dataType !== UnknownData && cond.dataType.type.startsWith('vec')) {
+      if (cond.dataType !== UnknownData && cond.dataType.type.startsWith('vec')) {
+        if (isF32VecfSchema(falsy.dataType)) {
           return super.emitCall('mix', templateParams, args);
         }
-        return super.emitCall('mix', templateParams, [
-          falsy,
-          truthy,
-          this.typeInstantiation(correspondingBooleanVectorSchema(falsy.dataType), [cond]),
-        ]);
+        // GLSL ES 3.00 mixes floats only
+        this._declareHelper('select', SELECT_OVERLOADS);
+        return super.emitCall('select', templateParams, args);
       }
 
-      // Generating a ternary expression, which is supported in GLSL (scalar condition only)
-      if (cond.dataType !== UnknownData && cond.dataType.type.startsWith('vec')) {
-        throw new Error(`GLSL select() with scalar branches requires a scalar boolean condition`);
-      }
+      // Generating a ternary expression, which GLSL has for any type with a scalar condition
 
       return `(${this.ctx.resolveSnippet(cond).value} ? ${this.ctx.resolveSnippet(truthy).value} : ${this.ctx.resolveSnippet(falsy).value})`;
     }
@@ -897,6 +1102,20 @@ export class GlslGenerator extends WgslGenerator {
 
     if (schema.type === 'u32' && args.length === 0) {
       return withValue('0u', super.typeInstantiation(schema, args));
+    }
+
+    // GLSL matrix and struct constructors take every component; WGSL's zero-argument ones zero them.
+    if (schema.type.startsWith('mat') && args.length === 0) {
+      return super.typeInstantiation(schema, [snip(0, d.f32, 'constant')]);
+    }
+
+    if (d.isWgslStruct(schema) && args.length === 0) {
+      return super.typeInstantiation(
+        schema,
+        Object.values(schema.propTypes).map((prop) =>
+          this.typeInstantiation(undecorateDataType(prop), []),
+        ),
+      );
     }
 
     if (schema.type === 'array') {
@@ -983,7 +1202,33 @@ export class GlslGenerator extends WgslGenerator {
     return `${this.ctx.pre}switch (${resolvedDiscriminant}) {\n${cases.join('\n')}\n${this.ctx.pre}}`;
   }
 
+  /**
+   * WGSL converts an abstract scalar to the component type of the vector it meets. GLSL converts
+   * nothing, so the scalar is written as that type.
+   */
+  #matchVectorComponent(operand: Snippet, other: Snippet): Snippet {
+    if (operand.dataType === UnknownData || other.dataType === UnknownData) {
+      return operand;
+    }
+    const type = operand.dataType.type;
+    const otherType = other.dataType as d.Vec2u;
+    if ((type !== 'abstractInt' && type !== 'abstractFloat') || !otherType.type.startsWith('vec')) {
+      return operand;
+    }
+    const primitive = otherType.primitive;
+    if (typeof operand.value === 'number') {
+      return this.numericLiteral(operand.value, primitive);
+    }
+    return snip(
+      `${this.ctx.resolve(primitive).value}(${this.ctx.resolveSnippet(operand).value})`,
+      primitive,
+      'runtime',
+    );
+  }
+
   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
+    lhs = this.#matchVectorComponent(lhs, rhs);
+    rhs = this.#matchVectorComponent(rhs, lhs);
     const comparisonBuiltin = vectorComparisonBuiltins[op];
     if (
       comparisonBuiltin &&
@@ -1397,10 +1642,13 @@ The generated shader will omit it, so its runtime side effects will not occur.`)
       }
 
       const argList = options.args
-        .map((arg) => `${this.ctx.resolve(arg.decoratedType).value} ${arg.name}`)
+        .map(
+          (arg) =>
+            `${this.ctx.resolve(arg.decoratedType).value} ${arg.name}${resolveArraySizeSuffix(this.ctx, arg.decoratedType)}`,
+        )
         .join(', ');
 
-      return `${this.ctx.resolve(returnType).value} ${options.name}(${argList}) ${body}`;
+      return `${this.ctx.resolve(returnType).value}${resolveArraySizeSuffix(this.ctx, returnType)} ${options.name}(${argList}) ${body || '{}'}`;
     } finally {
       this.#functionType = lastFunctionType;
       this.#entryFnState = lastEntryFnState;

@@ -1,6 +1,6 @@
+// oxlint-disable no-underscore-dangle -- the generator overrides WgslGenerator's protected hooks, named with one
 import { CrossShaderStageState, GlslGenerator } from '@typegpu/gl';
-import { NodeTypeCatalog as NODE } from 'tinyest';
-import type { Expression, Return } from 'tinyest';
+import { NodeTypeCatalog as NODE, type Expression, type Return } from 'tinyest';
 import { d, std } from 'typegpu';
 import {
   abstractInt,
@@ -42,6 +42,7 @@ const HANDLE_ARG = '\u0001kit-handle\u0001';
 
 /** Stands in for an entry function's output variable until the output's location is known. */
 const OUT = (prop: string) => `\u0002${prop}\u0002`;
+// oxlint-disable-next-line no-control-regex -- the placeholder's delimiters cannot occur in GLSL
 const OUT_PATTERN = /\u0002([A-Za-z0-9_$]*)\u0002/g;
 
 /** Stands in for a load the shader cannot make, so the function that makes it fails clearly. */
@@ -217,21 +218,53 @@ function attributeOf(data: d.BaseData, kind: string): unknown[] | undefined {
 function membersOf(struct: d.WgslStruct): { name: string; type: d.BaseData; offset: number }[] {
   let offset = 0;
   return Object.entries(struct.propTypes as Record<string, d.BaseData>).map(([name, type]) => {
-    offset = roundUp(offset, d.alignmentOf(type));
+    offset = roundUp(offset, d.alignmentOf(type as d.AnyData));
     const member = { name, type: undecorate(type), offset };
-    offset += d.sizeOf(type);
+    offset += d.sizeOf(type as d.AnyData);
     return member;
   });
 }
 
-const strideOf = (element: d.BaseData) => roundUp(d.sizeOf(element), d.alignmentOf(element));
+const strideOf = (element: d.BaseData) =>
+  roundUp(d.sizeOf(element as d.AnyData), d.alignmentOf(element as d.AnyData));
 
 function wordsOf(bytes: number): number {
   if (bytes % 4 !== 0) throw unsupported('A buffer member that is not 4-byte aligned');
   return bytes / 4;
 }
 
+/** Reinterprets raw words as `f`, `i` or `u` components. */
+const cast = (raw: string, scalar: string, size: number) =>
+  scalar === 'f'
+    ? `uintBitsToFloat(${raw})`
+    : scalar === 'i'
+      ? `${size === 1 ? 'int' : `ivec${size}`}(${raw})`
+      : raw;
+
 const plus = (address: string, words: number) => (words === 0 ? address : `${address} + ${words}u`);
+
+/** `common.fullScreenTriangle`, the one WGSL string function TypeGPU Kit draws with. */
+const FULL_SCREEN_TRIANGLE =
+  /^@vertex fn (\w+)\(@builtin\(vertex_index\) (\w+): uint\) -> (\w+) \{([\s\S]*)\}$/;
+
+const squeeze = (text: string) => text.replace(/\s+/g, '');
+
+const fullScreenTriangleBody = (index: string, output: string) =>
+  squeeze(`
+  const pos = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+  const uv = array<vec2f, 3>(vec2f(0, 1), vec2f(2, 1), vec2f(0, -1));
+  return ${output}(vec4f(pos[${index}], 0, 1), uv[${index}]);`);
+
+/** Ends every vertex stage: WebGPU's clip space in GL's, with rows running top to bottom. */
+function vertexEpilogue(linear: readonly string[]): string[] {
+  return [
+    ...linear.map((name) => `  ${name} *= gl_Position.w;`),
+    '  gl_Position.y = -gl_Position.y;',
+    `#ifndef ${CLIP_ZERO_TO_ONE}`,
+    '  gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;',
+    '#endif',
+  ];
+}
 
 interface Entry {
   readonly stage: 'vertex' | 'fragment';
@@ -252,6 +285,7 @@ export class KitGlslGenerator extends GlslGenerator {
   readonly #helpers = new Set<string>();
   readonly #variants = new Map<unknown, Map<string, unknown[]>>();
   readonly #tags = new Map<d.BaseData, Map<string, d.BaseData>>();
+  readonly #structs = new Map<string, d.WgslStruct>();
   #entry: Entry | undefined;
   #temporaries = 0;
 
@@ -263,6 +297,43 @@ export class KitGlslGenerator extends GlslGenerator {
     super.initGenerator(ctx);
     for (const name of KIT_NAMES) ctx.reserveIdentifier(name, 'global');
     ctx.addDeclaration(HEADER);
+    // TypeGPU adds functions written as WGSL strings without calling the generator
+    const add = ctx.addDeclaration.bind(ctx);
+    ctx.addDeclaration = (code: string, name?: string) =>
+      add(code.startsWith('//#') ? code : this.#foreign(code, name), name);
+  }
+
+  /** GLSL for a declaration TypeGPU wrote in WGSL itself. */
+  #foreign(code: string, name: string | undefined): string {
+    const triangle = FULL_SCREEN_TRIANGLE.exec(code.trim());
+    if (triangle) {
+      const [, , index, output, body] = triangle as unknown as string[];
+      const expected = fullScreenTriangleBody(index as string, output as string);
+      if (squeeze(body as string) === expected) {
+        const struct = this.#structs.get(output as string);
+        const uv = struct && (struct.propTypes as Record<string, d.BaseData>).uv;
+        const location = (uv && (attributeOf(uv, '@location')?.[0] as number)) ?? 0;
+        const varying = `kit_vary${location}`;
+        return [
+          `${CHUNK} vertex`,
+          `out vec2 ${varying};`,
+          `uniform int ${BASE_VERTEX};`,
+          '',
+          `${CHUNK} vertex main`,
+          'void main() {',
+          '  vec2 pos[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));',
+          '  vec2 uv[3] = vec2[3](vec2(0.0, 1.0), vec2(2.0, 1.0), vec2(0.0, -1.0));',
+          `  int i = gl_VertexID + ${BASE_VERTEX};`,
+          '  gl_Position = vec4(pos[i], 0.0, 1.0);',
+          `  ${varying} = uv[i];`,
+          ...vertexEpilogue([]),
+          '}',
+        ].join('\n');
+      }
+    }
+    throw new Error(
+      `@typegpu/kit-gl: '${name ?? code.slice(0, 40)}' is written in WGSL, which the GLSL generator cannot translate.`,
+    );
   }
 
   #chunk(stage: ChunkStage, names: readonly string[], code: string, directives: string[] = []) {
@@ -275,6 +346,10 @@ export class KitGlslGenerator extends GlslGenerator {
     if (this.#helpers.has(name)) return;
     this.#helpers.add(name);
     this.#chunk('shared', [name], code);
+  }
+
+  protected override _declareHelper(name: string, code: string): void {
+    this.#helper(name, code);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -304,6 +379,7 @@ export class KitGlslGenerator extends GlslGenerator {
           `  ${this.ctx.resolve(undecorate(type)).value} ${memberName(prop)}${this.#suffix(type)};`,
       );
       this.#chunk('shared', [id], `struct ${id} {\n${members.join('\n')}\n};`);
+      this.#structs.set(id, data);
       return id;
     }
     if (d.isWgslArray(data)) this.#suffix(data);
@@ -361,7 +437,7 @@ export class KitGlslGenerator extends GlslGenerator {
     );
     const buffer: BufferInfo = { id, range, access, schema: dataType };
     const root = this.#placeSnippet({ buffer, address: `${range}.x`, schema: dataType });
-    return snip(root.value, dataType, access);
+    return snip(root.value as string, dataType, access) as ResolvedSnippet;
   }
 
   #texelHelpers() {
@@ -402,12 +478,6 @@ export class KitGlslGenerator extends GlslGenerator {
     }
     this.#texelHelpers();
     const a = `(${address})`;
-    const cast = (raw: string, scalar: string, size: number) =>
-      scalar === 'f'
-        ? `uintBitsToFloat(${raw})`
-        : scalar === 'i'
-          ? `${size === 1 ? 'int' : `ivec${size}`}(${raw})`
-          : raw;
     if (type === 'f32' || type === 'i32' || type === 'u32') {
       return cast(`kit_word(${t}, ${address})`, type[0] as string, 1);
     }
@@ -1086,13 +1156,7 @@ export class KitGlslGenerator extends GlslGenerator {
 
     const epilogue =
       stage === 'vertex'
-        ? [
-            ...linear.map((name) => `  ${name} *= gl_Position.w;`),
-            '  gl_Position.y = -gl_Position.y;',
-            `#ifndef ${CLIP_ZERO_TO_ONE}`,
-            '  gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;',
-            '#endif',
-          ]
+        ? vertexEpilogue(linear)
         : sampleMask
           ? ['  if ((kit_sampleMask & 1u) == 0u) discard;']
           : [];

@@ -36,7 +36,14 @@ class RenderGenerator implements ShaderGenerator {
 
   initGenerator(ctx: ResolutionCtx) {
     this.#ctx = ctx;
-    this.#backend?.initGenerator(ctx);
+    // A compute entry written as a WGSL string never reaches `functionDefinition`, so this reads
+    // the pipeline's kind from the call that started the resolution
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    const stack = new Error().stack ?? '';
+    Error.stackTraceLimit = limit;
+    if (stack.includes('computePipeline.js')) this.#use(true);
+    else this.#backend?.initGenerator(ctx);
   }
 
   functionDefinition(options: FunctionDefinitionOptions) {
