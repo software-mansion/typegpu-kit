@@ -666,12 +666,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     for (const conjunct of conjuncts(condition.replace(/\s+/g, ''))) {
       const sides = splitTop(unwrap(conjunct), '==');
       if (sides.length !== 2) continue;
-      for (const [own, other] of [sides, [...sides].reverse()] as [string, string][]) {
+      for (const [own, other] of [sides, sides.toReversed()] as [string, string][]) {
         const value = new Arithmetic(own, frame.names).read();
-        const axis = typeof value === 'object' ? axesOf(value) : undefined;
-        const settled = axis?.length === 1 ? this.#shared(other, frame) : undefined;
+        const named = typeof value === 'object' ? axesOf(value) : undefined;
+        const settled = named?.length === 1 ? this.#shared(other, frame) : undefined;
         if (!settled) continue;
-        axes.set('xyz'.indexOf(axis as string), inlined(other, frame));
+        axes.set('xyz'.indexOf(named as string), inlined(other, frame));
         from.push(...settled);
         break;
       }
@@ -714,11 +714,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const from: string[] = [];
     for (const each of this.#chosen) {
       if (each.frame !== frame) continue;
-      for (const [axis, text] of each.axes) axes.set(axis, text);
+      for (const [index, text] of each.axes) axes.set(index, text);
       from.push(...each.from);
     }
     const chosen: string[] = [];
-    for (let axis = 0; axes.has(axis); axis++) chosen.push(`uint(${axes.get(axis)})`);
+    for (let index = 0; axes.has(index); index++) chosen.push(`uint(${axes.get(index)})`);
     if (chosen.length === 0 || !frame) return undefined;
     for (const name of from) frame.choosing.add(name);
     return chosen;
@@ -1195,7 +1195,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     ].join(' ');
     const { chosen } = written;
     const gid = chosen
-      ? `uvec3(${[0, 1, 2].map((axis) => chosen[axis] ?? '0u').join(', ')})`
+      ? `uvec3(${[0, 1, 2].map((i) => chosen[i] ?? '0u').join(', ')})`
       : written.whole
         ? 'uvec3(0u)'
         : invocationOf(layout, 'element');
