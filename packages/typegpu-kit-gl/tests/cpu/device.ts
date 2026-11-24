@@ -61,7 +61,14 @@ export function cpuRoot(
         return () => {
           const commands: Command[] = [];
           return {
-            beginRenderPass() {
+            beginRenderPass(descriptor: GPURenderPassDescriptor) {
+              const depth = descriptor.depthStencilAttachment;
+              if (depth?.depthLoadOp === 'clear')
+                commands.push(() => {
+                  (texture.textures.get(depth.view)!.levels[0]!.data as Float32Array).fill(
+                    depth.depthClearValue ?? 1,
+                  );
+                });
               return {
                 setPipeline: noop,
                 setBindGroup: noop,
