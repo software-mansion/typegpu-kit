@@ -13,6 +13,7 @@
 
 import { tgpu, type TgpuRoot } from 'typegpu';
 import type { Schedule } from './animate.ts';
+import * as backends from './backends.ts';
 import { pan as panBy, turn as turnBy } from './cameras.ts';
 import { checkSize, configuration } from './canvases.ts';
 import type { Frame } from './frames.ts';
@@ -98,7 +99,8 @@ export function surface(
   options: SurfaceOptions = {},
 ): Surface {
   const { maxPixelRatio = 2 } = options;
-  const format = options.format ?? navigator.gpu.getPreferredCanvasFormat();
+  const backend = backends.of(root);
+  const format = options.format ?? backend.preferredCanvasFormat;
 
   const maxSize = root.device.limits.maxTextureDimension2D;
   const clamp = (size: number) => Math.max(1, Math.min(maxSize, Math.round(size)));
@@ -131,7 +133,11 @@ export function surface(
   };
 
   fix(options.size);
-  const context = root.configureContext({ canvas, format, ...configuration(options) });
+  // A fallback device has no `webgpu` canvas context to configure, so it supplies its own
+  const context =
+    backend.kind === 'webgpu'
+      ? root.configureContext({ canvas, format, ...configuration(options) })
+      : backend.configure(canvas, { format, ...configuration(options) });
 
   const bounds = canvas.getBoundingClientRect();
   apply(bounds.width * layout.pixelRatio, bounds.height * layout.pixelRatio, layout.pixelRatio);
@@ -666,6 +672,37 @@ export interface HostOptions<S extends Scene> extends AnyHostOptions<S, Surface>
    * none.
    */
   readonly optionalFeatures?: Iterable<GPUFeatureName>;
+  /**
+   * Creates the root where WebGPU is missing or gives no adapter, such as `webgl.fallback()` from
+   * `@typegpu/kit-gl`. Ignored with `device` or `root`. Default none: the host reports the error.
+   */
+  readonly fallback?: Fallback;
+}
+
+/** Creates a root on another graphics API for `web.host`, which owns and destroys it. */
+export interface Fallback {
+  /**
+   * Creates the root. Its `destroy` frees the device with it.
+   *
+   * @param canvas the canvas the scene is hosted on
+   */
+  init(canvas: HTMLCanvasElement): TgpuRoot | Promise<TgpuRoot>;
+}
+
+async function init(
+  canvas: HTMLCanvasElement,
+  optionalFeatures: Iterable<GPUFeatureName>,
+  fallback: Fallback | undefined,
+): Promise<TgpuRoot> {
+  if (!fallback) return tgpu.init({ device: { optionalFeatures } });
+  if (navigator.gpu) {
+    try {
+      return await tgpu.init({ device: { optionalFeatures } });
+    } catch {
+      // No adapter or no device: the browser has the API but not the hardware path
+    }
+  }
+  return fallback.init(canvas);
 }
 
 /**
@@ -713,7 +750,7 @@ export function host<Options, S extends Scene>(
     try {
       root ??= device
         ? tgpu.initFromDevice({ device })
-        : await tgpu.init({ device: { optionalFeatures } });
+        : await init(canvas, optionalFeatures, hosting.fallback);
 
       canvasSurface = surface(root, canvas, hosting);
 

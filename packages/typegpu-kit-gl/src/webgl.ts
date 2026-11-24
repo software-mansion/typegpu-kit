@@ -1,7 +1,74 @@
 /**
- * Runs a TypeGPU Kit program on WebGL 2 where WebGPU is missing.
+ * Runs a TypeGPU Kit program on WebGL 2 where WebGPU is missing. The root it creates is TypeGPU's
+ * own, on a device implemented over a WebGL 2 context, so scenes and modules run unchanged.
+ * Compute pipelines run on the CPU; `LIMITATIONS.md` lists what differs.
  *
  * @module
+ * @kind platform
+ * @platform web
+ * @unstable
  */
 
-export {};
+import { tgpu, type TgpuRoot } from 'typegpu';
+import { createDevice, isSupported, type DeviceOptions } from './device/index.ts';
+import { KitGenerator } from './generator.ts';
+
+export interface InitOptions extends DeviceOptions {}
+
+/** What `web.host` takes as `fallback`: it creates the root on the hosted canvas. */
+export interface Fallback {
+  init(canvas: HTMLCanvasElement): Promise<TgpuRoot>;
+}
+
+/** Reports whether this browser can create a WebGL 2 context. */
+export function supported(): boolean {
+  return isSupported();
+}
+
+/**
+ * Creates a root that runs on WebGL 2. Pass the canvas you draw to, so the device presents to it
+ * without a copy; other canvases still work through `web.surface`. Throws if WebGL 2 is missing.
+ *
+ * @returns a root whose `destroy` also frees the WebGL device
+ */
+export async function init(options: InitOptions = {}): Promise<TgpuRoot> {
+  const device = createDevice(options);
+  const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: KitGenerator });
+
+  const destroyRoot = root.destroy.bind(root);
+  root.destroy = () => {
+    destroyRoot();
+    device.destroy();
+  };
+  return root;
+}
+
+/**
+ * Returns the fallback for `web.host`: `web.host(createScene, { canvas, fallback:
+ * webgl.fallback() })` hosts on WebGPU where it works and on WebGL 2 where it does not.
+ */
+export function fallback(options: Omit<InitOptions, 'canvas'> = {}): Fallback {
+  return { init: (canvas) => init({ ...options, canvas }) };
+}
+
+export interface InitWithFallbackOptions extends InitOptions {
+  /** Requests these WebGPU features when the adapter supports them. Default none. */
+  readonly optionalFeatures?: Iterable<GPUFeatureName>;
+}
+
+/**
+ * Creates a WebGPU root, or a WebGL 2 root where WebGPU is missing or gives no adapter. Use it in
+ * a program that makes its own root instead of calling `web.host`. Read which one you got with
+ * `backends.of(root).kind`.
+ */
+export async function initWithFallback(options: InitWithFallbackOptions = {}): Promise<TgpuRoot> {
+  const { optionalFeatures = [], ...rest } = options;
+  if (typeof navigator !== 'undefined' && navigator.gpu) {
+    try {
+      return await tgpu.init({ device: { optionalFeatures } });
+    } catch {
+      // No adapter or no device: fall through to WebGL
+    }
+  }
+  return init(rest);
+}

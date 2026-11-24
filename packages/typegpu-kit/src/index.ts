@@ -1,3 +1,6 @@
+export * as backends from './backends.ts';
+export type { Backend } from './backends.ts';
+
 export * as bindings from './bindings.ts';
 export type { Part as BindingPart, Shared as SharedBindings } from './bindings.ts';
 

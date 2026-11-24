@@ -38,6 +38,7 @@
   ],
   "exports": {
     ".": "./src/index.ts",
+    "./backends": "./src/backends.ts",
     "./bindings": "./src/bindings.ts",
     "./cameras": "./src/cameras.ts",
     "./clock": "./src/clock.ts",
@@ -116,6 +117,7 @@
     },
     "exports": {
       ".": "./dist/index.js",
+      "./backends": "./dist/backends.js",
       "./bindings": "./dist/bindings.js",
       "./cameras": "./dist/cameras.js",
       "./clock": "./dist/clock.js",
