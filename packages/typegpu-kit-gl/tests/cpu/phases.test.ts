@@ -2,6 +2,7 @@ import { workgroup } from '@typegpu/kit';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
+import { workgroupReturns } from './calls.ts';
 
 it('reuses plain barrier phases across workgroups and preserves private state and locals', async () => {
   let code = '';
@@ -80,6 +81,50 @@ it('keeps repeated scan helper locals separate across unrolled barrier phases', 
       ).flat(),
     );
     expect(code).toContain('"phases":13');
+  } finally {
+    root.destroy();
+  }
+});
+
+it('skips whole workgroups that return before or between barrier phases', async () => {
+  let code = '';
+  const root = cpuRoot({
+    onModule: (source) => {
+      code = source;
+    },
+  });
+  try {
+    expect(await workgroupReturns(root)).toEqual(
+      Array.from({ length: 16 }, (_, i) => {
+        const group = Math.floor(i / 4);
+        return group === 1
+          ? [0, 0]
+          : [group * 4 + ((i + 1) % 4) + 1, group === 2 ? 0 : group * 4 + ((i + 2) % 4) + 1];
+      }).flat(),
+    );
+    expect(code).toContain('"phases":3');
+  } finally {
+    root.destroy();
+  }
+});
+
+it('reports lanes returning at different barrier phases as divergent', () => {
+  const root = cpuRoot();
+  try {
+    for (const afterFirst of [false, true]) {
+      const kernel = tgpu.computeFn({
+        workgroupSize: [4],
+        in: { lid: d.builtin.localInvocationIndex },
+      })(({ lid }) => {
+        'use gpu';
+        if (afterFirst) std.workgroupBarrier();
+        if (lid === 0) return;
+        std.workgroupBarrier();
+      });
+      expect(() => root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1)).toThrow(
+        'divergent workgroup barrier',
+      );
+    }
   } finally {
     root.destroy();
   }

@@ -21,7 +21,7 @@ interface Entry {
 type Kernel = (...args: unknown[]) => void | Generator<unknown, void>;
 interface Execution {
   kernel: Kernel;
-  phases?: () => ((...args: unknown[]) => void)[];
+  phases?: () => ((...args: unknown[]) => boolean | void)[];
   capture(values?: unknown[]): unknown[];
   restore(values: unknown[]): void;
   resetWorkgroup(): void;
@@ -148,6 +148,7 @@ export function compile(code: string): CpuModule {
             const invocations: { iterator: Generator<unknown, void>; privateValues?: unknown[] }[] =
               [];
             let index = 0;
+            let phaseFinished = 0;
             for (local[2] = 0; local[2] < entry.size[2]; local[2]++)
               for (local[1] = 0; local[1] < entry.size[1]; local[1]++)
                 for (local[0] = 0; local[0] < entry.size[0]; local[0]++) {
@@ -166,7 +167,7 @@ export function compile(code: string): CpuModule {
                         held[2] = value[2];
                       } else lane.inputs[i] = value;
                     }
-                    lane.phases[0]!(...lane.inputs);
+                    if (lane.phases[0]!(...lane.inputs) === true) phaseFinished++;
                     if (privateNames.length) execution.capture(lane.privateValues);
                     continue;
                   }
@@ -179,12 +180,17 @@ export function compile(code: string): CpuModule {
                   if (invocation) invocations.push({ iterator: invocation });
                 }
             if (phaseLanes) {
-              for (let phase = 1; phase < entry.phases!; phase++)
+              for (let phase = 1; phase < entry.phases!; phase++) {
+                if (phaseFinished === phaseLanes.length) break;
+                if (phaseFinished)
+                  throw new Error('@typegpu/kit-gl CPU: divergent workgroup barrier');
+                phaseFinished = 0;
                 for (const lane of phaseLanes) {
                   if (privateNames.length) execution.restore(lane.privateValues);
-                  lane.phases[phase]!();
+                  if (lane.phases[phase]!() === true) phaseFinished++;
                   if (privateNames.length) execution.capture(lane.privateValues);
                 }
+              }
             }
             if (invocations.length) {
               for (;;) {

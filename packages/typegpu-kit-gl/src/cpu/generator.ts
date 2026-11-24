@@ -582,6 +582,27 @@ export class CpuGenerator extends WgslGenerator {
       );
       return name;
     }
+    if (d.isWgslArray(schema)) {
+      const element = d.isAtomic(schema.elementType)
+        ? schema.elementType.inner
+        : schema.elementType;
+      const ctor = this.emitTypeAnnotation(element);
+      const input = 'value?.[i]';
+      const copied = ctor.startsWith('cpuType')
+        ? `${ctor}(${input})`
+        : ctor === 'u32'
+          ? `((${input})>>>0)`
+          : ctor === 'i32'
+            ? `((${input})|0)`
+            : ctor === 'bool'
+              ? `Boolean(${input})`
+              : `Number(${input}??0)`;
+      this.ctx.addDeclaration(
+        `function ${name}(...args) { const value=args.length===1 ? args[0] : args; const result=new Array(${schema.elementCount}); for(let i=0;i<${schema.elementCount};i++) result[i]=${copied}; return result; }`,
+        name,
+      );
+      return name;
+    }
     if (schema.type === 'struct') {
       const entries = Object.entries((schema as d.WgslStruct).propTypes);
       const copied = entries.map(([key, field]) => {

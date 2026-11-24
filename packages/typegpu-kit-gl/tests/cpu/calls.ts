@@ -214,3 +214,27 @@ export async function vectorResults(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(2);
   return (await output.read()).flatMap((v) => [v.x, v.y, v.z, v.w]);
 }
+
+export async function workgroupReturns(root: TgpuRoot): Promise<number[]> {
+  const output = root.createMutable(d.arrayOf(d.vec2u, 16));
+  const shared = tgpu.workgroupVar(d.arrayOf(d.u32, 4));
+  const kernel = tgpu.computeFn({
+    workgroupSize: [4],
+    in: {
+      gid: d.builtin.globalInvocationId,
+      wid: d.builtin.workgroupId,
+      lid: d.builtin.localInvocationIndex,
+    },
+  })(({ gid, wid, lid }) => {
+    'use gpu';
+    if (wid.x === 1) return;
+    shared.$[lid] = gid.x + d.u32(1);
+    std.workgroupBarrier();
+    output.$[gid.x].x = shared.$[(lid + 1) % 4];
+    if (wid.x === 2) return;
+    std.workgroupBarrier();
+    output.$[gid.x].y = shared.$[(lid + 2) % 4];
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(4);
+  return (await output.read()).flatMap((v) => [v.x, v.y]);
+}
