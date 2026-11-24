@@ -44,13 +44,22 @@ function cpuTexture(ctx: Ctx, view: ViewImpl): CpuTexture {
   };
 }
 
-function count(ctx: Ctx, label: string, ms: number): void {
-  const kernel = ctx.stats.kernels.get(label);
+/** A kernel's stats, with the invocations its dispatches ran, which profiles read. */
+interface KernelStats {
+  ms: number;
+  dispatches: number;
+  invocations: number;
+}
+
+function count(ctx: Ctx, label: string, ms: number, invocations: number): void {
+  const kernel = ctx.stats.kernels.get(label) as KernelStats | undefined;
   if (kernel) {
     kernel.ms += ms;
     kernel.dispatches++;
+    kernel.invocations += invocations;
   } else {
-    ctx.stats.kernels.set(label, { ms, dispatches: 1 });
+    const fresh: KernelStats = { ms, dispatches: 1, invocations };
+    ctx.stats.kernels.set(label, fresh);
   }
 }
 
@@ -62,11 +71,13 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
     return;
   }
   if (x === 0 || y === 0 || z === 0) return;
+  const size = pipeline.gpu?.module.workgroupSize ?? module.workgroupSize;
+  const invocations = x * y * z * size[0] * size[1] * size[2];
   if (pipeline.gpu) {
     const start = performance.now();
     const reason = runGpu(ctx, pipeline.gpu, pass.groups, x, y, z);
     if (reason === undefined) {
-      count(ctx, `${pipeline.label} (gpu)`, performance.now() - start);
+      count(ctx, `${pipeline.label} (gpu)`, performance.now() - start, invocations);
       return;
     }
     ctx.stats.fallbacks.set(pipeline.label, reason);
@@ -104,7 +115,7 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   try {
     const start = performance.now();
     module.dispatch(x, y, z, resources);
-    count(ctx, pipeline.label, performance.now() - start);
+    count(ctx, pipeline.label, performance.now() - start, invocations);
   } catch (error) {
     ctx.errors.report(
       'internal',
