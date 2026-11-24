@@ -38,6 +38,24 @@ export class CpuGenerator extends WgslGenerator {
     string,
     { schema: d.BaseData; parameters: string[]; components: string[] }
   >();
+  #recordReturns = new Map<string, { parameters: string[]; expression: string }>();
+  #inlineRecord(code: string): { prefix: string; value: string } | undefined {
+    const call = /^([A-Za-z_$][\w$]*)\(([\s\S]*)\)$/.exec(code);
+    const record = call && this.#recordReturns.get(call[1]!);
+    if (!record) return undefined;
+    const values = callArguments(code);
+    if (values.length !== record.parameters.length) return undefined;
+    const names = values.map(() => this.ctx.makeUniqueIdentifier('cpuRecordInput', 'global'));
+    const replacements = new Map(record.parameters.map((parameter, i) => [parameter, names[i]!]));
+    const value = record.expression.replace(
+      /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_$][\w$]*/g,
+      (token, at: number) =>
+        record.expression[at - 1] === '.' ? token : (replacements.get(token) ?? token),
+    );
+    const prefix = values.map((input, i) => `let ${names[i]} = ${input};\n`).join('');
+    const nested = this.#inlineRecord(value);
+    return nested ? { prefix: prefix + nested.prefix, value: nested.value } : { prefix, value };
+  }
   #functionUsed = new Map<string, boolean[]>();
   #effects = false;
   #functionVectors = new Map<string, (number | undefined)[]>();
@@ -754,6 +772,11 @@ export class CpuGenerator extends WgslGenerator {
       this.#vectors.set(name, locals);
       return prefix + locals.map((local, i) => `let ${local}=${components[i]};`).join('');
     }
+    const record = schema.type === 'struct' ? this.#inlineRecord(rhs) : undefined;
+    if (record) {
+      this.#ownedLocals.add(name);
+      return `${record.prefix}let ${name} = ${record.value};`;
+    }
     const type = this.emitTypeAnnotation(schema);
     const address = this.#addresses.get(rhs);
     if (address) rhs = readAddress(address);
@@ -960,6 +983,16 @@ export class CpuGenerator extends WgslGenerator {
           });
       }
       if (options.functionType === 'normal') {
+        const record = /^\{\s*return ([\s\S]*);\s*}$/.exec(body);
+        if (!this.#effects && returnType.type === 'struct' && record) {
+          const expression = record[1]!;
+          const forwarded = /^([A-Za-z_$][\w$]*)\(/.exec(expression);
+          if (expression.startsWith('({') || (forwarded && this.#recordReturns.has(forwarded[1]!)))
+            this.#recordReturns.set(options.name, {
+              parameters: args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]),
+              expression,
+            });
+        }
         return `function${generator ? '*' : ''} ${options.name}(${args.flatMap((arg) => parameters.get(arg.name) ?? [arg.name]).join(',')}) ${body || '{}'}`;
       }
       const inputs = args.map((arg) => {

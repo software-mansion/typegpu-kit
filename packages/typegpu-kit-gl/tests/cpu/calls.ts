@@ -239,3 +239,49 @@ export async function workgroupReturns(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(4);
   return (await output.read()).flatMap((v) => [v.x, v.y]);
 }
+
+export async function recordValues(root: TgpuRoot): Promise<number[]> {
+  const Row = d.struct({ value: d.vec2u, index: d.u32 });
+  const source = root.createMutable(d.arrayOf(d.vec2u, 2), [d.vec2u(3, 4), d.vec2u(8, 9)]);
+  const output = root.createMutable(d.arrayOf(d.u32, 7));
+  const state = tgpu.privateVar(d.u32);
+  const next = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    const current = state.$;
+    state.$ += d.u32(1);
+    return current;
+  });
+  const make = tgpu.fn(
+    [d.u32],
+    Row,
+  )((index) => {
+    'use gpu';
+    return Row({ value: source.$[index], index });
+  });
+  const forward = tgpu.fn(
+    [d.u32],
+    Row,
+  )((index) => {
+    'use gpu';
+    return make(index);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    const first = forward(next());
+    const second = forward(next());
+    first.value.x += d.u32(100);
+    source.$[0] = d.vec2u(99);
+    output.$[0] = first.value.x;
+    output.$[1] = first.value.y;
+    output.$[2] = second.value.x;
+    output.$[3] = second.value.y;
+    output.$[4] = first.index;
+    output.$[5] = second.index;
+    output.$[6] = state.$;
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return output.read();
+}
