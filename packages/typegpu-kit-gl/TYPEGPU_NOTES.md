@@ -153,7 +153,7 @@ const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
 
 **Upstream.** Add typed barrier emission and function effects, including reachable barriers, to `tgsl/shaderGenerator.ts`; preserve calls as structured nodes until function emission in `tgsl/wgslGenerator.ts`.
 
-**Workaround.** `CpuGenerator.functionDefinition` lowers barrier text to `yield`, then propagates `yield*`. `src/cpu/index.ts` schedules the resulting generators in workgroup phases.
+**Workaround.** `CpuGenerator.functionDefinition` lowers barrier text to `yield`, then propagates `yield*`. `src/cpu/phase-helpers.ts` parses and inlines straight-line scalar barrier helpers; `src/cpu/phases.ts` splits unconditional entry barriers into plain phase functions. It turns entry returns into completion flags, which `src/cpu/index.ts` checks across lanes before the next phase. Other control-flow barriers retain generator functions. Structured function effects and barrier nodes would remove these text passes.
 
 ### 14. Local names are reusable across sibling blocks, without scope hooks
 
