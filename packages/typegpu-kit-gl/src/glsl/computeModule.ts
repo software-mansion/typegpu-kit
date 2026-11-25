@@ -397,7 +397,8 @@ export function parseCompute(
     if (scatter) {
       const parts = scatter.trim().split(/\s+/);
       const [, sites, words = '1', lanes = '1'] = accumulate ? [ACCUMULATE, parts[1]] : parts;
-      const taken = accumulate && parts[2] === 'take' ? int(parts[3] as string, scatter) : undefined;
+      const taken =
+        accumulate && parts[2] === 'take' ? int(parts[3] as string, scatter) : undefined;
       const stage = `points${chunk.stage.slice('pass'.length)}`;
       const draw = chunks.find((each) => each.stage === stage);
       if (!draw) throw new Error(`@typegpu/kit-gl: a pass of points without its '${stage}'`);
