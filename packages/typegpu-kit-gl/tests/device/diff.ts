@@ -9,6 +9,7 @@ import { offscreenSurface } from '@typegpu/kit/testing';
 import type { TgpuRoot } from 'typegpu';
 import { loading } from '../../../../apps/typegpu-kit-docs/src/examples/files.ts';
 import { begin, filesOf } from '../../../typegpu-kit-examples/src/hosts.ts';
+import type { ExampleScene } from '../../../typegpu-kit-examples/src/contract.ts';
 import { exampleOf } from '../../../typegpu-kit-examples/src/index.ts';
 import { compare, readTexture, values } from './compare.ts';
 
@@ -109,11 +110,40 @@ export interface BufferDifference {
   readonly usage: number;
   /** Share of 32-bit words that differ, compared as floats within 1e-3 relative. */
   readonly mismatched: number;
+  /**
+   * The same share with each side's words sorted, so rows in another order, as a particle pool's
+   * from atomics, compare equal and wrong values still show.
+   */
+  readonly unordered: number;
   /** The first differing word: index, WebGPU's and WebGL's value as u32 and f32. */
   readonly first: string;
 }
 
-function compareWords(a: Uint8Array, b: Uint8Array): { mismatched: number; first: string } {
+function farApart(ua: Uint32Array, ub: Uint32Array, fa: Float32Array, fb: Float32Array, i: number) {
+  if (ua[i] === ub[i]) return false;
+  return Math.abs(fa[i]! - fb[i]!) > 1e-3 * Math.max(1, Math.abs(fa[i]!));
+}
+
+/** Sorts a buffer's words by their float values, with NaNs and their bits last. */
+function sortedWords(bytes: Uint8Array): { u: Uint32Array; f: Float32Array } {
+  const f = new Float32Array(bytes.buffer.slice(0, bytes.byteLength - (bytes.byteLength % 4)));
+  const u = new Uint32Array(f.buffer);
+  const order = Array.from(u.keys()).toSorted((i, j) => {
+    const x = f[i]!;
+    const y = f[j]!;
+    if (Number.isNaN(x) || Number.isNaN(y)) {
+      return Number(Number.isNaN(x)) - Number(Number.isNaN(y)) || u[i]! - u[j]!;
+    }
+    return x - y || u[i]! - u[j]!;
+  });
+  const sorted = Uint32Array.from(order, (i) => u[i]!);
+  return { u: sorted, f: new Float32Array(sorted.buffer) };
+}
+
+function compareWords(
+  a: Uint8Array,
+  b: Uint8Array,
+): { mismatched: number; unordered: number; first: string } {
   const ua = new Uint32Array(a.buffer, 0, a.byteLength / 4);
   const ub = new Uint32Array(b.buffer, 0, b.byteLength / 4);
   const fa = new Float32Array(a.buffer, 0, a.byteLength / 4);
@@ -121,14 +151,19 @@ function compareWords(a: Uint8Array, b: Uint8Array): { mismatched: number; first
   let far = 0;
   let first = '';
   for (let i = 0; i < ua.length; i++) {
-    if (ua[i] === ub[i]) continue;
-    const close = Math.abs(fa[i]! - fb[i]!) <= 1e-3 * Math.max(1, Math.abs(fa[i]!));
-    if (close) continue;
+    if (!farApart(ua, ub, fa, fb, i)) continue;
     far++;
     if (far <= 6)
       first += `[${i}] gpu ${ua[i]} (${fa[i]?.toPrecision(4)}) gl ${ub[i]} (${fb[i]?.toPrecision(4)}) `;
   }
-  return { mismatched: Number((far / Math.max(1, ua.length)).toFixed(4)), first };
+  let unordered = 0;
+  if (far > 0) {
+    const sa = sortedWords(a);
+    const sb = sortedWords(b);
+    for (let i = 0; i < sa.u.length; i++) if (farApart(sa.u, sb.u, sa.f, sb.f, i)) unordered++;
+  }
+  const share = (count: number) => Number((count / Math.max(1, ua.length)).toFixed(4));
+  return { mismatched: share(far), unordered: share(unordered), first };
 }
 
 /** A small seeded generator, so both runs draw the same random numbers. */
@@ -143,17 +178,26 @@ function seeded(seed: number): () => number {
   };
 }
 
-async function run(root: TgpuRoot, key: string, count: number, size: [number, number]) {
+/** Acts on a scene as a viewer would, before frame `frame` runs. */
+export type Act = (scene: ExampleScene, frame: number) => void | Promise<void>;
+
+async function run(root: TgpuRoot, key: string, count: number, size: [number, number], act?: Act) {
   const random = Math.random;
   Math.random = seeded(1);
   try {
-    return await runSeeded(root, key, count, size);
+    return await runSeeded(root, key, count, size, act);
   } finally {
     Math.random = random;
   }
 }
 
-async function runSeeded(root: TgpuRoot, key: string, count: number, size: [number, number]) {
+async function runSeeded(
+  root: TgpuRoot,
+  key: string,
+  count: number,
+  size: [number, number],
+  act?: Act,
+) {
   const made = record(root.device);
   const buffers = recordBuffers(root.device);
   const surface = offscreenSurface(root, { width: size[0], height: size[1], format: 'rgba8unorm' });
@@ -163,6 +207,7 @@ async function runSeeded(root: TgpuRoot, key: string, count: number, size: [numb
   await scene.ready;
   const loop = frames.create(root, scene.frame);
   for (let i = 0; i < count; i++) {
+    await act?.(scene, i);
     loop.run(i * 0.04);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -198,12 +243,18 @@ export async function diffScene(
   gpu: TgpuRoot,
   gl: TgpuRoot,
   key: string,
-  options: { frames?: number; size?: [number, number]; layers?: number; levels?: number } = {},
+  options: {
+    frames?: number;
+    size?: [number, number];
+    layers?: number;
+    levels?: number;
+    act?: Act;
+  } = {},
 ): Promise<{ textures: TextureDifference[]; buffers: BufferDifference[] }> {
   const count = options.frames ?? 3;
   const size = options.size ?? [320, 240];
-  const expected = await run(gpu, key, count, size);
-  const actual = await run(gl, key, count, size);
+  const expected = await run(gpu, key, count, size, options.act);
+  const actual = await run(gl, key, count, size, options.act);
   const differences: TextureDifference[] = [];
   const pairs = Math.min(expected.made.length, actual.made.length);
   for (let index = 0; index < pairs; index++) {
