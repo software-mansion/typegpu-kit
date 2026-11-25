@@ -200,10 +200,11 @@ precision highp ${sampler};
 uniform ${sampler} source;
 uniform ivec2 origin;
 uniform int layer;
+uniform int level;
 out uvec4 color;
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy) + origin;
-  color = floatBitsToUint(texelFetch(source, ${sampler === 'sampler2D' ? 'at' : 'ivec3(at, layer)'}, 0));
+  color = floatBitsToUint(texelFetch(source, ${sampler === 'sampler2D' ? 'at' : 'ivec3(at, layer)'}, level));
 }
 `;
 
@@ -252,8 +253,13 @@ function readThroughShader(
   state.scratchTexture(gl.TEXTURE_2D, target);
   gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32UI, width, height);
   state.scratchTexture(source.target, source.texture);
-  gl.texParameteri(source.target, gl.TEXTURE_BASE_LEVEL, sourceLevel);
-  gl.texParameteri(source.target, gl.TEXTURE_MAX_LEVEL, sourceLevel);
+  // The level goes to texelFetch, so the read does not depend on how a driver applies base levels
+  gl.texParameteri(source.target, gl.TEXTURE_BASE_LEVEL, 0);
+  gl.texParameteri(
+    source.target,
+    gl.TEXTURE_MAX_LEVEL,
+    source === texture ? texture.mipLevelCount - 1 : 0,
+  );
   texture.levelRange = -1;
   state.sampler(state.scratchUnit, ctx.nearest);
 
@@ -263,6 +269,7 @@ function readThroughShader(
   state.program(program);
   gl.uniform1i(uniforms.get('source')!, state.scratchUnit);
   gl.uniform2i(uniforms.get('origin')!, x, y);
+  gl.uniform1i(uniforms.get('level')!, sourceLevel);
   const layered = uniforms.get('layer');
   if (layered) gl.uniform1i(layered, source === texture ? layer : 0);
   state.vertexArray(null);
@@ -387,6 +394,8 @@ function readFrom(ctx: Ctx, texture: TextureImpl, level: number, layer: number) 
     throw new Error('@typegpu/kit-gl: multisampled textures cannot be read back on WebGL 2.');
   }
   if (!readsDirectly(texture.info)) return undefined;
+  // Apple's OpenGL driver reads level 0 of a 32-bit float texture whichever level is attached
+  if (level > 0 && texture.info.array === 'f32') return undefined;
   state.readFramebuffer(ctx.scratch.read);
   attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, level, layer);
   state.readBuffer(gl.COLOR_ATTACHMENT0);
