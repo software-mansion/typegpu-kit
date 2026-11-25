@@ -7,6 +7,7 @@ import { SweepGenerator } from './scene-generator.ts';
 import { observeScene } from './scene-observer.ts';
 import { captureScene } from './example-comparison.ts';
 import { replay, snapshotDispatch, type ReplaySnapshot } from './replay.ts';
+import { classifyAmplification } from './amplification.ts';
 import { recordResults } from './results.ts';
 
 const batch: { example: string; label: string; resource: string; skip: number; entry?: string }[] =
@@ -108,8 +109,9 @@ for (const probe of probes)
           snapshot!,
           example === 'censer',
         );
-        recordResults(`replay:${example}:${snapshot!.label}:${skip}`, result);
-        expect(result.differences).toEqual([]);
+        const classified = classifyAmplification(example, result);
+        recordResults(`replay:${example}:${snapshot!.label}:${skip}`, classified);
+        expect(classified.differences).toEqual([]);
       } finally {
         gpu.destroy();
         cpu.destroy();

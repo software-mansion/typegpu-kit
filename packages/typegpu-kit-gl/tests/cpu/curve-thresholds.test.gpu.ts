@@ -34,8 +34,8 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
         ({ id }) => {
           'use gpu';
           const segment = id.x % 16;
-          const sample = id.x / 16;
-          const index = indices.$[sample / 5];
+          const sample = std.intdiv(id.x, d.u32(16));
+          const index = indices.$[std.intdiv(sample, d.u32(5))];
           const uv = (d.vec2f(d.vec2u(index % 256, index / 256)) + 0.5) / d.vec2f(256, 128);
           const point =
             d.vec2f(

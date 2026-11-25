@@ -23,7 +23,7 @@ async function trace(root: TgpuRoot) {
           const index = input.$[id.x];
           const angle = (d.f32(index % 192) / 192) * Math.PI * 2;
           const direction = d.vec2f(std.cos(angle), std.sin(angle));
-          const level = levelOf(index / 192);
+          const level = levelOf(std.intdiv(index, d.u32(192)));
           const stride = REACH / 48;
           let inner = d.f32(0);
           let outer = d.f32(0);

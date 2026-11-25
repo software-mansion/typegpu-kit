@@ -71,9 +71,25 @@ for (const example of ['fireworks', 'stampede'] as const)
         let maximumHeightError = 0,
           maximumHeightRelative = 0;
         const records = [];
+        const unboundedAccuracy = [];
         for (let i = 0; i < ac.length / 12; i++) {
           for (let c = 2; c < 8; c++) {
-            if (c === 3 || (c === 2 && inputs[i * 12] === 0 && inputs[i * 12 + 1] === 0)) continue;
+            if (c === 3) continue;
+            const x = inputs[i * 12]!,
+              z = inputs[i * 12 + 1]!;
+            const offset = Math.fround(example === 'fireworks' ? 0.6 : 0.8);
+            const atX = c === 4 ? Math.fround(x - offset) : c === 5 ? Math.fround(x + offset) : x;
+            const atZ = c === 6 ? Math.fround(z - offset) : c === 7 ? Math.fround(z + offset) : z;
+            if (Math.abs(atX) < 2 ** -126 || Math.abs(atZ) < 2 ** -126) {
+              unboundedAccuracy.push({
+                row: i,
+                component: c,
+                pointBits: Array.from(new Uint32Array(Float32Array.of(atX, atZ).buffer)),
+                cpu: ac[i * 12 + c],
+                dawn: bc[i * 12 + c],
+              });
+              continue;
+            }
             const delta = Math.abs(ac[i * 12 + c]! - bc[i * 12 + c]!);
             maximumHeightError = Math.max(maximumHeightError, delta);
             maximumHeightRelative = Math.max(
@@ -90,6 +106,7 @@ for (const example of ['fireworks', 'stampede'] as const)
         recordResults(`terrainThresholds:${example}`, {
           maximumHeightError,
           maximumHeightRelative,
+          unboundedAccuracy,
           records,
           original: { cpu: Array.from(a), dawn: Array.from(b) },
         });

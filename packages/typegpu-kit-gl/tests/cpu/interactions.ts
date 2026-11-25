@@ -49,7 +49,10 @@ export async function interact(
       for (const key of Object.keys(element.buttons)) {
         const button = buttons[key]!;
         await act(`ui.${name}.${key}.press`, () => button.press());
-        if ('release' in button) await act(`ui.${name}.${key}.release`, () => button.release());
+        if ('release' in button) {
+          await pointer(`ui.${name}.${key}.held`);
+          await act(`ui.${name}.${key}.release`, () => button.release());
+        }
       }
     } else if (element.kind === 'text') {
       report.completed.push(`ui.${name}: ${(handler as () => string)()}`);
