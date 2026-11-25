@@ -505,6 +505,12 @@ const BIT_POLYFILLS: Record<string, (value: number) => number> = {
   },
 };
 
+/** WGSL's `quantizeToF16` on one component: GLSL ES 3.00 has no `f16`, but it packs halves. */
+const quantizeToF16 = (value: number): number => {
+  'use gpu';
+  return std.unpack2x16float(std.pack2x16float(d.vec2f(value, 0))).x;
+};
+
 /**
  * `select` for every type a WGSL `select` takes, as the WGSL generator writes it for ternaries.
  * Like WGSL's, it evaluates both branches.
@@ -908,7 +914,31 @@ export class GlslGenerator extends WgslGenerator {
         return component.dataType === d.i32 ? `int(${result})` : result;
       });
     }
-    if (name === 'extractBits' || name === 'insertBits') {
+    if (name === 'quantizeToF16') {
+      return this.#componentwise(args[0], (component) => {
+        const result = this._callShellless(quantizeToF16, [component]);
+        if (!result) {
+          throw new Error(`Invalid argument passed to ${name}()`);
+        }
+        return result.value;
+      });
+    }
+    if (name === 'ldexp') {
+      const [value, exponent] = args;
+      if (!value || !exponent || value.dataType === UnknownData) {
+        throw new Error(`Invalid number of arguments for 'ldexp'`);
+      }
+      const size = (value.dataType as d.Vec2f).componentCount;
+      const float = size ? `vec${size}` : 'float';
+      return `(${this.ctx.resolveSnippet(value).value} * exp2(${float}(${this.ctx.resolveSnippet(exponent).value})))`;
+    }
+    if (
+      name === 'extractBits' ||
+      name === 'insertBits' ||
+      // GLSL's take an `out` parameter where WGSL's return a struct
+      name === 'modf' ||
+      name === 'frexp'
+    ) {
       throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
     }
     if (name === 'dot' && args[0] && isIntegerVector(args[0].dataType)) {

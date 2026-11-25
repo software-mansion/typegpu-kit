@@ -54,7 +54,7 @@ In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `partic
 - A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
 - No `textureGather` or `textureGatherCompare`, no `textureNumSamples`, no multisampled or cube-array texture bindings.
 - No `sample_index`, `primitive_index`, `clip_distances` or sample-mask input. A `sample_mask` output discards the fragment when bit 0 is clear, which is exact only without multisampling.
-- No `extractBits` or `insertBits` in generated GLSL (CPU kernels support both), no `f16`, no `bool` inside a buffer, and no array of arrays other than a buffer's runtime-sized array of them.
+- No `extractBits` or `insertBits` in generated GLSL (CPU kernels support both), no `modf` or `frexp` in either, no `f16`, no `bool` inside a buffer, and no array of arrays other than a buffer's runtime-sized array of them.
 - A render stage cannot write a buffer or a storage texture, and cannot use atomics other than `atomicLoad`.
 - A uniform buffer over 16 KiB is read through a texture instead of a uniform block. Reading a whole runtime-sized array as one value throws.
 - A stage may use 16 texture units, and a program 32. Each storage buffer, each large uniform buffer and each texture and sampler pair takes one. A program that needs more fails when it links, with a message that counts them.

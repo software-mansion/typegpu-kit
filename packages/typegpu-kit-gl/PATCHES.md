@@ -468,4 +468,39 @@ New.
 +      }
 ```
 
+### K. `ldexp` and `quantizeToF16`, and `modf` and `frexp` refused by name
+
+New.
+
+**Why.** GLSL ES 3.00 has no `ldexp` or `quantizeToF16`, and its `modf` and `frexp` take an `out` parameter where WGSL's return a struct. The generator passed all four through by name, so a shader that called one failed to link with the driver's message. `censer` quantizes its smoke's carried velocities with `quantizeToF16`, in a kernel the fallback runs on the CPU today.
+
+**Reproduction.** `std.ldexp(x, 2)` or `std.quantizeToF16(x)` in a fragment: "'ldexp' : no matching overloaded function found". Patched, `(x * exp2(float(2)))` and a helper over `packHalf2x16` and `unpackHalf2x16`, componentwise for vectors; `std.modf(x)` throws "'modf' is not supported by the GLSL generator yet." `tests/glsl/semantics.test.gl.ts` compares both builtins with WebGPU.
+
+**Diff.**
+
+```diff
++const quantizeToF16 = (value: number): number => {
++  'use gpu';
++  return std.unpack2x16float(std.pack2x16float(d.vec2f(value, 0))).x;
++};
+ …
++    if (name === 'quantizeToF16') {
++      return this.#componentwise(args[0], (component) => this._callShellless(quantizeToF16, [component]).value);
++    }
++    if (name === 'ldexp') {
++      const size = (value.dataType as d.Vec2f).componentCount;
++      const float = size ? `vec${size}` : 'float';
++      return `(${value} * exp2(${float}(${exponent})))`;
++    }
+-    if (name === 'extractBits' || name === 'insertBits') {
++    if (
++      name === 'extractBits' ||
++      name === 'insertBits' ||
++      // GLSL's take an `out` parameter where WGSL's return a struct
++      name === 'modf' ||
++      name === 'frexp'
++    ) {
+       throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
+```
+
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.
