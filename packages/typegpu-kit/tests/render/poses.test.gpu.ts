@@ -1,10 +1,10 @@
-import { frames, history } from '@typegpu/kit';
+import { backends, frames, history } from '@typegpu/kit';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
 import { meshPool, poses } from '../../src/index.ts';
 import { jointHalf, Pose, poseJoints } from '../../src/render/skinning.ts';
-import { bend, blade, leg, rest, shin, slow, sway } from './leg.ts';
+import { bend, blade, leg, moving, QUARTER_Z, rest, shin, slow, sway } from './leg.ts';
 
 /** The shin's three vertices, then the blade's. */
 const VERTICES = 6;
@@ -569,3 +569,94 @@ it('gives a joint’s position in shaders where jointAt places it', async () => 
   // The hip has turned the knee an eighth about +z.
   expectNear(gpu.slice(1), [[-Math.SQRT1_2, Math.SQRT1_2, 0]]);
 });
+
+const STILL = { rotation: [0, 0, 0, 1], scale: [1, 1, 1] } as const;
+
+/** A chain of `depth` joints a metre apart up +y, and a side joint on the first, bound at rest. */
+const chain = (depth: number): poses.SkinData => ({
+  joints: [
+    ...Array.from({ length: depth }, (_, j) => ({
+      name: `j${j}`,
+      parent: j - 1,
+      position: [0, j === 0 ? 0 : 1, 0] as [number, number, number],
+      ...STILL,
+      inverseBind: moving(0, -j, 0),
+    })),
+    { name: 'side', parent: 0, position: [1, 0, 0], ...STILL, inverseBind: moving(-1, 0, 0) },
+  ],
+});
+
+/** Every joint of the chain turning a quarter, about z or x by turns, over a second. */
+const twist = (depth: number): poses.ClipData => ({
+  name: 'twist',
+  duration: 1,
+  channels: [...Array.from({ length: depth }, (_, j) => `j${j}`), 'side'].map((joint, j) => ({
+    joint,
+    path: 'rotation' as const,
+    interpolation: 'linear' as const,
+    times: [0, 1],
+    values: [0, 0, 0, 1, ...(j % 2 === 0 ? QUARTER_Z : [Math.SQRT1_2, 0, 0, Math.SQRT1_2])],
+  })),
+});
+
+/** Every joint row of each pose, this frame's and last, over a run that adds and changes poses. */
+async function chained(depth: number, compute: 'gpu' | 'cpu') {
+  const root = await gpuRoot();
+  // A device that says its compute runs on the CPU finds each joint's chain in a thread of its own
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
+  const joints = depth + 1;
+  const rows = joints * 3;
+  const figures = poses.create(root, chain(depth), { twist: twist(depth), rest }, { capacity: 3 });
+  const out = root.createBuffer(d.arrayOf(d.vec4f, 3 * rows * 2)).$usage('storage');
+  const copied = out.as('mutable');
+  const copy = root.pipe(figures.inject()).createComputePipeline({
+    compute: tgpu.computeFn({
+      workgroupSize: [1],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const row = gid.x;
+      copied.$[row * 2] = rowOf(row);
+      copied.$[row * 2 + 1] = lastRowOf(row);
+    }),
+  });
+
+  let now = 0;
+  const loop = frames.create(root, (frame) => {
+    const pass = frame.encoder.beginComputePass();
+    figures.animate(pass, now);
+    pass.setPipeline(copy);
+    pass.dispatchWorkgroups(3 * rows);
+    pass.end();
+  });
+  const seen: number[][] = [];
+  const first = figures.add('twist', 0);
+  for (const [k, time] of [0.1, 0.25, 0.4, 0.7, 0.9].entries()) {
+    if (k === 1) figures.add('rest', 0.2);
+    if (k === 2) figures.play(first, 'rest', 0.4, { fade: 0.3 });
+    if (k === 3) figures.add('twist', 0.5, { speed: 0.5 });
+    now = time;
+    loop.run(time);
+    seen.push((await out.read()).flatMap(({ x, y, z, w }) => [x, y, z, w]));
+  }
+  loop.destroy();
+  figures.destroy();
+  root.destroy();
+  return seen;
+}
+
+it.each([1, 3, 6])(
+  'finds a chain of %i joints the same where compute runs on the CPU, a thread a joint',
+  async (depth) => {
+    const [shared, alone] = [await chained(depth, 'gpu'), await chained(depth, 'cpu')];
+    expect(shared.flat().some((value) => value !== 0 && value !== 1)).toBe(true);
+    for (const [frame, values] of shared.entries()) {
+      const off = values.filter((value, i) => Math.abs(value - alone[frame]![i]!) > 1e-5);
+      expect(off, `frame ${frame}`).toEqual([]);
+    }
+  },
+);

@@ -23,6 +23,7 @@
  * joints.
  */
 
+import * as backends from '../backends.ts';
 import * as table from '../table.ts';
 import { temporal } from '../history.ts';
 import { unfilled, type Inject } from '../inject.ts';
@@ -1318,7 +1319,73 @@ export function create<const C extends string, const L extends string = never>(
       .with(rigged, rig)
       .with(clock, clockUniform);
 
-  const finding = root.pipe(inject).createComputePipeline({ compute: findJoints });
+  // Where compute runs on the CPU, the workgroup's shared locals and barriers keep the kernel
+  // there. Instead each thread finds its own joint's chain, placing its ancestors again, and two
+  // small kernels copy fresh poses into the last frame's half and clear their `born`
+  const alone = backends.of(root).compute === 'cpu';
+  const WORKGROUP = 64;
+
+  const localOf = (slot: number, joint: number, now: number) => {
+    'use gpu';
+    const played = placedOf(slot, joint, now);
+    return matrixOf(local === undefined ? played : local(played, joint, slot));
+  };
+
+  const findEach = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const slot = std.intdiv(gid.x, d.u32(joints));
+    const joint = gid.x % joints;
+    if (!Pose.alive(slot)) return;
+    const time = clock.$;
+    let placed = localOf(slot, joint, time.time);
+    let parent = rig.$[joint].parent;
+    while (parent >= 0) {
+      placed = localOf(slot, d.u32(parent), time.time) * placed;
+      parent = rig.$[parent].parent;
+    }
+    const skinning = std.transpose(placed * rig.$[joint].inverseBind);
+    const at = gid.x * 3;
+    written.$[time.now + at] = d.vec4f(skinning.columns[0]);
+    written.$[time.now + at + 1] = d.vec4f(skinning.columns[1]);
+    written.$[time.now + at + 2] = d.vec4f(skinning.columns[2]);
+  });
+
+  // A pose added since the last frame has no last frame, so both halves hold this one
+  const freshEach = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const slot = std.intdiv(gid.x, d.u32(joints * 3));
+    if (!Pose.alive(slot) || Pose.born(slot) === 0) return;
+    const time = clock.$;
+    written.$[time.before + gid.x] = d.vec4f(written.$[time.now + gid.x]);
+  });
+
+  const bornEach = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const slot = gid.x;
+    if (!Pose.alive(slot)) return;
+    Pose.device.$[slot].born = 0;
+  });
+
+  const finding = (
+    alone
+      ? root.pipe(inject).createComputePipeline({ compute: findEach })
+      : root.pipe(inject).createComputePipeline({ compute: findJoints })
+  ).$name('finding');
+  const freshening = alone
+    ? root.pipe(inject).createComputePipeline({ compute: freshEach }).$name('freshening')
+    : undefined;
+  const bearing = alone
+    ? root.pipe(inject).createComputePipeline({ compute: bornEach }).$name('bearing')
+    : undefined;
 
   // Retain each pose's tracks on the CPU so the next play can blend from them
   type TrackInput = d.Infer<typeof Track>;
@@ -1666,12 +1733,21 @@ export function create<const C extends string, const L extends string = never>(
       clockHalves[1] = (1 - flip) * half;
       queue.writeBuffer(clockGpu, 0, clockData);
       pass.setPipeline(finding);
-      pass.dispatchWorkgroups(plays.span);
+      if (!freshening || !bearing) {
+        pass.dispatchWorkgroups(plays.span);
+        return;
+      }
+      pass.dispatchWorkgroups(Math.ceil((plays.span * joints) / WORKGROUP));
+      pass.setPipeline(freshening);
+      pass.dispatchWorkgroups(Math.ceil((plays.span * joints * 3) / WORKGROUP));
+      pass.setPipeline(bearing);
+      pass.dispatchWorkgroups(Math.ceil(plays.span / WORKGROUP));
     },
 
     inject: () => inject,
 
-    initAsync: () => finding.initAsync(),
+    initAsync: () =>
+      Promise.all([finding, freshening, bearing].map((each) => each?.initAsync())).then(() => {}),
 
     destroy,
     [Symbol.dispose]: destroy,
