@@ -372,6 +372,7 @@ function form(
   reads: BufferImpl[],
   writes: BufferImpl[],
   invocations = 64,
+  gpuMs = 0.1,
 ) {
   const pipeline = {};
   const all = [...new Set([...reads, ...writes])];
@@ -398,9 +399,9 @@ function form(
       target: { kind: 'buffer', group: 0, binding: all.indexOf(each) },
     })),
   } as unknown as GpuCompute;
-  return (cpuMs = 0.1): 'gpu' | 'cpu' => {
-    if (runsOnGpu(ctx, pipeline, label, module, groups, invocations)) {
-      ranOnGpu(ctx, pipeline, label, gpu, groups, 0.1, invocations);
+  return (cpuMs = 0.1, size = invocations): 'gpu' | 'cpu' => {
+    if (runsOnGpu(ctx, pipeline, label, module, groups, size)) {
+      ranOnGpu(ctx, pipeline, label, gpu, groups, gpuMs, size);
       for (const each of writes) each.gpuNewer = true;
       return 'gpu';
     }
@@ -414,28 +415,30 @@ function form(
 }
 
 /** A CPU kernel binding `bound` each frame: whether it waited for GL, which counts the wait. */
-const binding = (ctx: Ctx, bound: BufferImpl) => () => {
-  if (!bound.gpuNewer) return false;
-  readBack(ctx, bound, 1);
-  bound.gpuNewer = false;
-  return true;
-};
+const binding =
+  (ctx: Ctx, bound: BufferImpl, wait = 1) =>
+  () => {
+    if (!bound.gpuNewer) return false;
+    readBack(ctx, bound, wait);
+    bound.gpuNewer = false;
+    return true;
+  };
 
 /**
  * Fireworks' shape: two forms that each take from one counter, `x`, every frame, so each rewrites
  * the other's input, one of whose outputs, `y`, a CPU kernel binds every frame.
  */
-function cycle(options: { invocations?: number } = {}) {
+function cycle(options: { gpuMs?: number; wait?: number } = {}) {
   const { ctx } = fakeCtx({ timer: true, gpuMs: 0.1 });
   const [x, y, z] = [buffer('x'), buffer('y'), buffer('z')];
-  const stars = form(ctx, 'stars', [x], [x, z]);
-  const shells = form(ctx, 'shells', [x], [x, y], options.invocations);
-  const bind = binding(ctx, y);
+  const stars = form(ctx, 'stars', [x], [x, z], 64, options.gpuMs);
+  const shells = form(ctx, 'shells', [x], [x, y], 64, options.gpuMs);
+  const bind = binding(ctx, y, options.wait);
   const frame = (cpuMs?: number) => {
     const where = [stars(cpuMs), shells(cpuMs)];
     return { where, waited: bind() };
   };
-  return { ctx, x, frame };
+  return { ctx, x, frame, stars, shells };
 }
 
 test("two forms that rewrite each other's input move to the CPU together, and the waits stop", async () => {
@@ -527,5 +530,26 @@ test('a form whose blocker is too large to try stays on the GPU', async () => {
   }
   expect(ctx.stats.placement.get('shells')).toBe(
     "gpu: GL rewrote its input 'x' before 6 of 6 dispatches",
+  );
+});
+
+/** Frames of `cycle` until its two forms moved to the CPU together. */
+async function grouped(options: Parameters<typeof cycle>[0] = {}, before?: (ctx: Ctx) => void) {
+  const made = cycle(options);
+  for (let i = 0; i < 8; i++) {
+    before?.(made.ctx);
+    made.frame();
+    await task();
+  }
+  expect(made.frame().where).toEqual(['cpu', 'cpu']);
+  return made;
+}
+
+test('a grouped form whose dispatch outgrows the CPU sends its group back before it runs', async () => {
+  const { ctx, stars, shells } = await grouped();
+  expect(stars(0.1, 1 << 26)).toBe('gpu');
+  expect(shells()).toBe('gpu');
+  expect(ctx.stats.placement.get('stars')).toBe(
+    'gpu: 67108864 invocations are too many to run on the CPU',
   );
 });

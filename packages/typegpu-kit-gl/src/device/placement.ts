@@ -402,8 +402,11 @@ export function runsOnGpu(
   if (held === undefined) record.cpuInputs++;
   else record.held = held;
   record.upcoming = invocations;
-  // A GPU form outside the group rewrote what a member reads: the group goes back as one
-  if (record.group && held !== undefined) {
+  // A dispatch too large to run on the CPU, or a GPU form outside the group that rewrote what a
+  // member reads, sends the group back as one before this dispatch runs
+  if (record.group && invocations > MOST_INVOCATIONS) {
+    breakGroup(ctx, record.group, `${invocations} invocations are too many to run on the CPU`);
+  } else if (record.group && held !== undefined) {
     breakGroup(ctx, record.group, `a GPU form outside its group rewrote '${held}'`);
   }
   pollProbes(ctx);
