@@ -131,11 +131,6 @@ function texelMapOf(own: Own): TexelMap | undefined {
 const plainMap = (map: TexelMap) => map.every(({ step, r }) => step === 1 && !r);
 
 const GID = 'kit_gid';
-/** The write site a pass of points captures, and what the invocation wrote there. */
-const SITE = 'kit_site';
-const HIT = 'kit_hit';
-const AT = 'kit_at';
-const POINT = 'kit_point';
 /** Which resource written at computed cells the pass of points draws, by its index. */
 const AIM = 'kit_aim';
 /** Stands in for a read of a buffer the kernel writes at computed cells, which no pass can see. */
@@ -684,7 +679,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   /** Write sites emitted so far, per resource written at computed cells. */
   readonly #sites = new Map<string, number>();
   /** What each such resource's captured write holds. */
-  readonly #captured = new Map<string, string>();
+  readonly #captured = new Map<string, { hit: string; at: string; value: string }>();
   /** Runtime loops around the statement being generated. */
   #loops = 0;
   /** `if` statements around the statement being generated. */
@@ -776,26 +771,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   override initGenerator(ctx: ResolutionCtx): void {
     super.initGenerator(ctx);
-    for (const name of [
-      GID,
-      BEGIN,
-      RESULT,
-      INVOCATIONS,
-      WORKGROUPS,
-      LAYER,
-      Z,
-      SITE,
-      HIT,
-      AT,
-      POINT,
-      AIM,
-    ]) {
+    for (const name of [GID, BEGIN, RESULT, INVOCATIONS, WORKGROUPS, LAYER, Z, AIM]) {
       ctx.reserveIdentifier(name, 'global');
     }
     this.chunk(
       'shared',
-      [GID, INVOCATIONS, WORKGROUPS, LAYER, Z, SITE, HIT, AT, POINT, AIM],
-      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};\nint ${Z};\nuniform int ${SITE};\nbool ${HIT};\nuint ${AT};\nivec3 ${POINT};\nint ${AIM} = -1;`,
+      [GID, INVOCATIONS, WORKGROUPS, LAYER, Z, AIM],
+      `uvec3 ${GID};\nuniform highp uvec3 ${INVOCATIONS};\nuniform highp uvec3 ${WORKGROUPS};\nuniform int ${LAYER};\nint ${Z};\nint ${AIM} = -1;`,
     );
   }
 
@@ -1203,16 +1185,30 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return site;
   }
 
-  /** The variable a pass of points reads a resource's captured write from. */
-  #capture(id: string, type: d.BaseData | string): string {
-    const known = this.#captured.get(id);
+  /**
+   * The variables a write site captures into: whether it ran, where it wrote, and what. A pass of
+   * points reads them after the kernel, one set per site.
+   */
+  #capture(
+    id: string,
+    site: number,
+    where: 'uint' | 'ivec3',
+    type: d.BaseData | string,
+  ): { hit: string; at: string; value: string } {
+    const key = `${id}:${site}`;
+    const known = this.#captured.get(key);
     if (known) return known;
-    const name = this.ctx.makeUniqueIdentifier(`kit_scatter_${id}`, 'global');
+    const prefix = `kit_s${this.#aim(id)}_${site}`;
+    const names = { hit: `${prefix}_hit`, at: `${prefix}_at`, value: `${prefix}_value` };
     const declared = typeof type === 'string' ? type : `${this.ctx.resolve(type).value}`;
     const suffix = typeof type === 'string' ? '' : this.arraySuffix(type);
-    this.chunk('shared', [name], `${declared} ${name}${suffix};`);
-    this.#captured.set(id, name);
-    return name;
+    this.chunk(
+      'shared',
+      [names.hit, names.at, names.value],
+      `bool ${names.hit};\n${where} ${names.at};\n${declared} ${names.value}${suffix};`,
+    );
+    this.#captured.set(key, names);
+    return names;
   }
 
   /** A whole element written at a computed index: captured when its site is the pass's. */
@@ -1232,9 +1228,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const written = this.ctx.resolveSnippet(this._expressionWithTypeConversion(value, type)).value;
     const site = this.#site(buffer.id);
     const at = `${buffer.base} + ${element.offset}u + uint(${element.index}) * ${stride}u`;
-    const holder = this.#capture(buffer.id, type);
+    const held = this.#capture(buffer.id, site, 'uint', type);
     return {
-      code: `${this.ctx.pre}if (${AIM} == ${this.#aim(buffer.id)} && ${SITE} == ${site}) { ${HIT} = true; ${AT} = ${at}; ${holder} = ${written}; }`,
+      code: `${this.ctx.pre}if (${AIM} == ${this.#aim(buffer.id)}) { ${held.hit} = true; ${held.at} = ${at}; ${held.value} = ${written}; }`,
       definesInNearestScope: false,
     };
   }
@@ -1483,9 +1479,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
             : `ivec3(${this.intOf(args[1])}, 0, 0)`;
     const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
     this.#scatters.set(texture.id, { kind: 'texture', texture });
-    const holder = this.#capture(texture.id, this.#texelType(texture));
     const site = this.#site(texture.id);
-    return `if (${AIM} == ${this.#aim(texture.id)} && ${SITE} == ${site}) { ${HIT} = true; ${POINT} = ${point}; ${holder} = ${value}; }`;
+    const held = this.#capture(texture.id, site, 'ivec3', this.#texelType(texture));
+    return `if (${AIM} == ${this.#aim(texture.id)}) { ${held.hit} = true; ${held.at} = ${point}; ${held.value} = ${value}; }`;
   }
 
   /** Whether a store's coordinates own a cell through a texel map; records the map if so. */
@@ -1911,31 +1907,51 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
   }
 
   /**
-   * A pass of points, in a vertex stage: each vertex runs the kernel for one invocation and, where
-   * the invocation reached the write site `kit_site` captures, puts its point on the written cell.
+   * A pass of points, in two vertex stages. The capture stage runs the kernel once per invocation
+   * and writes what each write site wrote as transform feedback varyings, `kit_c<site>_<field>`;
+   * the draw stage reads one site's record as attributes, `kit_a_<field>`, and puts its point on
+   * the written cell.
    */
   #scatterPass(target: Scatter, index: number, kernel: string): string {
-    const sites =
-      this.#sites.get(target.kind === 'buffer' ? target.buffer.id : target.texture.id) ?? 0;
-    const start = [
-      `void main() {`,
-      `  uint kit_id = uint(gl_VertexID);`,
-      `  uvec3 kit_g = uvec3(kit_id % ${INVOCATIONS}.x, (kit_id / ${INVOCATIONS}.x) % ${INVOCATIONS}.y, kit_id / (${INVOCATIONS}.x * ${INVOCATIONS}.y));`,
-      `  ${HIT} = false;`,
-      `  ${AIM} = ${this.#aim(target.kind === 'buffer' ? target.buffer.id : target.texture.id)};`,
-      `  ${BEGIN}(kit_g);`,
-      `  ${kernel}();`,
-      `  gl_PointSize = 1.0;`,
-      `  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);`,
-      `  if (!${HIT}) return;`,
-    ];
+    const id = target.kind === 'buffer' ? target.buffer.id : target.texture.id;
+    const sites = this.#sites.get(id) ?? 0;
+    const capture = (fields: readonly [string, string][], copy: (site: number) => string[]) => {
+      const outputs: string[] = [];
+      const lines: string[] = [];
+      for (let site = 0; site < sites; site++) {
+        for (const [name, type] of fields) outputs.push(`flat out ${type} kit_c${site}_${name};`);
+        lines.push(...copy(site));
+      }
+      const resets = Array.from(
+        { length: sites },
+        (_, site) =>
+          `  ${this.#capture(id, site, target.kind === 'buffer' ? 'uint' : 'ivec3', target.kind === 'buffer' ? (target.array.elementType as d.BaseData) : this.#texelType(target.texture)).hit} = false;`,
+      );
+      return `${outputs.join('\n')}
+void main() {
+  uint kit_id = uint(gl_VertexID);
+  uvec3 kit_g = uvec3(kit_id % ${INVOCATIONS}.x, (kit_id / ${INVOCATIONS}.x) % ${INVOCATIONS}.y, kit_id / (${INVOCATIONS}.x * ${INVOCATIONS}.y));
+${resets.join('\n')}
+  ${AIM} = ${this.#aim(id)};
+  ${BEGIN}(kit_g);
+  ${kernel}();
+${lines.join('\n')}
+  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}`;
+    };
     if (target.kind === 'buffer') {
       const { buffer, array, offset } = target;
       const type = array.elementType as d.BaseData;
       const stride = wordsOf(strideOf(type));
       const words = Math.ceil(d.sizeOf(type as d.AnyData) / 4);
       const range = buffer.range as string;
-      const holder = this.#capture(buffer.id, type);
+      const pack = this.#packer(type);
+      const vectors = Math.ceil(words / 4);
+      const fields: [string, string][] = [
+        ['hit', 'uint'],
+        ['at', 'uint'],
+        ...Array.from({ length: vectors }, (_, j): [string, string] => [`v${j}`, 'uvec4']),
+      ];
       const directive = [
         TARGET,
         'buffer',
@@ -1946,27 +1962,67 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
         stride * 4,
         d.sizeOf(type as d.AnyData),
       ].join(' ');
+      // An element that fits its data texel is written whole, one draw per place in the texel
+      const lanes = (stride === 2 || stride === 4) && offset % stride === 0 ? stride : 1;
+      const word = (k: string) =>
+        vectors === 1
+          ? `kit_a_v0[${k}]`
+          : Array.from({ length: vectors }, (_, j) => j)
+              .toReversed()
+              .reduce(
+                (rest, j) =>
+                  rest
+                    ? `(${k} < ${4 * j}u ? ${rest} : kit_a_v${j}[${k} - ${4 * j}u])`
+                    : `kit_a_v${j}[${k} - ${4 * j}u]`,
+                '',
+              );
+      const drawn =
+        lanes > 1
+          ? `  uint kit_w = kit_a_at;
+  if (kit_w < ${range}.x || kit_w + ${words - 1}u >= ${range}.x + ${range}.y / 4u || (kit_w & 3u) / ${lanes}u != uint(kit_phase)) return;
+  uvec4 kit_v = uvec4(0u);
+${Array.from({ length: words }, (_, k) => `  kit_v[(kit_w & 3u) + ${k}u] = kit_a_v${k >> 2}[${k & 3}];`).join('\n')}`
+          : `  uint kit_w = kit_a_at + uint(kit_part);
+  if (kit_w < ${range}.x || kit_w >= ${range}.x + ${range}.y / 4u || (kit_w & 3u) != uint(kit_phase)) return;
+  uvec4 kit_v = uvec4(${word('uint(kit_part)')});`;
       return `${CHUNK} pass${index} main
 ${directive}
-${SCATTER} ${sites} ${words}
+${SCATTER} ${sites} ${words} ${lanes}
+${capture(fields, (site) => {
+  const held = this.#capture(id, site, 'uint', type);
+  return [
+    `  kit_c${site}_hit = ${held.hit} ? 1u : 0u;`,
+    `  kit_c${site}_at = ${held.at};`,
+    ...Array.from({ length: vectors }, (_, j) => {
+      const parts = [0, 1, 2, 3].map((c) =>
+        4 * j + c < words ? `${pack}(${held.value}, ${4 * j + c}u, 0u)` : '0u',
+      );
+      return `  kit_c${site}_v${j} = uvec4(${parts.join(', ')});`;
+    }),
+  ];
+})}
+
+${CHUNK} points${index} main
+${fields.map(([name, t]) => `in ${t} kit_a_${name};`).join('\n')}
 uniform int kit_part;
 uniform int kit_phase;
 flat out uvec4 kit_value;
-${start.join('\n')}
-  uint kit_w = ${AT} + uint(kit_part);
-  if (kit_w < ${range}.x || kit_w >= ${range}.x + ${range}.y / 4u || (kit_w & 3u) != uint(kit_phase)) return;
+void main() {
+  gl_PointSize = 1.0;
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  if (kit_a_hit == 0u) return;
+${drawn}
   ivec2 kit_size = textureSize(${buffer.id}, 0);
   uint kit_t = kit_w >> 2u;
   vec2 kit_xy = vec2(float(kit_t % uint(kit_size.x)), float(kit_t / uint(kit_size.x)));
   gl_Position = vec4((kit_xy + 0.5) / vec2(kit_size) * 2.0 - 1.0, 0.0, 1.0);
-  kit_value = uvec4(${this.#packer(type)}(${holder}, uint(kit_part), 0u));
+  kit_value = kit_v;
 }`;
     }
     const { texture } = target;
     const { format } = texture.schema as unknown as { format: string };
     const old = this.samplerUniform(texture);
     const type = this.#texelType(texture);
-    const holder = this.#capture(texture.id, type);
     const { dimension } = texture.kind;
     const layered = dimension === '2d-array' || dimension === '3d';
     const size = layered
@@ -1974,19 +2030,36 @@ ${start.join('\n')}
       : dimension === '1d'
         ? `ivec3(textureSize(${old}, 0).x, 1, 1)`
         : `ivec3(textureSize(${old}, 0), 1)`;
+    const fields: [string, string][] = [
+      ['hit', 'uint'],
+      ['at', 'ivec3'],
+      ['value', type],
+    ];
     const directive = [TARGET, 'texture', texture.group, texture.binding, old, dimension, format];
     return `${CHUNK} pass${index} main
 ${directive.join(' ')}
 ${SCATTER} ${sites} 1
-uniform int kit_part;
-uniform int kit_phase;
+${capture(fields, (site) => {
+  const held = this.#capture(id, site, 'ivec3', type);
+  return [
+    `  kit_c${site}_hit = ${held.hit} ? 1u : 0u;`,
+    `  kit_c${site}_at = ${held.at};`,
+    `  kit_c${site}_value = ${held.value};`,
+  ];
+})}
+
+${CHUNK} points${index} main
+${fields.map(([name, t]) => `in ${t} kit_a_${name};`).join('\n')}
 flat out ${type} kit_value;
-${start.join('\n')}
+void main() {
+  gl_PointSize = 1.0;
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  if (kit_a_hit == 0u) return;
   ivec3 kit_size = ${size};
-  if (any(lessThan(${POINT}, ivec3(0))) || any(greaterThanEqual(${POINT}, kit_size))) return;
-  if (${POINT}.z != ${LAYER}) return;
-  gl_Position = vec4((vec2(${POINT}.xy) + 0.5) / vec2(kit_size.xy) * 2.0 - 1.0, 0.0, 1.0);
-  kit_value = ${holder};
+  if (any(lessThan(kit_a_at, ivec3(0))) || any(greaterThanEqual(kit_a_at, kit_size))) return;
+  if (kit_a_at.z != ${LAYER}) return;
+  gl_Position = vec4((vec2(kit_a_at.xy) + 0.5) / vec2(kit_size.xy) * 2.0 - 1.0, 0.0, 1.0);
+  kit_value = kit_a_value;
 }`;
   }
 

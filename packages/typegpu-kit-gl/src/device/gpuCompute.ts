@@ -8,6 +8,8 @@
 import type { CpuModule } from '../cpu/types.ts';
 import {
   type ComputeModule,
+  type Scatter,
+  type ScatterField,
   type ComputeTarget,
   INVOCATIONS,
   LAYER,
@@ -39,12 +41,161 @@ interface GpuPass {
   readonly invocations: WebGLUniformLocation | null;
   readonly workgroups: WebGLUniformLocation | null;
   readonly layer: WebGLUniformLocation | null;
-  /** Present for a pass of points, with the write sites and words it draws. */
-  readonly scatter: { readonly sites: number; readonly words: number } | undefined;
-  /** For a pass of points, the uniforms that pick the write site, word and channel it draws. */
-  readonly site: WebGLUniformLocation | null;
+  /** Present for a pass of points: its capture stage and how its records are laid out. */
+  readonly scatter: Points | undefined;
+  /** For a pass of points, the uniforms that pick the word and channel it draws. */
   readonly word: WebGLUniformLocation | null;
   readonly phase: WebGLUniformLocation | null;
+}
+
+interface Points {
+  readonly sites: number;
+  readonly words: number;
+  readonly lanes: number;
+  readonly capture: Program;
+  readonly captureUses: Uses;
+  readonly invocations: WebGLUniformLocation | null;
+  readonly workgroups: WebGLUniformLocation | null;
+  /** The draw stage's attributes, with their place in one site's record. */
+  readonly attributes: readonly {
+    readonly location: number;
+    readonly type: ScatterField['type'];
+    readonly offset: number;
+  }[];
+  /** Bytes of one site's record, and of one invocation's records. */
+  readonly siteBytes: number;
+  readonly recordBytes: number;
+  /** The records of the last capture, kept for the next dispatch. */
+  records: { buffer: WebGLBuffer; bytes: number } | undefined;
+  vertexArray: WebGLVertexArrayObject | undefined;
+}
+
+const FIELD_BYTES: Record<ScatterField['type'], number> = {
+  uint: 4,
+  ivec3: 12,
+  uvec4: 16,
+  ivec4: 16,
+  vec4: 16,
+};
+
+const CAPTURE_FRAGMENT = `#version 300 es
+precision highp float;
+void main() {}
+`;
+
+const captures = new WeakMap<Ctx, Map<string, Program | string>>();
+
+/** Links a capture stage, recording `varyings` interleaved; returns why it failed otherwise. */
+function linkCapture(
+  ctx: Ctx,
+  vertex: string,
+  varyings: readonly string[],
+  label: string,
+): Program | string {
+  let cache = captures.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    captures.set(ctx, cache);
+  }
+  const key = `${vertex}\u0000${varyings.join(',')}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const { gl } = ctx;
+  const shaders = [
+    [gl.VERTEX_SHADER, vertex],
+    [gl.FRAGMENT_SHADER, CAPTURE_FRAGMENT],
+  ].map(([type, source]) => {
+    const shader = gl.createShader(type as number) as WebGLShader;
+    gl.shaderSource(shader, source as string);
+    gl.compileShader(shader);
+    return shader;
+  });
+  const program = gl.createProgram();
+  for (const shader of shaders) gl.attachShader(program, shader);
+  gl.transformFeedbackVaryings(program, varyings as string[], gl.INTERLEAVED_ATTRIBS);
+  gl.linkProgram(program);
+  let linked: Program | string;
+  if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const uniforms = new Map<string, WebGLUniformLocation>();
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number;
+    for (let i = 0; i < count; i++) {
+      const active = gl.getActiveUniform(program, i);
+      const location = active && gl.getUniformLocation(program, active.name);
+      if (!active || !location) continue;
+      uniforms.set(active.name, location);
+      if (active.name.endsWith('[0]')) uniforms.set(active.name.slice(0, -3), location);
+    }
+    ctx.track(() => gl.deleteProgram(program));
+    linked = { program, uniforms };
+  } else {
+    linked = `The capture stage of ${label} failed to link: ${gl.getShaderInfoLog(shaders[0] as WebGLShader) ?? ''} ${gl.getProgramInfoLog(program) ?? ''}`;
+    gl.deleteProgram(program);
+  }
+  for (const shader of shaders) gl.deleteShader(shader);
+  cache.set(key, linked);
+  return linked;
+}
+
+const feedbacks = new WeakMap<Ctx, WebGLTransformFeedback>();
+
+function feedbackOf(ctx: Ctx): WebGLTransformFeedback {
+  let feedback = feedbacks.get(ctx);
+  if (!feedback) {
+    const made = ctx.gl.createTransformFeedback();
+    feedback = made;
+    feedbacks.set(ctx, made);
+    ctx.track(() => ctx.gl.deleteTransformFeedback(made));
+  }
+  return feedback;
+}
+
+/** Prepares a pass of points: links its capture stage and lays out its records. */
+function preparePoints(
+  ctx: Ctx,
+  label: string,
+  module: ComputeModule,
+  scatter: Scatter,
+  draw: Program,
+): Points | string {
+  const { gl } = ctx;
+  const varyings: string[] = [];
+  for (let site = 0; site < scatter.sites; site++) {
+    for (const field of scatter.fields) varyings.push(`kit_c${site}_${field.name}`);
+  }
+  const components =
+    scatter.sites * scatter.fields.reduce((sum, f) => sum + FIELD_BYTES[f.type] / 4, 0);
+  const limit = gl.getParameter(gl.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS) as number;
+  if (components > limit) {
+    return `its writes need ${components} transform feedback components; WebGL 2 here records ${limit}`;
+  }
+  const capture = linkCapture(ctx, scatter.capture, varyings, `'${label}'`);
+  if (typeof capture === 'string') return capture;
+  const captureUses = connectUses(ctx, label, module, capture);
+  if (typeof captureUses === 'string') return captureUses;
+  let offset = 0;
+  const attributes = scatter.fields.map((field) => {
+    const at = {
+      location: gl.getAttribLocation(draw.program, `kit_a_${field.name}`),
+      type: field.type,
+      offset,
+    };
+    offset += FIELD_BYTES[field.type];
+    return at;
+  });
+  return {
+    sites: scatter.sites,
+    words: scatter.words,
+    lanes: scatter.lanes,
+    capture,
+    captureUses,
+    invocations: capture.uniforms.get(INVOCATIONS) ?? null,
+    workgroups: capture.uniforms.get(WORKGROUPS) ?? null,
+    attributes,
+    siteBytes: offset,
+    recordBytes: offset * scatter.sites,
+    records: undefined,
+    vertexArray: undefined,
+  };
 }
 
 export interface GpuCompute {
@@ -80,6 +231,8 @@ export function prepareGpu(
     const { program } = linked;
     const uses = connectUses(ctx, label, module, program);
     if (typeof uses === 'string') return uses;
+    const points = pass.scatter && preparePoints(ctx, label, module, pass.scatter, program);
+    if (typeof points === 'string') return points;
     passes.push({
       target: pass.target,
       program,
@@ -87,8 +240,7 @@ export function prepareGpu(
       invocations: program.uniforms.get(INVOCATIONS) ?? null,
       workgroups: program.uniforms.get(WORKGROUPS) ?? null,
       layer: program.uniforms.get(LAYER) ?? null,
-      scatter: pass.scatter && { sites: pass.scatter.sites, words: pass.scatter.words },
-      site: program.uniforms.get('kit_site') ?? null,
+      scatter: points,
       word: program.uniforms.get('kit_part') ?? null,
       phase: program.uniforms.get('kit_phase') ?? null,
     });
@@ -375,10 +527,65 @@ export function runGpu(
     }
 
     if (pass.scatter) {
-      const { sites, words } = pass.scatter;
+      const points = pass.scatter;
+      const { sites, words, lanes } = points;
       const buffer = resource.kind === 'buffer';
       const count = invocations[0] * invocations[1] * invocations[2];
       const made: WebGLTexture[] = [];
+      // The kernel runs once per invocation, into records every draw below reads
+      const bytes = Math.max(count * points.recordBytes, 4);
+      if (!points.records || points.records.bytes < bytes) {
+        if (points.records) gl.deleteBuffer(points.records.buffer);
+        const created = gl.createBuffer();
+        gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, created);
+        gl.bufferData(gl.TRANSFORM_FEEDBACK_BUFFER, bytes, gl.DYNAMIC_COPY);
+        gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, null);
+        points.records = { buffer: created, bytes };
+        ctx.track(() => gl.deleteBuffer(created));
+      }
+      const records = points.records.buffer;
+      if (count > 0) {
+        state.program(points.capture.program);
+        const lacking = bindUses(ctx, points.captureUses, points.capture, groups);
+        if (lacking) {
+          ctx.errors.report('validation', `The dispatch is missing ${lacking}.`);
+          return undefined;
+        }
+        if (points.invocations) gl.uniform3ui(points.invocations, ...invocations);
+        if (points.workgroups) gl.uniform3ui(points.workgroups, x, y, z);
+        state.vertexArray(null);
+        // A draw needs a complete framebuffer even with the rasterizer discarded
+        state.drawFramebuffer(null);
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, feedbackOf(ctx));
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, records);
+        state.enable(gl.RASTERIZER_DISCARD, true);
+        gl.beginTransformFeedback(gl.POINTS);
+        gl.drawArrays(gl.POINTS, 0, count);
+        gl.endTransformFeedback();
+        state.enable(gl.RASTERIZER_DISCARD, false);
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+        state.program(pass.program.program);
+        bindUses(ctx, pass.uses, pass.program, groups);
+      }
+      points.vertexArray ??= gl.createVertexArray();
+      const vertexArray = points.vertexArray;
+      const pointAt = (site: number) => {
+        state.vertexArray(vertexArray);
+        state.arrayBuffer(records);
+        for (const { location, type, offset } of points.attributes) {
+          if (location < 0) continue;
+          gl.enableVertexAttribArray(location);
+          const at = site * points.siteBytes + offset;
+          const size = FIELD_BYTES[type] / 4;
+          if (type === 'vec4') {
+            gl.vertexAttribPointer(location, size, gl.FLOAT, false, points.recordBytes, at);
+          } else {
+            const kind = type === 'uint' || type === 'uvec4' ? gl.UNSIGNED_INT : gl.INT;
+            gl.vertexAttribIPointer(location, size, kind, points.recordBytes, at);
+          }
+        }
+      };
       for (let layer = 0; layer < layers; layer++) {
         const texture = take(ctx, internal, width, height);
         // Cells no point covers keep their old contents
@@ -419,7 +626,6 @@ export function runGpu(
         state.drawBuffers([gl.COLOR_ATTACHMENT0]);
         state.program(pass.program.program);
         setInt(gl, pass.layer, layer);
-        state.vertexArray(null);
         state.viewport(0, 0, width, height);
         writeEverything(ctx);
         for (const cap of [
@@ -436,19 +642,23 @@ export function runGpu(
         state.blend(0, NO_BLEND);
         const drawn = count > 0 ? sites : 0;
         for (let site = 0; site < drawn; site++) {
-          setInt(gl, pass.site, site);
-          for (let word = 0; word < (buffer ? words : 1); word++) {
+          pointAt(site);
+          // A data texel holds four words; each draw writes the channels its points carry: one
+          // word of an element, or a whole element where elements fit their texels
+          const whole = buffer && lanes > 1;
+          for (let word = 0; word < (buffer && !whole ? words : 1); word++) {
             setInt(gl, pass.word, word);
-            // A data texel holds four words; each draw writes the one channel its points carry
-            for (let phase = 0; phase < (buffer ? 4 : 1); phase++) {
+            for (let phase = 0; phase < (buffer ? 4 / lanes : 1); phase++) {
               setInt(gl, pass.phase, phase);
-              state.colorMask(0, buffer ? 1 << phase : 0xf);
+              const mask = whole ? ((1 << words) - 1) << (phase * lanes) : 1 << phase;
+              state.colorMask(0, buffer ? mask : 0xf);
               gl.drawArrays(gl.POINTS, 0, count);
             }
           }
         }
         gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
       }
+      state.vertexArray(null);
       if (resource.kind === 'buffer') {
         const size = [internal, width, height] as const;
         outputs.push(() => give(ctx, ...size, replaceData(resource.buffer, made[0]!)));

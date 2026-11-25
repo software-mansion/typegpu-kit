@@ -73,7 +73,7 @@ export const GPU_FORM = '//#kit-gl gpu ';
 export const CPU_ONLY = '//#kit-gl cpu-only ';
 export const COMPUTE = '//#compute';
 export const TARGET = '//#target';
-/** Marks a pass of points: `//#scatter <sites> <words>`. */
+/** Marks a pass of points: `//#scatter <sites> <words> [lanes]`. */
 export const SCATTER = '//#scatter';
 
 /** Uniforms every pass may declare, which the device sets as step 3 and 4 of a dispatch say. */
@@ -136,23 +136,41 @@ export interface ComputePass {
   readonly scatter?: Scatter;
 }
 
+/** A field of a write site's record: its name and GLSL type, `uint`, `ivec3` or a 4-vector. */
+export interface ScatterField {
+  readonly name: string;
+  readonly type: 'uint' | 'ivec3' | 'uvec4' | 'ivec4' | 'vec4';
+}
+
 /**
- * A pass of points, for a target the kernel writes at cells it computes: `vertex` runs the kernel
- * for invocation `gl_VertexID` (`x` fastest, then `y`, then `z`) and puts one point on the cell
- * the write site `kit_site` (`int`) wrote, or outside the clip volume where the invocation did
- * not reach that site.
+ * A pass of points, for a target the kernel writes at cells it computes.
  *
- * For it, the device starts the target's new contents as a copy of the old ones, draws `vertex`
- * with `fragment` as `POINTS`, one vertex per invocation, with the state of step 4, then replaces
- * the target as step 5 says. It draws once per site from 0 to `sites - 1`. For a buffer target it
- * also draws once per word of an element, `kit_part` (`int`) from 0 to `words - 1`, and per
- * channel of a data texel, `kit_phase` (`int`) from 0 to 3, writing only that channel. For a
- * 2d-array or 3d target it draws once per layer, `kit_layer` set to it, into that layer alone.
+ * First the device runs `capture`, a vertex stage, as `POINTS` with the rasterizer discarded, one
+ * vertex per invocation (`gl_VertexID`, `x` fastest, then `y`, then `z`), with the uniforms of
+ * step 3 and the bindings of step 2. Transform feedback records, interleaved, for each site from
+ * 0 to `sites - 1` and each of `fields` in order, the varying `kit_c<site>_<name>`: what the
+ * invocation wrote at that write site, with field `hit` 0 where it did not reach it.
+ *
+ * Then it starts the target's new contents as a copy of the old ones, and draws `vertex` with
+ * `fragment` as `POINTS`, one vertex per invocation, with the state of step 4, reading one site's
+ * record as the attributes `kit_a_<name>`. It draws once per site. For a buffer target it also
+ * draws once per word of an element, `kit_part` (`int`) from 0 to `words - 1`, and per channel of
+ * a data texel, `kit_phase` (`int`) from 0 to 3, writing only that channel. For a 2d-array or 3d
+ * target it draws once per layer, `kit_layer` set to it, into that layer alone. It then replaces
+ * the target as step 5 says.
  */
 export interface Scatter {
+  readonly capture: string;
   readonly vertex: string;
+  readonly fields: readonly ScatterField[];
   readonly sites: number;
   readonly words: number;
+  /**
+   * For a buffer target, 1, or the words a draw writes together, 2 or 4: then each draw writes a
+   * whole element, `kit_part` stays 0, and `kit_phase` runs from 0 to `3 / lanes`, writing the
+   * `words` channels from `kit_phase * lanes` on.
+   */
+  readonly lanes: number;
 }
 
 /** A binding the GPU form uses, to compare with the CPU module's `bindings`. */
@@ -287,14 +305,26 @@ export function parseCompute(
     }
     const scatter = chunk.directives.find((each) => each.startsWith(`${SCATTER} `));
     if (scatter) {
-      const [, sites, words] = scatter.trim().split(/\s+/);
+      const [, sites, words, lanes = '1'] = scatter.trim().split(/\s+/);
+      const stage = `points${chunk.stage.slice('pass'.length)}`;
+      const draw = chunks.find((each) => each.stage === stage);
+      if (!draw) throw new Error(`@typegpu/kit-gl: a pass of points without its '${stage}'`);
+      const drawing = reachable(chunks, stage as ChunkStage);
+      for (const each of drawing) used.add(each);
+      const fields = [...draw.code.matchAll(/^in (\w+) kit_a_(\w+);$/gm)].map(([, type, name]) => ({
+        name: name as string,
+        type: type as ScatterField['type'],
+      }));
       passes.push({
         target,
         fragment: pointFragment(target, options.defines ?? []),
         scatter: {
-          vertex: source(included, options.defines ?? []),
+          capture: source(included, options.defines ?? []),
+          vertex: source(drawing, options.defines ?? []),
+          fields,
           sites: int(sites, scatter),
           words: int(words, scatter),
+          lanes: int(lanes, scatter),
         },
       });
       continue;

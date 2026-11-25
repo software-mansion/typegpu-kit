@@ -197,3 +197,41 @@ it('stores texels at computed coordinates of a texture and a 2d-array layer', as
   expect(onGpu('texels')).toBe(true);
   expect(actual).toEqual(await texels(gpu));
 });
+
+/** Writes elements of four words, and of three words that straddle data texels, in reverse. */
+async function widths(root: TgpuRoot) {
+  const N = 21;
+  const Triple = d.arrayOf(d.u32, 3);
+  const quads = root.createMutable(
+    d.arrayOf(d.vec4u, N),
+    Array.from({ length: N }, (_, i) => d.vec4u(i, i, i, i)),
+  );
+  const tripleBuffer = root
+    .createBuffer(
+      d.arrayOf(Triple, N),
+      Array.from({ length: N }, (_, i) => [i, 2 * i, 3 * i]),
+    )
+    .$usage('storage');
+  const layout = tgpu.bindGroupLayout({
+    triples: { storage: d.arrayOf(Triple), access: 'mutable' },
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [8], in: gid })(({ gid: at }) => {
+    'use gpu';
+    if (at.x >= N - 1) return;
+    const to = N - 1 - at.x;
+    quads.$[to] = d.vec4u(at.x, at.x + 100, at.x + 200, at.x + 300);
+    layout.$.triples[to] = Triple([at.x * 7, at.x + 1, 9]);
+  });
+  root
+    .createComputePipeline({ compute: kernel })
+    .$name('widths')
+    .with(root.createBindGroup(layout, { triples: tripleBuffer }))
+    .dispatchWorkgroups(3);
+  return [await quads.read(), await tripleBuffer.read()];
+}
+
+it('writes elements of four words, and of three that straddle texels', async () => {
+  const actual = await widths(gl);
+  expect(onGpu('widths')).toBe(true);
+  expect(actual).toEqual(await widths(gpu));
+});
