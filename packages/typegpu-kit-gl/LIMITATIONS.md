@@ -40,10 +40,10 @@ CPU `f32` literals, conversions and arithmetic round to 32 bits at each operatio
 
 ## What still needs a branch
 
-Most examples run on the fallback as they are. Four choose other kernels with `backends.of(root)`, because the kernels they run on WebGPU would stay on the CPU here and be too slow there. Each waits on a form the fallback does not have:
+Most examples run on the fallback as they are. Four choose other kernels with `backends.of(root)`, because the kernels they run on WebGPU would stay on the CPU here and be too slow there. For each, the branch is the faster design:
 
 - `ocean`, `censer` and `sph-sculpt` share workgroup memory behind barriers: the FFT and its mip reductions, the smoke's coarse average, the water's tally and occupancy. Such a kernel can be split at its barriers into passes, with the workgroup's memory spilled to a scratch texture between them, but for these three that costs more passes than their branches: `ocean`'s FFT would take 26 passes, ten of them scatters of 1.2M points, against its branch's 11, and its mips 45 against 27. Their branches are the faster design and stay. In the Kit, `poses` is the kernel the split would speed up, since it now recomputes each joint's ancestors in every thread that needs them.
-- `jump-flood` places seeds with `atomicMin` used as a minimum and links regions with `atomicOr` into rows of bits. No form covers either.
+- `jump-flood` places seeds with `atomicMin` used as a minimum and links regions with `atomicOr` into rows of bits. No form covers either. Both can be drawn as points that blend, a minimum in two rounds of 16-bit halves and an or as planes of bits, but its links put a million records a frame on some thirty texels, where blends run one after another: 630 ms a dispatch at its size. Its branch gathers instead and stays.
 
 In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` branch for the same reasons: workgroup memory, counters per cell whose results are used, and a ring slot taken inside a loop or passed on to a callback.
 
