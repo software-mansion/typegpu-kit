@@ -300,6 +300,8 @@ function accumulate(
   });
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  // The sums go back to the pool, where a later pass may render into them: none stays bound
+  for (let unit = 0; unit < sources.length; unit++) state.texture(unit, gl.TEXTURE_2D, null);
   for (const texture of sums) give(ctx, gl.RGBA32F, width, height, texture);
   return made;
 }

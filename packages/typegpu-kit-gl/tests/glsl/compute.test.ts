@@ -277,7 +277,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         }
       });
     },
-    "writes an element of 'out",
+    'at computed cells inside a loop',
   ],
   [
     'adds atomically',
@@ -312,6 +312,37 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
       });
     },
     'scatter',
+  ],
+  [
+    'writes cells it computes through a helper, twice',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 128));
+      const put = (cell: number, value: number) => {
+        'use gpu';
+        out.$[cell] = value;
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        put((id.x * 5) % 64, d.f32(1));
+        if (id.x > 7) put(64 + ((id.x * 3) % 64), d.f32(2));
+      });
+    },
+    'scatter',
+  ],
+  [
+    'writes cells it computes through a helper inside a loop',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.f32, 128));
+      const put = (cell: number) => {
+        'use gpu';
+        out.$[cell] = 1;
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < 2; k++) put((id.x * 5 + k) % 128);
+      });
+    },
+    'at computed cells inside a loop',
   ],
   [
     'adds to shared cells inside a loop',

@@ -96,6 +96,8 @@ export interface ComputePlan {
   readonly adds?: ReadonlySet<string>;
   /** The most additions an invocation makes, which bounds its records. */
   readonly slots?: number;
+  /** The most writes an invocation makes at computed cells of each such resource. */
+  readonly records?: ReadonlyMap<string, number>;
 }
 
 /** A resource written at computed cells: an array of a buffer, or a texture. */
@@ -671,6 +673,8 @@ interface Frame {
   relies: boolean;
   /** The most additions to shared cells it makes, counting those of the functions it calls. */
   adds: number;
+  /** The most writes at computed cells it makes per resource, its callees' included. */
+  readonly records: Map<string, number>;
 }
 
 /**
@@ -690,16 +694,16 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #adds = new Map<string, BufferInfo>();
   /** The most additions each generated function makes, its callees' included. */
   readonly #addsOf = new Map<string, number>();
+  /** The most writes at computed cells each generated function makes, per resource. */
+  readonly #recordsOf = new Map<string, ReadonlyMap<string, number>>();
+  /** The entry's writes at computed cells per resource, which size the records of each. */
+  #records: ReadonlyMap<string, number> = new Map();
   /** The call whose value the statement being generated drops, and whether it is being made. */
   #dropped: Expression | undefined;
   #dropping = false;
   /** Whether a call is being made, so a nested route to the same call does not count it twice. */
   #inCall = false;
   #slots = 0;
-  /** Write sites emitted so far, per resource written at computed cells. */
-  readonly #sites = new Map<string, number>();
-  /** What each such resource's captured write holds. */
-  readonly #captured = new Map<string, { hit: string; at: string; value: string }>();
   /** Runtime loops around the statement being generated. */
   #loops = 0;
   /** `if` statements around the statement being generated. */
@@ -784,6 +788,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       scatters: new Set(this.#scatters.keys()),
       adds: new Set(this.#adds.keys()),
       slots: this.#slots,
+      records: new Map(this.#records),
     };
   }
 
@@ -939,6 +944,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     // A call reaches here once more through the generator's own call, which counts it
     const adds = (!nested && name !== undefined && this.#addsOf.get(name)) || 0;
     if (adds > 0) this.#added(adds);
+    const records = !nested && name !== undefined ? this.#recordsOf.get(name) : undefined;
+    for (const [id, count] of records ?? []) this.#wrote(id, count);
     if (name === undefined || !this.#relies.has(name)) return result;
     if (this.#assumed.get(name) !== JSON.stringify(owns.some(Boolean) ? owns : [])) {
       throw new Ineligible(`calls '${name}' with other invocation indices than it was made for`);
@@ -1006,6 +1013,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (typeof snippet.value === 'number') return this.numericLiteral(snippet.value, type).value;
     const value = this.ctx.resolveSnippet(snippet).value;
     return snippet.dataType === type ? value : `${this.ctx.resolve(type).value}(${value})`;
+  }
+
+  /** Counts writes at computed cells, which loops would leave unbounded. */
+  #wrote(id: string, count: number): void {
+    if (this.#loops > 0) throw new Ineligible(`writes '${id}' at computed cells inside a loop`);
+    const frame = this.#frame;
+    if (frame) frame.records.set(id, (frame.records.get(id) ?? 0) + count);
   }
 
   /** Counts additions the statement being generated makes, which loops would leave unbounded. */
@@ -1299,7 +1313,7 @@ void ${ADD}(int aim, uint at, uint amount) {
    * resources are, so the second resolution finds no new ones.
    */
   #scatterable(): boolean {
-    return this.#frame?.entry === true && this.#loops === 0 && !this.#plan;
+    return this.#loops === 0 && !this.#plan;
   }
 
   /** A resource's index among those the kernel writes at computed cells, as `kit_aim` holds it. */
@@ -1307,37 +1321,54 @@ void ${ADD}(int aim, uint at, uint amount) {
     return [...(this.#plan?.scatters ?? []), ...(this.#plan?.adds ?? [])].toSorted().indexOf(id);
   }
 
-  /** The next write site of a resource written at computed cells. */
-  #site(id: string): number {
-    const site = this.#sites.get(id) ?? 0;
-    this.#sites.set(id, site + 1);
-    return site;
+  /** The records a resource written at computed cells keeps per invocation. */
+  #slotsOf(id: string): number {
+    return this.#plan?.records?.get(id) ?? 0;
   }
 
   /**
-   * The variables a write site captures into: whether it ran, where it wrote, and what. A pass of
-   * points reads them after the kernel, one set per site.
+   * The function a write at computed cells of `id` calls: it records where the invocation wrote
+   * and what, in the next of the resource's slots, which a pass of points reads after the kernel.
+   * A buffer's values are kept as their words.
    */
-  #capture(
-    id: string,
-    site: number,
-    where: 'uint' | 'ivec3',
-    type: d.BaseData | string,
-  ): { hit: string; at: string; value: string } {
-    const key = `${id}:${site}`;
-    const known = this.#captured.get(key);
-    if (known) return known;
-    const prefix = `kit_s${this.#aim(id)}_${site}`;
-    const names = { hit: `${prefix}_hit`, at: `${prefix}_at`, value: `${prefix}_value` };
+  #putter(id: string, where: 'uint' | 'ivec3', type: d.BaseData | string): string {
+    const aim = this.#aim(id);
+    const name = `kit_put${aim}`;
+    const slots = this.#slotsOf(id);
+    const prefix = `kit_p${aim}`;
     const declared = typeof type === 'string' ? type : `${this.ctx.resolve(type).value}`;
     const suffix = typeof type === 'string' ? '' : this.arraySuffix(type);
-    this.chunk(
-      'shared',
-      [names.hit, names.at, names.value],
-      `bool ${names.hit};\n${where} ${names.at};\n${declared} ${names.value}${suffix};`,
+    let kept: string[];
+    let stored: string[];
+    if (where === 'uint') {
+      const schema = type as d.BaseData;
+      const words = Math.ceil(d.sizeOf(schema as d.AnyData) / 4);
+      const pack = this.#packer(schema);
+      const vectors = Math.ceil(words / 4);
+      kept = Array.from({ length: vectors }, (_, j) => `uvec4 ${prefix}_v${j}[${slots}];`);
+      stored = Array.from({ length: vectors }, (_, j) => {
+        const parts = [0, 1, 2, 3].map((c) =>
+          4 * j + c < words ? `${pack}(value, ${4 * j + c}u, 0u)` : '0u',
+        );
+        return `  ${prefix}_v${j}[${prefix}_n] = uvec4(${parts.join(', ')});`;
+      });
+    } else {
+      kept = [`${declared} ${prefix}_value[${slots}];`];
+      stored = [`  ${prefix}_value[${prefix}_n] = value;`];
+    }
+    this.helper(
+      name,
+      `uint ${prefix}_n;
+${where} ${prefix}_at[${slots}];
+${kept.join('\n')}
+void ${name}(${where} at, ${declared} value${suffix}) {
+  if (${AIM} != ${aim} || ${prefix}_n >= ${slots}u) return;
+  ${prefix}_at[${prefix}_n] = at;
+${stored.join('\n')}
+  ${prefix}_n += 1u;
+}`,
     );
-    this.#captured.set(key, names);
-    return names;
+    return name;
   }
 
   /** A whole element written at a computed index: captured when its site is the pass's. */
@@ -1355,11 +1386,9 @@ void ${ADD}(int aim, uint at, uint amount) {
       offset: element.offset,
     });
     const written = this.ctx.resolveSnippet(this._expressionWithTypeConversion(value, type)).value;
-    const site = this.#site(buffer.id);
     const at = `${buffer.base} + ${element.offset}u + uint(${element.index}) * ${stride}u`;
-    const held = this.#capture(buffer.id, site, 'uint', type);
     return {
-      code: `${this.ctx.pre}if (${AIM} == ${this.#aim(buffer.id)}) { ${held.hit} = true; ${held.at} = ${at}; ${held.value} = ${written}; }`,
+      code: `${this.ctx.pre}${this.#putter(buffer.id, 'uint', type)}(${at}, ${written});`,
       definesInNearestScope: false,
     };
   }
@@ -1375,6 +1404,24 @@ void ${ADD}(int aim, uint at, uint amount) {
       if (verb !== 'writes' || !this.#plain) {
         throw new Ineligible(`${verb} '${buffer.id}', which it writes at computed cells`);
       }
+      return;
+    }
+    if (
+      verb === 'writes' &&
+      this.#plain &&
+      element?.path === '' &&
+      !element.own &&
+      !this.#single &&
+      this.#scatterable() &&
+      !this.#chosen.some((each) => each.frame === frame)
+    ) {
+      this.#scatters.set(buffer.id, {
+        kind: 'buffer',
+        buffer,
+        array: element.array as d.WgslArray,
+        offset: element.offset,
+      });
+      this.#wrote(buffer.id, 1);
       return;
     }
     this.#relyOnOwn();
@@ -1400,7 +1447,11 @@ void ${ADD}(int aim, uint at, uint amount) {
         array: element.array as d.WgslArray,
         offset: element.offset,
       });
+      this.#wrote(buffer.id, 1);
       return;
+    }
+    if (verb === 'writes' && this.#plain && element.path === '' && this.#loops > 0) {
+      throw new Ineligible(`writes '${buffer.id}' at computed cells inside a loop`);
     }
     if (!frame?.entry && !frame?.names.size) {
       throw new Ineligible(`a helper function ${verb} '${buffer.id}'`);
@@ -1574,6 +1625,7 @@ void ${ADD}(int aim, uint at, uint amount) {
     const strided = !owns && !column && dimension !== '1d' && this.#strided(texture, args);
     if (!owns && !column && !strided && this.#scatterable()) {
       this.#scatters.set(texture.id, { kind: 'texture', texture });
+      this.#wrote(texture.id, 1);
       return '';
     }
     if (!owns && !column && !strided) {
@@ -1611,9 +1663,7 @@ void ${ADD}(int aim, uint at, uint amount) {
             : `ivec3(${this.intOf(args[1])}, 0, 0)`;
     const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
     this.#scatters.set(texture.id, { kind: 'texture', texture });
-    const site = this.#site(texture.id);
-    const held = this.#capture(texture.id, site, 'ivec3', this.#texelType(texture));
-    return `if (${AIM} == ${this.#aim(texture.id)}) { ${held.hit} = true; ${held.at} = ${point}; ${held.value} = ${value}; }`;
+    return `${this.#putter(texture.id, 'ivec3', this.#texelType(texture))}(${point}, ${value})`;
   }
 
   /** Whether a store's coordinates own a cell through a texel map; records the map if so. */
@@ -1713,6 +1763,7 @@ void ${ADD}(int aim, uint at, uint amount) {
       choosing: new Set(),
       relies: false,
       adds: 0,
+      records: new Map(),
     };
     this.#functions.add(options.name);
     if (options.functionType === 'normal') {
@@ -1735,6 +1786,7 @@ void ${ADD}(int aim, uint at, uint amount) {
     }
     if (frame.relies) this.#relies.add(options.name);
     this.#addsOf.set(options.name, frame.adds);
+    this.#recordsOf.set(options.name, frame.records);
     const body = code.slice(code.indexOf('{'));
     if (options.functionType === 'normal' && options.args.length === 0 && !this.#varies(body)) {
       this.#pure.add(options.name);
@@ -1772,6 +1824,7 @@ void ${ADD}(int aim, uint at, uint amount) {
     const body = this._block(options.body, /* allowInlining */ false).code;
     options.determineReturnType();
     this.#slots = this.#frame?.adds ?? 0;
+    this.#records = new Map(this.#frame?.records);
 
     const wg = `uvec3(${size.join('u, ')}u)`;
     const prelude = options.args
@@ -2111,19 +2164,16 @@ void main() {
 
   #scatterPass(target: Scatter, index: number, kernel: string): string {
     const id = target.kind === 'buffer' ? target.buffer.id : target.texture.id;
-    const sites = this.#sites.get(id) ?? 0;
+    const sites = this.#slotsOf(id);
+    const prefix = `kit_p${this.#aim(id)}`;
     const capture = (fields: readonly [string, string][], copy: (site: number) => string[]) => {
       const outputs: string[] = [];
       const lines: string[] = [];
       for (let site = 0; site < sites; site++) {
         for (const [name, type] of fields) outputs.push(`flat out ${type} kit_c${site}_${name};`);
-        lines.push(...copy(site));
+        lines.push(`  kit_c${site}_hit = ${site}u < ${prefix}_n ? 1u : 0u;`, ...copy(site));
       }
-      const resets = Array.from(
-        { length: sites },
-        (_, site) =>
-          `  ${this.#capture(id, site, target.kind === 'buffer' ? 'uint' : 'ivec3', target.kind === 'buffer' ? (target.array.elementType as d.BaseData) : this.#texelType(target.texture)).hit} = false;`,
-      );
+      const resets = [`  ${prefix}_n = 0u;`];
       return `${outputs.join('\n')}
 void main() {
   uint kit_id = uint(gl_VertexID);
@@ -2142,7 +2192,6 @@ ${lines.join('\n')}
       const stride = wordsOf(strideOf(type));
       const words = Math.ceil(d.sizeOf(type as d.AnyData) / 4);
       const range = buffer.range as string;
-      const pack = this.#packer(type);
       const vectors = Math.ceil(words / 4);
       const fields: [string, string][] = [
         ['hit', 'uint'],
@@ -2185,19 +2234,10 @@ ${Array.from({ length: words }, (_, k) => `  kit_v[(kit_w & 3u) + ${k}u] = kit_a
       return `${CHUNK} pass${index} main
 ${directive}
 ${SCATTER} ${sites} ${words} ${lanes}
-${capture(fields, (site) => {
-  const held = this.#capture(id, site, 'uint', type);
-  return [
-    `  kit_c${site}_hit = ${held.hit} ? 1u : 0u;`,
-    `  kit_c${site}_at = ${held.at};`,
-    ...Array.from({ length: vectors }, (_, j) => {
-      const parts = [0, 1, 2, 3].map((c) =>
-        4 * j + c < words ? `${pack}(${held.value}, ${4 * j + c}u, 0u)` : '0u',
-      );
-      return `  kit_c${site}_v${j} = uvec4(${parts.join(', ')});`;
-    }),
-  ];
-})}
+${capture(fields, (site) => [
+  `  kit_c${site}_at = ${prefix}_at[${site}];`,
+  ...Array.from({ length: vectors }, (_, j) => `  kit_c${site}_v${j} = ${prefix}_v${j}[${site}];`),
+])}
 
 ${CHUNK} points${index} main
 ${fields.map(([name, t]) => `in ${t} kit_a_${name};`).join('\n')}
@@ -2236,14 +2276,10 @@ ${drawn}
     return `${CHUNK} pass${index} main
 ${directive.join(' ')}
 ${SCATTER} ${sites} 1
-${capture(fields, (site) => {
-  const held = this.#capture(id, site, 'ivec3', type);
-  return [
-    `  kit_c${site}_hit = ${held.hit} ? 1u : 0u;`,
-    `  kit_c${site}_at = ${held.at};`,
-    `  kit_c${site}_value = ${held.value};`,
-  ];
-})}
+${capture(fields, (site) => [
+  `  kit_c${site}_at = ${prefix}_at[${site}];`,
+  `  kit_c${site}_value = ${prefix}_value[${site}];`,
+])}
 
 ${CHUNK} points${index} main
 ${fields.map(([name, t]) => `in ${t} kit_a_${name};`).join('\n')}

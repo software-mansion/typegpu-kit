@@ -331,3 +331,74 @@ it.each([false, true])(
     expect(actual).toEqual(await repeated(gpu, stored));
   },
 );
+
+/**
+ * Writes cells it computes through a helper, twice an invocation and once only on a condition,
+ * into a buffer and a texture, over two dispatches.
+ */
+async function helped(root: TgpuRoot) {
+  const N = 40;
+  const W = 8;
+  const out = root.createMutable(
+    d.arrayOf(d.vec2u, 2 * N),
+    Array.from({ length: 2 * N }, () => d.vec2u(9, 9)),
+  );
+  const image = root
+    .createTexture({ size: [W, (2 * N) / W], format: 'rgba16float' })
+    .$usage('storage', 'sampled');
+  const layout = tgpu.bindGroupLayout({
+    image: { storageTexture: d.textureStorage2d('rgba16float', 'write-only') },
+    round: { uniform: d.u32 },
+  });
+  const put = (cell: number, value: number) => {
+    'use gpu';
+    out.$[cell] = d.vec2u(value, layout.$.round);
+    std.textureStore(
+      layout.$.image,
+      d.vec2u(cell % W, std.intdiv(cell, W)),
+      d.vec4f(d.f32(value), d.f32(layout.$.round), 0, 1),
+    );
+  };
+  const kernel = tgpu.computeFn({ workgroupSize: [8], in: gid })(({ gid: at }) => {
+    'use gpu';
+    if (at.x >= N) return;
+    put((at.x * 7 + layout.$.round) % N, at.x);
+    if (at.x % 3 !== 0) put(N + ((at.x * 11) % N), at.x + 100);
+  });
+  const pipeline = root.createComputePipeline({ compute: kernel }).$name('helped');
+  const encoder = root.createCommandEncoder();
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  for (const round of [1, 2]) {
+    pass.setBindGroup(
+      layout,
+      root.createBindGroup(layout, { image, round: root.createUniform(d.u32, round).buffer }),
+    );
+    pass.dispatchWorkgroups(N / 8);
+  }
+  pass.end();
+  encoder.submit();
+  const read = tgpu.bindGroupLayout({ from: { texture: d.texture2d(d.f32) } });
+  const seen = root.createMutable(d.arrayOf(d.vec4f, 2 * N));
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        for (let i = d.u32(0); i < 2 * N; i++) {
+          seen.$[i] = std.textureLoad(read.$.from, d.vec2u(i % W, std.intdiv(i, W)), 0);
+        }
+      }),
+    })
+    .with(root.createBindGroup(read, { from: image }))
+    .dispatchWorkgroups(1);
+  return {
+    out: (await out.read()).map((v) => [v.x, v.y]),
+    image: (await seen.read()).map((v) => [v.x, v.y, v.z, v.w]),
+  };
+}
+
+it('writes cells it computes through a helper called twice, as WebGPU does', async () => {
+  const actual = await helped(gl);
+  expect(onGpu('helped')).toBe(true);
+  expect(actual).toEqual(await helped(gpu));
+});
