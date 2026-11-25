@@ -7,6 +7,7 @@ import { SweepGenerator } from './scene-generator.ts';
 import { observeScene } from './scene-observer.ts';
 import { captureScene, compareCaptures } from './example-comparison.ts';
 import { recordResults } from './results.ts';
+import { classifyAmplification } from './amplification.ts';
 
 for (const example of examples.filter(
   (item) => !process.env.CPU_EXAMPLES || process.env.CPU_EXAMPLES.split(',').includes(item.key),
@@ -28,7 +29,7 @@ for (const example of examples.filter(
       try {
         const expected = await captureScene(gpu, gpuObserver, example.key);
         const actual = await captureScene(cpu, cpuObserver, example.key);
-        const result = compareCaptures(expected, actual);
+        const result = classifyAmplification(example.key, compareCaptures(expected, actual));
         recordResults(`comparison:${example.key}`, result);
         expect(
           result.differences.filter((difference) => difference.order.length === 0),
