@@ -28,6 +28,8 @@ interface Pipeline {
 
 export function cpuRoot(
   options: {
+    observeDevice?: (device: GPUDevice) => GPUDevice;
+    onTexture?: (texture: GPUTexture, data: import('../../src/cpu/types.ts').CpuTexture) => void;
     generator?: NonNullable<
       Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
     >;
@@ -62,7 +64,12 @@ export function cpuRoot(
       if (key === backends.brand) return cpuBackend;
       if (key === 'limits') return limits;
       if (key === 'queue') return queue;
-      if (key === 'createTexture') return texture.createTexture;
+      if (key === 'createTexture')
+        return (descriptor: GPUTextureDescriptor) => {
+          const made = texture.createTexture(descriptor);
+          options.onTexture?.(made, texture.textures.get(made)!);
+          return made;
+        };
       if (key === 'createSampler') return texture.createSampler;
       if (key === 'createShaderModule')
         return (descriptor: GPUShaderModuleDescriptor) => {
@@ -225,7 +232,7 @@ export function cpuRoot(
     },
   });
   return tgpu.initFromDevice({
-    device,
+    device: options.observeDevice?.(device) ?? device,
     unstable_shaderGeneratorClass:
       options.generator ??
       (CpuGenerator as unknown as NonNullable<
