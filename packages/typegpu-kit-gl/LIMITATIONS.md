@@ -29,7 +29,7 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
 
-`backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick a kernel that suits a CPU, as the kit's culling does, and an example's `meta.json` may give `fallback` scene options that size it.
+`backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick kernels the fallback runs on the GPU or that suit a CPU, as the kit's grid and culling do, and an example's `meta.json` may give `fallback` scene options that size it.
 
 ## Shaders
 
