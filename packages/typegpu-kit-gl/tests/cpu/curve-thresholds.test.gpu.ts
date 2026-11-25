@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
+import { BOX } from '../../../typegpu-kit-examples/src/jelly-world/slider.ts';
 import { sdBezier } from '../../../typegpu-kit-examples/node_modules/@typegpu/sdf/index.js';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -28,7 +29,10 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
           const sample = id.x / 16;
           const index = indices.$[sample / 5];
           const uv = (d.vec2f(d.vec2u(index % 256, index / 256)) + 0.5) / d.vec2f(256, 128);
-          let point = d.vec2f(-1.038 + uv.x * (1.09 + 1.038), 0.65 - uv.y * 0.95);
+          let point = d.vec2f(
+            BOX.left + uv.x * (BOX.right - BOX.left),
+            BOX.top - uv.y * (BOX.top - BOX.bottom),
+          );
           if (sample % 5 === 1) point.x += 0.03;
           if (sample % 5 === 2) point.x -= 0.03;
           if (sample % 5 === 3) point.y += 0.03;
@@ -45,7 +49,8 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
           const kz = kk * std.dot(delta, a);
           const p = ky - kx * kx;
           const q = kx * (2 * kx * kx - 3 * ky) + kz;
-          const h = q * q + 4 * p * p * p;
+          const p3 = p * p * p;
+          const h = q * q + 4 * p3;
           let roots = d.vec4f();
           if (h >= 0) {
             const x = (d.vec2f(std.sqrt(h), -std.sqrt(h)) - q) * 0.5;
