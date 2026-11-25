@@ -212,8 +212,10 @@ export const TAKE_WIDTH = 256;
  * A pass of points that adds to a buffer, for atomic additions whose results the kernel drops on
  * cells other invocations may add to too. The kernel qualifies when every atomic on the buffer is
  * an `atomicAdd` or `atomicSub` whose value its statement drops, it neither reads nor writes the
- * buffer otherwise, and no addition, its own or in a function it calls, is inside a runtime loop:
- * then an invocation makes at most `sites` additions, its slots.
+ * buffer otherwise, except with an `atomicLoad` that no addition to the buffer can precede on any
+ * path through the kernel, which reads the contents from before the dispatch, and no addition, its
+ * own or in a function it calls, is inside a runtime loop: then an invocation makes at most
+ * `sites` additions, its slots, the most any one path makes.
  *
  * The capture stage records, for each slot from 0 to `sites - 1`, whether the invocation made that
  * many additions (`hit`), the word it added to (`at`) and the amount as `uint` bits (`value`,

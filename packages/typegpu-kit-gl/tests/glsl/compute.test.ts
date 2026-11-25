@@ -431,7 +431,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     'adds to shared cells inside a loop',
   ],
   [
-    'reads a buffer it adds to',
+    'loads a buffer it adds to after adding to it',
     (root) => {
       const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
       const out = root.createMutable(d.arrayOf(d.u32, 64));
@@ -441,7 +441,127 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = std.atomicLoad(counter.$[0]);
       });
     },
-    'which it adds to at shared cells',
+    'where it may have added to it',
+  ],
+  [
+    'loads a buffer before adding to it',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const seen = std.atomicLoad(counter.$[0]);
+        std.atomicAdd(counter.$[id.x % 4], 1);
+        out.$[id.x] = seen;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'loads a buffer in a constant loop before adding to it',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        let seen = d.u32(0);
+        for (let k = d.u32(0); k < 4; k++) seen += std.atomicLoad(counter.$[k]);
+        std.atomicAdd(counter.$[id.x % 4], 1);
+        out.$[id.x] = seen;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'loads a buffer after an arm that adds and returns',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 2 === 0) {
+          std.atomicAdd(counter.$[id.x % 4], 1);
+          return;
+        }
+        out.$[id.x] = std.atomicLoad(counter.$[1]);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'loads a buffer after an arm that adds and falls through',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 2 === 0) {
+          std.atomicAdd(counter.$[id.x % 4], 1);
+        }
+        out.$[id.x] = std.atomicLoad(counter.$[1]);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    'loads through a helper before adding through another',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const read = (i: number) => {
+        'use gpu';
+        return std.atomicLoad(counter.$[i % 4]);
+      };
+      const add = (i: number) => {
+        'use gpu';
+        std.atomicAdd(counter.$[i % 4], 1);
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const seen = read(id.x);
+        add(id.x);
+        out.$[id.x] = seen;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'adds through a helper before loading through another',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const read = (i: number) => {
+        'use gpu';
+        return std.atomicLoad(counter.$[i % 4]);
+      };
+      const add = (i: number) => {
+        'use gpu';
+        std.atomicAdd(counter.$[i % 4], 1);
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        add(id.x);
+        out.$[id.x] = read(id.x);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    'loads and adds in one loop',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        let seen = d.u32(0);
+        for (let k = d.u32(0); k < 2; k++) {
+          seen += std.atomicLoad(counter.$[k]);
+          std.atomicAdd(counter.$[id.x % 4], 1);
+        }
+        out.$[id.x] = seen;
+      });
+    },
+    'inside a loop',
   ],
   [
     'uses the old value an addition returns',

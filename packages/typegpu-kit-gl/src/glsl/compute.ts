@@ -39,6 +39,7 @@ import {
   type Place,
   type TextureInfo,
 } from './generator.ts';
+import { ADD_MARK, flowOf, LOAD_MARK } from './flow.ts';
 import { CHUNK } from './renderModule.ts';
 
 type AnyFn = Parameters<KitGlslGenerator['call']>[0];
@@ -1077,6 +1078,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     if (
       this.#adds.has(id) &&
       !taken &&
+      name !== 'atomicLoad' &&
       !(dropped && (name === 'atomicAdd' || name === 'atomicSub'))
     ) {
       throw new Ineligible(`'${name}' on '${id}', which it adds to at shared cells`);
@@ -1095,6 +1097,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     if (name === 'atomicLoad') {
       this.#loads.add(id);
+      // Marked for the order of loads and additions; a summed buffer's load reads the contents
+      // from before the dispatch
+      if (!this.#plan) return snip(`${LOAD_MARK}${id}(${value})`, inner, 'runtime', false);
       return snip(value, inner, 'runtime', false);
     }
     if (
@@ -1162,7 +1167,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const operand = this.#valueAs(amount, inner);
     const bits = inner === d.u32 ? operand : `uint(${operand})`;
     const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
-    if (!this.#plan) return snip('', d.Void, 'runtime', true);
+    if (!this.#plan) return snip(`${ADD_MARK}${buffer.id}()`, d.Void, 'runtime', true);
     // The records are kept per pass, one buffer's additions each, in arrays the most of them fit
     const slots = Math.max(0, ...(this.#plan.slots?.values() ?? []));
     this.helper(
@@ -2269,11 +2274,25 @@ ${stored.join('\n')}
           }
         }
       }
-      // Decided from the whole walk, not where it met them: a helper resolved before the kernel's
-      // addition still reads what it adds to
+      // Decided from the finished functions, not where the walk met them: a helper resolved
+      // before the kernel's addition may still load after it
+      const flow = flowOf(new Map([...this.#codeOf, [options.name, kernel]]), options.name);
       for (const id of this.#adds.keys()) {
-        if (this.#loads.has(id)) {
-          throw new Ineligible(`reads '${id}' with atomicLoad, which it adds to or takes from`);
+        if (!this.#loads.has(id)) continue;
+        if (this.#takes.has(id)) {
+          throw new Ineligible(`reads '${id}' with atomicLoad, which it takes from`);
+        }
+        // Loads before every addition read what every invocation's loads would before any
+        // addition, an order WebGPU's atomics may take
+        if (flow.late.has(id)) {
+          throw new Ineligible(`reads '${id}' with atomicLoad where it may have added to it`);
+        }
+      }
+      // One path makes no more additions than its own
+      for (const [id, count] of this.#slots) {
+        const most = flow.most.get(id);
+        if (!this.#takes.has(id) && most !== undefined && most > 0 && most < count) {
+          this.#slots.set(id, most);
         }
       }
       if (this.#takes.size > 0) this.#checkTakes([...this.#codes, kernel].join('\n'));
