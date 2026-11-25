@@ -209,3 +209,27 @@ it('combines on a device of four draw buffers in more rounds, to the same result
     undo();
   }
 });
+
+// Bits combine in RGBA8 targets, which every context renders; halves blend in 32-bit floats
+it('combines by or and and without float targets, and by min and max on the CPU', async () => {
+  const undo = install({ minimum: true, hide: ['EXT_color_buffer_float', 'EXT_float_blend'] });
+  const bare = glRoot();
+  try {
+    const { gl: context, stats } = bare.device as unknown as GLDevice;
+    expect(context.getExtension('EXT_float_blend')).toBeNull();
+    for (const kind of ['min', 'max', 'or', 'and'] as const) {
+      const label = `${kind} bare`;
+      const actual = await combined(bare, kind, label);
+      expect(actual).toEqual(await combined(gpu, kind, label));
+      if (kind === 'or' || kind === 'and') expect(onGpu(bare, label)).toBe(true);
+      else
+        expect(stats.fallbacks.get(label)).toBe(
+          `'${kind}' on shared cells needs EXT_color_buffer_float and EXT_float_blend`,
+        );
+    }
+    expect(context.getError()).toBe(0);
+  } finally {
+    bare.destroy();
+    undo();
+  }
+});
