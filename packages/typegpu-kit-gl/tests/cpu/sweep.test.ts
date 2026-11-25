@@ -1,3 +1,4 @@
+import { interact } from './interactions.ts';
 import { cpuRoot, cpuBackend } from './device.ts';
 import { recordResults } from './results.ts';
 import { writeFile } from 'node:fs/promises';
@@ -172,6 +173,10 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         steadyDispatches.milliseconds = median(samples.map((sample) => sample.total.milliseconds));
         steadyDispatches.invocations = median(samples.map((sample) => sample.total.invocations));
         steady = false;
+        const interactions =
+          process.env.CPU_INTERACT === '1'
+            ? await interact(scene, example.ui ?? {}, (count) => driver.run(count))
+            : undefined;
         const rawCompute = recording.log.shaders.find(
           (code) => !isCpuModule(code) && /@compute\b/.test(code),
         );
@@ -198,6 +203,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
+                interactions,
                 timingSamples: repeatCount,
                 steadyPipelines: [...steadyPipelines]
                   .map(([code, timing]) => ({
@@ -259,7 +265,8 @@ it.runIf(process.env.CPU_SWEEP === '1')(
               new URL(process.env.CPU_RESULTS, import.meta.url),
               `${JSON.stringify(results, null, 2)}\n`,
             );
-          else recordResults('execution', results);
+          else
+            recordResults(process.env.CPU_INTERACT === '1' ? 'interactions' : 'execution', results);
         }
       }
     }
