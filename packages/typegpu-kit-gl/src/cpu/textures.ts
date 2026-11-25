@@ -90,7 +90,8 @@ function texel(
     if (format.kind === 'snorm') value = Math.max(-1, value / (2 ** (format.bits - 1) - 1));
     if (format.srgb && i < 3)
       value = value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-    result[format.bgra && i < 3 ? 2 - i : i] = value;
+    result[format.bgra && i < 3 ? 2 - i : i] =
+      format.kind === 'uint' || format.kind === 'sint' ? value : Math.fround(value);
   }
   return vector(result);
 }
@@ -286,13 +287,15 @@ export const textureOps = {
       texture.format.startsWith('depth') &&
       (texture.dimension === '2d' || texture.dimension === '2d-array')
     )
-      return sampleDepth(
-        texture,
-        sampler,
-        coords,
-        texture.dimension === '2d-array' ? Math.round(layerOrLod) : 0,
-        texture.dimension === '2d-array' ? arrayLod! : layerOrLod,
-        compare,
+      return Math.fround(
+        sampleDepth(
+          texture,
+          sampler,
+          coords,
+          texture.dimension === '2d-array' ? Math.round(layerOrLod) : 0,
+          texture.dimension === '2d-array' ? arrayLod! : layerOrLod,
+          compare,
+        ),
       );
     const cube = texture.dimension.startsWith('cube');
     const array = texture.dimension === '2d-array' || texture.dimension === 'cube-array';
@@ -374,7 +377,10 @@ export const textureOps = {
           }
       return vector(result);
     };
-    const finish = (value: number[]) => (texture.format.startsWith('depth') ? value[0]! : value);
+    const finish = (value: number[]) => {
+      for (let i = 0; i < value.length; i++) value[i] = Math.fround(value[i]!);
+      return texture.format.startsWith('depth') ? value[0]! : value;
+    };
     if (sampler.mipmapFilter !== 'linear') return finish(sample(Math.round(lod)));
     const low = Math.floor(lod),
       high = Math.min(low + 1, texture.levels.length - 1),

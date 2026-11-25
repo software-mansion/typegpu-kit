@@ -1,3 +1,4 @@
+import { f32, f32dot, f32op } from './floats.ts';
 import { expandBarrierHelpers, type BarrierHelper } from './phase-helpers.ts';
 import { splitPhases } from './phases.ts';
 import { isPureExpression, prunePureLocals } from './dead-locals.ts';
@@ -264,7 +265,8 @@ export class CpuGenerator extends WgslGenerator {
     const components = type.startsWith('vec') ? this.#components(code) : undefined;
     if (components) return `$vector([${components.join(',')}])`;
     const address = this.#addresses.get(code);
-    if (!address || address.layout.type !== type) return code;
+    if (!address || address.layout.type !== type)
+      return type === 'f32' && /^[-+\d.e]+$/i.test(code) ? f32(code) : code;
     const value = readAddress(address);
     if (
       this.#globalScopes.get(address.base)?.scope === 'uniform' &&
@@ -493,6 +495,7 @@ export class CpuGenerator extends WgslGenerator {
     const ctor = this.emitTypeAnnotation(type);
     const address = this.#addresses.get(match[2]!);
     const value = address ? readAddress(address) : match[2]!;
+    if (ctor === 'f32') return `${match[1]}${f32(value)};`;
     return `${match[1]}${ctor.startsWith('cpuType') && !address && !this.#ownedLocals.has(value) && !this.#fresh(value) ? `${ctor}(${value})` : value};`;
   }
 
@@ -659,8 +662,11 @@ export class CpuGenerator extends WgslGenerator {
       return result;
     }
     if (Object.values(std).includes(callee as never)) {
+      const emitted = this.emitCall(name, [], args);
       return snip(
-        this.emitCall(name, [], args),
+        typeof result.dataType !== 'symbol' && result.dataType.type === 'f32'
+          ? f32(emitted)
+          : emitted,
         result.dataType as d.BaseData,
         result.origin,
         result.possibleSideEffects,
@@ -691,7 +697,12 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   override numericLiteral(value: number, schema: d.BaseData): ResolvedSnippet {
-    return snip(String(value), schema, 'constant', false);
+    return snip(
+      scalar(schema) === 'f32' ? f32(String(value)) : String(value),
+      schema,
+      'constant',
+      false,
+    );
   }
 
   override emitTypeAnnotation(schema: d.BaseData): string {
@@ -709,7 +720,11 @@ export class CpuGenerator extends WgslGenerator {
     if (/^vec[234][fui]$/.test(type)) {
       const count = Number(type[3]);
       const convert = (value: string) =>
-        type.endsWith('u') ? `((${value})>>>0)` : type.endsWith('i') ? `((${value})|0)` : value;
+        type.endsWith('u')
+          ? `((${value})>>>0)`
+          : type.endsWith('i')
+            ? `((${value})|0)`
+            : f32(value);
       const components = Array.from({ length: count }, (_, i) => `v${i}`);
       this.ctx.addDeclaration(
         `function ${name}(${components.map((component, i) => `${component}=${i === 0 ? '0' : 'v0'}`).join(',')}) { return typeof v0==='number' ? $vector([${components.map(convert).join(',')}]) : $vector([${components.map((_component, i) => convert(`(v0[${i}]??0)`)).join(',')}]); }`,
@@ -724,12 +739,12 @@ export class CpuGenerator extends WgslGenerator {
       const flat = Array.from(
         { length: columns },
         (_, c) =>
-          `$vector([${Array.from({ length: rows }, (_row, r) => `(args[${c * rows + r}]??0)`).join(',')}])`,
+          `$vector([${Array.from({ length: rows }, (_row, r) => f32(`(args[${c * rows + r}]??0)`)).join(',')}])`,
       ).join(',');
       const copied = Array.from(
         { length: columns },
         (_, c) =>
-          `$vector([${Array.from({ length: rows }, (_row, r) => `(columns[${c}]?.[${r}]??0)`).join(',')}])`,
+          `$vector([${Array.from({ length: rows }, (_row, r) => f32(`(columns[${c}]?.[${r}]??0)`)).join(',')}])`,
       ).join(',');
       this.ctx.addDeclaration(
         `function ${name}(...args) { if(typeof args[0]==='number') return [${flat}]; const columns=args.length===1 ? (args[0]??[]) : args; return [${copied}]; }`,
@@ -751,7 +766,7 @@ export class CpuGenerator extends WgslGenerator {
             ? `((${input})|0)`
             : ctor === 'bool'
               ? `Boolean(${input})`
-              : `Number(${input}??0)`;
+              : f32(`(${input}??0)`);
       this.ctx.addDeclaration(
         `function ${name}(...args) { const value=args.length===1 ? args[0] : args; const result=new Array(${schema.elementCount}); for(let i=0;i<${schema.elementCount};i++) result[i]=${copied}; return result; }`,
         name,
@@ -771,7 +786,7 @@ export class CpuGenerator extends WgslGenerator {
               ? `((${input})|0)`
               : fieldType === 'bool'
                 ? `Boolean(${input})`
-                : `Number(${input}??0)`;
+                : f32(`(${input}??0)`);
         return `${JSON.stringify(key)}:${copy}`;
       });
       this.ctx.addDeclaration(
@@ -811,7 +826,7 @@ export class CpuGenerator extends WgslGenerator {
           ? `((${value})>>>0)`
           : schema.type.endsWith('i')
             ? `((${value})|0)`
-            : value;
+            : f32(value);
       });
       const name = this.#vector(schema, components);
       if (args.every((arg) => arg.origin === 'constant'))
@@ -833,7 +848,7 @@ export class CpuGenerator extends WgslGenerator {
           ? `((${value})>>>0)`
           : vectorType[2] === 'i'
             ? `((${value})|0)`
-            : value;
+            : f32(value);
       });
       return snip(
         `((${args.map((_, i) => `a${i}`).join(',')})=>$vector([${values.join(',')}]))(${args.map((arg) => this.#value(arg)).join(',')})`,
@@ -877,7 +892,7 @@ export class CpuGenerator extends WgslGenerator {
           ? `((${value}) | 0)`
           : type === 'bool'
             ? `Boolean(${value})`
-            : `Number(${value})`;
+            : f32(value);
     return snip(
       code,
       schema,
@@ -916,6 +931,7 @@ export class CpuGenerator extends WgslGenerator {
     const type = this.emitTypeAnnotation(schema);
     const address = this.#addresses.get(rhs);
     if (address) rhs = readAddress(address);
+    if (type === 'f32') return `let ${name} = ${f32(rhs)};`;
     this.#ownedLocals.add(name);
     return `let ${name} = ${type.startsWith('cpuType') && !address && !this.#fresh(rhs) ? `${type}(${rhs})` : rhs};`;
   }
@@ -1314,27 +1330,47 @@ export class CpuGenerator extends WgslGenerator {
         return this.#vector(
           d[`vec${rows}f` as 'vec2f'],
           Array.from({ length: rows }, (_row, r) =>
-            matrixLeft.map((column, c) => `(${column[r]})*(${rightParts[c]})`).join('+'),
+            f32dot(
+              matrixLeft.map((column) => column[r]!),
+              rightParts,
+            ),
           ),
         );
       }
       if (op === '*' && matrixRight && leftParts && !lhs.possibleSideEffects)
         return this.#vector(
           d[`vec${matrixRight.length}f` as 'vec2f'],
-          matrixRight.map((column) =>
-            column.map((value, r) => `(${leftParts[r]})*(${value})`).join('+'),
-          ),
+          matrixRight.map((column) => f32dot(leftParts, column)),
         );
       let output: string;
       if (op === '*' && lm && rhsType.startsWith('vec'))
-        output = `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) => Array.from({ length: Number(lm[1]) }, (_c, c) => `a[${c}][${r}]*b[${c}]`).join('+')).join(',')}])`;
+        output = `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) =>
+          f32dot(
+            Array.from({ length: Number(lm[1]) }, (_c, c) => `a[${c}][${r}]`),
+            Array.from({ length: Number(lm[1]) }, (_c, c) => `b[${c}]`),
+          ),
+        ).join(',')}])`;
       else if (op === '*' && rm && type.startsWith('vec'))
-        output = `$vector([${Array.from({ length: Number(rm[1]) }, (_c, c) => Array.from({ length: Number(rm[2]) }, (_r, r) => `a[${r}]*b[${c}][${r}]`).join('+')).join(',')}])`;
+        output = `$vector([${Array.from({ length: Number(rm[1]) }, (_c, c) =>
+          f32dot(
+            Array.from({ length: Number(rm[2]) }, (_r, r) => `a[${r}]`),
+            Array.from({ length: Number(rm[2]) }, (_r, r) => `b[${c}][${r}]`),
+          ),
+        ).join(',')}])`;
       else if (op === '*' && lm && rm)
-        output = `[${Array.from({ length: Number(rm[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) => Array.from({ length: Number(lm[1]) }, (_k, k) => `a[${k}][${r}]*b[${c}][${k}]`).join('+')).join(',')}])`).join(',')}]`;
+        output = `[${Array.from(
+          { length: Number(rm[1]) },
+          (_c, c) =>
+            `$vector([${Array.from({ length: Number(lm[2]) }, (_r, r) =>
+              f32dot(
+                Array.from({ length: Number(lm[1]) }, (_k, k) => `a[${k}][${r}]`),
+                Array.from({ length: Number(lm[1]) }, (_k, k) => `b[${c}][${k}]`),
+              ),
+            ).join(',')}])`,
+        ).join(',')}]`;
       else if (['+', '-', '*', '/'].includes(op)) {
         const shape = lm ?? rm!;
-        output = `[${Array.from({ length: Number(shape[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(shape[2]) }, (_r, r) => `${lm ? `a[${c}][${r}]` : 'a'}${op}${rm ? `b[${c}][${r}]` : 'b'}`).join(',')}])`).join(',')}]`;
+        output = `[${Array.from({ length: Number(shape[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(shape[2]) }, (_r, r) => f32op(lm ? `a[${c}][${r}]` : 'a', op, rm ? `b[${c}][${r}]` : 'b')).join(',')}])`).join(',')}]`;
       } else return unsupported(`matrix operator ${op}`);
       return `((a,b)=>${output})(${left},${right})`;
     }
@@ -1366,8 +1402,9 @@ export class CpuGenerator extends WgslGenerator {
 
     if (!['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(type))
       unsupported(`${op} on ${type}`);
+    const float = type === 'f32' || rhsType === 'f32';
     const left = `(${this.#value(lhs)})`;
-    const right = `(${this.#value(rhs)})`;
+    const right = float ? f32(this.#value(rhs)) : `(${this.#value(rhs)})`;
     if (op === '=') return `${left} = ${right}`;
     const assignment = op.endsWith('=') && !['==', '!=', '<=', '>='].includes(op);
     const operator = assignment ? op.slice(0, -1) : op;
@@ -1380,6 +1417,8 @@ export class CpuGenerator extends WgslGenerator {
           : `(${left} ${operator === '>>' && type === 'u32' ? '>>>' : operator} ${right})`;
     if (integer && !['<', '>', '<=', '>=', '==', '!=', '&&', '||'].includes(operator))
       result = `(${result} ${type === 'u32' ? '>>> 0' : '| 0'})`;
+    if (float && ['+', '-', '*', '/', '%'].includes(operator))
+      result = f32op(this.#value(lhs), operator, this.#value(rhs));
     return assignment ? `${left} = ${result}` : result;
   }
 
@@ -1452,7 +1491,9 @@ export class CpuGenerator extends WgslGenerator {
         const expanded = args.flatMap((_arg, i) => (widths[i] ? parts[i]! : [values[i]!]));
         if (
           expanded.every(
-            (value) => /^[\w$.[\]()+\-*/%<>&|^ ]+$/.test(value) && !/[\w$]\(/.test(value),
+            (value) =>
+              /^[\w$.[\]()+\-*/%<>&|^ ]+$/.test(value) &&
+              !/[\w$]\(/.test(value.replaceAll('Math.fround(', '(')),
           )
         ) {
           const replacements = new Map(
@@ -1473,7 +1514,7 @@ export class CpuGenerator extends WgslGenerator {
       const copied = args.map((arg, i) => {
         if (ignored[i]) return 'undefined';
         const type = scalar(arg.dataType);
-        let value = values[i]!;
+        let value = type === 'f32' ? f32(values[i]!) : values[i]!;
         const parameter = widths.slice(0, i).reduce<number>((sum, width) => sum + (width ?? 1), 0);
         const fields = this.#recordArguments.get(name)?.[parameter];
         if (fields?.length && type === 'struct')
@@ -1525,97 +1566,92 @@ export class CpuGenerator extends WgslGenerator {
     if (vectorArg) {
       const schema = vectorArg.dataType as d.BaseData;
       const count = Number(schema.type[3]);
-      const ctor = this.emitTypeAnnotation(schema);
+      const primitive = schema.type.endsWith('u')
+        ? d.u32
+        : schema.type.endsWith('i')
+          ? d.i32
+          : d.f32;
       const direct = args.map((arg) => this.#parts(arg));
-      if (
-        args.every(
-          (arg, i) =>
-            !arg.possibleSideEffects && (!scalar(arg.dataType).startsWith('vec') || direct[i]),
-        )
-      ) {
-        const at = (arg: number, component: number) =>
-          `(${direct[arg]?.[component] ?? this.#value(args[arg]!)})`;
-        const product = Array.from(
-          { length: count },
-          (_, i) => `${at(0, i)}*${at(['dot', 'reflect', 'refract'].includes(name) ? 1 : 0, i)}`,
-        ).join('+');
-        if (name === 'dot') return `(${product})`;
-        if (name === 'length') return `Math.sqrt(${product})`;
-        if (name === 'distance')
-          return `Math.sqrt(${Array.from({ length: count }, (_, i) => `(${at(0, i)}-${at(1, i)})**2`).join('+')})`;
-        let parts: string[];
-        if (name === 'normalize')
-          parts = Array.from({ length: count }, (_, i) => `${at(0, i)}/Math.sqrt(${product})`);
-        else if (name === 'reflect')
-          parts = Array.from({ length: count }, (_, i) => `${at(0, i)}-2*(${product})*${at(1, i)}`);
-        else if (name === 'refract') {
-          const eta = this.#value(args[2]!);
-          parts = Array.from(
-            { length: count },
-            (_, i) =>
-              `((k)=>k<0?0:((${eta})*${at(0, i)}-((${eta})*(${product})+Math.sqrt(k))*${at(1, i)}))(1-(${eta})*(${eta})*(1-(${product})*(${product})))`,
-          );
-        } else if (name === 'cross')
-          parts = [0, 1, 2].map(
-            (i) =>
-              `${at(0, (i + 1) % 3)}*${at(1, (i + 2) % 3)}-${at(0, (i + 2) % 3)}*${at(1, (i + 1) % 3)}`,
-          );
-        else
-          parts = Array.from({ length: count }, (_, i) =>
-            this.emitCall(
-              name,
-              [],
-              args.map((arg, j) =>
-                snip(
-                  at(j, i),
-                  scalar(arg.dataType).startsWith('vec') ? d.f32 : (arg.dataType as d.BaseData),
-                  'runtime',
-                  false,
-                ),
-              ),
-            ),
-          );
-        return this.#vector(schema, parts);
-      }
+      const canInline = args.every(
+        (arg, i) =>
+          !arg.possibleSideEffects && (!scalar(arg.dataType).startsWith('vec') || direct[i]),
+      );
       const letters = args.map((_, i) => `a${i}`);
-      const component = (index: number, i: number) =>
-        scalar(args[index]!.dataType).startsWith('vec')
-          ? `${letters[index]}[${i}]`
-          : letters[index]!;
-      const dot = Array.from(
-        { length: count },
-        (_, i) => `${component(0, i)}*${component(name === 'dot' ? 1 : 0, i)}`,
-      ).join('+');
-      let body: string;
-      if (name === 'reflect') {
-        const product = Array.from({ length: count }, (_, i) => `a0[${i}]*a1[${i}]`).join('+');
-        body = `$vector([${Array.from({ length: count }, (_, i) => `a0[${i}]-2*(${product})*a1[${i}]`).join(',')}])`;
-      } else if (name === 'refract') {
-        const product = Array.from({ length: count }, (_, i) => `a0[${i}]*a1[${i}]`).join('+');
-        body = `((dot)=>{const k=1-a2*a2*(1-dot*dot);return $vector([${Array.from({ length: count }, (_, i) => `k<0?0:a2*a0[${i}]-(a2*dot+Math.sqrt(k))*a1[${i}]`).join(',')}]);})(${product})`;
-      } else if (name === 'distance')
-        body = `Math.sqrt(${Array.from({ length: count }, (_, i) => `(a0[${i}]-a1[${i}])**2`).join('+')})`;
-      else if (name === 'dot' || name === 'length')
-        body = name === 'dot' ? `(${dot})` : `Math.sqrt(${dot})`;
-      else if (name === 'normalize')
-        body = `${ctor}(${Array.from({ length: count }, (_, i) => `${component(0, i)}/Math.sqrt(${dot})`).join(',')})`;
-      else if (name === 'cross')
-        body = `${ctor}(a0[1]*a1[2]-a0[2]*a1[1],a0[2]*a1[0]-a0[0]*a1[2],a0[0]*a1[1]-a0[1]*a1[0])`;
+      const at = (index: number, i: number) =>
+        canInline
+          ? `(${direct[index]?.[i] ?? this.#value(args[index]!)})`
+          : scalar(args[index]!.dataType).startsWith('vec')
+            ? `${letters[index]}[${i}]`
+            : letters[index]!;
+      const components = (index: number) => Array.from({ length: count }, (_, i) => at(index, i));
+      const operation = (left: string, op: BinaryOperator, right: string) =>
+        this.emitBinaryOp(
+          snip(left, primitive, 'runtime', false),
+          op,
+          snip(right, primitive, 'runtime', false),
+        );
+      const dot = (a: string[], b: string[]) =>
+        a
+          .map((value, i) => operation(value, '*', b[i]!))
+          .reduce((sum, value) => operation(sum, '+', value));
+      const product = dot(
+        components(0),
+        components(['dot', 'reflect', 'refract'].includes(name) ? 1 : 0),
+      );
+      let result: string | undefined;
+      let parts: string[] | undefined;
+      if (name === 'dot') result = product;
+      else if (name === 'length') result = f32(`Math.sqrt(${product})`);
+      else if (name === 'distance') {
+        const difference = components(0).map((value, i) => f32op(value, '-', at(1, i)));
+        result = f32(`Math.sqrt(${f32dot(difference, difference)})`);
+      } else if (name === 'normalize')
+        parts = components(0).map((value) => f32op(value, '/', f32(`Math.sqrt(${product})`)));
+      else if (name === 'reflect')
+        parts = components(0).map((value, i) =>
+          f32op(value, '-', f32op(f32op('2', '*', product), '*', at(1, i))),
+        );
+      else if (name === 'refract') {
+        const eta = at(2, 0);
+        const k = f32op(
+          '1',
+          '-',
+          f32op(f32op(eta, '*', eta), '*', f32op('1', '-', f32op(product, '*', product))),
+        );
+        parts = components(0).map(
+          (value, i) =>
+            `((k)=>k<0?0:${f32op(f32op(eta, '*', value), '-', f32op(f32op(f32op(eta, '*', product), '+', f32('Math.sqrt(k)')), '*', at(1, i)))} )(${k})`,
+        );
+      } else if (name === 'cross')
+        parts = [0, 1, 2].map((i) =>
+          f32op(
+            f32op(at(0, (i + 1) % 3), '*', at(1, (i + 2) % 3)),
+            '-',
+            f32op(at(0, (i + 2) % 3), '*', at(1, (i + 1) % 3)),
+          ),
+        );
       else
-        body = `${ctor}(${Array.from({ length: count }, (_, i) =>
+        parts = Array.from({ length: count }, (_, i) =>
           this.emitCall(
             name,
             [],
-            args.map((arg, index) =>
-              snip(
-                component(index, i),
-                scalar(arg.dataType).startsWith('vec') ? d.f32 : (arg.dataType as d.BaseData),
-                'runtime',
-              ),
-            ),
+            args.map((arg, j) => {
+              const type = scalar(arg.dataType);
+              const componentType = type.startsWith('vec')
+                ? type.endsWith('u')
+                  ? d.u32
+                  : type.endsWith('i')
+                    ? d.i32
+                    : type.endsWith('b')
+                      ? d.bool
+                      : d.f32
+                : (arg.dataType as d.BaseData);
+              return snip(at(j, i), componentType, 'runtime', false);
+            }),
           ),
-        ).join(',')})`;
-      return `((${letters.join(',')})=>${body})(${values.join(',')})`;
+        );
+      if (canInline) return result ?? this.#vector(schema, parts!);
+      return `((${letters.join(',')})=>${result ?? `$vector([${parts!.join(',')}])`})(${values.join(',')})`;
     }
     if (name === 'reverseBits')
       return `((a)=>{let r=0;for(let i=0;i<32;i++){r=(r<<1)|(a&1);a>>>=1;}return r>>>0;})(${values[0]})`;
@@ -1623,21 +1659,23 @@ export class CpuGenerator extends WgslGenerator {
       return `((a)=>{a=a-((a>>>1)&0x55555555);a=(a&0x33333333)+((a>>>2)&0x33333333);return Math.imul((a+(a>>>4))&0x0f0f0f0f,0x01010101)>>>24;})(${values[0]})`;
     const expressions: Record<string, string> = {
       not: '!a',
-      smoothstep: '((t)=>t*t*(3-2*t))(Math.min(Math.max((c-a)/(b-a),0),1))',
+      smoothstep: `((t)=>${f32op(f32op('t', '*', 't'), '*', f32op('3', '-', f32op('2', '*', 't')))})(Math.min(Math.max(${f32op(f32op('c', '-', 'a'), '/', f32op('b', '-', 'a'))},0),1))`,
       clamp: 'Math.min(Math.max(a,b),c)',
-      mix: 'a*(1-c)+b*c',
-      fract: 'a-Math.floor(a)',
-      inverseSqrt: '1/Math.sqrt(a)',
+      mix: f32op(f32op('a', '*', f32op('1', '-', 'c')), '+', f32op('b', '*', 'c')),
+      fract: f32op('a', '-', 'Math.floor(a)'),
+      inverseSqrt: f32op('1', '/', f32('Math.sqrt(a)')),
       saturate: 'Math.min(Math.max(a,0),1)',
       step: 'b<a?0:1',
       fma: 'a*b+c',
-      radians: 'a*Math.PI/180',
-      degrees: 'a*180/Math.PI',
+      radians: f32op('a', '*', String(Math.PI / 180)),
+      degrees: f32op('a', '*', String(180 / Math.PI)),
       countLeadingZeros: 'Math.clz32(a)',
       countTrailingZeros: 'a===0?32:31-Math.clz32((a&-a)>>>0)',
       firstTrailingBit: 'a===0?4294967295:31-Math.clz32((a&-a)>>>0)',
     };
-    if (expressions[name]) return `((a,b,c)=>(${expressions[name]}))(${values.join(',')})`;
+    const floatResult = scalar(args[0]!.dataType) === 'f32';
+    const rounded = (value: string) => (floatResult ? f32(value) : value);
+    if (expressions[name]) return `((a,b,c)=>(${rounded(expressions[name])}))(${values.join(',')})`;
     for (const arg of args) {
       if (
         !['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(
@@ -1678,10 +1716,10 @@ export class CpuGenerator extends WgslGenerator {
         'sign',
       ].includes(name)
     ) {
-      if (name === 'exp2') return `(2 ** (${values[0]}))`;
+      if (name === 'exp2') return rounded(`(2 ** (${values[0]}))`);
       if (name === 'round')
         return `((a)=>{const f=Math.floor(a);return a-f===0.5?(f%2===0?f:f+1):Math.round(a);})(${values[0]})`;
-      return `Math.${name}(${values.join(',')})`;
+      return rounded(`Math.${name}(${values.join(',')})`);
     }
     if (name === 'select') return `(${values[2]} ? ${values[1]} : ${values[0]})`;
     return unsupported(`builtin ${name}`);

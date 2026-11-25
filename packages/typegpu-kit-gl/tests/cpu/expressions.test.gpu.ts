@@ -9,15 +9,22 @@ it('matches dawn for composed vector, scalar and matrix expressions', async () =
   try {
     const expected = await expressionValues(gpu),
       actual = await expressionValues(cpu);
+    const cpuBits = new Uint32Array(Float32Array.from(actual).buffer);
+    const gpuBits = new Uint32Array(Float32Array.from(expected).buffer);
     const differences = expected.flatMap((value, word) => {
+      const index = Math.floor(word / 3) % expressionCases.length;
+      const source = expressionCases[index]!.source;
+      const approximate =
+        /std\.(?:normalize|refract|length|distance|sin|cos|exp|pow|inverseSqrt)\(/.test(source);
+      const ulps = Math.abs(cpuBits[word]! - gpuBits[word]!);
       if (
         Number.isFinite(actual[word]) &&
-        Math.abs(actual[word]! - value) <= 1e-4 * Math.max(1, Math.abs(value))
+        (cpuBits[word] === gpuBits[word] ||
+          (approximate && Math.sign(actual[word]!) === Math.sign(value) && ulps <= 8))
       )
         return [];
-      const index = Math.floor(word / 3) % expressionCases.length;
       return [
-        `input ${Math.floor(word / (3 * expressionCases.length))}, component ${word % 3}: ${expressionCases[index]!.source}: CPU=${actual[word]}, dawn=${value}`,
+        `input ${Math.floor(word / (3 * expressionCases.length))}, component ${word % 3}: ${source}: CPU=${actual[word]}, dawn=${value}, ${ulps} ulp (${approximate ? 'approximate' : 'exact'})`,
       ];
     });
     expect(actual.length).toBe(expected.length);

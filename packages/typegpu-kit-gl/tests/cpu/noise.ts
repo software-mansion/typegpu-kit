@@ -1,5 +1,39 @@
-import { randf } from '../../../typegpu-kit-examples/node_modules/@typegpu/noise/index.mjs';
+import {
+  perlin2d,
+  randf,
+} from '../../../typegpu-kit-examples/node_modules/@typegpu/noise/index.mjs';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+
+export async function scaledSeeds(root: TgpuRoot): Promise<number[]> {
+  const output = root.createMutable(d.arrayOf(d.f32, 64));
+  const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(
+    ({ gid }) => {
+      'use gpu';
+      randf.seed2(d.vec2f(d.f32(gid.x), d.f32(gid.x)) * 1e-3);
+      output.$[gid.x] = randf.sample();
+    },
+  );
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return [...(await output.read())];
+}
+
+export async function perlinCache(root: TgpuRoot): Promise<number[]> {
+  const cache = perlin2d.staticCache({ root, size: d.vec2u(64, 64) });
+  const output = root.createMutable(d.arrayOf(d.vec2f, 64 * 64));
+  try {
+    const kernel = tgpu.computeFn({
+      workgroupSize: [8, 8],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      output.$[gid.y * 64 + gid.x] = cache.getJunctionGradient(d.vec2i(gid.xy));
+    });
+    root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(8, 8);
+    return (await output.read()).flatMap((value) => [value.x, value.y]);
+  } finally {
+    cache.destroy();
+  }
+}
 
 export async function randomValues(root: TgpuRoot): Promise<number[]> {
   const output = root.createMutable(d.arrayOf(d.vec2f, 4));

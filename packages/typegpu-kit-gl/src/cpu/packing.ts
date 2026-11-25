@@ -21,9 +21,11 @@ export function unpack(value: number, bits: number, kind: string): number[] {
     Array.from({ length: 32 / bits }, (_, i) => {
       const word = (value >>> (i * bits)) & mask;
       if (kind === 'float') return decodeHalf(word);
-      if (kind === 'unorm') return word / mask;
+      if (kind === 'unorm') return Math.fround(word / mask);
       if (kind === 'snorm')
-        return Math.max(-1, ((word << (32 - bits)) >> (32 - bits)) / (2 ** (bits - 1) - 1));
+        return Math.fround(
+          Math.max(-1, ((word << (32 - bits)) >> (32 - bits)) / (2 ** (bits - 1) - 1)),
+        );
       return kind === 'i' ? (word << (32 - bits)) >> (32 - bits) : word;
     }),
   );

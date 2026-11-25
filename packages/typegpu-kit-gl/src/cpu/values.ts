@@ -9,7 +9,7 @@ export function construct(layout: Layout, ...args: Value[]): Value {
   if (layout.type === 'bool') return Boolean(args[0]);
   if (layout.type === 'u32') return Number(args[0] ?? 0) >>> 0;
   if (layout.type === 'i32') return Number(args[0] ?? 0) | 0;
-  if (layout.type === 'f32') return Number(args[0] ?? 0);
+  if (layout.type === 'f32') return Math.fround(Number(args[0] ?? 0));
   if (layout.fields) {
     const value: Record<string, Value> = {};
     Object.entries(layout.fields).forEach(([key, field], index) => {
