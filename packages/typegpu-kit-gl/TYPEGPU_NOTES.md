@@ -540,3 +540,51 @@ const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
 **Upstream.** Use a null-prototype argument table or an own-property check in `packages/typegpu/src/resolutionCtx.ts`, in `ItemStateStackImpl.getSnippetById`.
 
 **Workaround.** The effectful RHS helper in `tests/cpu/indexed.ts` is named `nextValue` instead of `valueOf`.
+
+## Resolution order
+
+### 34. A helper is generated inside the statement that first calls it
+
+TypeGPU generates a function's definition when a call first reaches it, in the middle of generating the caller. Whatever the generator tracks about the statement it is in, such as how many `if`s or loops surround it or which condition it is generating, still describes the caller while the helper's body is generated. A check meant for the helper's own top level, such as "this early return is the first statement, outside any branch", then depends on where the first call happened to be. The GPU compute form refused falling-sand's block writes when the first `put` sat inside an `if`, because the helper's guard looked nested.
+
+```ts
+const put = (p: d.v2i, value: number) => {
+  'use gpu';
+  if (!inside(p)) return; // generated while the entry is inside `if (g.x % 2 === 0)`
+  cells.$[d.u32(p.y) * W + d.u32(p.x)] = value;
+};
+const kernel = tgpu.computeFn({ workgroupSize: [4, 4], in: { gid: d.builtin.globalInvocationId } })(
+  ({ gid: g }) => {
+    'use gpu';
+    if (g.x % 2 === 0) put(d.vec2i(g.xy) * 2, d.u32(1));
+    put(d.vec2i(g.xy) * 2 + d.vec2i(1, 0), d.u32(2));
+  },
+);
+```
+
+**Upstream.** Generate a function's definition outside the caller's statement, or give generators a hook around `functionDefinition` that saves and restores their per-statement state, in `tgsl/wgslGenerator.ts` where calls resolve their callee.
+
+**Workaround.** Each function's frame in `KitGlslComputeGenerator` (`src/glsl/compute.ts`) records the generator's branch depth when the function's generation began (`Frame.depth`), and the guard check compares against it.
+
+### 35. A generator cannot see the whole pipeline before it emits
+
+Whether a kernel has a GPU form, and how to emit it, depends on facts spread over its functions: every atomic on a buffer anywhere in the kernel, how many records each helper adds summed over its calls, whether a taken value reaches a branch in another function. TypeGPU emits each function as it reaches it, helpers before the code after the call, so a helper is written before the generator knows how many record slots it needs or whether the kernel loads the buffer it adds to.
+
+```ts
+const count = (cell: number) => {
+  'use gpu';
+  std.atomicAdd(counts.$[cell % 8], 1); // emitted before the entry's other additions are seen
+};
+const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+  gid,
+}) => {
+  'use gpu';
+  count(gid.x);
+  count(gid.x + 1);
+  const seen = std.atomicLoad(counts.$[0]); // refuses the form for `counts`, after `count` was emitted
+});
+```
+
+**Upstream.** Offer generators a pass over the resolved call graph before any text is emitted, such as each reachable function's AST with its externals and call sites, or let a generator replace a function's emitted text once the resolution ends. In `resolutionCtx.ts` and `tgsl/shaderGenerator.ts`.
+
+**Workaround.** `computeForm` in `src/glsl/compute.ts` resolves the pipeline twice: a first `KitGlslComputeGenerator` without a plan walks the kernel and throws `Ineligible` or returns the plan, and a second emits from it, throwing if it reaches a write the plan did not list. Beside the resolution of the CPU module (entry 5), every compute pipeline is resolved twice more.
