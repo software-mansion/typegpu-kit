@@ -762,15 +762,19 @@ export function create<S extends Schema>(
 
   const filled: Inject = (cfg) => cfg.pipe(inject).pipe(camera.inject());
   const injected = root.pipe(filled);
+  // Named for the system, so a profile tells several systems' kernels apart
+  const named = options.label ?? 'particles';
   const spawnPipeline = (
     alone
       ? injected.createComputePipeline({ compute: spawnEach })
       : injected.createComputePipeline({ compute: spawnKernel })
-  ).$name('spawnPipeline');
+  ).$name(`${named}_spawn`);
   const advancing = alone
-    ? injected.createComputePipeline({ compute: advanceKernel }).$name('advancing')
+    ? injected.createComputePipeline({ compute: advanceKernel }).$name(`${named}_advance`)
     : undefined;
-  const stepPipeline = injected.createComputePipeline({ compute: stepKernel });
+  const stepPipeline = injected
+    .createComputePipeline({ compute: stepKernel })
+    .$name(`${named}_step`);
   const drawn: Inject = (cfg) => (live ? cfg.pipe(filled).pipe(live.inject()) : cfg.pipe(filled));
 
   const tally = tgpu.computeFn({
@@ -785,10 +789,10 @@ export function create<S extends Schema>(
     counted!.$[1] = std.atomicExchange(tallied!.$[0], 0);
   });
   const tallyPipeline = alone
-    ? injected.createComputePipeline({ compute: tally }).$name('tally')
+    ? injected.createComputePipeline({ compute: tally }).$name(`${named}_tally`)
     : undefined;
   const countPipeline = alone
-    ? root.createComputePipeline({ compute: recount }).$name('counting')
+    ? root.createComputePipeline({ compute: recount }).$name(`${named}_count`)
     : undefined;
 
   // Reuse burst records until spawn consumes them. Initialize custom fields from a zero particle
@@ -956,7 +960,7 @@ export function create<S extends Schema>(
     },
 
     drawing: {
-      label: options.label ?? 'particles',
+      label: named,
       Vertex: Corner,
       at: live ? at : covered,
       pixelOf,
