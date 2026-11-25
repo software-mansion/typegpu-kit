@@ -380,21 +380,10 @@ function drawRecords(ctx: Ctx, points: Points, count: number, pointAt: (site: nu
 
 /** Readies the scratch draw framebuffer for a pass's own draws over a `width` by `height` target. */
 function drawingInto(ctx: Ctx, width: number, height: number): void {
-  const { gl, state } = ctx;
+  const { state } = ctx;
   state.drawFramebuffer(ctx.scratch.draw);
   state.viewport(0, 0, width, height);
-  writeEverything(ctx);
-  for (const cap of [
-    gl.SCISSOR_TEST,
-    gl.DEPTH_TEST,
-    gl.STENCIL_TEST,
-    gl.CULL_FACE,
-    gl.RASTERIZER_DISCARD,
-    gl.SAMPLE_ALPHA_TO_COVERAGE,
-    gl.POLYGON_OFFSET_FILL,
-  ]) {
-    state.enable(cap, false);
-  }
+  drawPlainly(ctx);
 }
 
 /**
