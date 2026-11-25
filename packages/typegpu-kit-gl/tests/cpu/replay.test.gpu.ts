@@ -108,6 +108,7 @@ for (const probe of probes)
           gpuObserver.dispatches,
           snapshot!,
           example === 'censer',
+          { sampling: process.env.CPU_SAMPLE_TRACE === '1' },
         );
         const classified = classifyAmplification(example, result);
         recordResults(`replay:${example}:${snapshot!.label}:${skip}`, classified);

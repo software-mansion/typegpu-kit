@@ -96,3 +96,79 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
   },
   30000,
 );
+
+async function sampledUnormRamp(root: TgpuRoot) {
+  const image = root
+    .createTexture({ size: [2, 1, 1], dimension: '3d', format: 'rgba8unorm' })
+    .$usage('sampled');
+  image.write(new Uint8Array([0, 127, 1, 250, 255, 128, 254, 251]));
+  const view = image.createView(d.texture3d(d.f32));
+  const sampler = root.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+  const output = root.createMutable(d.arrayOf(d.vec4f, 1025));
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.globalInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          const t = d.f32(id.x) / 1024;
+          output.$[id.x] = std.textureSampleLevel(
+            view.$,
+            sampler.$,
+            d.vec3f((0.5 + t) / 2, 0.5, 0.5),
+            0,
+          );
+        },
+      ),
+    })
+    .dispatchWorkgroups(1025);
+  return new Float32Array(await readBuffer(root.device, root.unwrap(output.buffer)));
+}
+it.runIf(process.env.CPU_THRESHOLDS === '1')(
+  'measures fractional-byte precision of unorm texture filtering',
+  async () => {
+    const gpu = await gpuRoot(),
+      cpu = cpuRoot();
+    try {
+      const expected = await sampledUnormRamp(gpu),
+        actual = await sampledUnormRamp(cpu);
+      const from = [0, 127, 1, 250],
+        to = [255, 128, 254, 251];
+      let quantized = 0,
+        maxModelError = 0,
+        maxFractionalByteDistance = 0;
+      const first = [];
+      for (let i = 0; i < expected.length; i++) {
+        const t = Math.floor(i / 4) / 1024,
+          c = i % 4,
+          q = Math.round(t * 256) / 256;
+        const model = Math.fround(Math.round((from[c]! * (1 - q) + to[c]! * q) * 16) / (255 * 16));
+        const error = Math.abs(expected[i]! - model);
+        maxModelError = Math.max(maxModelError, error);
+        maxFractionalByteDistance = Math.max(
+          maxFractionalByteDistance,
+          Math.abs(expected[i]! * 4080 - Math.round(expected[i]! * 4080)),
+        );
+        if (error <= 2 ** -22) quantized++;
+        if (first.length < 20 && Math.abs(expected[i]! - actual[i]!) > 1e-6)
+          first.push({
+            sample: Math.floor(i / 4),
+            channel: c,
+            cpu: actual[i],
+            dawn: expected[i],
+            model,
+          });
+      }
+      recordResults('unormFilterPrecision', {
+        components: expected.length,
+        quantized,
+        maxModelError,
+        maxFractionalByteDistance,
+        first,
+      });
+      expect(maxModelError).toBeLessThanOrEqual(1 / 4080 + 2 ** -22);
+    } finally {
+      gpu.destroy();
+      cpu.destroy();
+    }
+  },
+);

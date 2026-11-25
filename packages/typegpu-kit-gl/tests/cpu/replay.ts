@@ -1,3 +1,4 @@
+import { traceSampling } from './sampling-trace.ts';
 import { tracePrefilter } from './prefilter-trace.ts';
 import { traceSky } from './sky-trace.ts';
 import { traceMaterial } from './material-trace.ts';
@@ -105,16 +106,20 @@ export async function replay(
   events: ObservedDispatch[],
   snapshot: ReplaySnapshot,
   filterDiagnostic = false,
+  options: { sampling?: boolean; geometry?: boolean; prefilter?: boolean } = {},
 ) {
   const keys = snapshot.bindings
     .filter((binding) => binding.resource)
-    .map((binding) => binding.key)
+    .map((binding) => `${binding.key}:${binding.use.writes ? 'write' : 'read'}`)
     .toSorted();
   const candidates = events.filter(
     (event) =>
       event.label === snapshot.label &&
-      JSON.stringify(event.bindings.map((binding) => binding.resource.key).toSorted()) ===
-        JSON.stringify(keys),
+      JSON.stringify(
+        event.bindings
+          .map((binding) => `${binding.resource.key}:${binding.writes ? 'write' : 'read'}`)
+          .toSorted(),
+      ) === JSON.stringify(keys),
   );
   const event = candidates[0];
   if (!event)
@@ -144,10 +149,13 @@ export async function replay(
   try {
     for (const binding of snapshot.bindings) {
       if (binding.sampler) continue;
+      const matches = event.bindings.filter(
+        (item) => item.resource.key === binding.key && item.writes === binding.use.writes,
+      );
       const gpuBinding =
-        event.bindings.find(
-          (item) => item.resource.key === binding.key && item.writes === binding.use.writes,
-        ) ?? event.bindings.find((item) => item.resource.key === binding.key);
+        matches.find(
+          (item) => item.group === binding.use.group && item.binding === binding.use.binding,
+        ) ?? matches[0];
       if (!gpuBinding) throw new Error(`Missing WGSL binding ${binding.key}`);
       if (binding.buffer) {
         const source = binding.buffer;
@@ -202,13 +210,18 @@ export async function replay(
     }
     for (const sampler of event.samplers)
       append(sampler.group, sampler.binding, device.createSampler(sampler.descriptor));
+    // Captures contain statically used bindings, not unused entries of explicit TypeGPU layouts.
+    const pipeline = await device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: event.code }) },
+    });
     const encoder = device.createCommandEncoder(),
       pass = encoder.beginComputePass();
-    pass.setPipeline(event.pipeline);
+    pass.setPipeline(pipeline);
     for (const [group, entries] of groups)
       pass.setBindGroup(
         group,
-        device.createBindGroup({ layout: event.pipeline.getBindGroupLayout(group), entries }),
+        device.createBindGroup({ layout: pipeline.getBindGroupLayout(group), entries }),
       );
     pass.dispatchWorkgroups(...snapshot.workgroups);
     pass.end();
@@ -399,7 +412,11 @@ ${snapshot.code}`;
     }
     let skyTrace;
     let prefilterTrace;
-    if (process.env.CPU_SKY_TRACE === '1' || process.env.CPU_PREFILTER_TRACE === '1') {
+    if (
+      process.env.CPU_SKY_TRACE === '1' ||
+      process.env.CPU_PREFILTER_TRACE === '1' ||
+      options.prefilter
+    ) {
       const binding = snapshot.bindings.find((item) => item.texture && item.use.writes)!;
       const level = binding.texture!.levels[0]!;
       const actual = level.data as Uint16Array,
@@ -413,7 +430,7 @@ ${snapshot.code}`;
         .toSorted((a, b) => b.gap - a.gap)
         .slice(0, 10);
       skyTrace =
-        process.env.CPU_PREFILTER_TRACE === '1'
+        process.env.CPU_PREFILTER_TRACE === '1' || options.prefilter
           ? undefined
           : await traceSky(
               device,
@@ -424,7 +441,7 @@ ${snapshot.code}`;
               worst.map((item) => item.texel),
               level.width,
             );
-      if (process.env.CPU_PREFILTER_TRACE === '1')
+      if (process.env.CPU_PREFILTER_TRACE === '1' || options.prefilter)
         prefilterTrace = await tracePrefilter(
           device,
           event.code,
@@ -435,7 +452,44 @@ ${snapshot.code}`;
           level.width,
         );
     }
+    let samplingTrace;
+    if (options.sampling || options.geometry) {
+      const binding = snapshot.bindings.find(
+        (item) => (item.texture || item.buffer) && item.use.writes,
+      )!;
+      const level = binding.texture?.levels[0];
+      if (binding.texture && binding.texture.format !== 'rgba16float')
+        throw new Error('Sampling trace output must be rgba16float');
+      const actual = level?.data as Uint16Array | undefined;
+      const expectedBytes = gpu.find((item) => item.key === binding.key)!.levels[0]!.bytes;
+      const expected = level ? new Uint16Array(expectedBytes) : new Uint32Array(expectedBytes);
+      const worst = actual
+        ? Array.from({ length: actual.length / 4 }, (_, texel) => ({
+            texel,
+            gap: Math.max(
+              ...[0, 1, 2, 3].map((c) =>
+                Math.abs(ordered(actual[texel * 4 + c]!) - ordered(expected[texel * 4 + c]!)),
+              ),
+            ),
+          }))
+            .toSorted((a, b) => b.gap - a.gap)
+            .slice(0, 10)
+        : [{ texel: 0, gap: 0 }];
+      samplingTrace = await traceSampling(
+        device,
+        event.code,
+        groups,
+        snapshot,
+        resources,
+        worst.map((item) => item.texel),
+        level ? [level.width, level.height, level.depthOrArrayLayers] : [1, 1, 1],
+        binding.texture ?? binding.buffer!,
+        expected,
+        options.geometry,
+      );
+    }
     return {
+      samplingTrace,
       prefilterTrace,
       skyTrace,
       materialTrace,

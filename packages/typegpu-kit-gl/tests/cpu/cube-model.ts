@@ -38,6 +38,7 @@ export function cubeSampleModel(
   quantized = true,
   truncateLod = false,
   weightOffsets: readonly [number, number] = [0, 0],
+  cornerAxis = 0,
 ) {
   const [face, u, v] = faceOf(direction);
   const lod = Math.min(
@@ -75,7 +76,9 @@ export function cubeSampleModel(
         const outsideX = tx < 0 || tx >= level.width,
           outsideY = ty < 0 || ty >= level.height;
         if (outsideX && outsideY) {
-          const corner = faceOf(directionOf(face, tx < 0 ? 0 : 1, ty < 0 ? 0 : 1));
+          const cornerDirection = directionOf(face, tx < 0 ? 0 : 1, ty < 0 ? 0 : 1);
+          cornerDirection[cornerAxis]! *= 1.000001;
+          const corner = faceOf(cornerDirection);
           layer = corner[0];
           tx = Math.floor(corner[1] * level.width);
           ty = Math.floor(corner[2] * level.height);
@@ -112,7 +115,7 @@ function expand(value: number, sign: number) {
   return decodeHalf(bits + (value < 0 ? -sign : sign));
 }
 
-/** Bounds one 8-bit weight step and one adjacent half at each filtering stage. */
+/** Bounds spatial weights, measured 6-bit mip weights and adjacent half results. */
 export function cubeSampleEnvelope(
   texture: CpuTexture,
   sampler: GPUSamplerDescriptor,
@@ -129,8 +132,10 @@ export function cubeSampleEnvelope(
 
   const levels = [low, high].map((mip) => {
     const corners = [-1, 1].flatMap((x) =>
-      [-1, 1].map((y) =>
-        cubeSampleModel(texture, sampler, direction, mip, false, false, [x / 256, y / 256]),
+      [-1, 1].flatMap((y) =>
+        [0, 1, 2].map((axis) =>
+          cubeSampleModel(texture, sampler, direction, mip, false, false, [x / 256, y / 256], axis),
+        ),
       ),
     );
     return Array.from({ length: 4 }, (_, c) => [
@@ -138,7 +143,8 @@ export function cubeSampleEnvelope(
       expand(Math.max(...corners.map((v) => v[c]!)), 1),
     ]);
   });
-  const weights = [-1, 1].map((sign) => Math.max(0, Math.min(1, lod - low + sign / 256)));
+  const roundedLod = decodeHalf(encodeHalf(lod));
+  const weights = [-1, 1].map((sign) => Math.max(0, Math.min(1, roundedLod - low + sign / 64)));
   return Array.from({ length: 4 }, (_, c) => {
     const bottom = Math.min(
       ...weights.map((w) => levels[0]![c]![0]! * (1 - w) + levels[1]![c]![0]! * w),

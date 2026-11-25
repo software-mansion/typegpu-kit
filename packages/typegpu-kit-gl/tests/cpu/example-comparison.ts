@@ -1,3 +1,4 @@
+import { N, CASCADES } from '../../../typegpu-kit-examples/src/ocean/spectrum.ts';
 import { packedEqual } from './encoded-fields.ts';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface } from '@typegpu/kit/testing';
@@ -460,4 +461,37 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
       ).length,
     },
   };
+}
+
+/** Decode backend-private representations before comparing public scene results. */
+export function compareExampleCaptures(
+  example: string,
+  expected: SceneCapture,
+  actual: SceneCapture,
+) {
+  const representations: { key: string; reason: string }[] = [];
+  if (example === 'ocean')
+    actual = {
+      ...actual,
+      resources: actual.resources.map((resource) => {
+        if (resource.key !== 'buffer:foam:host#0') return resource;
+        const source = new Uint32Array(resource.levels[0]!.bytes);
+        const cascades = CASCADES,
+          side = N;
+        if (source.length !== cascades * side * side)
+          throw new Error('ocean foam history has an unexpected shape');
+        const words = new Uint32Array(source.length);
+        for (let cascade = 0; cascade < cascades; cascade++)
+          for (let y = 0; y < side; y++)
+            for (let x = 0; x < side; x++)
+              words[(cascade * side + x) * side + y] = source[(cascade * side + y) * side + x]!;
+        representations.push({
+          key: resource.key,
+          reason:
+            'fallback foam history is transposed relative to the WebGPU FFT branch; compare matching cascade/x/y cells',
+        });
+        return { ...resource, levels: [{ ...resource.levels[0]!, bytes: words.buffer }] };
+      }),
+    };
+  return { ...compareCaptures(expected, actual), representations };
 }

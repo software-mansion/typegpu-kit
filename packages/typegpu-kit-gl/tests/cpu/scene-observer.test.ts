@@ -1,9 +1,16 @@
+import { layoutOf } from '../../src/cpu/memory.ts';
 import { expect, it } from 'vitest';
 import { d, std, tgpu } from 'typegpu';
 import { cpuRoot } from './device.ts';
 import { SweepGenerator } from './scene-generator.ts';
 import { observeScene } from './scene-observer.ts';
-import { captureScene, compareCaptures, fieldAt, type SceneCapture } from './example-comparison.ts';
+import {
+  captureScene,
+  compareCaptures,
+  compareExampleCaptures,
+  fieldAt,
+  type SceneCapture,
+} from './example-comparison.ts';
 
 it('captures typed buffer writes and propagates render dependencies through compute', () => {
   const observer = observeScene();
@@ -98,3 +105,32 @@ it('captures a whole seeded forest scene identically twice on the CPU', async ()
   expect(result.differences).toEqual([]);
   expect(result.skipped.length).toBeGreaterThan(0);
 }, 30000);
+
+const foamCapture = (values: Uint32Array): SceneCapture => ({
+  ...capture([]),
+  resources: [
+    {
+      ...capture([]).resources[0]!,
+      key: 'buffer:foam:host#0',
+      label: 'foam',
+      layout: layoutOf(d.arrayOf(d.u32, values.length)),
+      levels: [{ width: 0, height: 0, depth: 0, bytes: values.slice().buffer }],
+    },
+  ],
+});
+
+it('compares ocean foam history in cascade/x/y order without ignoring words', () => {
+  const cpu = new Uint32Array(4 * 512 * 512),
+    gpu = new Uint32Array(cpu.length);
+  cpu[512 * 512 + 2 * 512 + 7] = 17;
+  gpu[512 * 512 + 7 * 512 + 2] = 17;
+  cpu[3 * 512 * 512 + 511 * 512 + 5] = 29;
+  gpu[3 * 512 * 512 + 5 * 512 + 511] = 29;
+  const matched = compareExampleCaptures('ocean', foamCapture(gpu), foamCapture(cpu));
+  expect(matched.differences).toEqual([]);
+  expect(matched.representations).toHaveLength(1);
+  cpu[512 * 512 + 2 * 512 + 7] = 18;
+  expect(
+    compareExampleCaptures('ocean', foamCapture(gpu), foamCapture(cpu)).differences[0]!.words,
+  ).toBe(1);
+});

@@ -1,6 +1,6 @@
 import { cubeSampleEnvelope, cubeSampleModel } from './cube-model.ts';
 import { compile } from '../../src/cpu/index.ts';
-import { textureOps, encodeHalf } from '../../src/cpu/textures.ts';
+import { textureOps, encodeHalf, decodeHalf } from '../../src/cpu/textures.ts';
 import type { CpuResources, CpuTexture } from '../../src/cpu/types.ts';
 import type { ReplaySnapshot } from './replay.ts';
 import { readBuffer } from './example-comparison.ts';
@@ -21,23 +21,24 @@ export async function tracePrefilter(
 ) {
   let records: Row[][] = texels.map(() => []);
   let selected = -1,
-    index = 0;
+    iteration = 0;
   let injected: number[][][] | undefined;
   let texture: CpuTexture, sampler: GPUSamplerDescriptor;
   const select = (id: number[]) => {
     selected = texels.indexOf(id[0]! + side * (id[1]! + side * id[2]!));
-    index = 0;
+    iteration = 0;
     return selected >= 0;
   };
   const record = (tag: number, value: number[]) => {
     records[selected]!.push({ tag, value: Array.from(value) });
+    if (tag === 1) iteration = value[3]!;
   };
   const sample = (t: CpuTexture, s: GPUSamplerDescriptor, c: number[], l: number, v: number[]) => {
     texture = t;
     sampler = s;
     record(2, [...c, l]);
     record(3, v);
-    return injected?.[selected]?.[index++] ?? v;
+    return injected?.[selected]?.[iteration] ?? v;
   };
   const scope = globalThis as typeof globalThis & {
     cpuPrefilterTrace?: { select: typeof select; record: typeof record; sample: typeof sample };
@@ -50,6 +51,10 @@ export async function tracePrefilter(
   cpu = cpu.replace(
     /(let lod = [^\n]+;)/,
     '$1globalThis.cpuPrefilterTrace.record(0,[cosTheta,sinTheta,nl,spread]);globalThis.cpuPrefilterTrace.record(1,[density,share,lod,i]);',
+  );
+  cpu = cpu.replace(
+    /((?:let|const) nl = [^;\n]+;)/,
+    '$1globalThis.cpuPrefilterTrace.record(4,[i,nl,cosTheta,sinTheta]);',
   );
   cpu = `const prefSample=$textures.textureSampleLevel,prefStore=$textures.textureStore;$textures={...$textures,textureSampleLevel:(t,s,c,l)=>globalThis.cpuPrefilterTrace.sample(t,s,c,l,prefSample(t,s,c,l)),textureStore:(t,c,l,v)=>{globalThis.cpuPrefilterTrace.record(112,v);return prefStore(t,c,l,v);}};\n${cpu}`;
   const run = () => {
@@ -75,6 +80,7 @@ export async function tracePrefilter(
       /(      let lod = [^\n]+;)/,
       '$1pref_record(0u,vec4f(cosTheta,sinTheta,nl,spread));pref_record(1u,vec4f(density,share,lod,f32(i)));',
     )
+    .replace(/(let nl = [^;\n]+;)/, '$1pref_record(4u,vec4f(f32(i),nl,cosTheta,sinTheta));')
     .replaceAll('textureSampleLevel(', 'pref_sample(')
     .replaceAll('textureStore(', 'pref_store(');
   shader += `\nvar<private> pref_slot:u32=0xffffffffu;var<private> pref_row:u32=0u;
@@ -118,7 +124,15 @@ fn pref_store(t:texture_storage_2d_array<rgba16float,write>,c:vec2u,l:u32,v:vec4
           : undefined;
       }).filter((row): row is Row => !!row),
     );
-    injected = dawn.map((rows) => rows.filter((row) => row.tag === 3).map((row) => row.value));
+    injected = dawn.map((rows) => {
+      const values: number[][] = [];
+      let at = 0;
+      for (const row of rows) {
+        if (row.tag === 1) at = row.value[3]!;
+        if (row.tag === 3) values[at] = row.value;
+      }
+      return values;
+    });
     records = texels.map(() => []);
     run();
     return texels.map((texel, i) => {
@@ -133,9 +147,15 @@ fn pref_store(t:texture_storage_2d_array<rgba16float,write>,c:vec2u,l:u32,v:vec4
           row.value.slice(0, 3),
           row.value[3]!,
         ) as number[],
-        dawn: injected![i]![j],
+        dawn: dawn[i]!.filter((item) => item.tag === 3)[j]!.value,
         envelope: cubeSampleEnvelope(texture, sampler, row.value.slice(0, 3), row.value[3]!),
         cornerModel: cubeSampleModel(texture, sampler, row.value.slice(0, 3), row.value[3]!),
+        mip6Model: cubeSampleModel(
+          texture,
+          sampler,
+          row.value.slice(0, 3),
+          Math.floor(decodeHalf(encodeHalf(row.value[3]!)) * 64) / 64,
+        ),
         cornerTruncatedLod: cubeSampleModel(
           texture,
           sampler,
@@ -149,6 +169,19 @@ fn pref_store(t:texture_storage_2d_array<rgba16float,write>,c:vec2u,l:u32,v:vec4
       return {
         texel,
         cell: [texel % side, Math.floor(texel / side) % side, Math.floor(texel / (side * side))],
+        branchFlips: original[i]!.filter((row) => row.tag === 4).flatMap((row) => {
+          const other = dawn[i]!.find((item) => item.tag === 4 && item.value[0] === row.value[0]);
+          return other && row.value[1]! > 0 !== other.value[1]! > 0
+            ? [
+                {
+                  iteration: row.value[0],
+                  cpu: row.value,
+                  dawn: other.value,
+                  delta: Math.abs(row.value[1]! - other.value[1]!),
+                },
+              ]
+            : [];
+        }),
         originalStore,
         sameStore,
         expectedStore,

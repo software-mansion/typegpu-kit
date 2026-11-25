@@ -9,6 +9,62 @@ interface Mechanism {
 
 const mechanisms: Mechanism[] = [
   {
+    example: 'ocean',
+    resource: /^buffer:foam:host#0$/,
+    mechanism:
+      'frequency quantization and FFT/Jacobian rounding are amplified by foam growth and 24 history steps',
+    evidence:
+      'After decoding the transpose, equal spectra/frequencies reduce 826 whole-scene differing words to 114. CPU_OCEAN_HISTORY_TRACE records ten residual cells through 26 steps: all CPU updates reconstruct bit-exactly; active Dawn growth implies at most 0.489 f32 ulp of effective Jacobian difference on identical recorded inputs. The 67.5 growth rate at dt=0.125 amplifies the whitecap deficit by 8.4375 before history carry',
+  },
+  {
+    example: 'censer',
+    resource:
+      /^texture:(?:smoke (?:matter [ab]|velocity|curls|averaged)|pressure(?: rhs)? [0-9]+):host#0$/,
+    mechanism:
+      'bounded transport sampling and half stores propagate through velocity derivatives, pressure solves and projection',
+    evidence:
+      'CPU_CENSER_KERNELS: 27 nonzero-step writer/shape cases; 25 pass from identical inputs. Advection is separately traced over all 85 residual texels; matter transport has zero sample-envelope misses and sampled-value injection puts all ten worst final stores within one half ulp. The fallback averages half-stored matter in a separate pass rather than the unrounded workgroup values used by the WebGPU branch',
+  },
+  {
+    example: 'ocean',
+    resource: /^texture:<unnamed>:host#[234]$/,
+    mechanism:
+      'FFT arithmetic and half-store differences are amplified by signed mip cancellation and the whitecap threshold',
+    evidence:
+      'CPU_OCEAN_WAVES: all 35 identical-input evolution/FFT/pack/mip dispatches pass. Equal final lattice puts base stores within one half ulp except three whitecap values bracketed by one-f32-ulp Jacobian contraction; equal base halves make every mip bit-exact',
+  },
+  {
+    example: 'ocean',
+    resource: /^texture:tile:host#0$/,
+    mechanism: 'half-store rounding accumulates through the foam tile mip chain',
+    evidence:
+      'CPU_OCEAN_FOAM: base and ten mip dispatches pass independently; equal base bytes plus test-only truncating half stores make all eleven levels bit-exact',
+  },
+  {
+    example: 'ocean',
+    resource: /^texture:<unnamed>:(?:host#[01]|typegpu-kit-examples\/src\/ocean\/clouds.ts#[012])$/,
+    mechanism:
+      'hardware noise filtering and half conversion feed cloud density thresholds, integration and history filtering',
+    evidence:
+      'CPU_OCEAN_KERNELS: worst-texel sample bounds all pass and substituting Dawn samples puts every selected final output within one half ulp; rgba8 ramp has 4100/4100 exact matches to 8-bit weights and a 1/4080 conversion step',
+  },
+  {
+    example: 'ocean',
+    resource: /^(?:texture:texture:host#[012]|buffer:sunlight:host#0)$/,
+    mechanism:
+      'radius-minus-Earth and near-zero ground intersections amplify float contraction; lookup filtering and half stores propagate the result',
+    evidence:
+      'CPU_OCEAN_ATMOSPHERE: radii differ by at most three f32 ulps, ground-shadow sign flips have result gaps below one ulp of the cancelled dot term; injecting geometry and samples puts selected LUT stores within one half ulp and sunlight bits match exactly. Identical-input multiScatter passes',
+  },
+  {
+    example: 'ocean',
+    resource: /^(?:texture:<unnamed>:host#[56]|buffer:shBuffer:host#0)$/,
+    mechanism:
+      'filtered sky/cloud samples and implementation-dependent cube corner/mip filtering propagate through the environment',
+    evidence:
+      'CPU_OCEAN_KERNELS: sampled-value injection closes all ten base and forty prefilter worst texels; all 2062 prefilter samples fit incident-corner, 8-bit spatial, measured 6-bit mip and adjacent-half bounds. Identical-input halve and projectRows pass. The explicit cube-LOD ramp matches floor(f16(lod)*64)/64 in 3075/3075 components',
+  },
+  {
     example: 'sph-sculpt',
     resource: /^texture:(?:origin|volume):host#0$/,
     mechanism: 'one-ulp coordinate contraction crosses the integer material-search window boundary',

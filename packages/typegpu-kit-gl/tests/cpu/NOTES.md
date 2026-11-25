@@ -2,11 +2,25 @@
 
 The normal suites compare language features, textures, Kit data structures and rendering modules against Dawn. The expression sweep checks 13 416 components, with exact comparisons where WGSL requires them and accuracy bounds for division and transcendental expressions. The seeded skeletons comparison checks poses and joints after 100 frames. The noise tests compare float seeds bit for bit and the Perlin gradient cache within four ulp.
 
+## Numerical follow-up result
+
+The fresh targeted Dawn run of censer, sph-sculpt and ocean passes all three comparisons with zero review failures. No production CPU arithmetic or sampler change was needed. Two replay-harness defects were corrected: matching ping-pong resources without their read/write roles, and reusing explicit layouts with unused bindings absent from a snapshot. Both have a normal Dawn regression.
+
+| Scene      | Within ordinary field policy | Named amplification entries | Review failures |
+| ---------- | ---------------------------: | --------------------------: | --------------: |
+| censer     |                           10 |                          13 |               0 |
+| sph-sculpt |                           14 |                           6 |               0 |
+| ocean      |                            5 |                          18 |               0 |
+
+These are resource comparison counts, not bit-identical scenes. Allocation-order and render-dependent exclusions remain listed separately. Detailed traces cover the selected worst or residual cells; full-resource replays and controlled runs have their own assertions. Other examples retain their earlier captures; this follow-up reran these three, not all 33.
+
+Validation at this checkpoint: 67 CPU unit tests and 28 normal Dawn comparisons pass; the targeted writer, filtering, geometry, history and whole-scene probes pass; repository type and style gates pass. The sampler models and source-accuracy intervals exist only in tests.
+
 ## Whole scenes and controls
 
 `CPU_SWEEP=1` enables the 33-example compilation sweep. Add `CPU_EXECUTE=1` to dispatch their kernels and `CPU_INTERACT=1` to drive pointer moves, presses, drags, buttons, image uploads, setting extremes and options, actions and camera goals. Each action gets a 60 Hz frame and the end gets six more frames for readbacks. `undispatched` lists each compiled entry that received no nonzero dispatch and the source-specific reason. Camera attachment needs a real external texture; the synthetic image is a 2×2 RGBA pattern. Files use the examples' Node loader, whose decoded images are white pixels.
 
-`CPU_EXAMPLE_COMPARE=1` enables `examples.test.gpu.ts`. It runs two frames from the same seed, with a plain Dawn root and a branded CPU fallback root. Render outputs and resources downstream of them are excluded. Atomic allocation order is reported separately and checked by the module invariant tests. Ocean's `lattice` is an excluded backend-specific FFT intermediate; its final maps remain compared.
+`CPU_EXAMPLE_COMPARE=1` enables `examples.test.gpu.ts`. It runs two frames from the same seed, with a plain Dawn root and a branded CPU fallback root. Render outputs and resources downstream of them are excluded. Atomic allocation order is reported separately and checked by the module invariant tests. Ocean's `lattice` is an excluded backend-specific FFT intermediate; its final maps remain compared. Its foam history is transposed into matching cascade/x/y order before comparison, with that decoding recorded separately.
 
 Integer fields stay exact. Float fields use the larger of four ulp, 1e-5 of their vector's component magnitude and 1e-6 absolute. Half stores allow one half ulp. Packed normalized fields allow one unit per channel. Octahedral normals are compared after seam canonicalization or decoding because opposite edge signs can represent the same normal. These policies live only in tests.
 
@@ -43,9 +57,9 @@ These are CPU-only timings, including kernels that the real fallback can run as 
 
 `compile` accepts the self-describing compute string and ignores unknown directive comments, including GPU-form metadata. `dispatch` takes workgroup counts; the device reads the three u32 words for indirect dispatch before calling it. Buffer offsets and sizes are bytes. Texture mip levels are relative to the bound view, tightly packed with rows top to bottom and slices/layers in order; half textures contain raw `Uint16Array` bits. Samplers use `GPUSamplerDescriptor`. Binding read/write flags conservatively reflect declared access: mutable buffers are both read and written, even if a particular kernel only stores. The device must synchronize those resources accordingly. The original `types.ts` contract is unchanged.
 
-## Latest comparison outcome
+## Initial hardening checkpoint
 
-The fresh 33-scene run plus the fishtank readiness rerun has 22 scenes whose compared resources meet the field policy, eight with only source-traced amplification, and three with unresolved differences (ocean, censer, sph-sculpt). All 26 normal Dawn tests pass. Fishtank initially exceeded a 100-tick shader-compilation wait; the harness now waits up to 30 seconds without advancing simulation time, and its rerun passes. The normal unit suite passes 65 tests with four opt-in tests skipped; the all-example compilation sweep passes.
+The initial 33-scene run plus the fishtank readiness rerun has 22 scenes whose compared resources meet the field policy, eight with only source-traced amplification, and three with unresolved differences (ocean, censer, sph-sculpt). All 26 normal Dawn tests pass. Fishtank initially exceeded a 100-tick shader-compilation wait; the harness now waits up to 30 seconds without advancing simulation time, and its rerun passes. The normal unit suite passes 65 tests with four opt-in tests skipped; the all-example compilation sweep passes.
 
 The eight amplified scenes are jelly-world, fireworks, kinetic, stampede, jellies, spider, survey-model and flow-field. Some of the other 22 scenes have no compute-written resources left after render-dependency exclusions; their status is not a render comparison.
 
@@ -82,6 +96,8 @@ The largest residual is at (93,26,49): normalized y is 0.2365896850824356 on the
 
 All 595 samples in the 85 traces agree with trilinear interpolation of Dawn's recorded taps using 8-bit weights and half-rounded results to within one half ulp. Replaying Dawn's sampled values through the CPU module leaves only (75,33,40) two half ulps apart: world position differs by one f32 ulp from contraction; `force`/`carry` amplify it and the final mix cancels to about -9.7e-6. Replaying that world-position input as well puts every affected component within one half-store ulp. These substitutions are diagnostic only; neither the production sampler nor the arithmetic changes. The opt-in test asserts these source bounds and does not claim bit-exact whole-scene equality.
 
+`CPU_CENSER_KERNELS=1 CPU_CENSER_TRACE=1` with `censer-kernels.test.gpu.ts` checks downstream writers after the second advection starts, avoiding the initially empty smoke field. It keeps distinct pipeline labels even when guarded entry functions share the generated name `item`. There are 27 writer/shape cases: 25 meet the ordinary policy from identical inputs. Matter transport's ten worst texels have no misses against the measured sample envelope; substituting Dawn samples puts every final store within one half ulp. Curl, averaging, divergence, every pressure level and projection all pass independently. The fallback matter branch also averages already half-stored values in a separate pass; the WebGPU branch averages pre-store workgroup values, so that branch adds a quantization point before pressure processing.
+
 ### Sph-sculpt material and environment traces
 
 `CPU_MATERIAL_TRACE=1` with replay entries `originating` and `generating` (skip 1 for the latter) traces all 192 origin and 269 mip-volume residual texels. Every pre-round search coordinate differs by one f32 ulp and selects a different integer center. For origin (10,13,37), the CPU's 20.500001907348633 rounds to 21 while Dawn's 20.5 rounds to 20: shifting the finite search window loses the nearest candidate. Substituting only Dawn's center makes all 461 encoded output bytes exact. `results.json` retains every summary and the ten worst full traces.
@@ -92,15 +108,60 @@ All 595 samples in the 85 traces agree with trilinear interpolation of Dawn's re
 
 A test-only corner policy selecting the X incident face at an ambiguous corner, combined with 8-bit interpolation, predicts the large sampled differences. All 640 Dawn samples fit tap-derived intervals allowing one 8-bit step in spatial/LOD weights and adjacent-half rounding at each filter stage. A fixed nearest-weight model leaves 11 samples 3–4 half ulps apart; flooring LOD reduces that to three samples at three half ulps, so the tests assert the bounded interval rather than claim exact knowledge of Metal's internal sequence. These are measured sampling differences from identical coordinates and texture bytes, not an unexplained arithmetic error or an added production tolerance.
 
-### Unresolved comparisons
+### Follow-up scope
 
-These are still review failures in the opt-in whole-example comparison, not accepted tolerances:
+The initial whole-example run left these review failures. The investigations below supersede that initial status without changing production tolerances:
 
-- Censer: the identical-input advection residual is now source-traced below. Other whole-scene velocity/curl and pressure resources have not independently been replayed; they are not automatically classified by this result.
-- Ocean: sky/cloud, environment, foam and wave-map outputs beyond the classified frequency buffer have not all been traced. Half-store chains and frequency quantization are known sources, but their presence alone does not prove every reported output difference.
+- Censer: advection and matter transport are source-traced; the follow-up replays all 27 distinct nonzero-step writer/shape cases. The other 25 pass independently, including curl, averaging, divergence, all pressure levels and projection. Their whole-scene differences inherit the bounded transport inputs and half stores.
+- Ocean: the follow-up below isolates sky/cloud, environment, foam and wave-map writers separately; equalizing frequencies alone does not clear them.
 - Sph-sculpt: the five environment/material resources are source-traced in the probes below. Allocation-order and render-dependent outputs remain separately excluded.
 
 The detailed resource keys, differing-word counts and first values remain in `results.json`. Render-dependent resources, backend-specific scratch storage and resources with atomic allocation order are listed separately; their exclusion is not a claim of equality.
+
+## Ocean follow-up: separate inputs, representation and sampling
+
+Equalizing the 16 differing `omegas` words before the wave evolution dispatch does **not** clear the other 17 whole-scene resource entries. `ocean-inputs.test.gpu.ts` records the baseline and equal-frequency captures independently. Cloud, atmosphere, foam-tile and environment kernels do not depend on that frequency buffer.
+
+`ocean-waves.test.gpu.ts` starts both branches with equal amplitudes and frequencies. The plain WebGPU branch stores the private foam history at `(cascade*N+x)*N+y`; the fallback branch stores it at `(cascade*N+y)*N+x`. Transposing the fallback buffer clears its differences under the ordinary field policy. This is a representation difference between Kit implementations, not a CPU arithmetic defect. Every one of the 35 selected identical-input dispatches passes: one evolution, three row stages, three column stages, one packing stage and 27 mip fills.
+
+Injecting the final Dawn FFT lattice before the last fallback packing dispatch puts every base displacement and derivative component within one half-store ulp. Three foam channels remain two to four half ulps apart: permitted multiply-add contraction changes the Jacobian by one f32 ulp before subtracting the whitecap threshold. The recorded contraction candidates bracket all three Dawn halves within the one-store allowance. Injecting identical base half bytes makes all wave mip levels bit-exact. Without that control, mip sums of signed values cancel and amplify adjacent base-half differences.
+
+The whole-scene foam history additionally runs 24 prewarm steps. Decoding the transpose leaves 826 differing words; equal spectra and frequencies reduce this to 114, on both the plain and fallback-shaped Dawn paths. `CPU_OCEAN_HISTORY=1 CPU_OCEAN_HISTORY_TRACE=1` records ten of these residual cells through all 26 steps, including the two frame updates. Every CPU update reconstructs bit-exactly from the recorded FFT signals and prior foam. Inverting the active Dawn foam-growth expression gives an effective Jacobian within 0.489 f32 ulp of the separately rounded arithmetic on the same recorded inputs. This is an inferred intermediate, not a claim to know Metal's instruction sequence. A one-ulp Jacobian interval plus the `exp` accuracy bound contains every recorded Dawn update. Incoming deformation signals differ by at most 9.69e-8 absolute (2.40e-6 relative to their vector magnitude) after the FFT. The whitecap subtraction multiplies these small differences by `67.5 * 0.125 = 8.4375` before carrying history forward. [WGSL permits reassociation and fusion](https://www.w3.org/TR/WGSL/#reassociation-and-fusion); no comparison tolerance was added to the runtime.
+
+The independent foam tile is another store chain. Its base and each of ten mip dispatches pass from identical inputs. After injecting Dawn's base bytes, a test-only truncating-half-store model makes all eleven levels bit-exact (`CPU_OCEAN_FOAM=1`). The production CPU still rounds half stores to nearest even.
+
+### Clouds and atmosphere
+
+The additional rgba8unorm filtering ramp in `filter-precision.test.gpu.ts` has 4100 components. Every Dawn component exactly matches 8-bit interpolation coordinates followed by a conversion step of `1/(255*16)`. The probe records the model; the production sampler keeps its full-precision interpolation. This conversion quantization matters when cloud density subtracts a threshold from several sampled noise octaves.
+
+`ocean-kernels.test.gpu.ts` captures the independent writer dispatches and traces the ten worst texels for density, lighting, each cloud-view target, and the environment base. It records each sample's coordinates, input identity, output and the filtering envelope. Replaying Dawn's samples puts these selected final outputs within one half-store ulp; the standalone sunlight buffer becomes bit-exact. These checks isolate arithmetic after sampling rather than granting a scene-wide tolerance.
+
+Atmospheric transmittance has radii at most three f32 ulps apart before subtracting Earth radius 6360. Sky-view radii differ by at most one ulp, and near-zero sphere intersections change 26 selected ground-shadow decisions. For example, the origin near `(1.0997744, 6360, 1.1484978)` yields intersection 0 on the CPU and -8.239858e-7 on Dawn. The subtraction cancels terms around 56; the largest recorded result gap is 0.831 ulp of that dot-product term. The sign test changes whether the shader samples sunlight. Injecting the recorded intersection/radius values and sampled values puts all selected stores within one half ulp. `ocean-atmosphere.test.gpu.ts` asserts the coordinate-radius bound, sample envelope and controlled-store bound separately.
+
+### Environment cube filtering
+
+The ten worst base environment texels use 506 sky/cloud samples. Every sample lies within the measured spatial filtering and half-result bounds; substituting Dawn samples puts the final stores within one half ulp. Every identical-input `halve` and harmonic `projectRows` replay passes the ordinary field policy.
+
+The four reflection levels retain 40 worst texels and 2062 executed samples. Mip precision was the missing term in the earlier model: the independent cube-LOD ramp matches `floor(f16(requestedLOD)*64)/64` in all 3075 components. Every ocean reflection sample fits an envelope allowing incident-face cube corners, one 8-bit spatial weight step, the measured 6-bit mip weights and adjacent-half results. Injecting Dawn samples by Hammersley iteration makes all 40 final half vectors bit-exact. A fixed single-corner/quantization model is not asserted exact for arbitrary texture data; the tap-derived envelope is the check.
+
+[Vulkan mip level selection](https://docs.vulkan.org/spec/latest/chapters/textures.html#textures-level-selection) explicitly quantizes the interpolation fraction to implementation mip precision. Cube-corner behavior likewise permits differing incident-face policies. Neither model is installed in the production sampler.
+
+These controls close the named ocean mechanisms, with limits on what was measured: the detailed intermediate traces cover the selected worst texels, while whole-resource stage replays, equal-input controls, and whole-scene comparisons retain their own counts. They do not establish bit-identical whole-scene simulation. The raw reports remain available rather than being overwritten by a generic pass flag.
+
+### Reproducing the ocean controls
+
+Run the relevant file with `npx vitest run --project 'typegpu-kit-gl (gpu)' tests/cpu/<file>` and these opt-in flags:
+
+- `ocean-inputs.test.gpu.ts`: `CPU_OCEAN_INPUTS=1` compares whole captures with and without equalized frequencies.
+- `ocean-waves.test.gpu.ts`: `CPU_OCEAN_WAVES=1 CPU_OCEAN_STAGES=1 CPU_OCEAN_STORE_CONTROLS=1` checks all 35 stage replays and the final-lattice/base-half controls.
+- `ocean-foam.test.gpu.ts`: `CPU_OCEAN_FOAM=1` checks the tile's eleven half-store levels.
+- `ocean-kernels.test.gpu.ts`: `CPU_OCEAN_KERNELS=1 CPU_OCEAN_TRACE_KEYS='^compute:|^bakeLighting:' CPU_OCEAN_GEOMETRY=1 CPU_OCEAN_PREFILTER=1` captures the independent writers and checks their worst-texel traces.
+- `ocean-atmosphere.test.gpu.ts`: `CPU_OCEAN_ATMOSPHERE=1 CPU_ATMOSPHERE_ENTRY='bakeTransmittance|bakeSkyView|bakeLighting' CPU_ATMOSPHERE_GEOMETRY=1 CPU_SAMPLE_TRACE=1` runs the smaller atmosphere-only control.
+- `cube-lod.test.gpu.ts` and `filter-precision.test.gpu.ts`: `CPU_THRESHOLDS=1` measures this Dawn device's mip and spatial filter precision. These are device diagnostics, not claims that every GPU has the same quantization.
+
+### Replay harness correction
+
+The old replay matcher could select the opposite direction of a ping-pong dispatch because both directions mention the same resources. Matching now includes each resource's read/write role, and binding reconstruction prefers the matching group and binding. `replay-matching.test.gpu.ts` is a normal Dawn regression with two opposed texture dispatches and an unused explicit-layout binding. Replays compile the captured WGSL with an inferred layout because snapshots contain statically used bindings, whereas the original explicit layout can contain additional unused entries. Invalid earlier cloud replay results are superseded by the role-matched runs.
 
 ## Execution coverage at the hardening checkpoint
 
