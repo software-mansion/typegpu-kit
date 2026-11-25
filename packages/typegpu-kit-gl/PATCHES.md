@@ -503,4 +503,36 @@ New.
        throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
 ```
 
+### L. Runtime shift counts wrap at the bit width
+
+New.
+
+**Why.** WGSL shifts by the count modulo 32; GLSL leaves a count of 32 or more undefined. Counts the kit computes at run time reach the shift unmasked: the grid's cell bits (`@typegpu/kit`'s `src/grid.ts`) and `jelly-world`'s land mask (`src/jelly-world/land.ts`).
+
+**Reproduction.** `const f = tgpu.fn([d.u32, d.u32], d.u32)((x, n) => { 'use gpu'; return x << n; });` gives `return (x << n);`, which for `n = 32u` is 0 or `x` as the driver decides; WGSL's is `x`. ANGLE on Metal happens to wrap the count, so `tests/glsl/semantics.test.gl.ts` checks the generated text as well as comparing results with WebGPU. Patched, `return (x << (n & 31u));`. A constant count is left as written.
+
+**Diff.**
+
+```diff
++const SHIFTS = new Set<string>(['<<', '>>', '<<=', '>>=', '>>>', '>>>=']);
+ …
++  #wrapShiftCount(count: Snippet): Snippet {
++    if (count.dataType === UnknownData || typeof count.value === 'number' ||
++        count.origin === 'constant' || count.origin === 'constant-immutable-def') {
++      return count;
++    }
++    const type = count.dataType as d.Vec2u;
++    const primitive = type.type.startsWith('vec') ? type.primitive : type;
++    const mask = primitive.type === 'u32' ? '31u' : '31';
++    return snip(`(${this.ctx.resolveSnippet(count).value} & ${mask})`, count.dataType, 'runtime');
++  }
++
+   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
+     lhs = this.#matchVectorComponent(lhs, rhs);
+     rhs = this.#matchVectorComponent(rhs, lhs);
++    if (SHIFTS.has(op)) {
++      rhs = this.#wrapShiftCount(rhs);
++    }
+```
+
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.

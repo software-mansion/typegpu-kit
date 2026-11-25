@@ -1,5 +1,6 @@
 import { common, d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
+import { CrossShaderStageState, GlslGenerator } from '@typegpu/gl';
 import type { GLDevice } from '../../src/device/index.ts';
 import { readTexture, roots, values } from '../device/compare.ts';
 
@@ -54,6 +55,13 @@ async function paint(root: TgpuRoot, width: number, pixel: (x: number) => d.v4f)
   const texels = values(await readTexture(root.device, target));
   target.destroy();
   return Array.from({ length: width }, (_, x) => [...texels.subarray(x * 4, x * 4 + 4)]);
+}
+
+/** The GLSL `@typegpu/gl` generates for `item`. */
+function glslOf(item: object) {
+  return tgpu.resolve([item as never], {
+    unstable_shaderGenerator: new GlslGenerator('neutral', new CrossShaderStageState()),
+  });
 }
 
 const INTS = [-1, -2147483648, 2147483647, 7, 0, -12345];
@@ -118,4 +126,59 @@ it('names modf and frexp, which it does not emit', async () => {
   };
   await expect(paint(gl, 1, modf)).rejects.toThrow("'modf' is not supported");
   await expect(paint(gl, 1, frexp)).rejects.toThrow("'frexp' is not supported");
+});
+
+const COUNTS = [0, 1, 5, 31, 32, 33, 63, 64];
+
+async function shifts(root: TgpuRoot) {
+  const counts = root.createReadonly(d.arrayOf(d.u32, COUNTS.length), COUNTS);
+  const left = root.createMutable(d.arrayOf(d.vec4u, COUNTS.length));
+  const right = root.createMutable(d.arrayOf(d.vec2i, COUNTS.length));
+  const kernel = tgpu.computeFn({ workgroupSize: [COUNTS.length], in: gid })(({ gid: at }) => {
+    'use gpu';
+    const n = counts.$[at.x] as number;
+    let shifted = d.u32(3);
+    shifted <<= n;
+    left.$[at.x] = d.vec4u(d.u32(1) << n, d.u32(0x80000000) >>> n, d.u32(5) << (n + 1), shifted);
+    right.$[at.x] = d.vec2i(d.i32(-8) >> n, d.i32(1) << n);
+  });
+  root.createComputePipeline({ compute: kernel }).$name('shifts').dispatchWorkgroups(1);
+  return {
+    left: (await left.read()).map((v) => [...v]),
+    right: (await right.read()).map((v) => [...v]),
+  };
+}
+
+/** Vector shifts, which the CPU backend lacks, in a fragment. */
+function vectorShifts(root: TgpuRoot) {
+  const counts = root.createReadonly(d.arrayOf(d.u32, COUNTS.length), COUNTS);
+  return paint(root, COUNTS.length, (i) => {
+    'use gpu';
+    const n = counts.$[i] as number;
+    const wide = d.vec2u(n, n + 1);
+    const pair = std.bitShiftLeft(d.vec2u(1, 0x80000000), wide);
+    const signed = std.bitShiftRight(d.vec2i(-8, 1), wide);
+    return d.vec4f(d.vec2f(pair), d.vec2f(signed));
+  });
+}
+
+it('shifts by a runtime count modulo the bit width, as WGSL does', async () => {
+  const { actual, expected } = await both('shifts', shifts);
+  expect(expected.left[4]).toEqual([1, 0x80000000, 10, 3]);
+  expect(actual).toEqual(expected);
+  const vectors = await vectorShifts(gl);
+  expect(vectors).toEqual(await vectorShifts(gpu));
+  expect(vectors[4]).toEqual([1, 0, -8, 0]);
+  // GLSL leaves a count of 32 undefined, so the count is masked even where a driver wraps it
+  const shift = tgpu.fn(
+    [d.u32, d.u32, d.vec2i, d.vec2u],
+    d.vec2u,
+  )((x, n, v, m) => {
+    'use gpu';
+    return d.vec2u((x << n) + (x >>> 3), d.vec2u(std.bitShiftRight(v, m)).x);
+  });
+  const code = glslOf(shift);
+  expect(code).toContain('(x << (n & 31u))');
+  expect(code).toContain('(x >> 3u)');
+  expect(code).toContain('(v >> (m & 31u))');
 });

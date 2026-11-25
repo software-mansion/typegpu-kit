@@ -505,6 +505,8 @@ const BIT_POLYFILLS: Record<string, (value: number) => number> = {
   },
 };
 
+const SHIFTS = new Set<string>(['<<', '>>', '<<=', '>>=', '>>>', '>>>=']);
+
 /** WGSL's `quantizeToF16` on one component: GLSL ES 3.00 has no `f16`, but it packs halves. */
 const quantizeToF16 = (value: number): number => {
   'use gpu';
@@ -1266,9 +1268,31 @@ export class GlslGenerator extends WgslGenerator {
     );
   }
 
+  /**
+   * WGSL shifts by the count modulo the bit width; GLSL leaves a count of 32 or more undefined. A
+   * constant count is already in range, since WGSL rejects a larger one.
+   */
+  #wrapShiftCount(count: Snippet): Snippet {
+    if (
+      count.dataType === UnknownData ||
+      typeof count.value === 'number' ||
+      count.origin === 'constant' ||
+      count.origin === 'constant-immutable-def'
+    ) {
+      return count;
+    }
+    const type = count.dataType as d.Vec2u;
+    const primitive = type.type.startsWith('vec') ? type.primitive : type;
+    const mask = primitive.type === 'u32' ? '31u' : '31';
+    return snip(`(${this.ctx.resolveSnippet(count).value} & ${mask})`, count.dataType, 'runtime');
+  }
+
   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
     lhs = this.#matchVectorComponent(lhs, rhs);
     rhs = this.#matchVectorComponent(rhs, lhs);
+    if (SHIFTS.has(op)) {
+      rhs = this.#wrapShiftCount(rhs);
+    }
     const comparisonBuiltin = vectorComparisonBuiltins[op];
     if (
       comparisonBuiltin &&
