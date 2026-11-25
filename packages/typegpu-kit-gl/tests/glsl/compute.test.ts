@@ -384,20 +384,109 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     "adds other than 1 to 'head",
   ],
   [
-    'reads cells it writes at computed cells through a helper resolved first',
+    'reads cells through a helper resolved first, then writes at computed cells',
     (root) => {
       const out = root.createMutable(d.arrayOf(d.u32, 64));
       const peek = (i: number) => {
         'use gpu';
-        return out.$[i] as number;
+        return out.$[i % 64] as number;
+      };
+      const poke = (i: number, value: number) => {
+        'use gpu';
+        out.$[(i * 5) % 64] = value;
       };
       return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
         'use gpu';
-        const seen = peek((id.x + 1) % 64);
+        const seen = peek(id.x + 1);
+        poke(id.x, seen + 1);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'reads a cell, then writes at a computed cell',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const seen = out.$[id.x] as number;
         out.$[(id.x * 5) % 64] = seen + 1;
       });
     },
-    "reads 'out",
+    'scatter',
+  ],
+  [
+    'reads cells in a constant loop, then writes at a computed cell',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        let sum = d.u32(0);
+        for (let k = d.u32(0); k < 4; k++) sum += out.$[(id.x + k) % 64] as number;
+        out.$[(id.x * 5) % 64] = sum;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'writes at a computed cell in an arm that returns, then reads',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 2 === 0) {
+          out.$[(id.x * 5) % 64] = 1;
+          return;
+        }
+        out.$[(id.x * 3) % 64] = (out.$[id.x] as number) + 2;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'writes at a computed cell, then reads it',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[(id.x * 5) % 64] = 1;
+        out.$[(id.x * 3) % 64] = (out.$[id.x] as number) + 1;
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    'reads and writes at computed cells in one loop',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < 2; k++) {
+          out.$[(id.x * 5 + k) % 64] = (out.$[(id.x + k) % 64] as number) + 1;
+        }
+      });
+    },
+    'inside a loop',
+  ],
+  [
+    'writes through a helper before reading through another',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const peek = (i: number) => {
+        'use gpu';
+        return out.$[i % 64] as number;
+      };
+      const poke = (i: number, value: number) => {
+        'use gpu';
+        out.$[(i * 5) % 64] = value;
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        poke(id.x, d.u32(1));
+        out.$[(id.x * 3) % 64] = peek(id.x + 1) + 1;
+      });
+    },
+    'which it writes at computed cells, after writing it',
   ],
   [
     'takes from a counter through a pointer',
@@ -1268,6 +1357,21 @@ function blockKernels(): [string, Make, number | string][] {
         });
       },
       'blocks of two shapes',
+    ],
+    [
+      'writes through a block-shaped helper from another helper, as points',
+      (root) => {
+        const { cells, put } = parts(root, true);
+        const land = (p: d.v2i) => {
+          'use gpu';
+          if ((cells.$[d.u32(p.y) * W + d.u32(p.x)] as number) === 0) put(p, d.u32(9));
+        };
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          land(d.vec2i(d.i32((g.x * 3) % 10), d.i32(g.y)));
+        });
+      },
+      'scatter',
     ],
     [
       'guards its block write only inside a switch case',

@@ -53,6 +53,19 @@ export class Ineligible extends Error {
 }
 
 /**
+ * A helper whose writes look like blocks is called where blocks cannot be: the kernel is analysed
+ * again with those buffers' writes taken by the other rules.
+ */
+class NotBlocks extends Ineligible {
+  readonly buffers: readonly string[];
+
+  constructor(buffers: readonly string[], reason: string) {
+    super(reason);
+    this.buffers = buffers;
+  }
+}
+
+/**
  * How the elements of a written array map to invocations: element
  * `x + y * width + z * width * height` belongs to invocation `(x, y, z)`. Without a width, element
  * `x` belongs to invocation `(x, 0, 0)`.
@@ -873,10 +886,18 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
    * its own resolution does, which differs where a catch-all group's order or a layout's automatic
    * index depends on the order of resolution.
    */
-  constructor(plan?: ComputePlan, outer?: ResolutionCtx) {
+  /** Buffers whose writes are not taken as blocks, after a first analysis could not use them. */
+  readonly #unblocked: ReadonlySet<string>;
+
+  constructor(
+    plan?: ComputePlan,
+    outer?: ResolutionCtx,
+    unblocked: ReadonlySet<string> = new Set(),
+  ) {
     super();
     this.#plan = plan;
     this.#outer = outer as Numbering | undefined;
+    this.#unblocked = unblocked;
   }
 
   /** The group and binding `outer` gives a resource, as placeholders its resolution replaces. */
@@ -1399,8 +1420,20 @@ uint ${name}() {
         if (place && this.#plan?.scatters.has(place.buffer.id)) {
           return this.#scatterWrite(place, statement[3] as Expression);
         }
+        if (place && !this.#plan) {
+          return this.#markWrite(
+            super._statement(statement),
+            place.buffer.id,
+            statement[2] === '=',
+          );
+        }
       }
-      if (statement[0] === NODE.postUpdate) this.#checkWrite(statement[2] as Expression);
+      if (statement[0] === NODE.postUpdate) {
+        const place = this.#checkWrite(statement[2] as Expression);
+        if (place && !this.#plan) {
+          return this.#markWrite(super._statement(statement), place.buffer.id, false);
+        }
+      }
       if (statement[0] === NODE.for || statement[0] === NODE.while || statement[0] === NODE.forOf) {
         // A loop until TypeGPU resolves a `for…of`'s iterable to what `tgpu.unroll` gives, which
         // it then expands; decided by that value, never by how the call is spelled
@@ -1451,6 +1484,27 @@ uint ${name}() {
       }
     }
     return super._statement(statement);
+  }
+
+  /**
+   * The first resolution's code for a write to `id`, followed by its mark for `flow.ts`. A plain
+   * assignment's target reads nothing, so its own read mark is taken off.
+   */
+  #markWrite(resolved: ResolvedStatement, id: string, assigned: boolean): ResolvedStatement {
+    let code = resolved.code;
+    const opening = `${LOAD_MARK}${id}(`;
+    const at = code.indexOf(opening);
+    if (assigned && at >= 0 && code.slice(0, at).trim() === '') {
+      let depth = 0;
+      for (let i = at + opening.length - 1; i < code.length; i++) {
+        if (code[i] === '(') depth++;
+        if (code[i] === ')' && --depth === 0) {
+          code = code.slice(0, at) + code.slice(at + opening.length, i) + code.slice(i + 1);
+          break;
+        }
+      }
+    }
+    return { ...resolved, code: `${code}\n${this.ctx.pre}${ADD_MARK}${id}();` };
   }
 
   /** Notes whether the call being made is the one whose value its statement drops. */
@@ -1804,6 +1858,7 @@ ${stored.join('\n')}
     if (!frame || frame.entry || !element?.array || element.path !== '' || !this.#plain) {
       return false;
     }
+    if (this.#unblocked.has(buffer.id)) return false;
     const index = element.index.replace(/\s+/g, '');
     const shape = /^\(*\(uint\((\w+)\.y\)\*(\d+)u\)\+uint\(\1\.x\)\)*$/.exec(index);
     if (!shape) return false;
@@ -1854,7 +1909,10 @@ ${stored.join('\n')}
     if (!writes?.length) return;
     const frame = this.#frame;
     if (!frame?.entry || this.#loops > 0) {
-      throw new Ineligible(`writes blocks through '${name}' other than from the entry, once`);
+      throw new NotBlocks(
+        writes.map((write) => write.buffer.id),
+        `writes blocks through '${name}' other than from the entry, once`,
+      );
     }
     for (const write of writes) {
       const own = this.#own(args[write.param]);
@@ -1965,8 +2023,15 @@ ${stored.join('\n')}
   }
 
   protected override placeValue(place: Place, load: string): string {
-    if (this.#plan?.scatters.has(place.buffer.id))
-      return `${SCATTERED}${place.buffer.id}_${this.#packers++}`;
+    // Marked for the order of reads and writes, which `flow.ts` reads from the finished code
+    // Only a writable buffer can be written at computed cells, and only its reads are marked
+    if (!this.#plan && place.buffer.access === 'mutable') {
+      return `${LOAD_MARK}${place.buffer.id}(${load})`;
+    }
+    if (!this.#plan) return load;
+    // A read of a buffer written at computed cells comes before every write of it, as the first
+    // resolution checked, so it reads the contents from before the dispatch
+    if (this.#plan.scatters.has(place.buffer.id)) return load;
     const block = this.#plan?.blocks?.get(place.buffer.id);
     if (block) {
       const element = place.element;
@@ -2054,6 +2119,13 @@ ${stored.join('\n')}
   }
 
   #store(args: readonly Snippet[]): string {
+    const code = this.#stored(args);
+    if (this.#plan) return code;
+    const mark = `${ADD_MARK}${this.textureOf(args[0]).id}()`;
+    return code ? `${code}; ${mark}` : mark;
+  }
+
+  #stored(args: readonly Snippet[]): string {
     const texture = this.textureOf(args[0]);
     const { format } = texture.schema as unknown as { format: string };
     if (!RENDERABLE.has(format)) {
@@ -2186,9 +2258,11 @@ ${stored.join('\n')}
     if (name === 'textureLoad' && args[0]) {
       const texture = this.textureOf(args[0]);
       if (this.#isStorage(texture)) this.#loaded.add(texture.id);
-      if (this.#plan?.scatters.has(texture.id)) {
-        throw new Ineligible(`reads '${texture.id}', which it writes at computed cells`);
+      if (!this.#plan && this.#isStorage(texture)) {
+        return `${LOAD_MARK}${texture.id}(${super.emitCall(name, templateParams, args)})`;
       }
+      // Before every store of it, as the first resolution checked: the contents before the dispatch
+      if (this.#plan?.scatters.has(texture.id)) return super.emitCall(name, templateParams, args);
       if (this.#isStorage(texture) && this.#plan?.textures.has(texture.id)) {
         const cell = this.#cellIn(texture, args);
         const own = this.#ownCell(texture, GID);
@@ -2317,9 +2391,6 @@ ${stored.join('\n')}
       this.#textures.delete(id);
       this.#columns.delete(id);
       this.#maps.delete(id);
-      if (this.#loaded.has(id)) {
-        throw new Ineligible(`reads '${id}', which it writes at computed cells`);
-      }
     }
     const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
@@ -2356,6 +2427,15 @@ ${stored.join('\n')}
         // addition, an order WebGPU's atomics may take
         if (flow.late.has(id)) {
           throw new Ineligible(`reads '${id}' with atomicLoad where it may have added to it`);
+        }
+      }
+      // A read no write can precede, on any path, reads what the read of every invocation before
+      // any write would: the contents before the dispatch, as a kernel without races reads them
+      for (const id of this.#scatters.keys()) {
+        if (flow.late.has(id)) {
+          throw new Ineligible(
+            `reads '${id}', which it writes at computed cells, after writing it`,
+          );
         }
       }
       // One path makes no more additions than its own
@@ -3022,6 +3102,17 @@ const CATCHALL = '#CATCHALL#';
 const OUTER = '#KIT_OUTER_';
 
 /** The reason an error gives for a kernel's GPU form failing, with the function it is in. */
+/** The first error of class `kind` along `error`'s causes, as TypeGPU wraps what a generator throws. */
+function causeOf<T extends Error>(
+  error: unknown,
+  kind: abstract new (...args: never[]) => T,
+): T | undefined {
+  for (let at = error; at instanceof Error; at = at.cause) {
+    if (at instanceof kind) return at;
+  }
+  return undefined;
+}
+
 function reasonOf(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const own = /GPU compute: (.*)$/m.exec(message);
@@ -3041,9 +3132,22 @@ export function computeForm(
 ): { code: string } | { reason: string } {
   type Options = Parameters<typeof tgpu.resolveWithContext>[1];
   try {
-    const analysis = new KitGlslComputeGenerator(undefined, outer);
-    tgpu.resolveWithContext([item as never], { unstable_shaderGenerator: analysis } as Options);
-    const generator = new KitGlslComputeGenerator(analysis.plan, outer);
+    // A helper that writes like blocks but is called where blocks cannot be has its buffers
+    // analysed again by the other rules, once each
+    const unblocked = new Set<string>();
+    let analysis: KitGlslComputeGenerator;
+    for (;;) {
+      analysis = new KitGlslComputeGenerator(undefined, outer, unblocked);
+      try {
+        tgpu.resolveWithContext([item as never], { unstable_shaderGenerator: analysis } as Options);
+        break;
+      } catch (error) {
+        const blocked = error instanceof NotBlocks ? error : causeOf(error, NotBlocks);
+        if (!blocked || blocked.buffers.every((id) => unblocked.has(id))) throw error;
+        for (const id of blocked.buffers) unblocked.add(id);
+      }
+    }
+    const generator = new KitGlslComputeGenerator(analysis.plan, outer, unblocked);
     const { code } = tgpu.resolveWithContext([item as never], {
       unstable_shaderGenerator: generator,
     } as Options);
