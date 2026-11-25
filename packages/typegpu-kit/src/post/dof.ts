@@ -118,7 +118,8 @@ export interface Dof extends Rendered, Disposable {
   /**
    * Focuses on what the depth holds at a point of the picture, from 0 to 1 over its region, such
    * as under a tap. The next `record` reads the distance there, and from then on each `record`
-   * moves `settings.focus` towards it on the GPU at `pull`.
+   * moves the focus towards it on the GPU at `pull`. It moves `settings.focus`, except where
+   * compute runs on the CPU, where the settings' focus holds -1 after each `record` that moves it.
    */
   aim(x: number, y: number): void;
   /** Compiles the depth of field pipelines. Calling it is optional. */
@@ -251,8 +252,8 @@ export const thinLens = (distance: number, focus: number) => {
 };
 
 /**
- * Returns the distance in focus, `settings.focus`, which follows `aim`. Call it only from the
- * `radius` callback.
+ * Returns the distance in focus: `settings.focus` until the first `aim`, then the focus that follows
+ * it. Call it only from the `radius` callback.
  */
 export const focus = () => {
   'use gpu';
