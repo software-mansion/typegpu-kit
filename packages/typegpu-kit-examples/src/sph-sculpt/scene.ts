@@ -33,7 +33,15 @@ const CARVE = 0.8;
 export async function createScene(root: TgpuRoot, surface: Surface) {
   const formats = formatsOf(root);
   const clay = createClay(root, formats);
-  const water = createWater(root, clay, formats);
+  // Alive now is at most the last count read back and every particle spawned since its frame
+  const spawnedBy = new Map<number, number>();
+  const live = () => {
+    const since = spawnedBy.get(alive.latestFrame);
+    return alive.latest === undefined || since === undefined
+      ? spawned
+      : alive.latest + spawned - since;
+  };
+  const water = createWater(root, clay, formats, live);
   const render = createRender(root, surface, { clay, water, formats });
   const { camera } = render;
   // The rays take one sample a pixel, so FXAA smooths the clay's and the water's silhouettes
@@ -191,6 +199,10 @@ export async function createScene(root: TgpuRoot, surface: Surface) {
       final.record(frame, display.views.ldr);
       smooth.record(frame, surface.view(frame));
       alive.capture(frame);
+      spawnedBy.set(frame.index, spawned);
+      for (const index of spawnedBy.keys()) {
+        if (index < alive.latestFrame) spawnedBy.delete(index);
+      }
       restarting = false;
     },
 

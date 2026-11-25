@@ -10,7 +10,7 @@ const SIDE = 16;
 const STEPS = 6;
 
 /** Pours one batch of water, steps it, rebuilds the surface and samples it around the spring. */
-async function sampled(compute: 'gpu' | 'cpu') {
+async function sampled(compute: 'gpu' | 'cpu', live?: () => number) {
   const root = await gpuRoot();
   // A device that says its compute runs on the CPU builds the surface a voxel per thread
   if (compute === 'cpu') {
@@ -20,7 +20,7 @@ async function sampled(compute: 'gpu' | 'cpu') {
   }
   const formats = formatsOf(root);
   const clay = createClay(root, formats);
-  const water = createWater(root, clay, formats);
+  const water = createWater(root, clay, formats, live);
   water.spawn.write({ count: 3000, first: 0, total: 0 });
   const encoder = root['~unstable'].createCommandEncoder();
   const pass = encoder.beginComputePass();
@@ -69,4 +69,15 @@ it('builds the same fluid surface where compute runs on the CPU, a voxel per thr
   // level's 8-bit storage; sorts that order a cell's particles differently sum them differently
   expect(inside).toBeGreaterThan(20);
   expect(worst).toBeLessThan((2 * 2 * BAND * CELL) / 255);
+});
+
+it('sorts only the slots below a bound on the live particles where compute runs on the CPU', async () => {
+  const [whole, bounded] = [await sampled('cpu'), await sampled('cpu', () => 3000)];
+  let worst = 0;
+  for (const [i, expected] of whole.entries()) {
+    const actual = bounded[i] as d.v2f;
+    worst = Math.max(worst, Math.abs(expected.x - actual.x), Math.abs(expected.y - actual.y));
+  }
+  // Both sorts order by key and then slot, so the steps match exactly
+  expect(worst).toBe(0);
 });

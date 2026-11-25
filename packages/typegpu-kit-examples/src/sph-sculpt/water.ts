@@ -108,7 +108,16 @@ const kernelWeight = (r: d.v3f) => {
  * where neighbours sit next to each other in memory. The grid lists the tiles holding water, so no
  * pass touches the whole box.
  */
-export function createWater(root: TgpuRoot, clay: Clay, formats: Formats) {
+export function createWater(
+  root: TgpuRoot,
+  clay: Clay,
+  formats: Formats,
+  /** At least the particles alive in the coming step, known on the CPU. Default the pool. */
+  live?: () => number,
+) {
+  // Where compute runs on the CPU, the grid sorts with passes over every slot below its span, so
+  // a bound on the live particles saves the passes over empty ones
+  const alone = backends.of(root).compute === 'cpu';
   const spawn = root.createUniform(Spawn);
 
   /** Particles in slot order, predicted by `integrate`; `relax` writes them back in sorted order. */
@@ -158,6 +167,8 @@ export function createWater(root: TgpuRoot, clay: Clay, formats: Formats) {
       'use gpu';
       return i < end() && stateIn.$[i].vel.w > 0;
     },
+    // Live particles fill the slots from 0: relax writes them back in sorted order
+    ...(alone && live && { span: () => Math.min(Math.ceil(live()), POOL) }),
     position: (i) => {
       'use gpu';
       return d.vec3f(stateIn.$[i].pos.xyz);
@@ -445,7 +456,6 @@ export function createWater(root: TgpuRoot, clay: Clay, formats: Formats) {
 
   // Where compute runs on the CPU, the shared tally and staged occupancy keep the surface there;
   // a thread per voxel that reads what it needs runs on the GPU
-  const alone = backends.of(root).compute === 'cpu';
 
   const integrating = root.createComputePipeline({ compute: integrate });
   const recounting = root.createComputePipeline({ compute: recount });
