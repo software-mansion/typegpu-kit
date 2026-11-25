@@ -4,7 +4,7 @@
  * stored as an array, samples a copy refreshed when the texture changed.
  */
 
-import { type Ctx, IMPL, implOf } from './context.ts';
+import { type Ctx, IMPL, implOf, TEXTURE_USAGE } from './context.ts';
 import { type FormatInfo, formatInfo } from './formats.ts';
 import type { TexelArray } from './packing.ts';
 
@@ -612,6 +612,17 @@ export function createTexture(ctx: Ctx, descriptor: GPUTextureDescriptor): GPUTe
       ? Array.from(size as Iterable<number>)
       : [size.width, size.height, size.depthOrArrayLayers];
   const info = formatInfo(ctx.formats, descriptor.format);
+  if (
+    descriptor.usage & TEXTURE_USAGE.RENDER_ATTACHMENT &&
+    !info.renderable &&
+    info.kind === 'float'
+  ) {
+    const needs = info.array === 'f16' ? 'EXT_color_buffer_half_float' : 'EXT_color_buffer_float';
+    ctx.errors.report(
+      'validation',
+      `A '${descriptor.format}' texture cannot be rendered to on this WebGL 2: it needs ${needs}.`,
+    );
+  }
   const dimension = descriptor.dimension ?? '2d';
   const viewDimension = (descriptor as { textureBindingViewDimension?: GPUTextureViewDimension })
     .textureBindingViewDimension;

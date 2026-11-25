@@ -210,6 +210,13 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
     const blend = target.blend;
     const info = formatInfo(ctx.formats, target.format);
     const mask = target.writeMask ?? 0xf;
+    if (blend && !info.blendable && info.kind === 'float') {
+      // WebGPU rejects this too, without the `float32-blendable` feature this device then lacks
+      ctx.errors.report(
+        'validation',
+        `The pipeline '${descriptor.label ?? ''}' blends into '${target.format}', which needs EXT_float_blend and EXT_color_buffer_float on WebGL 2; it draws without blending.`,
+      );
+    }
     if (!blend || !info.blendable) return { blend: NO_BLEND, mask };
     return {
       blend: {
