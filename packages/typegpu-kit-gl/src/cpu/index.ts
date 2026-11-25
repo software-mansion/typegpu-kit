@@ -101,8 +101,16 @@ export function compile(code: string): CpuModule {
       for (const [at, end] of stores) edits.push({ at, end, slot });
       return use;
     });
-  for (const { at, end, slot } of edits.toSorted((a, b) => b.at - a.at)) {
-    code = `${code.slice(0, at)}$written(${slot},(${code.slice(at, end)}))${code.slice(end)}`;
+  // Each store's opening and closing are insertions at positions taken before any edit, applied
+  // from the last: a store inside another's index then shifts nothing it has not passed. Where a
+  // closing and an opening meet, the opening goes in first so the closing stays before it
+  const insertions = edits.flatMap(({ at, end, slot }) => [
+    { position: at, text: `$written(${slot},(`, opening: true },
+    { position: end, text: '))', opening: false },
+  ]);
+  insertions.sort((a, b) => b.position - a.position || Number(b.opening) - Number(a.opening));
+  for (const { position, text } of insertions) {
+    code = `${code.slice(0, position)}${text}${code.slice(position)}`;
   }
   const ranges = new Float64Array(tracked.size * 2);
   const writtenAt = (slot: number, index: number) => {

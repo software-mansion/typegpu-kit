@@ -173,3 +173,43 @@ it('cannot tell the words an atomic stored to', () => {
     ),
   ).toBeUndefined();
 });
+
+/** Dispatches `module` once over one buffer per binding, of `words` words each: their words. */
+function runOver(module: ReturnType<typeof compile>, words: number[], workgroups = 1) {
+  const buffers = words.map((count) => new ArrayBuffer(count * 4));
+  module.dispatch(workgroups, 1, 1, {
+    buffer: (_group, binding) => {
+      const bytes = buffers[binding]!;
+      return { bytes, offset: 0, size: bytes.byteLength };
+    },
+    texture: () => {
+      throw new Error('unexpected texture');
+    },
+    sampler: () => {
+      throw new Error('unexpected sampler');
+    },
+  });
+  return buffers.map((bytes) => [...new Uint32Array(bytes)]);
+}
+
+it('tracks a store inside the index of another store, each in its own range', () => {
+  // `idx[…] = …` stores inside the index of the store to `out`, as an inline adapter's setter does
+  const module = compile(
+    [
+      '//#kit-gl compute',
+      '//#binding {"group":0,"binding":0,"kind":"buffer","reads":true,"writes":true}',
+      'const out = $buffer(0, 0, Uint32Array);',
+      '//#binding {"group":0,"binding":1,"kind":"buffer","reads":true,"writes":true}',
+      'const idx = $buffer(0, 1, Uint32Array);',
+      '//#entry {"name":"main","size":[4,1,1],"inputs":["global_invocation_id"],"generator":false}',
+      'function main(gid) {',
+      '  (out[((idx[(gid[0] + 2)] = (gid[0] * 3)), idx[(gid[0] + 2)])]) = (gid[0] + 40);',
+      '}',
+    ].join('\n'),
+  );
+  const [out, idx] = runOver(module, [16, 8]);
+  expect(out!.slice(0, 10)).toEqual([40, 0, 0, 41, 0, 0, 42, 0, 0, 43]);
+  expect(idx).toEqual([0, 0, 0, 3, 6, 9, 0, 0]);
+  expect(module.writtenWords?.(0, 0)).toEqual([0, 10]);
+  expect(module.writtenWords?.(0, 1)).toEqual([2, 6]);
+});
