@@ -78,10 +78,10 @@ export const SCATTER = '//#scatter';
 /** Marks a pass of points that adds to a buffer: `//#accumulate <slots>`. */
 export const ACCUMULATE = '//#accumulate';
 /**
- * The most records a pass of sums may sum into one word in a dispatch, summing each word in
- * `parts` pieces of `32 / parts` bits, one float channel each: exact up to 2^24 per channel.
+ * The most records a pass of sums may sum into one word in a dispatch. Each float channel sums
+ * one nibble of every amount, so it stays exact up to 2^24 / 15.
  */
-export const mostAdded = (parts: 4 | 8): number => Math.floor(2 ** 24 / (2 ** (32 / parts) - 1));
+export const MOST_ADDED = Math.floor(2 ** 24 / 15);
 /** The most invocations a dispatch that takes may have, so ranking stays a few hundred reads. */
 export const MOST_TAKEN = 65_536;
 
@@ -217,62 +217,54 @@ export const TAKE_WIDTH = 256;
  *
  * The capture stage records, for each slot from 0 to `sites - 1`, whether the invocation made that
  * many additions (`hit`), the word it added to (`at`) and the amount as `uint` bits (`value`,
- * negated for a subtraction). The device splits each amount into `parts` pieces: eight nibbles
- * where it has eight draw buffers, four bytes otherwise. It clears one `RGBA32F` texture of the
- * data texture's size per piece to 0, and draws `vertex` with `accumulateFragment(parts)` as
- * `POINTS` once per slot with additive blending (`ONE`, `ONE`), each point on its word's data
- * texel, carrying `kit_value` and `kit_lane`, the word's channel. Texture `k` sums piece `k` of the
- * amounts in each channel. Last it renders the target's new contents with
- * `accumulatedFragment(parts)`: each word plus the sum of its pieces at their places, in `uint`
- * arithmetic, which wraps as the atomic does.
+ * negated for a subtraction). The device splits each amount into its eight nibbles. It clears
+ * eight `RGBA32F` textures of the data texture's size to 0, and draws `vertex` with
+ * `accumulateFragment(targets)` as `POINTS` once per slot with additive blending (`ONE`, `ONE`),
+ * each point on its word's data texel, carrying `kit_value` and `kit_lane`, the word's channel.
+ * Texture `k` sums nibble `k` of the amounts in each channel. A device of eight draw buffers draws
+ * into all eight at once; one of four draws every slot twice, into four textures each, with
+ * `kit_group` (`int`) 0 for nibbles 0 to 3 and 1 for nibbles 4 to 7. Last it renders the target's
+ * new contents with `ACCUMULATED_FRAGMENT`: each word plus the sum of its nibbles at their places,
+ * in `uint` arithmetic, which wraps as the atomic does.
  *
- * The sums are exact while no word takes more than `mostAdded(parts)` records in a dispatch, so the
+ * The sums are exact while no word takes more than `MOST_ADDED` records in a dispatch, so the
  * device runs a dispatch of more invocations times slots on the CPU. The order of additions does
  * not change a sum.
  */
-export function accumulateFragment(parts: 4 | 8): string {
-  const bits = 32 / parts;
-  const mask = 2 ** bits - 1;
+export function accumulateFragment(targets: 4 | 8): string {
   const outputs = Array.from(
-    { length: parts },
+    { length: targets },
     (_, k) => `layout(location = ${k}) out vec4 kit_part${k};`,
   );
+  const first = targets === 8 ? '0' : '4 * kit_group';
   const sums = Array.from(
-    { length: parts },
-    (_, k) => `  kit_part${k} = lane * float((kit_value >> ${bits * k}u) & ${mask}u);`,
+    { length: targets },
+    (_, k) => `  kit_part${k} = lane * float((kit_value >> uint(4 * (${first} + ${k}))) & 15u);`,
   );
   return `#version 300 es
 precision highp float;
 precision highp int;
 flat in uint kit_value;
 flat in uint kit_lane;
-${outputs.join('\n')}
+${targets === 8 ? '' : 'uniform int kit_group;\n'}${outputs.join('\n')}
 void main() {
   vec4 lane = vec4(equal(uvec4(kit_lane), uvec4(0u, 1u, 2u, 3u)));
 ${sums.join('\n')}
 }`;
 }
 
-/** Renders a buffer's data texture plus the pieces' sums a pass of sums drew, at their places. */
-export function accumulatedFragment(parts: 4 | 8): string {
-  const bits = 32 / parts;
-  const samplers = Array.from({ length: parts }, (_, k) => `uniform highp sampler2D kit_sum${k};`);
-  const added = Array.from(
-    { length: parts },
-    (_, k) => `(uvec4(texelFetch(kit_sum${k}, at, 0)) << ${bits * k}u)`,
-  );
-  return `#version 300 es
+/** Renders a buffer's data texture plus the nibbles' sums a pass of sums drew, at their places. */
+export const ACCUMULATED_FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
 uniform highp usampler2D kit_old;
-${samplers.join('\n')}
+${Array.from({ length: 8 }, (_, k) => `uniform highp sampler2D kit_sum${k};`).join('\n')}
 layout(location = 0) out uvec4 kit_result;
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
-  uvec4 added = ${added.join('\n    + ')};
+  uvec4 added = ${Array.from({ length: 8 }, (_, k) => `(uvec4(texelFetch(kit_sum${k}, at, 0)) << ${4 * k}u)`).join('\n    + ')};
   kit_result = texelFetch(kit_old, at, 0) + added;
 }`;
-}
 
 /** A binding the GPU form uses, to compare with the CPU module's `bindings`. */
 export interface ComputeBinding {
@@ -422,7 +414,7 @@ export function parseCompute(
       }));
       passes.push({
         target,
-        fragment: accumulate ? accumulateFragment(4) : pointFragment(target, options.defines ?? []),
+        fragment: accumulate ? accumulateFragment(8) : pointFragment(target, options.defines ?? []),
         scatter: {
           capture: source(included, options.defines ?? []),
           vertex: source(drawing, options.defines ?? []),

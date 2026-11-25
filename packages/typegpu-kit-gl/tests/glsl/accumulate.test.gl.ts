@@ -1,7 +1,7 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
-import { mostAdded } from '../../src/glsl/computeModule.ts';
+import { MOST_ADDED } from '../../src/glsl/computeModule.ts';
 import { glRoot, roots } from '../device/compare.ts';
 import { install } from '../device/minimum.ts';
 
@@ -110,30 +110,20 @@ it('adds through helpers at shared cells as WebGPU does, over several dispatches
   expect(actual).toEqual(await counted(gpu, 300, 'counted'));
 });
 
-/** The most records the device of `root` sums exactly into one cell: nibbles with eight targets. */
-function mostOf(root: TgpuRoot) {
-  const { gl: context } = root.device as unknown as GLDevice;
-  const targets = Math.min(
-    context.getParameter(context.MAX_DRAW_BUFFERS) as number,
-    context.getParameter(context.MAX_COLOR_ATTACHMENTS) as number,
-  );
-  return mostAdded(targets >= 8 ? 8 : 4);
-}
-
 it('runs a dispatch on the CPU where a cell could take more records than a sum keeps exact', async () => {
   // Three additions to the counts an invocation, one invocation past the bound's third; the
   // device counts every invocation of the workgroups dispatched
-  const invocations = Math.floor(mostOf(gl) / 3) + 1;
+  const invocations = Math.floor(MOST_ADDED / 3) + 1;
   const actual = await counted(gl, invocations, 'crowded');
   expect(stats().fallbacks.get('crowded')).toBe(
-    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 3} times to one cell, past ${mostOf(gl)}`,
+    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 3} times to one cell, past ${MOST_ADDED}`,
   );
   expect(actual).toEqual(await counted(gpu, invocations, 'crowded'));
 });
 
 /**
- * Adds the largest amount once an invocation to one cell from `workgroups` groups of 241: both
- * bounds, 2^24 / 15 = 241 * 4641 and 2^24 / 255 = 241 * 273, are whole dispatches of them.
+ * Adds the largest amount once an invocation to one cell from `workgroups` groups of 241: the
+ * bound, 2^24 / 15 = 241 * 4641, is a whole dispatch of them.
  */
 async function crowded(root: TgpuRoot, workgroups: number, label: string) {
   const counts = root.createMutable(d.arrayOf(d.atomic(d.u32), 2), [7, 0]);
@@ -147,7 +137,7 @@ async function crowded(root: TgpuRoot, workgroups: number, label: string) {
 
 /** Expects the most records a cell may take to sum exactly on `root`, and one group more to fall back. */
 async function bounded(root: TgpuRoot, label: string) {
-  const most = mostOf(root);
+  const most = MOST_ADDED;
   const { stats: counts } = root.device as unknown as GLDevice;
   const actual = await crowded(root, most / 241, label);
   expect(counts.fallbacks.get(label)).toBeUndefined();
@@ -163,18 +153,23 @@ async function bounded(root: TgpuRoot, label: string) {
 }
 
 it('sums the most records a dispatch may put on one cell exactly, every piece at its largest', async () => {
-  // 2^24 / 15 records where the device sums nibbles, 2^24 / 255 where it sums bytes
   const actual = await bounded(gl, 'worst');
-  expect(actual).toEqual(await crowded(gpu, mostOf(gl) / 241, 'worst'));
+  expect(actual).toEqual(await crowded(gpu, MOST_ADDED / 241, 'worst'));
 });
 
-it('sums bytes on a device of four draw buffers, to their own bound', async () => {
+it('sums nibbles in two rounds on a device of four draw buffers, to the same bound', async () => {
   const undo = install({ minimum: true });
   const small = glRoot();
   try {
-    expect(mostOf(small)).toBe(mostAdded(4));
-    await bounded(small, 'bytes');
-    expect((small.device as unknown as GLDevice).gl.getError()).toBe(0);
+    const { gl: context, stats: counts } = small.device as unknown as GLDevice;
+    expect(context.getParameter(context.MAX_DRAW_BUFFERS)).toBe(4);
+    const actual = await bounded(small, 'halves');
+    expect(actual).toEqual(await crowded(gpu, MOST_ADDED / 241, 'halves'));
+    // Amounts with every nibble different, at shared cells over several dispatches
+    const mixed = await counted(small, 300, 'mixed');
+    expect(counts.fallbacks.get('mixed')).toBeUndefined();
+    expect(mixed).toEqual(await counted(gpu, 300, 'mixed'));
+    expect(context.getError()).toBe(0);
   } finally {
     small.destroy();
     undo();
