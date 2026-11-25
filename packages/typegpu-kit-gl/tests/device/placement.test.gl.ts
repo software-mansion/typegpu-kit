@@ -294,3 +294,60 @@ test.each([
     undo();
   }
 });
+
+test.each([
+  ['timer queries', []],
+  ['fences', ['EXT_disjoint_timer_query_webgl2']],
+] as const)(
+  'a sample in flight is deleted once when the device idles, with %s',
+  async (_, hide) => {
+    const undo = install({ minimum: false, hide });
+    const { live, seen, undo: unwatch } = watchSamples();
+    const root = glRoot();
+    try {
+      const { gl } = root.device as GLDevice;
+      const dispatch = filling(root);
+      for (let frame = 1; frame <= 6; frame++) {
+        dispatch();
+        await settle(20);
+      }
+      await settle(300);
+      expect(seen.queries + seen.fences).toBeGreaterThan(0);
+      expect(live.queries.size + live.fences.size).toBe(0);
+      expect(seen.unknown).toBe(0);
+      expect(gl.getError()).toBe(0);
+    } finally {
+      root.destroy();
+      unwatch();
+      undo();
+    }
+  },
+);
+
+test.each([
+  ['timer queries', []],
+  ['fences', ['EXT_disjoint_timer_query_webgl2']],
+] as const)(
+  'a sample in flight is deleted once when the device is destroyed, with %s',
+  async (_, hide) => {
+    const undo = install({ minimum: false, hide });
+    const { live, seen, undo: unwatch } = watchSamples();
+    const root = glRoot();
+    try {
+      const dispatch = filling(root);
+      for (let frame = 1; frame <= 5; frame++) {
+        dispatch();
+        if (frame < 5) await settle(20);
+      }
+      expect(seen.queries + seen.fences).toBeGreaterThan(0);
+      root.destroy();
+      await settle(100);
+      expect(live.queries.size + live.fences.size).toBe(0);
+      expect(seen.unknown).toBe(0);
+    } finally {
+      root.destroy();
+      unwatch();
+      undo();
+    }
+  },
+);

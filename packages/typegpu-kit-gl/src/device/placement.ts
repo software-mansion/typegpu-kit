@@ -62,6 +62,11 @@ const CPU_NS = 40;
 const MOST_TRIED = 1 << 20;
 /** A CPU run stays only below this share of the GPU form's time, and returns above its inverse. */
 const KEEP_SHARE = 0.75;
+/**
+ * Milliseconds a sample may stay in flight before it is dropped unread: a fence a driver never
+ * signals, or a query result a context never makes available, would otherwise be polled forever.
+ */
+const PROBE_MS = 2000;
 
 interface Record {
   readonly label: string;
@@ -124,6 +129,8 @@ interface Probe {
   readonly after: WebGLSync | undefined;
   /** When a poll first saw the fence before the draws signalled. */
   seenBefore: number | undefined;
+  /** When the draws it times were issued. */
+  ended: number;
 }
 
 /** Each device's records with a probe in flight, and whether a poll is due or done this task. */
@@ -139,9 +146,9 @@ function pollsOf(ctx: Ctx) {
 }
 
 /**
- * Polls fences between tasks while any is in flight, as WebGL updates their status only then: the
- * time they give is no finer than the time between polls, which dispatches alone space a frame
- * apart. It stops when no fence is left, so it runs only while a sample is in flight.
+ * Polls samples between tasks while any is in flight, as WebGL updates their status only then:
+ * the time fences give is no finer than the time between polls, which dispatches alone space a
+ * frame apart. It stops when no sample is left, so a device that stops dispatching keeps none.
  */
 function tick(ctx: Ctx): void {
   const state = pollsOf(ctx);
@@ -150,8 +157,18 @@ function tick(ctx: Ctx): void {
   setTimeout(() => {
     state.ticking = false;
     pollProbes(ctx);
-    if ([...state.probing].some((record) => record.probe?.after)) tick(ctx);
+    if (state.probing.size > 0) tick(ctx);
   }, 0);
+}
+
+/** Deletes every sample in flight on the device, as it is destroyed. */
+export function discardProbes(ctx: Ctx): void {
+  const state = pollsOf(ctx);
+  for (const record of state.probing) {
+    if (record.probe) discardProbe(ctx, record.probe);
+    record.probe = undefined;
+  }
+  state.probing.clear();
 }
 
 const records = new WeakMap<object, Record>();
@@ -434,10 +451,10 @@ export function beginProbe(
     const query = gl.createQuery();
     if (!query) return undefined;
     gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
-    return { query, before: undefined, after: undefined, seenBefore: undefined };
+    return { query, before: undefined, after: undefined, seenBefore: undefined, ended: 0 };
   }
   const before = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
-  return { query: undefined, before, after: undefined, seenBefore: undefined };
+  return { query: undefined, before, after: undefined, seenBefore: undefined, ended: 0 };
 }
 
 /** Ends a sample `beginProbe` started; `ran` false when the form drew nothing and ran elsewhere. */
@@ -456,9 +473,9 @@ export function endProbe(ctx: Ctx, pipeline: object, probe: Probe | undefined, r
     : (gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined);
   // A fence signals only once the commands before it reach the GPU
   if (after) gl.flush();
-  record.probe = { ...probe, after };
+  record.probe = { ...probe, after, ended: performance.now() };
   pollsOf(ctx).probing.add(record);
-  if (after) tick(ctx);
+  tick(ctx);
 }
 
 function discardProbe(ctx: Ctx, probe: Probe): void {
@@ -506,6 +523,7 @@ function pollProbes(ctx: Ctx): void {
         done = true;
       }
     } else done = true;
+    if (!done && now - probe.ended > PROBE_MS) done = true;
     if (!done) continue;
     discardProbe(ctx, probe);
     record.probe = undefined;

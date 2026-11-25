@@ -173,3 +173,30 @@ test('readbacks of every output of every dispatch count each dispatch once and e
     'cpu: the CPU read back its outputs after 5 of 6 dispatches, waiting 2.50 ms each, and its inputs were on the CPU',
   );
 });
+
+test('fences that never signal are deleted once, after a bounded wait, and polling stops', async () => {
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const { ctx, made, deleted, polls, run } = (() => {
+    const fake = fakeCtx({ timer: false, gpuMs: 0, signals: false });
+    return { ...fake, run: kernel(fake.ctx).run };
+  })();
+  for (let i = 0; i < 5; i++) {
+    run(SAMPLED);
+    now += 16;
+    await task();
+  }
+  expect(made.fences).toHaveLength(2);
+  for (let i = 0; i < 5; i++) await task();
+  expect(deleted.fences).toEqual([]);
+  expect(polls.fences).toBeGreaterThan(0);
+
+  now += 60_000;
+  for (let i = 0; i < 5; i++) await task();
+  expect(new Set(deleted.fences)).toEqual(new Set(made.fences));
+  expect(deleted.fences).toHaveLength(2);
+  const polled = polls.fences;
+  for (let i = 0; i < 5; i++) await task();
+  expect(polls.fences).toBe(polled);
+  expect(ctx.lost).toBe(false);
+});
