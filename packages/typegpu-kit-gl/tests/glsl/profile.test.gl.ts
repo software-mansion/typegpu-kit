@@ -78,6 +78,7 @@ for (const key of keys) {
         readback: device.stats.readback,
         upload: device.stats.upload,
         fallbacks: Object.fromEntries(device.stats.fallbacks),
+        placement: Object.fromEntries(device.stats.placement),
         errors: errors.slice(0, 5),
       })}`,
     );
