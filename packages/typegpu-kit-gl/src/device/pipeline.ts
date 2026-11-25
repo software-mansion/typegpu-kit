@@ -60,6 +60,8 @@ export interface RenderState {
   readonly stencilWrite: number;
   readonly bias: { readonly constant: number; readonly slope: number } | undefined;
   readonly alphaToCoverage: boolean;
+  /** False when a single-sampled pipeline's sample mask clears sample 0, so it writes nothing. */
+  readonly writes: boolean;
 }
 
 export interface RenderPipelineImpl {
@@ -210,6 +212,14 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
   const { gl } = ctx;
   const primitive = descriptor.primitive ?? {};
   const depthStencil = descriptor.depthStencil;
+  const samples = descriptor.multisample?.count ?? 1;
+  const sampleMask = (descriptor.multisample?.mask ?? 0xffffffff) >>> 0;
+  const everySample = samples >= 32 ? 0xffffffff : 2 ** samples - 1;
+  if (samples > 1 && (sampleMask & everySample) !== everySample) {
+    throw new Error(
+      `The pipeline '${descriptor.label ?? ''}' has multisample.mask 0x${sampleMask.toString(16)}, which leaves out some of its ${samples} samples; WebGL 2 has no sample mask.`,
+    );
+  }
   const targets = Array.from(descriptor.fragment?.targets ?? []).map((target) => {
     if (!target) return { blend: NO_BLEND, mask: 0 };
     const blend = target.blend;
@@ -290,18 +300,28 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
     stencilWrite: depthStencil?.stencilWriteMask ?? 0xff,
     bias: constant !== 0 || slope !== 0 ? { constant, slope } : undefined,
     alphaToCoverage: descriptor.multisample?.alphaToCoverageEnabled ?? false,
+    writes: samples > 1 || (sampleMask & 1) !== 0,
   };
 }
+
+/** The widest stride `vertexAttribPointer` takes. */
+const MAX_STRIDE = 255;
 
 function slotsOf(
   ctx: Ctx,
   buffers: Iterable<GPUVertexBufferLayout | null | undefined>,
+  label: string,
 ): VertexSlot[] {
   const slots: VertexSlot[] = [];
   let index = 0;
   for (const layout of buffers) {
     const slot = index++;
     if (!layout) continue;
+    if (layout.arrayStride > MAX_STRIDE && layout.attributes.length > 0) {
+      throw new Error(
+        `The pipeline '${label}' reads vertex buffer ${slot} with an arrayStride of ${layout.arrayStride} bytes; WebGL 2 reads attributes at strides of at most ${MAX_STRIDE}.`,
+      );
+    }
     const attributes = Array.from(layout.attributes).map((attribute) => {
       const info = vertexFormatInfo(ctx.gl, attribute.format);
       return {
@@ -469,7 +489,7 @@ function makeRenderPipeline(
   try {
     stages = stagesOf(descriptor);
     renderStateValue = renderState(ctx, descriptor);
-    slots = slotsOf(ctx, descriptor.vertex.buffers ?? []);
+    slots = slotsOf(ctx, descriptor.vertex.buffers ?? [], descriptor.label ?? '');
   } catch (error) {
     stages = (error as Error).message;
     renderStateValue = renderState(ctx, { layout: descriptor.layout, vertex: descriptor.vertex });

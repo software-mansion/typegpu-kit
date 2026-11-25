@@ -316,7 +316,10 @@ function plainlyComplete(attachments: readonly Attachment[]): boolean {
   });
 }
 
-/** A framebuffer with these attachments, made once and kept until a texture in it is freed. */
+/**
+ * A framebuffer with these attachments, made once and kept until a texture in it is freed, with
+ * every attachment's GL copy current.
+ */
 export function framebuffer(
   ctx: Ctx,
   colors: readonly (Attachment | null)[],
@@ -329,6 +332,9 @@ export function framebuffer(
   if (cached) {
     cache.delete(key);
     cache.set(key, cached);
+    // A kernel may have written an attachment on the CPU since; a clear still needs the upload
+    // when the texture has levels or layers beyond the one attached
+    for (const texture of cached.textures) onGl(ctx, texture);
     return cached.fbo;
   }
   if (cache.size >= KEPT_FRAMEBUFFERS) {
@@ -697,7 +703,18 @@ export function createTexture(ctx: Ctx, descriptor: GPUTextureDescriptor): GPUTe
     format: descriptor.format,
     usage: descriptor.usage,
     textureBindingViewDimension: viewDimension,
-    createView: (viewDescriptor?: GPUTextureViewDescriptor) => makeView(impl, viewDescriptor),
+    createView(viewDescriptor?: GPUTextureViewDescriptor) {
+      const format = viewDescriptor?.format;
+      const aspect = viewDescriptor?.aspect ?? 'all';
+      // An aspect's view names that aspect's format, which is the texture's storage
+      if (format && format !== impl.format && aspect === 'all') {
+        ctx.errors.report(
+          'validation',
+          `A '${format}' view of a '${impl.format}' texture reads and writes it as '${impl.format}': WebGL 2 has no views in another format.`,
+        );
+      }
+      return makeView(impl, viewDescriptor);
+    },
     destroy() {
       if (impl.destroyed) return;
       impl.destroyed = true;
