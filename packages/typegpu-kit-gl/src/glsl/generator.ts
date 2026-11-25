@@ -392,9 +392,9 @@ export class KitGlslGenerator extends GlslGenerator {
         ].join('\n');
       }
     }
-    throw new Error(
-      `@typegpu/kit-gl: '${name ?? code.slice(0, 40)}' is written in WGSL, which the GLSL generator cannot translate.`,
-    );
+    // A compute entry written in WGSL arrives here too, before any backend sees it: neither the GLSL
+    // nor the CPU generator can translate text
+    throw unsupported(`A function written as a WGSL string ('${name ?? code.slice(0, 40)}')`);
   }
 
   protected chunk(
