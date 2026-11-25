@@ -269,8 +269,9 @@ async function repeated(root: TgpuRoot, stored: boolean) {
   });
   const pipeline = root.createComputePipeline({ compute: kernel }).$name('repeated');
   const targets = [0, 1, 2, 3, 4].map((k) => {
-    // A permutation of its own per dispatch
-    const order = Array.from({ length: N }, (_, i) => (i * (k * 2 + 5) + k) % N);
+    // A permutation of its own per dispatch: each multiplier is coprime to N, so no two
+    // invocations write one cell, which would leave which value wins open as on WebGPU
+    const order = Array.from({ length: N }, (_, i) => (i * ([5, 7, 11, 13, 17][k] ?? 1) + k) % N);
     const out = root
       .createBuffer(
         d.arrayOf(d.vec2u, N),
