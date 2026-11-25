@@ -18,7 +18,7 @@ interface Props {
 
 const { title, tagline, actions } = Astro.props;
 const KIT = '@typegpu/kit';
-const ADD = Object.fromEntries(MANAGERS.map((manager) => [manager.name, manager.add]));
+const CREATE = Object.fromEntries(MANAGERS.map((manager) => [manager.name, `${manager.name} create`]));
 ---
 
 {/* Lays the page out for the GPU before its first paint, so it doesn't jump when the runtime
@@ -65,10 +65,10 @@ const ADD = Object.fromEntries(MANAGERS.map((manager) => [manager.name, manager.
           </div>
         )
       }
-      <pre class="install"><code id="home-install">{`${ADD.npm} ${KIT}`}</code></pre>
+      <pre class="install"><code id="home-install">{`${CREATE.pnpm} ${KIT}`}</code></pre>
       {/* Says it with the package manager the reader picked in an install block, on any page. */}
-      <script is:inline define:vars={{ key: MANAGER_KEY, add: ADD, kit: KIT }}>
-        const chosen = add[localStorage.getItem(key) ?? ''];
+      <script is:inline define:vars={{ key: MANAGER_KEY, create: CREATE, kit: KIT }}>
+        const chosen = create[localStorage.getItem(key) ?? ''];
         if (chosen) document.getElementById('home-install').textContent = `${chosen} ${kit}`;
       </script>
       <p class="hint">The kit draws the frame on the right. Scroll to see it built.</p>
