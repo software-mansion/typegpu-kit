@@ -52,12 +52,25 @@ CPU `f32` literals, conversions and arithmetic round to 32 bits at each operatio
 - No cube-array textures. A multisampled texture can be rendered and resolved, not sampled.
 - A 6-layer texture is stored as a cube or as an array, whichever its first view asks for. A view of the other kind, or of part of a texture's layers, samples a copy the device refreshes after each change.
 - Two views of one texture with different mip ranges cannot be bound in the same draw.
-- Different blend states per colour target need `OES_draw_buffers_indexed`.
+- Without `OES_draw_buffers_indexed`, a pipeline whose colour targets blend or mask differently draws once for each group of targets that agree. Each later draw writes neither depth nor stencil, and one that wrote depth keeps only the fragments that won it, so a later group that blends sees one fragment a pixel where WebGPU blends every fragment that passed. A pipeline that also writes stencil is an error that names the extension.
 - Depth bias has no clamp.
-- Reading back a depth or signed-normalised texture needs `EXT_color_buffer_float`.
 - A device created on a canvas presents to that canvas without a copy and to no other. A device created without one presents to any number, each through a bitmap transfer.
 - `firstInstance` and `baseVertex` are emulated with a uniform and offset attribute pointers.
 - WebGL 2 has no indirect draws, so `drawIndirect` and `drawIndexedIndirect` read their arguments on the CPU, and a draw record a GPU-run kernel wrote waits for the GPU each frame. A kernel that writes draw records is cheapest on the CPU here. So the Kit's culling and live lists test each row on the GPU, where the rows are, and list the rows that passed on the CPU, which then holds the counts. The CPU still waits once a frame for the GPU to hand over those marks, and that wait is as long as the frame's drawing: a scene that culls or lists every frame runs its CPU and GPU work one after the other. Drawing a known upper bound of instances and letting the vertex stage collapse those past a count it reads from the buffer would keep the records on the GPU and remove the wait; it is not implemented.
+
+## Extensions and limits
+
+The device asks for the extensions below and keeps to the limits the context reports, down to WebGL 2's minimums: 2048 for textures, 256 for 3d sizes and layers, 4 draw buffers and samples, 16 texture units a stage and 32 a program, 24 uniform bindings of 16 KiB each, 64 interleaved transform feedback components. `tests/device/minimum.ts` emulates such a context, and `scripts/examples.ts --minimum --hide all` runs the examples on it. It reports the minimums to the device, but the driver behind it keeps its own limits, so a program over a limit the device leaves to the driver still links there. At the minimums with every extension present and 4096 texels for textures, every example runs; at 2048, the Kit refuses the 4096-texel shadow maps that `dominoes` and `skeletons` ask for.
+
+- `EXT_color_buffer_half_float` or `EXT_color_buffer_float`: rendering to 16-bit float targets, which every Kit pass with an HDR target does. Without both, creating such a texture for rendering is an error that names them, and almost every example stops there.
+- `EXT_color_buffer_float`: rendering to 32-bit float and `rg11b10ufloat` targets, GPU forms that write float textures and blending or additive sums into them. Without it, those kernels run on the CPU, as the device's `fallbacks` say, and the render targets are errors that name it. Reading float, depth and signed-normalised textures back needs no extension.
+- `EXT_float_blend`: blending into 32-bit float targets, and the additive GPU forms. Without it, a pipeline that blends into such a target is an error that names it, and additive kernels run on the CPU.
+- `OES_texture_float_linear`: filtering 32-bit float textures. Without it, the device lacks the `float32-filterable` feature, as a WebGPU adapter without it does, and a filtering sampler that reads such a texture is an error that names it; the draw then samples with nearest filtering.
+- `OES_draw_buffers_indexed`: different blend states or write masks per colour target in one draw. Without it, the draw repeats once per group of targets that agree, at the cost of running the fragment stage again, as the Device section says.
+- `EXT_clip_control`: depth from 0 to 1 natively. Without it, the vertex stage maps depth into GL's range, at a small cost in depth precision.
+- `KHR_parallel_shader_compile`: linking without blocking. Without it, programs link when first used and block then.
+- `EXT_texture_filter_anisotropic`: anisotropic filtering, ignored without it. `EXT_disjoint_timer_query_webgl2`, `WEBGL_multi_draw` and `WEBGL_debug_renderer_info` change nothing the Kit needs.
+- A scatter whose writes need more transform feedback components than the context records, or whose capture fails to link, runs on the CPU, with the reason in `fallbacks`. GPU forms draw into at most 4 buffers at once, WebGL 2's minimum. Texture units are counted against the program's 32; a stage that needs more than its 16 fails when its program links, with the driver's message.
 
 ## Browsers
 
