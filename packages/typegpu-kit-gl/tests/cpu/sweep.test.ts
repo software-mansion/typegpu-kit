@@ -21,7 +21,13 @@ function median(values: number[]): number {
 it.runIf(process.env.CPU_SWEEP === '1')(
   'records per-example CPU compilation coverage',
   async () => {
-    const results: { example: string; status: string; modules: number; error?: string }[] = [];
+    const results: {
+      example: string;
+      status: string;
+      modules: number;
+      uniqueModules?: number;
+      error?: string;
+    }[] = [];
     for (const example of examples.filter(
       (candidate) =>
         (!process.env.CPU_EXAMPLES ||
@@ -209,6 +215,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
           example: example.key,
           status: 'pass',
           modules: modules.length,
+          uniqueModules: new Set(modules).size,
           ...(process.env.CPU_EXECUTE === '1'
             ? {
                 executedModules: dispatched.size,
@@ -234,11 +241,11 @@ it.runIf(process.env.CPU_SWEEP === '1')(
                         ? 'meshPool precompiled a shape bake that no add/flush used during the scene and controls'
                         : entry === 'walk'
                           ? 'culling facility compiled for a drawing/layer that was not recorded while active'
-                          : example.key === 'kinetic' &&
-                              entry === 'compute' &&
-                              code.includes('function fromCube(')
-                            ? 'environment cube-source bake is precompiled; UI supplies daylight functions and panoramas, no cube texture'
-                            : 'not reached by the generic controls; needs source-specific reachability review';
+                          : entry === 'compute' && code.includes('function fromCube(')
+                            ? 'environment cube-source bake is precompiled; no cube texture is supplied by this scene or its controls'
+                            : entry === 'compute' && code.includes('function fromPanorama(')
+                              ? 'environment panorama bake is precompiled; no panorama is supplied by this scene or its controls'
+                              : 'not reached by the generic controls; needs source-specific reachability review';
                   return [{ module: index, entry, reason }];
                 }),
                 unexecutedEntries: modules

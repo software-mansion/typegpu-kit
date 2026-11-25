@@ -75,3 +75,47 @@ These are still review failures in the opt-in whole-example comparison, not acce
 - Sph-sculpt: the two environment textures, harmonic buffer, and `origin`/`volume` material textures remain unclassified. The height buffer's rim mechanism is established separately.
 
 The detailed resource keys, differing-word counts and first values remain in `results.json`. Render-dependent resources, backend-specific scratch storage and resources with atomic allocation order are listed separately; their exclusion is not a claim of equality.
+
+## Execution coverage at the hardening checkpoint
+
+All 33 examples passed compilation and the controls sweep. The table counts shader modules created; identical generated code may occur in more than one module, and dispatch tracking is by code. The remaining entries are listed explicitly rather than counted as executed. Pointer controls, all settings, images, UI buttons and held-button strokes were exercised. Camera attachment still needs a real external texture.
+
+The costs below are two-frame CPU-only means from the interaction runs, at the driver's reduced scene capacities and 64×36 surface. They are not benchmark medians or full-stack frame times; concurrent work ran on the same machine, and fragment-eligible kernels also run on the CPU fake device. The paired 31-sample medians above remain the performance comparison. Per-pipeline invocation counts and times are in `results.json`.
+
+| Example      | Compiled modules | Undispatched entries               | Calls/frame | Invocations/frame | CPU ms/frame |
+| ------------ | ---------------: | ---------------------------------- | ----------: | ----------------: | -----------: |
+| censer       |               17 | none                               |         112 |          41387008 |     48147.56 |
+| falling-sand |               65 | `spawnEach`, `advanceKernel`       |         150 |           7840708 |      8303.32 |
+| ocean        |               30 | `compute` ×2                       |          51 |          81805441 |      3155.19 |
+| classroom    |                7 | none                               |           7 |           1010625 |      2496.97 |
+| sph-sculpt   |               38 | `compute` ×2                       |          49 |           1664966 |       280.68 |
+| stampede     |               36 | none                               |         118 |            790194 |       243.37 |
+| jelly-world  |                4 | none                               |           2 |             32832 |       236.34 |
+| jump-flood   |                4 | none                               |          12 |           2883648 |       149.70 |
+| fishtank     |               30 | `spawnEach`                        |        97.5 |            311589 |       102.03 |
+| slime-mould  |                5 | none                               |         7.5 |            145600 |       101.23 |
+| benthos      |                6 | none                               |         4.5 |             84128 |        68.90 |
+| flow-field   |                2 | none                               |         2.5 |            163840 |        52.55 |
+| jellies      |               10 | none                               |         9.5 |              2160 |        13.66 |
+| ember-mirror |                6 | `spawnEach`, `advanceKernel`       |           7 |             96384 |        13.22 |
+| fireworks    |               31 | `spawnEach` ×4, `advanceKernel` ×4 |        30.5 |           88897.5 |         8.10 |
+| night-market |               15 | none                               |          15 |             27522 |         5.21 |
+| dominoes     |               13 | `spawnEach`, `advanceKernel`       |          17 |             27712 |         4.07 |
+| skeletons    |               34 | none                               |        32.5 |              6821 |         3.65 |
+| kinetic      |               11 | `compute`                          |           2 |              4097 |         3.33 |
+| lattice      |                5 | none                               |         4.5 |              5440 |         1.96 |
+| quiver-trees |               46 | none                               |          10 |                10 |         0.51 |
+| platformer   |               19 | `spawnEach`                        |          27 |              5701 |         0.32 |
+| forest       |                6 | none                               |           2 |                 2 |         0.30 |
+| blockfall    |               13 | `spawnEach`, `advanceKernel`       |           9 |              1440 |         0.20 |
+| solar-system |                5 | none                               |         3.5 |               224 |         0.09 |
+| afterimage   |                0 | none                               |           0 |                 0 |         0.00 |
+| cloister     |                0 | none                               |           0 |                 0 |         0.00 |
+| hex-isle     |                1 | `move_1`                           |           0 |                 0 |         0.00 |
+| spider       |                8 | none                               |           0 |                 0 |         0.00 |
+| robot-arm    |               15 | none                               |           0 |                 0 |         0.00 |
+| star-map     |                1 | none                               |           0 |                 0 |         0.00 |
+| survey-model |                6 | none                               |           0 |                 0 |         0.00 |
+| raymarch     |                0 | none                               |           0 |                 0 |         0.00 |
+
+Undispatched particle `spawnEach`/`advanceKernel` entries belong to pools whose examples use their emitter or device-side spawning instead of queued host bursts; the module tests exercise those facilities. Hex-isle supplies a custom depth-of-field radius and never enables its optional `move_1` autofocus. The remaining environment `compute` entries are precompiled panorama/cube source variants for which the scene supplies no corresponding source. The sweep reports those reasons and module indexes.
