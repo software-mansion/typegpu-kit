@@ -98,6 +98,8 @@ export interface ComputePlan {
   readonly slots?: number;
   /** The most writes an invocation makes at computed cells of each such resource. */
   readonly records?: ReadonlyMap<string, number>;
+  /** The counters the kernel takes values of, among `adds`. */
+  readonly takes?: ReadonlySet<string>;
 }
 
 /** A resource written at computed cells: an array of a buffer, or a texture. */
@@ -143,6 +145,10 @@ const AIM = 'kit_aim';
 /** An invocation's additions so far, and their words and amounts. */
 const ADDED = 'kit_added';
 const ADD = 'kit_add';
+/** Takes the next of a counter's values in invocation order; see `TAKES`. */
+const TAKE = 'kit_take';
+/** Whether the counts of earlier invocations' takes are known: 0 while the device counts them. */
+const RANKED = 'kit_ranked';
 /** Stands in for a read of a buffer the kernel writes at computed cells, which no pass can see. */
 const SCATTERED = 'kit_scattered_';
 /** The layer of a layered target the pass computes now, of the several one draw writes. */
@@ -703,6 +709,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #dropping = false;
   /** Whether a call is being made, so a nested route to the same call does not count it twice. */
   #inCall = false;
+  /** Counters whose values the kernel takes: atomic additions of 1 whose results it uses. */
+  readonly #takes = new Set<string>();
   #slots = 0;
   /** Runtime loops around the statement being generated. */
   #loops = 0;
@@ -789,6 +797,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       adds: new Set(this.#adds.keys()),
       slots: this.#slots,
       records: new Map(this.#records),
+      takes: new Set(this.#takes),
     };
   }
 
@@ -975,7 +984,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const inner = (undecorate(place.schema) as d.Atomic).inner as d.BaseData;
     const value = this.ctx.resolveSnippet(target).value;
     const id = place.buffer.id;
-    if (this.#adds.has(id) && !(dropped && (name === 'atomicAdd' || name === 'atomicSub'))) {
+    const taken = this.#takes.has(id) || this.#plan?.takes?.has(id) === true;
+    if (taken && dropped) throw new Ineligible(`takes values of '${id}' and adds to it`);
+    if (
+      this.#adds.has(id) &&
+      !taken &&
+      !(dropped && (name === 'atomicAdd' || name === 'atomicSub'))
+    ) {
       throw new Ineligible(`'${name}' on '${id}', which it adds to at shared cells`);
     }
     if (
@@ -991,6 +1006,16 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       return this.#add(name, place, args[1], inner);
     }
     if (name === 'atomicLoad') return snip(value, inner, 'runtime', false);
+    if (
+      name === 'atomicAdd' &&
+      !dropped &&
+      inner === d.u32 &&
+      (this.#takes.has(id) ||
+        this.#plan?.takes?.has(id) ||
+        (!place.element && !this.#single && !this.#buffers.has(id) && !this.#adds.has(id)))
+    ) {
+      return this.#take(place, args[1]);
+    }
     this.#recordPlace(place, `'${name}' on`);
     const operand = this.#valueAs(args[1], inner);
     if (name === 'atomicStore') return snip(`${value} = ${operand}`, d.Void, 'runtime', true);
@@ -1061,6 +1086,97 @@ void ${ADD}(int aim, uint at, uint amount) {
       'runtime',
       true,
     );
+  }
+
+  /**
+   * An atomic addition of 1 to a whole counter, whose result the kernel uses: the counter's value
+   * before the dispatch, plus the takes of the invocations before this one, plus this invocation's
+   * own so far. The addition is recorded too, so the counter's pass of sums advances it.
+   */
+  #take(place: Place, amount: Snippet | undefined): Snippet {
+    const { buffer } = place;
+    if (amount?.value !== 1)
+      throw new Ineligible(`adds other than 1 to '${buffer.id}' and uses it`);
+    if (this.#adds.has(buffer.id) && !this.#takes.has(buffer.id)) {
+      throw new Ineligible(`takes values of '${buffer.id}' and adds to it`);
+    }
+    this.#takes.add(buffer.id);
+    const added = this.#add('atomicAdd', place, amount, d.u32);
+    if (!this.#plan) return snip(`${TAKE}0()`, d.u32, 'runtime', true);
+    const aim = this.#aim(buffer.id);
+    const name = `${TAKE}${aim}`;
+    const head = this.load(buffer.source, place.address, d.u32, buffer.id);
+    this.helper(RANKED, `uniform int ${RANKED};`);
+    this.helper(
+      name,
+      `uniform highp usampler2D kit_bases${aim};
+uint kit_taken${aim};
+uint ${name}() {
+  uint base = 0u;
+  if (${RANKED} == 1) {
+    uint id = ${GID}.x + ${INVOCATIONS}.x * (${GID}.y + ${INVOCATIONS}.y * ${GID}.z);
+    uint width = uint(textureSize(kit_bases${aim}, 0).x);
+    base = texelFetch(kit_bases${aim}, ivec2(int(id % width), int(id / width)), 0).x;
+  }
+  ${added.value};
+  uint taken = kit_taken${aim};
+  kit_taken${aim} += 1u;
+  return ${head} + base + taken;
+}`,
+    );
+    return snip(`${name}()`, d.u32, 'runtime', true);
+  }
+
+  /**
+   * Refuses a function where a taken value could change how many values the invocation takes:
+   * where one, or a variable made from one, decides a branch or a loop, is returned, or is passed
+   * to a function of the kernel. Indices and stored values may use it.
+   */
+  #checkTakes(code: string): void {
+    const body = code.slice(code.indexOf('{'));
+    const tainted = new Set<string>();
+    for (let grown = true; grown;) {
+      grown = false;
+      for (const [, name, rhs] of body.matchAll(/\b(\w+)\s*[-+*/%&|^]?=\s*([^;]*);/g)) {
+        if (!name || rhs === undefined || tainted.has(name)) continue;
+        const names = [TAKE, ...tainted];
+        if (names.some((each) => new RegExp(`\\b${each}`).test(rhs))) {
+          tainted.add(name);
+          grown = true;
+        }
+      }
+    }
+    const reads = (text: string) =>
+      [TAKE, ...tainted].some((each) => new RegExp(`\\b${each}`).test(text));
+    const balanced = (from: number) => {
+      let depth = 0;
+      for (let i = from; i < body.length; i++) {
+        if (body[i] === '(') depth++;
+        if (body[i] === ')' && --depth === 0) return body.slice(from, i + 1);
+      }
+      return body.slice(from);
+    };
+    for (const match of body.matchAll(/\b(if|while|for|switch)\s*\(/g)) {
+      if (reads(balanced((match.index ?? 0) + match[0].length - 1))) {
+        throw new Ineligible('decides a branch on a value it takes from a counter');
+      }
+    }
+    for (const match of body.matchAll(/\?|\breturn\b[^;]*;/g)) {
+      const text =
+        match[0] === '?'
+          ? body.slice(Math.max(0, (match.index ?? 0) - 200), match.index)
+          : match[0];
+      if (match[0] !== '?' ? reads(text) : reads(text.split(/[;{}]/).at(-1) ?? '')) {
+        throw new Ineligible('returns or chooses by a value it takes from a counter');
+      }
+    }
+    for (const name of this.#functions) {
+      for (const match of body.matchAll(new RegExp(`\\b${name}\\(`, 'g'))) {
+        if (reads(balanced((match.index ?? 0) + match[0].length - 1))) {
+          throw new Ineligible(`passes a value it takes from a counter to '${name}'`);
+        }
+      }
+    }
   }
 
   protected override _callShellless(
@@ -1796,6 +1912,7 @@ ${stored.join('\n')}
         throw new Ineligible(`finds its cells through '${name}', which it reassigns`);
       }
     }
+    if (code.includes(TAKE)) this.#checkTakes(code);
     const scattered = code.indexOf(SCATTERED);
     if (scattered >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(scattered + SCATTERED.length))?.[1];
@@ -1861,6 +1978,13 @@ ${stored.join('\n')}
     if (!this.#plan) {
       if (buffers.length + this.#textures.size + this.#scatters.size + this.#adds.size === 0) {
         throw new Ineligible('writes nothing');
+      }
+      // Writes the counts missed, through a route other than a call, would overrun the records
+      for (const id of this.#scatters.keys()) {
+        if (!this.#records.get(id)) throw new Ineligible(`writes '${id}' where it cannot count`);
+      }
+      if (this.#adds.size > 0 && this.#slots === 0) {
+        throw new Ineligible('adds where it cannot count');
       }
       for (const id of this.#columns) {
         if (this.#loaded.has(id)) {
@@ -1930,6 +2054,7 @@ ${stored.join('\n')}
   /** `kit_begin(gid)`: starts an invocation, with fresh private variables and own cells. */
   #begin(): string {
     const lines = [`  ${GID} = kit_g;`];
+    for (const id of this.#takes) lines.push(`  kit_taken${this.#aim(id)} = 0u;`);
     for (const { id, dataType, init } of this.#privates) {
       lines.push(
         `  ${id} = ${init ?? this.ctx.resolveSnippet(this.typeInstantiation(dataType, [])).value};`,
@@ -2128,7 +2253,7 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
     const directive = [TARGET, 'buffer', buffer.group, buffer.binding, buffer.id, 0, 4, 4];
     return `${CHUNK} pass${index} main
 ${directive.join(' ')}
-${ACCUMULATE} ${slots}
+${ACCUMULATE} ${slots}${this.#takes.has(buffer.id) ? ` take ${this.#aim(buffer.id)}` : ''}
 ${outputs.join('\n')}
 void main() {
   uint kit_id = uint(gl_VertexID);

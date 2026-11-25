@@ -345,6 +345,45 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     'at computed cells inside a loop',
   ],
   [
+    'takes slots of a counter it then writes',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const ring = root.createMutable(d.arrayOf(d.f32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const slot = std.atomicAdd(head.$, 1) % 64;
+        ring.$[slot] = d.f32(id.x);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'decides by a slot it takes',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const ring = root.createMutable(d.arrayOf(d.f32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const slot = std.atomicAdd(head.$, 1);
+        if (slot < 64) ring.$[slot] = d.f32(id.x);
+      });
+    },
+    'decides a branch on a value it takes from a counter',
+  ],
+  [
+    'takes slots by more than one',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const ring = root.createMutable(d.arrayOf(d.f32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const slot = std.atomicAdd(head.$, 2) % 64;
+        ring.$[slot] = d.f32(id.x);
+      });
+    },
+    "adds other than 1 to 'head",
+  ],
+  [
     'adds to shared cells inside a loop',
     (root) => {
       const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));

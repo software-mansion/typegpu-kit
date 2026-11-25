@@ -183,7 +183,28 @@ export interface Scatter {
    * and `value`, all `uint`, `sites` is its slots, and `words` and `lanes` are 1.
    */
   readonly accumulate?: true;
+  /**
+   * Set for a counter whose values the kernel takes, as `Taking` describes: the `kit_aim` of its
+   * `kit_bases<aim>` sampler.
+   */
+  readonly takes?: number;
 }
+
+/**
+ * A counter the kernel takes values of: atomic additions of 1 to one whole `u32` whose results it
+ * uses. The kernel qualifies when how many values an invocation takes does not depend on a value it
+ * took: no taken value, nor a variable made from one, decides a branch or a loop, is returned or is
+ * passed to a function of the kernel. Such a counter is also a pass of sums, which adds the takes.
+ *
+ * Before any pass, the device runs that pass's capture stage with `kit_ranked` (`int`) 0, and
+ * counts each invocation's hits. It renders, into a `R32UI` texture 256 texels wide, each
+ * invocation's base: the takes of the invocations before it, in the order `gl_VertexID` numbers
+ * them. It binds that texture to `kit_bases<aim>` in every program of the form and sets
+ * `kit_ranked` to 1. A take then returns the counter's value before the dispatch, plus the
+ * invocation's base, plus its own takes before it: one order WebGPU's atomics may give. A dispatch
+ * of more than `MOST_ADDED` invocations runs on the CPU.
+ */
+export const TAKE_WIDTH = 256;
 
 /**
  * A pass of points that adds to a buffer, for atomic additions whose results the kernel drops on
@@ -374,9 +395,9 @@ export function parseCompute(
     const accumulate = chunk.directives.find((each) => each.startsWith(`${ACCUMULATE} `));
     const scatter = accumulate ?? chunk.directives.find((each) => each.startsWith(`${SCATTER} `));
     if (scatter) {
-      const [, sites, words = '1', lanes = '1'] = accumulate
-        ? [ACCUMULATE, accumulate.trim().split(/\s+/)[1]]
-        : scatter.trim().split(/\s+/);
+      const parts = scatter.trim().split(/\s+/);
+      const [, sites, words = '1', lanes = '1'] = accumulate ? [ACCUMULATE, parts[1]] : parts;
+      const taken = accumulate && parts[2] === 'take' ? int(parts[3] as string, scatter) : undefined;
       const stage = `points${chunk.stage.slice('pass'.length)}`;
       const draw = chunks.find((each) => each.stage === stage);
       if (!draw) throw new Error(`@typegpu/kit-gl: a pass of points without its '${stage}'`);
@@ -397,6 +418,7 @@ export function parseCompute(
           words: int(words, scatter),
           lanes: int(lanes, scatter),
           ...(accumulate && { accumulate: true as const }),
+          ...(taken !== undefined && { takes: taken }),
         },
       });
       continue;

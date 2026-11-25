@@ -7,6 +7,7 @@
 
 import type { CpuModule } from '../cpu/types.ts';
 import {
+  TAKE_WIDTH,
   ACCUMULATED_FRAGMENT,
   type ComputeModule,
   MOST_ADDED,
@@ -56,6 +57,8 @@ interface Points {
   readonly lanes: number;
   /** Whether the pass adds its records to the target instead of writing them. */
   readonly accumulate: boolean;
+  /** For a counter the kernel takes values of, the `kit_aim` of its bases. */
+  readonly takes: number | undefined;
   readonly capture: Program;
   readonly captureUses: Uses;
   readonly invocations: WebGLUniformLocation | null;
@@ -72,6 +75,8 @@ interface Points {
   /** The records of the last capture, kept for the next dispatch. */
   records: { buffer: WebGLBuffer; bytes: number } | undefined;
   vertexArray: WebGLVertexArrayObject | undefined;
+  /** The vertex array that counts takes from the records. */
+  rankArray?: WebGLVertexArrayObject;
 }
 
 const FIELD_BYTES: Record<ScatterField['type'], number> = {
@@ -191,6 +196,7 @@ function preparePoints(
     words: scatter.words,
     lanes: scatter.lanes,
     accumulate: scatter.accumulate === true,
+    takes: scatter.takes,
     capture,
     captureUses,
     invocations: capture.uniforms.get(INVOCATIONS) ?? null,
@@ -305,6 +311,244 @@ function accumulate(
   for (const texture of sums) give(ctx, gl.RGBA32F, width, height, texture);
   return made;
 }
+
+/**
+ * Runs a pass of points' capture stage once per invocation, recording into its records buffer, and
+ * leaves the pass's own program in use. Returns why it could not, or 'missing' once reported.
+ */
+function captureRecords(
+  ctx: Ctx,
+  pass: GpuPass,
+  points: Points,
+  groups: readonly (Bound | undefined)[],
+  invocations: readonly [number, number, number],
+  x: number,
+  y: number,
+  z: number,
+): string | undefined {
+  const { gl, state } = ctx;
+  const count = invocations[0] * invocations[1] * invocations[2];
+  // The kernel runs once per invocation, into records every draw reads
+  const bytes = Math.max(count * points.recordBytes, 4);
+  if (!points.records || points.records.bytes < bytes) {
+    if (points.records) gl.deleteBuffer(points.records.buffer);
+    const created = gl.createBuffer();
+    gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, created);
+    gl.bufferData(gl.TRANSFORM_FEEDBACK_BUFFER, bytes, gl.DYNAMIC_COPY);
+    gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, null);
+    points.records = { buffer: created, bytes };
+    ctx.track(() => gl.deleteBuffer(created));
+  }
+  const records = points.records.buffer;
+  if (count > 0) {
+    state.program(points.capture.program);
+    const lacking = bindUses(ctx, points.captureUses, points.capture, groups);
+    if (lacking) {
+      ctx.errors.report('validation', `The dispatch is missing ${lacking}.`);
+      return 'missing';
+    }
+    if (points.invocations) gl.uniform3ui(points.invocations, ...invocations);
+    if (points.workgroups) gl.uniform3ui(points.workgroups, x, y, z);
+    state.vertexArray(null);
+    // A draw needs a complete framebuffer even with the rasterizer discarded
+    state.drawFramebuffer(null);
+    // A buffer bound for transform feedback may be bound nowhere else, as the points drawn
+    // from the last records left it on ARRAY_BUFFER
+    state.arrayBuffer(null);
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, feedbackOf(ctx));
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, records);
+    state.enable(gl.RASTERIZER_DISCARD, true);
+    gl.beginTransformFeedback(gl.POINTS);
+    gl.drawArrays(gl.POINTS, 0, count);
+    gl.endTransformFeedback();
+    state.enable(gl.RASTERIZER_DISCARD, false);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+    state.program(pass.program.program);
+    bindUses(ctx, pass.uses, pass.program, groups);
+  }
+  return undefined;
+}
+
+const rankers = new WeakMap<Ctx, Map<string, Program | string>>();
+
+/** A program of the ranking, linked once per device. */
+function rankerOf(ctx: Ctx, key: string, vertex: string, fragment: string): Program | string {
+  let cache = rankers.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    rankers.set(ctx, cache);
+  }
+  let made = cache.get(key);
+  if (!made) {
+    const linked = link(ctx, vertex, fragment, 'ranking takes');
+    made = linked.ok ? linked.program : linked.message;
+    cache.set(key, made);
+  }
+  return made;
+}
+
+const COUNT_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+flat in uint kit_n;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  kit_result = uvec4(kit_n, 0u, 0u, 0u);
+}`;
+
+/** Sums each row of the counts. */
+const ROWS_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp usampler2D kit_counts;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  int row = int(gl_FragCoord.y);
+  uint sum = 0u;
+  for (int x = 0; x < ${TAKE_WIDTH}; x++) sum += texelFetch(kit_counts, ivec2(x, row), 0).x;
+  kit_result = uvec4(sum, 0u, 0u, 0u);
+}`;
+
+/** Each invocation's base: the rows above it and the cells before it in its row. */
+const BASES_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp usampler2D kit_counts;
+uniform highp usampler2D kit_rows;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  uint base = 0u;
+  for (int r = 0; r < at.y; r++) base += texelFetch(kit_rows, ivec2(0, r), 0).x;
+  for (int x = 0; x < at.x; x++) base += texelFetch(kit_counts, ivec2(x, at.y), 0).x;
+  kit_result = uvec4(base, 0u, 0u, 0u);
+}`;
+
+/**
+ * Counts the values each invocation takes of each counter, and binds each invocation's base, the
+ * takes before it, in every program of the form. Returns the bases to give back once the passes
+ * ran, or why it could not.
+ */
+function rank(
+  ctx: Ctx,
+  gpu: GpuCompute,
+  groups: readonly (Bound | undefined)[],
+  invocations: readonly [number, number, number],
+  x: number,
+  y: number,
+  z: number,
+): { aim: number; texture: WebGLTexture }[] | string {
+  const { gl, state } = ctx;
+  const count = invocations[0] * invocations[1] * invocations[2];
+  const rows = Math.max(1, Math.ceil(count / TAKE_WIDTH));
+  const made: { aim: number; texture: WebGLTexture }[] = [];
+  for (const pass of gpu.passes) {
+    const points = pass.scatter;
+    if (points?.takes === undefined) continue;
+    const aim = points.takes;
+    if (points.sites > 15) return 'a counter is taken more than 15 times an invocation';
+    // Every program of the form samples the bases on a unit no binding of a pass takes, kept
+    // until the passes ran. While counting, the capture leaves them unread
+    const bases = take(ctx, gl.R32UI, TAKE_WIDTH, rows);
+    made.push({ aim, texture: bases });
+    const unit = rankUnit(ctx, aim);
+    state.texture(unit, gl.TEXTURE_2D, bases);
+    state.sampler(unit, ctx.nearest);
+    for (const each of gpu.passes) {
+      for (const program of [each.program, each.scatter?.capture]) {
+        const location = program?.uniforms.get(`kit_bases${aim}`);
+        if (!program || !location) continue;
+        state.program(program.program);
+        gl.uniform1i(location, unit);
+        setInt(gl, program.uniforms.get('kit_ranked') ?? null, 1);
+      }
+    }
+    const ranked = points.capture.uniforms.get('kit_ranked') ?? null;
+    state.program(points.capture.program);
+    setInt(gl, ranked, 0);
+    const captured = captureRecords(ctx, pass, points, groups, invocations, x, y, z);
+    state.program(points.capture.program);
+    setInt(gl, ranked, 1);
+    if (captured) return captured === 'missing' ? 'a binding is missing' : captured;
+
+    const hits = Array.from({ length: points.sites }, (_, j) => `in uint kit_h${j};`);
+    const vertex = `#version 300 es
+${hits.join('\n')}
+flat out uint kit_n;
+void main() {
+  uint id = uint(gl_VertexID);
+  gl_PointSize = 1.0;
+  vec2 size = vec2(${TAKE_WIDTH}.0, float(${rows}));
+  vec2 xy = vec2(float(id % ${TAKE_WIDTH}u), float(id / ${TAKE_WIDTH}u));
+  gl_Position = vec4((xy + 0.5) / size * 2.0 - 1.0, 0.0, 1.0);
+  kit_n = ${Array.from({ length: points.sites }, (_, j) => `kit_h${j}`).join(' + ') || '0u'};
+}`;
+    const counter = rankerOf(ctx, `count:${points.sites}:${rows}`, vertex, COUNT_FRAGMENT);
+    const summer = rankerOf(ctx, 'rows', PASS_VERTEX, ROWS_FRAGMENT);
+    const baser = rankerOf(ctx, 'bases', PASS_VERTEX, BASES_FRAGMENT);
+    for (const each of [counter, summer, baser]) if (typeof each === 'string') return each;
+    const [counting, summing, basing] = [counter, summer, baser] as Program[];
+
+    const counts = take(ctx, gl.R32UI, TAKE_WIDTH, rows);
+    const sums = take(ctx, gl.R32UI, 1, rows);
+    const into = (texture: WebGLTexture, width: number) => {
+      state.drawFramebuffer(ctx.scratch.draw);
+      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      state.colorMask(0, 0xf);
+      state.blend(0, NO_BLEND);
+      state.viewport(0, 0, width, rows);
+    };
+    for (const cap of [gl.SCISSOR_TEST, gl.DEPTH_TEST, gl.STENCIL_TEST, gl.RASTERIZER_DISCARD]) {
+      state.enable(cap, false);
+    }
+    into(counts, TAKE_WIDTH);
+    gl.clearBufferuiv(gl.COLOR, 0, [0, 0, 0, 0]);
+    state.program(counting.program);
+    points.rankArray ??= gl.createVertexArray();
+    state.vertexArray(points.rankArray);
+    state.arrayBuffer((points.records as { buffer: WebGLBuffer }).buffer);
+    for (let j = 0; j < points.sites; j++) {
+      const location = gl.getAttribLocation(counting.program, `kit_h${j}`);
+      if (location < 0) continue;
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribIPointer(
+        location,
+        1,
+        gl.UNSIGNED_INT,
+        points.recordBytes,
+        j * points.siteBytes,
+      );
+    }
+    gl.drawArrays(gl.POINTS, 0, count);
+    state.vertexArray(null);
+
+    const sample = (program: Program, name: string, at: number, texture: WebGLTexture) => {
+      state.texture(at, gl.TEXTURE_2D, texture);
+      state.sampler(at, ctx.nearest);
+      setInt(gl, program.uniforms.get(name) ?? null, at);
+    };
+    into(sums, 1);
+    state.program(summing.program);
+    sample(summing, 'kit_counts', 0, counts);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    into(bases, TAKE_WIDTH);
+    state.program(basing.program);
+    sample(basing, 'kit_counts', 0, counts);
+    sample(basing, 'kit_rows', 1, sums);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+    state.texture(0, gl.TEXTURE_2D, null);
+    state.texture(1, gl.TEXTURE_2D, null);
+    give(ctx, gl.R32UI, TAKE_WIDTH, rows, counts);
+    give(ctx, gl.R32UI, 1, rows, sums);
+  }
+  return made;
+}
+
+/** The texture unit of a counter's bases: below the device's scratch unit, from the top down. */
+const rankUnit = (ctx: Ctx, aim: number) => ctx.maxTextureUnits - 2 - aim;
 
 export interface GpuCompute {
   readonly module: ComputeModule;
@@ -613,6 +857,20 @@ export function runGpu(
   }
 
   const outputs: (() => void)[] = [];
+  const bases = rank(ctx, gpu, groups, invocations, x, y, z);
+  if (typeof bases === 'string') return bases;
+  if (bases.length > 0) {
+    const rows = Math.max(
+      1,
+      Math.ceil((invocations[0] * invocations[1] * invocations[2]) / TAKE_WIDTH),
+    );
+    outputs.push(() =>
+      bases.forEach(({ aim, texture }) => {
+        state.texture(rankUnit(ctx, aim), gl.TEXTURE_2D, null);
+        give(ctx, gl.R32UI, TAKE_WIDTH, rows, texture);
+      }),
+    );
+  }
   for (const [i, pass] of gpu.passes.entries()) {
     const resource = resolved[i]!;
     state.program(pass.program.program);
@@ -649,45 +907,9 @@ export function runGpu(
       const buffer = resource.kind === 'buffer';
       const count = invocations[0] * invocations[1] * invocations[2];
       const made: WebGLTexture[] = [];
-      // The kernel runs once per invocation, into records every draw below reads
-      const bytes = Math.max(count * points.recordBytes, 4);
-      if (!points.records || points.records.bytes < bytes) {
-        if (points.records) gl.deleteBuffer(points.records.buffer);
-        const created = gl.createBuffer();
-        gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, created);
-        gl.bufferData(gl.TRANSFORM_FEEDBACK_BUFFER, bytes, gl.DYNAMIC_COPY);
-        gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, null);
-        points.records = { buffer: created, bytes };
-        ctx.track(() => gl.deleteBuffer(created));
-      }
-      const records = points.records.buffer;
-      if (count > 0) {
-        state.program(points.capture.program);
-        const lacking = bindUses(ctx, points.captureUses, points.capture, groups);
-        if (lacking) {
-          ctx.errors.report('validation', `The dispatch is missing ${lacking}.`);
-          return undefined;
-        }
-        if (points.invocations) gl.uniform3ui(points.invocations, ...invocations);
-        if (points.workgroups) gl.uniform3ui(points.workgroups, x, y, z);
-        state.vertexArray(null);
-        // A draw needs a complete framebuffer even with the rasterizer discarded
-        state.drawFramebuffer(null);
-        // A buffer bound for transform feedback may be bound nowhere else, as the points drawn
-        // from the last records left it on ARRAY_BUFFER
-        state.arrayBuffer(null);
-        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, feedbackOf(ctx));
-        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, records);
-        state.enable(gl.RASTERIZER_DISCARD, true);
-        gl.beginTransformFeedback(gl.POINTS);
-        gl.drawArrays(gl.POINTS, 0, count);
-        gl.endTransformFeedback();
-        state.enable(gl.RASTERIZER_DISCARD, false);
-        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
-        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
-        state.program(pass.program.program);
-        bindUses(ctx, pass.uses, pass.program, groups);
-      }
+      const captured = captureRecords(ctx, pass, points, groups, invocations, x, y, z);
+      if (captured) return captured === 'missing' ? undefined : captured;
+      const records = (points.records as { buffer: WebGLBuffer }).buffer;
       points.vertexArray ??= gl.createVertexArray();
       const vertexArray = points.vertexArray;
       const pointAt = (site: number) => {
