@@ -18,11 +18,12 @@ test('a GPU form whose output a CPU kernel reads back moves to the CPU and stays
       'use gpu';
       doubled.$[id.x] = input.$[id.x]! * 2;
     });
-    // A shared atomic keeps this kernel on the CPU, so it reads back what `double` wrote
+    // A barrier keeps this kernel on the CPU, so it reads back what `double` wrote
     const sum = tgpu.computeFn({ workgroupSize: [64], in: { id: d.builtin.globalInvocationId } })(({
       id,
     }) => {
       'use gpu';
+      std.workgroupBarrier();
       std.atomicAdd(total.$, doubled.$[id.x]!);
     });
     const doubling = root.createComputePipeline({ compute: double }).$name('doubling');
