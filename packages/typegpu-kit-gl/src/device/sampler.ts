@@ -76,6 +76,17 @@ function make(ctx: Ctx, descriptor: GPUSamplerDescriptor, filter: boolean): WebG
   return sampler;
 }
 
+/** A sampler's GL objects, apart from it so freeing them on collection never keeps it. */
+interface Made {
+  readonly sampler: WebGLSampler;
+  unfiltered: WebGLSampler | undefined;
+}
+
+const freeing = (gl: WebGL2RenderingContext, made: Made) => () => {
+  gl.deleteSampler(made.sampler);
+  if (made.unfiltered && made.unfiltered !== made.sampler) gl.deleteSampler(made.unfiltered);
+};
+
 export function createSampler(ctx: Ctx, descriptor: GPUSamplerDescriptor = {}): GPUSampler {
   const { gl } = ctx;
   const filtering =
@@ -83,20 +94,17 @@ export function createSampler(ctx: Ctx, descriptor: GPUSamplerDescriptor = {}): 
     descriptor.minFilter === 'linear' ||
     descriptor.mipmapFilter === 'linear';
   const sampler = make(ctx, descriptor, true);
-  let unfiltered: WebGLSampler | undefined = filtering ? undefined : sampler;
+  const made: Made = { sampler, unfiltered: filtering ? undefined : sampler };
   const impl: SamplerImpl = {
     descriptor: { ...descriptor },
     comparison: descriptor.compare !== undefined,
     filtering,
     sampler,
     unfiltered() {
-      return (unfiltered ??= make(ctx, descriptor, false));
+      return (made.unfiltered ??= make(ctx, descriptor, false));
     },
   };
-  ctx.track(() => {
-    gl.deleteSampler(sampler);
-    if (unfiltered && unfiltered !== sampler) gl.deleteSampler(unfiltered);
-  });
+  ctx.track(freeing(gl, made), impl);
   return {
     [IMPL]: impl,
     __brand: 'GPUSampler',

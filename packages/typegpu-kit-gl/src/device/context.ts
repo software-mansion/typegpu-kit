@@ -78,8 +78,12 @@ export interface Ctx {
   readonly scratch: { readonly read: WebGLFramebuffer; readonly draw: WebGLFramebuffer };
   /** Unique numbers for resource identity in cache keys. */
   id(): number;
-  /** Frees a GL object when the device is destroyed, unless its owner frees it first. */
-  track(free: () => void): () => void;
+  /**
+   * Frees a GL object when the device is destroyed, unless its owner frees it first. With
+   * `owner`, also once the owner is garbage collected, as WebGPU frees what a program drops:
+   * `free` must then reach no object that reaches the owner.
+   */
+  track(free: () => void, owner?: object): () => void;
   /** Called after a submit wrote to a canvas texture, to present it. */
   presented(texture: object): void;
   readonly stats: DeviceStats;

@@ -387,6 +387,10 @@ function autoLayouts(stages: Stages): GPUBindGroupLayout[] {
   return Array.from(groups, (entries) => makeLayout({ entries: entries ?? [] }));
 }
 
+/** Frees a pipeline's vertex array, made outside its scope so it captures nothing else. */
+const deleting = (gl: WebGL2RenderingContext, vao: WebGLVertexArrayObject) => () =>
+  gl.deleteVertexArray(vao);
+
 function makeRenderPipeline(
   ctx: Ctx,
   descriptor: GPURenderPipelineDescriptor,
@@ -395,7 +399,6 @@ function makeRenderPipeline(
   const { gl, state } = ctx;
   const label = descriptor.label ?? '';
   const vao = gl.createVertexArray()!;
-  ctx.track(() => gl.deleteVertexArray(vao));
   let stages: Stages | string;
   let renderStateValue: RenderState;
   let slots: VertexSlot[] = [];
@@ -421,6 +424,7 @@ function makeRenderPipeline(
     slots,
     state: renderStateValue,
   };
+  ctx.track(deleting(gl, vao), impl);
 
   state.vertexArray(vao);
   for (const slot of slots) {

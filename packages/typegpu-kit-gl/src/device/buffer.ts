@@ -66,6 +66,28 @@ export interface BufferImpl {
   free(): void;
 }
 
+/** The GL copies of a buffer, apart from it so freeing them on collection never keeps it. */
+interface Copies {
+  vertex: Copy<WebGLBuffer> | undefined;
+  index: Copy<WebGLBuffer> | undefined;
+  data: Copy<DataTexture> | undefined;
+  uniform: Copy<WebGLBuffer> | undefined;
+  readonly slices: BufferImpl['slices'];
+}
+
+function freeCopies(gl: WebGL2RenderingContext, copies: Copies): void {
+  if (copies.vertex) gl.deleteBuffer(copies.vertex.value);
+  if (copies.index) gl.deleteBuffer(copies.index.value);
+  if (copies.data) gl.deleteTexture(copies.data.value.texture);
+  if (copies.uniform) gl.deleteBuffer(copies.uniform.value);
+  for (const slice of copies.slices.values()) gl.deleteBuffer(slice.value);
+  copies.slices.clear();
+  copies.vertex = copies.index = copies.data = copies.uniform = undefined;
+}
+
+/** A closure over the copies alone, made outside the buffer's scope so it captures nothing else. */
+const freeing = (gl: WebGL2RenderingContext, copies: Copies) => () => freeCopies(gl, copies);
+
 export function bufferImpl(buffer: GPUBuffer): BufferImpl {
   return implOf<BufferImpl>(buffer, 'buffer');
 }
@@ -298,6 +320,13 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
   const padded = Math.max(16, Math.ceil(size / 16) * 16);
   const storage = new ArrayBuffer(padded);
 
+  const copies: Copies = {
+    vertex: undefined,
+    index: undefined,
+    data: undefined,
+    uniform: undefined,
+    slices: new Map(),
+  };
   const impl: BufferImpl = {
     id: ctx.id(),
     label: descriptor.label ?? '',
@@ -310,22 +339,34 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     sync() {
       if (impl.gpuNewer && impl.data && !impl.destroyed) readBack(ctx, impl);
     },
-    vertex: undefined,
-    index: undefined,
-    data: undefined,
-    uniform: undefined,
-    slices: new Map(),
-    free() {
-      if (impl.vertex) gl.deleteBuffer(impl.vertex.value);
-      if (impl.index) gl.deleteBuffer(impl.index.value);
-      if (impl.data) gl.deleteTexture(impl.data.value.texture);
-      if (impl.uniform) gl.deleteBuffer(impl.uniform.value);
-      for (const slice of impl.slices.values()) gl.deleteBuffer(slice.value);
-      impl.slices.clear();
-      impl.vertex = impl.index = impl.data = impl.uniform = undefined;
+    get vertex() {
+      return copies.vertex;
     },
+    set vertex(value) {
+      copies.vertex = value;
+    },
+    get index() {
+      return copies.index;
+    },
+    set index(value) {
+      copies.index = value;
+    },
+    get data() {
+      return copies.data;
+    },
+    set data(value) {
+      copies.data = value;
+    },
+    get uniform() {
+      return copies.uniform;
+    },
+    set uniform(value) {
+      copies.uniform = value;
+    },
+    slices: copies.slices,
+    free: () => freeCopies(gl, copies),
   };
-  const untrack = ctx.track(() => impl.free());
+  const untrack = ctx.track(freeing(gl, copies), impl);
 
   let mapState: GPUBufferMapState = descriptor.mappedAtCreation ? 'mapped' : 'unmapped';
   let mapMode = descriptor.mappedAtCreation ? MAP_MODE.WRITE : 0;

@@ -140,6 +140,10 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
 
   let nextId = 1;
   let presentRecord: ((record: object) => void) | undefined;
+  // Frees what an owner held once it is collected, unless the device was destroyed first
+  const collected = new FinalizationRegistry<() => void>((free) => {
+    if (frees.delete(free) && !ctx.lost) free();
+  });
   const ctx: Ctx = {
     gl,
     canvas,
@@ -155,9 +159,13 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     nearest,
     scratch: { read: gl.createFramebuffer(), draw: gl.createFramebuffer() },
     id: () => nextId++,
-    track(free) {
+    track(free, owner) {
       frees.add(free);
-      return () => frees.delete(free);
+      if (owner) collected.register(owner, free, free);
+      return () => {
+        frees.delete(free);
+        if (owner) collected.unregister(free);
+      };
     },
     presented: (record) => presentRecord?.(record),
     stats: createStats(),
