@@ -443,4 +443,29 @@ New.
 +export { CrossShaderStageState, GlslGenerator } from './glslGenerator.ts';
 ```
 
+### J. `bitcast` between `i32` and `u32`
+
+New.
+
+**Why.** The radix sort orders `i32` keys by their bits, `std.bitcast(d.i32, d.u32)(v) ^ 0x80000000` (`sortableI32` in `@typegpu/kit`'s `src/sort/radix/key.ts`). The generator translated bitcasts to and from `f32` only.
+
+**Reproduction.** `const f = tgpu.fn([d.i32], d.u32)((v) => { 'use gpu'; return std.bitcast(d.i32, d.u32)(v); });` resolved with `glOptions()` throws "Cannot bitcast from i32 to u32". Patched, `return uint(v);`. `tests/glsl/semantics.test.gl.ts` compares scalars and vectors both ways with WebGPU.
+
+**Diff.**
+
+```diff
+       if (sourceSchema.type === targetSchema.type) {
+         return this.ctx.resolveSnippet(source).value;
+       }
++      // GLSL's conversions between int and uint keep the bits
++      const integers = ['i32', 'u32'];
++      if (
++        integers.includes(sourcePrimitive.type) &&
++        integers.includes(targetPrimitive.type) &&
++        sourceSchema.type.startsWith('vec') === targetSchema.type.startsWith('vec')
++      ) {
++        return `${this.ctx.resolve(targetSchema).value}(${this.ctx.resolveSnippet(source).value})`;
++      }
+```
+
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.

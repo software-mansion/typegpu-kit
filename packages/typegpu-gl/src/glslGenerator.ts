@@ -1039,6 +1039,15 @@ export class GlslGenerator extends WgslGenerator {
       if (sourceSchema.type === targetSchema.type) {
         return this.ctx.resolveSnippet(source).value;
       }
+      // GLSL's conversions between int and uint keep the bits
+      const integers = ['i32', 'u32'];
+      if (
+        integers.includes(sourcePrimitive.type) &&
+        integers.includes(targetPrimitive.type) &&
+        sourceSchema.type.startsWith('vec') === targetSchema.type.startsWith('vec')
+      ) {
+        return `${this.ctx.resolve(targetSchema).value}(${this.ctx.resolveSnippet(source).value})`;
+      }
 
       throw new Error(`Cannot bitcast from ${String(sourceSchema)} to ${String(targetSchema)}`);
     }
