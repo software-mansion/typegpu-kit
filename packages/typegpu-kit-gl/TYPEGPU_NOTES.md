@@ -415,3 +415,45 @@ target.generateMipmaps(); // its own encoder and submit, a new bind group per le
 **Upstream.** Cache the bind group per source view, and give `generateMipmaps` an optional encoder to record into. In `core/texture/textureUtils.ts` and `core/texture/texture.ts`.
 
 **Workaround.** None in the fallback; the device runs each submit as it comes.
+
+### 28. A copy of a local array element is still a reference when assigned back
+
+Inside a `'use gpu'` function, `d.vec2u(group[1])` makes a copy, and binding it to a `const` should leave a value. Assigning that `const` to another element of the same local array is rejected as a reference assignment, so a compare-and-swap over a local array needs a second copy constructor at each store. A bitonic step does exactly this: it reads two elements, compares them and writes them back swapped.
+
+```ts
+const Pairs = d.arrayOf(d.vec2u, 8);
+const swap = tgpu.fn(
+  [],
+  d.u32,
+)(() => {
+  'use gpu';
+  const group = Pairs();
+  const b = d.vec2u(group[1]);
+  group[0] = b; // "references cannot be assigned. Try 'group[0] = vec2u(b)'"
+  return group[0].x;
+});
+```
+
+**Upstream.** Track the result of a schema call as a value, not a reference, through a `const` binding, so assigning it copies without another constructor. In the code generator's assignment check.
+
+**Workaround.** Wrap each stored value in its constructor again, `group[0] = d.vec2u(b)`, as the grid's bitonic `merge` kernel does.
+
+### 29. A shift of module constants is not folded where a schema needs a count
+
+`d.arrayOf(T, n)` inside a `'use gpu'` function needs `n` known when the shader resolves. `2 ** N` with a module constant `N` folds and resolves, but `1 << N` does not: it is resolved as a runtime expression and the schema call fails. A module that sizes a local array by a bit count has to write the power or hoist the schema.
+
+```ts
+const N = 3;
+const f = tgpu.fn(
+  [],
+  d.u32,
+)(() => {
+  'use gpu';
+  const group = d.arrayOf(d.vec2u, 1 << N)(); // "Called comptime function with runtime-known values: '1 << N'"
+  return group[0].x;
+});
+```
+
+**Upstream.** Fold bitwise and shift operators on known numbers as the other arithmetic operators are folded. In the code generator's binary-expression handling.
+
+**Workaround.** Hoist the schema to module scope, `const Gathered = d.arrayOf(d.vec2u, 2 ** STEPS)`, and call `Gathered()` in the body, as `grid.ts` does.
