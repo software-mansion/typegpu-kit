@@ -11,7 +11,10 @@ import type { TgpuRoot } from 'typegpu';
 export interface Backend {
   /** Names the API: `'webgpu'` for a device from an adapter, `'webgl'` for the fallback's. */
   readonly kind: 'webgpu' | 'webgl';
-  /** Tells where compute pipelines run. The fallback runs them on the CPU, row by row. */
+  /**
+   * Tells where kernels that share workgroup memory run. The fallback runs those on the CPU, row
+   * by row, and most other kernels on the GPU.
+   */
   readonly compute: 'gpu' | 'cpu';
   /** Gives the canvas format the backend presents without a conversion. */
   readonly preferredCanvasFormat: GPUTextureFormat;
