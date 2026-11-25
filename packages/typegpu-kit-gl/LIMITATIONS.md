@@ -44,7 +44,7 @@ Most examples run on the fallback as they are. Five choose other kernels with `b
 
 - `ocean`, `censer` and `sph-sculpt` share workgroup memory behind barriers: the FFT and its mip reductions, the smoke's coarse average, the water's tally and occupancy. A fragment that reran its whole workgroup would compute it, at the workgroup's size in cost, so for `censer` at eight times its heaviest kernel. Their branches read back or recompute what the first phase stored instead, which is cheaper.
 - `jump-flood` places seeds with `atomicMin` used as a minimum and links regions with `atomicOr` into rows of bits. No form covers either.
-- `slime-mould` claims cells with counters that its agents add to and load in the same dispatch, so each agent counts its neighbours from additions still being made. A pass of sums adds only after the kernel ran, and refuses an `atomicLoad` of a buffer it adds to.
+- `slime-mould` claims cells with counters that its agents add to and load in the same dispatch, so each agent counts its neighbours from additions still being made. A pass of sums adds only after the kernel ran, and refuses an `atomicLoad` of a buffer it adds to. Each agent loads before it adds, so loads served from before the dispatch would be a result WebGPU may give too. Allowing that needs the order of loads and additions followed through every path of a kernel, and sums drawn in batches: the agents make up to four additions each, past the bound on additions to one cell.
 
 In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` branch for the same reasons: workgroup memory, counters per cell whose results are used, and a ring slot taken inside a loop or passed on to a callback.
 
