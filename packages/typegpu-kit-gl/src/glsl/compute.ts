@@ -707,8 +707,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   /** The call whose value the statement being generated drops, and whether it is being made. */
   #dropped: Expression | undefined;
   #dropping = false;
-  /** Whether a call is being made, so a nested route to the same call does not count it twice. */
-  #inCall = false;
+  /** The function a call is being made from, so a second route to the same call counts once. */
+  #inCall: Frame | undefined;
   /** Counters whose values the kernel takes: atomic additions of 1 whose results it uses. */
   readonly #takes = new Set<string>();
   #slots = 0;
@@ -940,14 +940,16 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const owns = args.map((arg) => this.#own(arg));
     const outer = this.#pending;
     this.#pending = owns.some(Boolean) ? owns : undefined;
-    const nested = this.#inCall;
-    this.#inCall = true;
+    // The generator makes a call through `call` and then `_callShellless` in the same function
+    const nested = this.#inCall === this.#frame;
+    const calling = this.#inCall;
+    this.#inCall = this.#frame;
     let result: T;
     try {
       result = call();
     } finally {
       this.#pending = outer;
-      this.#inCall = nested;
+      this.#inCall = calling;
     }
     const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
     // A call reaches here once more through the generator's own call, which counts it
