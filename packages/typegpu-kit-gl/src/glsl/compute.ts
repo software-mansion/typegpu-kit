@@ -470,23 +470,25 @@ function add(left: Own, right: Own): Own | undefined {
   return sum;
 }
 
-/** Whether a `for…of` iterates `tgpu.unroll(…)`, which TypeGPU unrolls as it generates. */
 /**
  * The class of what `tgpu.unroll` gives a shader, which TypeGPU expands a `for…of` over: taken
  * from the real `tgpu.unroll` by calling its code generation once, since TypeGPU does not export
- * it. Undefined if that changes, and then no loop counts as unrolled.
+ * it. The result is known by holding the snippet it was given, not by its class's name, which a
+ * minifier may change. Undefined if that changes, and then no loop counts as unrolled.
  */
 const UNROLLED: (abstract new (...args: never[]) => unknown) | undefined = (() => {
   const callable = tgpu.unroll as unknown as Record<symbol, unknown>;
+  const given = snip(0, d.u32, 'constant');
   for (const key of Object.getOwnPropertySymbols(callable)) {
     const generate = callable[key];
     if (typeof generate !== 'function') continue;
     try {
       const made = (generate as (ctx: unknown, args: unknown[]) => { value?: unknown })(undefined, [
-        snip(0, d.u32, 'constant'),
+        given,
       ]);
-      const kind = (made?.value as object | undefined)?.constructor;
-      if (typeof kind === 'function' && kind.name === 'UnrollableIterable') {
+      const value = made?.value as { snippet?: unknown } | undefined;
+      const kind = value?.constructor;
+      if (typeof kind === 'function' && value?.snippet === given) {
         return kind as abstract new (...args: never[]) => unknown;
       }
     } catch {
