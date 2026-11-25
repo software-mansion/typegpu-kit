@@ -141,8 +141,10 @@ export async function captureScene(
       },
     );
     // Async compilation and asset loading do not advance simulation time.
-    for (let i = 0; i < 100 && !state.ready && !state.failure; i++) await settle();
+    const readyDeadline = performance.now() + 30000;
+    while (!state.ready && !state.failure && performance.now() < readyDeadline) await settle();
     if (state.failure) throw state.failure;
+    if (!state.ready) throw new Error(`${key}: scene loading did not settle within 30 seconds`);
     loop = frames.create(root, scene.frame);
     for (let frame = 0; frame < 2; frame++) {
       loop.run(frame * 0.04);

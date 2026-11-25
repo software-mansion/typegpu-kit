@@ -41,6 +41,14 @@ Retaining compiled kernel closures reduced falling-sand's first-50-dispatch medi
 
 These are CPU-only timings, including kernels that the real fallback can run as fragment passes. The closure is retained, but bindings and uniform-derived caches are reset for every dispatch and released afterward. Uniform writes, copies, changed binding ranges and other kernels therefore cannot reuse stale cached values. There is no device versioning contract and no change to `src/cpu/types.ts` for this optimization.
 
+`compile` accepts the self-describing compute string and ignores unknown directive comments, including GPU-form metadata. `dispatch` takes workgroup counts; the device reads the three u32 words for indirect dispatch before calling it. Buffer offsets and sizes are bytes. Texture mip levels are relative to the bound view, tightly packed with rows top to bottom and slices/layers in order; half textures contain raw `Uint16Array` bits. Samplers use `GPUSamplerDescriptor`. Binding read/write flags conservatively reflect declared access: mutable buffers are both read and written, even if a particular kernel only stores. The device must synchronize those resources accordingly. The original `types.ts` contract is unchanged.
+
+## Latest comparison outcome
+
+The fresh 33-scene run plus the fishtank readiness rerun has 22 scenes whose compared resources meet the field policy, eight with only source-traced amplification, and three with unresolved differences (ocean, censer, sph-sculpt). All 26 normal Dawn tests pass. Fishtank initially exceeded a 100-tick shader-compilation wait; the harness now waits up to 30 seconds without advancing simulation time, and its rerun passes. The normal unit suite passes 65 tests with four opt-in tests skipped; the all-example compilation sweep passes.
+
+The eight amplified scenes are jelly-world, fireworks, kinetic, stampede, jellies, spider, survey-model and flow-field. Some of the other 22 scenes have no compute-written resources left after render-dependency exclusions; their status is not a render comparison.
+
 ## Hardening findings
 
 The interaction sweep found one runtime error: conditional expressions could emit an unresolved `select` identifier because the base generator bypassed `emitCall`. Commit `3b70f435` routes those expressions through the CPU emitter; the calls fixture covers scalar and vector ternaries, and the expression suite remains green. Interaction controls now also drag while a held UI button remains pressed, reaching sph-sculpt's build-stroke height-map kernel.
