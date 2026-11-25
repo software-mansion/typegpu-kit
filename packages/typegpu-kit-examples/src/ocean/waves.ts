@@ -209,24 +209,34 @@ const twice = (o: number, span: number, base: number, stride: number) => {
   return butterfly(o, wide, x, y);
 };
 
-/** Steps every row of every signal twice, as `twice` does. */
+/** Three radix-2 steps in one, spans `span`, `2 * span` and `4 * span`, as `twice` gathers two. */
+const thrice = (o: number, span: number, base: number, stride: number) => {
+  'use gpu';
+  const wide = span * 4;
+  const k = pairOf(o, wide);
+  const x = twice(k, span, base, stride);
+  const y = twice(k + HALF_N, span, base, stride);
+  return butterfly(o, wide, x, y);
+};
+
+/** Steps every row of every signal three times, as `thrice` does. */
 const rowStages = tgpu.computeFn({
   workgroupSize: [64],
   in: { gid: d.builtin.globalInvocationId },
 })(({ gid }) => {
   'use gpu';
   const line = (gid.z * N + gid.y) * N;
-  stageLayout.$.into[line + gid.x] = twice(gid.x, stageLayout.$.span, line, d.u32(1));
+  stageLayout.$.into[line + gid.x] = thrice(gid.x, stageLayout.$.span, line, d.u32(1));
 });
 
-/** Steps every column of every signal twice, as `twice` does. */
+/** Steps every column of every signal three times, as `thrice` does. */
 const columnStages = tgpu.computeFn({
   workgroupSize: [64],
   in: { gid: d.builtin.globalInvocationId },
 })(({ gid }) => {
   'use gpu';
   const plane = gid.z * N * N + gid.x;
-  stageLayout.$.into[plane + gid.y * N] = twice(gid.y, stageLayout.$.span, plane, d.u32(N));
+  stageLayout.$.into[plane + gid.y * N] = thrice(gid.y, stageLayout.$.span, plane, d.u32(N));
 });
 
 /** Steps every column of every signal, `gid` being (column, y, signal of a cascade). */
@@ -489,11 +499,11 @@ export function createWaves(root: TgpuRoot) {
   const spare = cpu
     ? root.createBuffer(d.arrayOf(d.vec2f, CASCADES * SIGNALS * N * N)).$usage('storage')
     : undefined;
-  // Steps go two spans a pass, and the last alone when there is an odd one: an odd number of
-  // passes, as of steps, so rows step from the lattice and end in the spare one, columns step back
-  const passes = STRIDES.filter((_, s) => s % 2 === 0).map((span, pass) => ({
+  // Steps go three spans a pass, LOG2N being a multiple of three: an odd number of passes, as of
+  // steps, so rows step from the lattice and end in the spare one, columns step back
+  const passes = STRIDES.filter((_, s) => s % 3 === 0).map((span) => ({
     span: root.createUniform(d.u32, span),
-    twice: pass * 2 + 1 < LOG2N,
+    twice: true,
   }));
   const stagesOf = (start: 'lattice' | 'spare') =>
     (cpu ? passes : []).map(({ span, twice: both }, s) => {
