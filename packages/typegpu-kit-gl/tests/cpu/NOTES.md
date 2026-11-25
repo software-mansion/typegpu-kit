@@ -72,13 +72,21 @@ The orchestrator's 4096-value half-store ramp found 6069 differing channels out 
 
 The two-texel filtering probe found 3327 differing components. All 3327 match a model with 8-bit interpolation coordinates and a half-rounded sample result; 2307 already match just the coordinate model. All are bounded by half a weight step times the tap range plus one half ulp. This is measured filter precision, not a reason to make the CPU imitate Metal.
 
-Censer's identical-input advection replay differs in 8868 components beyond the one-store allowance. A test-only 8-bit coordinate model reduces that to 232; also rounding sample results to half reduces it to 110. Those 110 components, with a maximum distance of 62 half ulps, remain unexplained. The models are injected into a separate compiled test module with restored input bytes; production texture sampling is unchanged. Kinetic's remaining 73 base-level components per output are explained by the separately traced atmospheric cancellation; that kernel samples no textures.
+Censer's identical-input advection replay differs in 8868 components beyond the one-store allowance. A test-only 8-bit coordinate model reduces that to 232; also rounding sample results to half reduces it to 110. The follow-up advection trace below localizes those 110 components, whose maximum distance was 62 half ulps. The models are injected into a separate compiled test module with restored input bytes; production texture sampling is unchanged. Kinetic's remaining 73 base-level components per output are explained by the separately traced atmospheric cancellation; that kernel samples no textures.
+
+### Censer advection residual, traced
+
+`CPU_ADVECTION_TRACE=1 CPU_REPLAY_BATCH=1 CPU_EXAMPLES=censer` with `replay.test.gpu.ts` traces every texel left by the test-only filter model (85 texels, 110 components). `results.json` retains the ten worst full traces and a summary for all 85. Tags 0–15 name dt, at, back, restored, corrected velocity, held matter, curl, curl gradient, normalized gradient, confinement, world position, lift, force sum, dissipation result, carry, and final mix. Tags 100–111 hold normalized coordinates, texel coordinates, fractions, eight clamped taps with raw half bits, and sampled result; 112 is the pre-store value and 113 holds dissipation, sponge and carry-mix factors.
+
+The largest residual is at (93,26,49): normalized y is 0.2365896850824356 on the CPU and 0.2365896999835968 on Dawn (one f32 ulp). The texel-space fractions are 0.9980449676513672 and 0.998046875, straddling the 8-bit filter rounding midpoint. All eight raw taps agree. The predicted x velocity is 6.37769699e-6 under the CPU-coordinate hardware model and 2.68220901e-6 on Dawn, producing the 62-half-ulp difference after dissipation. The samples are interior, not a clamp, out-of-volume or depth-normalization defect.
+
+All 595 samples in the 85 traces agree with trilinear interpolation of Dawn's recorded taps using 8-bit weights and half-rounded results to within one half ulp. Replaying Dawn's sampled values through the CPU module leaves only (75,33,40) two half ulps apart: world position differs by one f32 ulp from contraction; `force`/`carry` amplify it and the final mix cancels to about -9.7e-6. Replaying that world-position input as well puts every affected component within one half-store ulp. These substitutions are diagnostic only; neither the production sampler nor the arithmetic changes. The opt-in test asserts these source bounds and does not claim bit-exact whole-scene equality.
 
 ### Unresolved comparisons
 
 These are still review failures in the opt-in whole-example comparison, not accepted tolerances:
 
-- Censer: the 110 components left by the filter model need a finer trace of advection arithmetic or hardware interpolation. Whole-scene differences also propagate into smoke velocity/curls and the pressure hierarchy.
+- Censer: the identical-input advection residual is now source-traced below. Other whole-scene velocity/curl and pressure resources have not independently been replayed; they are not automatically classified by this result.
 - Ocean: sky/cloud, environment, foam and wave-map outputs beyond the classified frequency buffer have not all been traced. Half-store chains and frequency quantization are known sources, but their presence alone does not prove every reported output difference.
 - Sph-sculpt: the two environment textures, harmonic buffer, and `origin`/`volume` material textures remain unclassified. The height buffer's rim mechanism is established separately.
 

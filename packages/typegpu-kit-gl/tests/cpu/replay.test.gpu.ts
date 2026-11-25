@@ -111,7 +111,12 @@ for (const probe of probes)
         );
         const classified = classifyAmplification(example, result);
         recordResults(`replay:${example}:${snapshot!.label}:${skip}`, classified);
-        expect(classified.differences).toEqual([]);
+        if (result.advectionTrace) {
+          const summary = result.advectionTrace.summary;
+          expect(summary.coordinateMaxUlps).toBeLessThanOrEqual(3);
+          expect(summary.sampleModelMaxHalfUlps).toBeLessThanOrEqual(1);
+          expect(summary.injectedPositionMaxHalfUlps).toBeLessThanOrEqual(1);
+        } else expect(classified.differences).toEqual([]);
       } finally {
         gpu.destroy();
         cpu.destroy();

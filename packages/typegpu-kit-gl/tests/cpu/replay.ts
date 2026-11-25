@@ -1,3 +1,4 @@
+import { traceAdvection, summarizeAdvection } from './advection-trace.ts';
 import type { CpuBindingUse, CpuBuffer, CpuResources, CpuTexture } from '../../src/cpu/types.ts';
 import { compile } from '../../src/cpu/index.ts';
 import type { DispatchSnapshot } from './device.ts';
@@ -8,6 +9,8 @@ import {
   readTexture,
   type CapturedResource,
 } from './example-comparison.ts';
+
+const ordered = (bits: number) => (bits & 0x8000 ? -(bits & 0x7fff) : bits);
 
 interface HeldBinding {
   use: CpuBindingUse;
@@ -112,6 +115,7 @@ export async function replay(
     throw new Error(
       `No WGSL dispatch matches ${snapshot.label}: ${keys.join(', ')}; available ${[...new Set(events.map((item) => item.label))].join(', ')}`,
     );
+
   const groups = new Map<number, GPUBindGroupEntry[]>();
   const append = (group: number, binding: number, resource: GPUBindingResource) => {
     const entries = groups.get(group) ?? [];
@@ -289,7 +293,52 @@ ${snapshot.code}`;
         });
       }
     }
+    let advectionTrace;
+    if (process.env.CPU_ADVECTION_TRACE === '1') {
+      const binding = snapshot.bindings.find((item) =>
+        item.key.startsWith('texture:smoke advected:'),
+      )!;
+      const level = binding.texture!.levels[0]!;
+      const actual = level.data as Uint16Array;
+      const expected = new Uint16Array(
+        gpu.find((item) => item.key === binding.key)!.levels[0]!.bytes,
+      );
+
+      const gap = (word: number) => Math.abs(ordered(actual[word]!) - ordered(expected[word]!));
+      const worst = Array.from({ length: actual.length / 4 }, (_, texel) => {
+        let channel = 0;
+        for (let k = 1; k < 4; k++) if (gap(texel * 4 + k) > gap(texel * 4 + channel)) channel = k;
+        const word = texel * 4 + channel;
+        return {
+          texel,
+          channel,
+          cpu: actual[word]!,
+          dawn: expected[word]!,
+          storedCpu: Array.from(actual.subarray(texel * 4, texel * 4 + 4)),
+          storedDawn: Array.from(expected.subarray(texel * 4, texel * 4 + 4)),
+          ulps: gap(word),
+        };
+      })
+        .toSorted((a, b) => b.ulps - a.ulps)
+        .filter((item) => item.ulps > 1);
+      for (const { target, bytes } of savedInputs) target.set(bytes);
+      const traces = await traceAdvection(
+        device,
+        event.code,
+        groups,
+        snapshot,
+        resources,
+        worst.map((item) => item.texel),
+        [level.width, level.height, level.depthOrArrayLayers],
+      );
+      advectionTrace = {
+        summary: summarizeAdvection(traces, worst),
+        worst: worst.slice(0, 10),
+        traces: traces.slice(0, 10),
+      };
+    }
     return {
+      advectionTrace,
       filterModels,
       pipeline: snapshot.label,
       workgroups: snapshot.workgroups,

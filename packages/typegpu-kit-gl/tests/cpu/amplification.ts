@@ -9,6 +9,14 @@ interface Mechanism {
 
 const mechanisms: Mechanism[] = [
   {
+    example: 'censer',
+    resource: /^texture:smoke advected:host#0$/,
+    mechanism:
+      'normalized-coordinate rounding crosses hardware filter weight thresholds; position contraction feeds force/carry cancellation',
+    evidence:
+      'CPU_ADVECTION_TRACE replay: all 85 residual texels traced, 595 samples fit 8-bit interpolation plus half-result rounding within one half ulp; substituting sampled values and world position puts every final store within one half ulp. Worst texel (93,26,49) crosses fraction 0.998046875 with a one-ulp coordinate change',
+  },
+  {
     example: 'survey-model',
     resource: /^buffer:contours_points:host#0$/,
     mechanism: 'height rounding crosses the final contour-bisection threshold',
