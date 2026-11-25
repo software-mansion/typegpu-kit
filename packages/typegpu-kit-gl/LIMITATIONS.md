@@ -28,7 +28,7 @@ All of these run at GPU speed, and differ from WebGPU in these ways:
 
 - Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
-- A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame.
+- A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame. The wait includes every other page's GPU work in the same browser, so two such pages drawing at once slow each other far more than they share the GPU: `falling-sand` and `stampede`, at 120 and 107 frames a second alone in Chromium here, ran at 28 and 42 side by side.
 - Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
 
