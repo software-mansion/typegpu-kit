@@ -110,15 +110,38 @@ it('adds through helpers at shared cells as WebGPU does, over several dispatches
   expect(actual).toEqual(await counted(gpu, 300, 'counted'));
 });
 
-it('runs a dispatch on the CPU where a cell could take more records than a sum keeps exact', async () => {
-  // Three additions to the counts an invocation, one invocation past the bound's third; the
-  // device counts every invocation of the workgroups dispatched
+it('adds past the bound a sum keeps exact in batches, as WebGPU does', async () => {
+  // Three additions to the counts an invocation, one invocation past the bound's third, so a
+  // batch ends inside each of the five dispatches
   const invocations = Math.floor(MOST_ADDED / 3) + 1;
   const actual = await counted(gl, invocations, 'crowded');
-  expect(stats().fallbacks.get('crowded')).toBe(
-    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 3} times to one cell, past ${MOST_ADDED}`,
-  );
+  expect(onGpu('crowded')).toBe(true);
   expect(actual).toEqual(await counted(gpu, invocations, 'crowded'));
+});
+
+/** Adds the largest amount to one cell `total` times, from one invocation each. */
+async function flooded(root: TgpuRoot, total: number, label: string) {
+  const counts = root.createMutable(d.arrayOf(d.atomic(d.u32), 2), [7, 0]);
+  const kernel = tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+    'use gpu';
+    if (id.x >= total) return;
+    std.atomicAdd(counts.$[0], 0xffffffff);
+  });
+  root
+    .createComputePipeline({ compute: kernel })
+    .$name(label)
+    .dispatchWorkgroups(Math.ceil(total / 64));
+  return counts.read();
+}
+
+const FLOOD = 3 * MOST_ADDED + 7;
+
+it('sums a cell that takes three batches and more exactly', async () => {
+  const actual = await flooded(gl, FLOOD, 'flooded');
+  expect(onGpu('flooded')).toBe(true);
+  // Each addition of 2^32 - 1 takes 1 off, modulo 2^32
+  expect(actual).toEqual([(7 - FLOOD) >>> 0, 0]);
+  expect(actual).toEqual(await flooded(gpu, FLOOD, 'flooded'));
 });
 
 /**
@@ -135,7 +158,7 @@ async function crowded(root: TgpuRoot, workgroups: number, label: string) {
   return counts.read();
 }
 
-/** Expects the most records a cell may take to sum exactly on `root`, and one group more to fall back. */
+/** Expects the most records a cell may take in one batch to sum exactly on `root`, and one group more in two. */
 async function bounded(root: TgpuRoot, label: string) {
   const most = MOST_ADDED;
   const { stats: counts } = root.device as unknown as GLDevice;
@@ -145,9 +168,8 @@ async function bounded(root: TgpuRoot, label: string) {
   // Each addition of 2^32 - 1 takes 1 off, modulo 2^32
   expect(actual).toEqual([(7 - most) >>> 0, 0]);
   const over = await crowded(root, most / 241 + 1, `${label} past`);
-  expect(counts.fallbacks.get(`${label} past`)).toBe(
-    `the dispatch may add ${most + 241} times to one cell, past ${most}`,
-  );
+  expect(counts.fallbacks.get(`${label} past`)).toBeUndefined();
+  expect([...counts.kernels.keys()]).toContain(`${label} past (gpu)`);
   expect(over).toEqual([(7 - most - 241) >>> 0, 0]);
   return actual;
 }
@@ -169,6 +191,12 @@ it('sums nibbles in two rounds on a device of four draw buffers, to the same bou
     const mixed = await counted(small, 300, 'mixed');
     expect(counts.fallbacks.get('mixed')).toBeUndefined();
     expect(mixed).toEqual(await counted(gpu, 300, 'mixed'));
+    const flood = await flooded(small, FLOOD, 'flooded halves');
+    expect(counts.fallbacks.get('flooded halves')).toBeUndefined();
+    expect(flood).toEqual([(7 - FLOOD) >>> 0, 0]);
+    const batched = await counted(small, Math.floor(MOST_ADDED / 3) + 1, 'crowded halves');
+    expect(counts.fallbacks.get('crowded halves')).toBeUndefined();
+    expect(batched).toEqual(await counted(gpu, Math.floor(MOST_ADDED / 3) + 1, 'crowded halves'));
     expect(context.getError()).toBe(0);
   } finally {
     small.destroy();

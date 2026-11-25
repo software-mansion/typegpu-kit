@@ -258,7 +258,9 @@ function combinerOf(ctx: Ctx): Program | string {
 /**
  * Sums an accumulating pass's records into eight float textures, a nibble of every amount each,
  * in one round of draws or two of four targets, and renders the buffer's data texture plus those
- * sums into a texture of the pool, which it returns.
+ * sums into a texture of the pool, which it returns. A sum stays exact up to `MOST_ADDED` records
+ * a cell, so a dispatch with more invocations than that allows is drawn in batches of contiguous
+ * invocations, each batch added to the result of the one before.
  */
 function accumulate(
   ctx: Ctx,
@@ -267,6 +269,7 @@ function accumulate(
   buffer: BufferImpl,
   count: number,
   pointAt: (site: number) => void,
+  rebind: () => void,
   width: number,
   height: number,
 ): WebGLTexture | string {
@@ -275,67 +278,85 @@ function accumulate(
   if (typeof combiner === 'string') return combiner;
   const targets = targetsOf(ctx);
   const sums = Array.from({ length: 8 }, () => take(ctx, gl.RGBA32F, width, height));
-  state.drawFramebuffer(ctx.scratch.draw);
-  state.drawBuffers(Array.from({ length: targets }, (_, i) => gl.COLOR_ATTACHMENT0 + i));
-  state.viewport(0, 0, width, height);
-  writeEverything(ctx);
-  for (const cap of [
-    gl.SCISSOR_TEST,
-    gl.DEPTH_TEST,
-    gl.STENCIL_TEST,
-    gl.CULL_FACE,
-    gl.RASTERIZER_DISCARD,
-    gl.SAMPLE_ALPHA_TO_COVERAGE,
-    gl.POLYGON_OFFSET_FILL,
-  ]) {
-    state.enable(cap, false);
-  }
-  const group = pass.program.uniforms.get('kit_group') ?? null;
-  for (let round = 0; round < 8 / targets; round++) {
+  const batch = Math.max(1, Math.floor(MOST_ADDED / Math.max(1, points.sites)));
+  const internal = gl.RGBA32UI;
+  let old = dataTexture(ctx, buffer).texture;
+  let made: WebGLTexture | undefined;
+  for (let first = 0; first === 0 || first < count; first += batch) {
+    const drawn = Math.min(batch, count - first);
+    // The last batch's combine unbound the units the pass reads, its target's size among them
+    if (first > 0) rebind();
+    state.drawFramebuffer(ctx.scratch.draw);
+    state.drawBuffers(Array.from({ length: targets }, (_, i) => gl.COLOR_ATTACHMENT0 + i));
+    state.viewport(0, 0, width, height);
+    writeEverything(ctx);
+    for (const cap of [
+      gl.SCISSOR_TEST,
+      gl.DEPTH_TEST,
+      gl.STENCIL_TEST,
+      gl.CULL_FACE,
+      gl.RASTERIZER_DISCARD,
+      gl.SAMPLE_ALPHA_TO_COVERAGE,
+      gl.POLYGON_OFFSET_FILL,
+    ]) {
+      state.enable(cap, false);
+    }
+    const group = pass.program.uniforms.get('kit_group') ?? null;
+    for (let round = 0; round < 8 / targets; round++) {
+      for (let i = 0; i < targets; i++) {
+        const texture = sums[round * targets + i] as WebGLTexture;
+        gl.framebufferTexture2D(
+          gl.DRAW_FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT0 + i,
+          gl.TEXTURE_2D,
+          texture,
+          0,
+        );
+        state.colorMask(i, 0xf);
+        gl.clearBufferfv(gl.COLOR, i, [0, 0, 0, 0]);
+        state.blend(i, ADDING);
+      }
+      state.program(pass.program.program);
+      setInt(gl, group, round);
+      for (let slot = 0; slot < (drawn > 0 ? points.sites : 0); slot++) {
+        pointAt(slot);
+        gl.drawArrays(gl.POINTS, first, drawn);
+      }
+      state.vertexArray(null);
+    }
     for (let i = 0; i < targets; i++) {
-      const texture = sums[round * targets + i] as WebGLTexture;
+      state.blend(i, NO_BLEND);
       gl.framebufferTexture2D(
         gl.DRAW_FRAMEBUFFER,
         gl.COLOR_ATTACHMENT0 + i,
         gl.TEXTURE_2D,
-        texture,
+        null,
         0,
       );
-      state.colorMask(i, 0xf);
-      gl.clearBufferfv(gl.COLOR, i, [0, 0, 0, 0]);
-      state.blend(i, ADDING);
     }
-    state.program(pass.program.program);
-    setInt(gl, group, round);
-    for (let slot = 0; slot < (count > 0 ? points.sites : 0); slot++) {
-      pointAt(slot);
-      gl.drawArrays(gl.POINTS, 0, count);
-    }
-    state.vertexArray(null);
-  }
-  for (let i = 0; i < targets; i++) {
-    state.blend(i, NO_BLEND);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, null, 0);
-  }
 
-  const internal = gl.RGBA32UI;
-  const made = take(ctx, internal, width, height);
-  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, made, 0);
-  state.drawBuffers([gl.COLOR_ATTACHMENT0]);
-  state.colorMask(0, 0xf);
-  state.program(combiner.program);
-  const sources = [dataTexture(ctx, buffer).texture, ...sums];
-  ['kit_old', ...sums.map((_, k) => `kit_sum${k}`)].forEach((name, unit) => {
-    state.texture(unit, gl.TEXTURE_2D, sources[unit] as WebGLTexture);
-    state.sampler(unit, ctx.nearest);
-    setInt(gl, combiner.uniforms.get(name) ?? null, unit);
-  });
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-  // The sums go back to the pool, where a later pass may render into them: none stays bound
-  for (let unit = 0; unit < sources.length; unit++) state.texture(unit, gl.TEXTURE_2D, null);
+    const combined = take(ctx, internal, width, height);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, combined, 0);
+    state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    state.colorMask(0, 0xf);
+    state.program(combiner.program);
+    const sources = [old, ...sums];
+    ['kit_old', ...sums.map((_, k) => `kit_sum${k}`)].forEach((name, unit) => {
+      state.texture(unit, gl.TEXTURE_2D, sources[unit] as WebGLTexture);
+      state.sampler(unit, ctx.nearest);
+      setInt(gl, combiner.uniforms.get(name) ?? null, unit);
+    });
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+    // The sums go back to the pool, where a later pass may render into them: none stays bound
+    for (let unit = 0; unit < sources.length; unit++) state.texture(unit, gl.TEXTURE_2D, null);
+    // The last batch's result was this batch's old contents
+    if (made) give(ctx, internal, width, height, made);
+    made = combined;
+    old = combined;
+  }
   for (const texture of sums) give(ctx, gl.RGBA32F, width, height, texture);
-  return made;
+  return made as WebGLTexture;
 }
 
 /**
@@ -849,10 +870,6 @@ export function runGpu(
       return 'adding needs EXT_color_buffer_float and EXT_float_blend';
     }
     const count = invocations[0] * invocations[1] * invocations[2];
-    const records = count * scatter.sites;
-    if (records > MOST_ADDED) {
-      return `the dispatch may add ${records} times to one cell, past ${MOST_ADDED}`;
-    }
     if (scatter.takes !== undefined && count > MOST_TAKEN) {
       return `the dispatch takes from ${count} invocations, past ${MOST_TAKEN}`;
     }
@@ -969,6 +986,10 @@ export function runGpu(
           resource.buffer,
           count,
           pointAt,
+          () => {
+            state.program(pass.program.program);
+            bindUses(ctx, pass.uses, pass.program, groups);
+          },
           width,
           height,
         );
