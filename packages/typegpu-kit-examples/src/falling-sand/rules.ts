@@ -78,6 +78,11 @@ const packSpit = (at: d.v2f, heat: number) => {
   return d.u32(0x80000000) | cell.x | (cell.y << 10) | (warmth << 20);
 };
 
+/** Counts nothing, for rules run again where another run counts. */
+const uncounted = (_amount: number) => {
+  'use gpu';
+};
+
 type Counted = Pick<Counters<'cooled' | 'burnt'>, 'add'>;
 /** Emits from a cell in y-down coordinates, with `heat` from 0 to 1. */
 type Spat = (at: d.v2f, heat: number) => void;
@@ -434,46 +439,31 @@ export function createRules(
   // count and spit, and a small one on the CPU adds the counts and spits the embers
   const alone = backends.of(root).compute === 'cpu';
 
-  const quiet = rulesWith(
-    {
-      add: {
-        cooled: (_amount: number) => {
-          'use gpu';
-        },
-        burnt: (_amount: number) => {
-          'use gpu';
-        },
-      },
-    },
-    (at: d.v2f, heat: number) => {
-      'use gpu';
-      sparked(at, heat);
-    },
-  );
+  /** Draws what a spit draws from `randf` and keeps nothing. */
+  const spitQuietly = (at: d.v2f, heat: number) => {
+    'use gpu';
+    sparked(at, heat);
+  };
+  const quiet = rulesWith({ add: { cooled: uncounted, burnt: uncounted } }, spitQuietly);
 
   const cooledHere = tgpu.privateVar(d.u32);
   const burntHere = tgpu.privateVar(d.u32);
   const spatHere = tgpu.privateVar(d.vec2u);
-  const noted = rulesWith(
-    {
-      add: {
-        cooled: (amount: number) => {
-          'use gpu';
-          cooledHere.$ += d.u32(amount);
-        },
-        burnt: (amount: number) => {
-          'use gpu';
-          burntHere.$ += d.u32(amount);
-        },
-      },
-    },
-    (at: d.v2f, heat: number) => {
-      'use gpu';
-      sparked(at, heat);
-      if (spatHere.$.x === 0) spatHere.$.x = packSpit(at, heat);
-      else spatHere.$.y = packSpit(at, heat);
-    },
-  );
+  const countCooled = (amount: number) => {
+    'use gpu';
+    cooledHere.$ += d.u32(amount);
+  };
+  const countBurnt = (amount: number) => {
+    'use gpu';
+    burntHere.$ += d.u32(amount);
+  };
+  const spitAside = (at: d.v2f, heat: number) => {
+    'use gpu';
+    sparked(at, heat);
+    if (spatHere.$.x === 0) spatHere.$.x = packSpit(at, heat);
+    else spatHere.$.y = packSpit(at, heat);
+  };
+  const noted = rulesWith({ add: { cooled: countCooled, burnt: countBurnt } }, spitAside);
 
   /** The block `gid` after this step under `rules`: top left, top right, bottom left and right. */
   const settledBy = (rules: typeof quiet) => (gid: d.v2u) => {
