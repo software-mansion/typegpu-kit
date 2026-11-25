@@ -18,8 +18,8 @@ async function sampled(compute: 'gpu' | 'cpu', steps: number) {
   }
   const waves = createWaves(root);
   await waves.initAsync();
-  waves.spectrum.write(spectrumAt(9, Math.PI / 2));
-  waves.foaming.write(foamingAt(9));
+  waves.spectrum.write(spectrumAt(20, Math.PI / 2));
+  waves.foaming.write(foamingAt(20));
 
   const encoder = root['~unstable'].createCommandEncoder();
   const pass = encoder.beginComputePass();
@@ -32,11 +32,12 @@ async function sampled(compute: 'gpu' | 'cpu', steps: number) {
     const stepped = stepping.beginComputePass();
     waves.record(stepped);
     stepped.end();
+    waves.recordMaps(stepping);
     stepping.submit();
   }
 
   const count = SAMPLES * SAMPLES * CASCADES * MIP_LEVELS;
-  const seen = root.createMutable(d.arrayOf(d.vec4f, count * 2));
+  const seen = root.createMutable(d.arrayOf(d.vec4f, count * 3));
   const probe = root.createComputePipeline({
     compute: tgpu.computeFn({
       workgroupSize: [SAMPLES],
@@ -52,6 +53,7 @@ async function sampled(compute: 'gpu' | 'cpu', steps: number) {
       // The moments carry the foam, which each step carries over
       const footprint = d.vec2f(std.exp2(d.f32(lod)) * 0.01, 0);
       seen.$[at + count] = waves.moments(xz, c, footprint, footprint.yx);
+      seen.$[at + count * 2] = waves.derivatives(xz, c, footprint, footprint.yx);
     }),
   });
   probe.dispatchWorkgroups(1, SAMPLES, CASCADES * MIP_LEVELS);
@@ -65,7 +67,10 @@ it('transforms the waves the same through Stockham stages where compute runs on 
   const [shared, staged] = await Promise.all([sampled('gpu', 3), sampled('cpu', 3)]);
   let largest = 0;
   let worst = 0;
+  let foam = 0;
+  const count = shared.length / 3;
   for (const [i, expected] of shared.entries()) {
+    if (i >= count && i < count * 2) foam = Math.max(foam, expected[3]);
     const actual = staged[i] as d.v4f;
     for (const k of [0, 1, 2, 3] as const) {
       largest = Math.max(largest, Math.abs(expected[k]));
@@ -73,6 +78,8 @@ it('transforms the waves the same through Stockham stages where compute runs on 
     }
   }
   expect(largest).toBeGreaterThan(0.1);
+  // Whitecaps foam at this wind, so the comparison covers the foam the moments carry
+  expect(foam).toBeGreaterThan(0.1);
   // Both store half floats; the transforms differ only in the order they round
   expect(worst).toBeLessThan(largest * 2e-3);
 });
