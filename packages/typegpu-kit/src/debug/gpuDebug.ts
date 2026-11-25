@@ -1,10 +1,11 @@
-import { instrument } from './instrument.ts';
+import { type Interfaces, instrument } from './instrument.ts';
 import { measure, type Measurement, type MeasureOptions } from './measure.ts';
 import { mountPanel } from './panel.ts';
 import { createRecorder, type Detail, type FrameCapture, type Recorder } from './recorder.ts';
 
 export { measureText, type Measurement, type MeasureOptions, type Spread } from './measure.ts';
 export type { Detail } from './recorder.ts';
+export type { Interfaces } from './instrument.ts';
 
 export interface GpuDebug {
   /** Mounts the panel and starts timing frames. */
@@ -46,6 +47,14 @@ export interface GpuDebug {
   [Symbol.dispose](): void;
 }
 
+export interface InstallOptions {
+  /**
+   * Interface objects of a device whose objects are not WebGPU's, patched beside WebGPU's own, such
+   * as `webgl.interfaces` from `@typegpu/kit-gl` to profile a scene on WebGL 2. Default none.
+   */
+  readonly interfaces?: Interfaces;
+}
+
 let installed: GpuDebug | undefined;
 
 /**
@@ -56,7 +65,7 @@ let installed: GpuDebug | undefined;
  * When stopped, `finish` and `submit` still look up command buffers for passes timed before the
  * stop. Other patched calls check the recording flag and run the original method. Animation and
  * video frame callbacks define frames. Installing again destroys the preceding installation.
- * Without WebGPU, it installs no patches and the panel remains empty.
+ * Without WebGPU or `interfaces`, it installs no patches and the panel remains empty.
  *
  * @unstable
  * @kind tool
@@ -68,10 +77,10 @@ let installed: GpuDebug | undefined;
  * frames draw into
  * @returns a profiler you start and stop, and destroy to remove the patches
  */
-export function install(): GpuDebug {
+export function install({ interfaces }: InstallOptions = {}): GpuDebug {
   installed?.destroy();
 
-  const instrumentation = instrument();
+  const instrumentation = instrument(interfaces ? { interfaces } : {});
   let unmount: (() => void) | undefined;
   let recorder: Recorder | undefined;
 

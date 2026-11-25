@@ -207,19 +207,8 @@ const { example } = Astro.props as { example: Example };
       // `?backend=webgl` shows the example on the WebGL 2 fallback where WebGPU works too
       const forced = new URLSearchParams(location.search).get('backend') === 'webgl';
 
-      if (!key) fail(new Error('The page names no example.'));
-      else if (forced || !('gpu' in navigator)) {
-        // The profiler patches WebGPU's own classes, which the fallback does not use
-        document.documentElement.dataset.backend = 'webgl';
-        try {
-          run(key, 'force');
-        } catch (error) {
-          fail(error);
-        }
-      } else {
-        // The profiler patches WebGPU before the example requests its device, and stays idle until
-        // the button starts it
-        const debug = gpuDebug.install();
+      /** Shows the Profile button, which starts and stops the profiler. */
+      const profile = (debug: gpuDebug.GpuDebug) => {
         const button = document.getElementById('debug')!;
         button.hidden = false;
 
@@ -238,12 +227,29 @@ const { example } = Astro.props as { example: Example };
         if (new URLSearchParams(location.search).has('debug')) setProfiling(true);
 
         button.addEventListener('click', () => setProfiling(!debug.running));
+      };
 
+      const start = (shown: string, webgl: 'missing' | 'force') => {
         try {
-          run(key);
+          run(shown, webgl);
         } catch (error) {
           fail(error);
         }
+      };
+
+      // The profiler patches WebGPU before the example requests its device, and stays idle until
+      // the button starts it
+      if (!key) fail(new Error('The page names no example.'));
+      else if (forced || !('gpu' in navigator)) {
+        document.documentElement.dataset.backend = 'webgl';
+        // The fallback's objects are not WebGPU's, so the profiler patches the fallback's interfaces
+        import('@typegpu/kit-gl').then(({ webgl }) => {
+          profile(gpuDebug.install({ interfaces: webgl.interfaces }));
+          start(key, 'force');
+        }, fail);
+      } else {
+        profile(gpuDebug.install());
+        start(key, 'missing');
       }
     </script>
   </body>
