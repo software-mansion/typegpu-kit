@@ -3,7 +3,7 @@
 import type { Bound } from './binding.ts';
 import { type BufferImpl, indexBuffer, vertexBuffer } from './buffer.ts';
 import type { Ctx } from './context.ts';
-import type { RenderPipelineImpl } from './pipeline.ts';
+import type { RenderPipelineImpl, RenderState } from './pipeline.ts';
 import { bindUses, setInt } from './uses.ts';
 import {
   type Attachment,
@@ -256,14 +256,7 @@ function applyState(pass: RenderPass, pipeline: RenderPipelineImpl): void {
       }
     }
   } else {
-    // One blend state and mask for every draw buffer, so a target that writes nothing leaves them
-    const buffers = colors.map((attached, i) =>
-      attached && (s.targets[i]?.mask ?? 0) !== 0 ? gl.COLOR_ATTACHMENT0 + i : gl.NONE,
-    );
-    const shared = s.targets[buffers.findIndex((buffer) => buffer !== gl.NONE)];
-    if (shared) state.blend(0, shared.blend);
-    state.colorMaskAll(shared?.mask ?? 0);
-    state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
+    targetGroup(pass, s, 0);
   }
   state.enable(gl.SAMPLE_ALPHA_TO_COVERAGE, s.alphaToCoverage);
   state.enable(gl.RASTERIZER_DISCARD, false);
@@ -275,6 +268,40 @@ function applyState(pass: RenderPass, pipeline: RenderPipelineImpl): void {
   state.depthRange(near, far);
   const [r, g, b, a] = pass.blendConstant;
   state.blendColor(r, g, b, a);
+}
+
+/**
+ * Without `OES_draw_buffers_indexed`, points the draw buffers at the targets of one of the
+ * pipeline's groups and sets their shared blend state and mask.
+ */
+function targetGroup(pass: RenderPass, s: RenderState, group: number): void {
+  const { gl, state } = pass.ctx;
+  const indices = s.shared[group];
+  const buffers = pass.targets.colors.map((attached, i) =>
+    attached && indices?.includes(i) ? gl.COLOR_ATTACHMENT0 + i : gl.NONE,
+  );
+  const shared = indices && s.targets[indices[0]!];
+  if (shared) state.blend(0, shared.blend);
+  state.colorMaskAll(shared?.mask ?? 0);
+  state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
+}
+
+/**
+ * Issues a draw, once for each group of targets that blend and mask alike when the context has
+ * one blend state for every draw buffer. Each later draw repeats the first one's fragments: it
+ * writes no depth or stencil, and a pipeline that wrote depth keeps the fragments that won.
+ */
+function issue(pass: RenderPass, pipeline: RenderPipelineImpl, call: () => void): void {
+  const s = pipeline.state;
+  call();
+  if (pass.ctx.ext.drawBuffersIndexed || s.shared.length < 2) return;
+  const { gl, state } = pass.ctx;
+  state.depthMask(false);
+  if (s.depthWrite && s.depthTest) state.depthFunc(gl.EQUAL);
+  for (let group = 1; group < s.shared.length; group++) {
+    targetGroup(pass, s, group);
+    call();
+  }
 }
 
 /**
@@ -355,7 +382,9 @@ export function draw(
   if (!pipeline) return;
   setInt(pass.ctx.gl, pipeline.baseVertex, 0);
   counted(pass, instanceCount);
-  pass.ctx.gl.drawArraysInstanced(pipeline.state.mode, firstVertex, vertexCount, instanceCount);
+  issue(pass, pipeline, () =>
+    pass.ctx.gl.drawArraysInstanced(pipeline.state.mode, firstVertex, vertexCount, instanceCount),
+  );
 }
 
 export function drawIndexed(
@@ -379,12 +408,14 @@ export function drawIndexed(
   indexBuffer(pass.ctx, index.buffer);
   const wide = index.format === 'uint32';
   counted(pass, instanceCount);
-  gl.drawElementsInstanced(
-    pipeline.state.mode,
-    indexCount,
-    wide ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
-    index.offset + firstIndex * (wide ? 4 : 2),
-    instanceCount,
+  issue(pass, pipeline, () =>
+    gl.drawElementsInstanced(
+      pipeline.state.mode,
+      indexCount,
+      wide ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
+      index.offset + firstIndex * (wide ? 4 : 2),
+      instanceCount,
+    ),
   );
 }
 

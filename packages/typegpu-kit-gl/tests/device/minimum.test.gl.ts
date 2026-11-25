@@ -86,18 +86,24 @@ test('a half-float render target without its extension is an error that names it
   }
 });
 
-test('a draw that blends one target and masks the other needs no indexed draw buffers', async () => {
+test('a draw that blends, writes and masks its targets differently needs no indexed buffers', async () => {
   const root = glRoot();
   try {
-    const shade = tgpu.fragmentFn({ out: { glow: d.vec4f, mark: d.vec4f } })(() => {
+    const shade = tgpu.fragmentFn({ out: { glow: d.vec4f, mark: d.vec4f, kept: d.vec4f } })(() => {
       'use gpu';
-      return { glow: d.vec4f(0.5, 0.25, 0, 0), mark: d.vec4f(1) };
+      return { glow: d.vec4f(0.5, 0.25, 0, 0), mark: d.vec4f(0, 0, 1, 1), kept: d.vec4f(1) };
     });
-    const textures = [0, 1].map(() =>
+    const textures = [0, 1, 2].map(() =>
       root.createTexture({ size: [4, 4], format: 'rgba8unorm' }).$usage('render', 'sampled'),
     );
-    const [glow, mark] = textures.map((texture) => texture.createView('render'));
+    const [glow, mark, kept] = textures.map((texture) => texture.createView('render'));
     const add = { srcFactor: 'one', dstFactor: 'one', operation: 'add' } as const;
+    const clear = (view: typeof glow, clearValue: [number, number, number, number]) => ({
+      view: view!,
+      loadOp: 'clear' as const,
+      storeOp: 'store' as const,
+      clearValue,
+    });
     root.device.pushErrorScope('validation');
     root
       .createRenderPipeline({
@@ -105,20 +111,27 @@ test('a draw that blends one target and masks the other needs no indexed draw bu
         fragment: shade,
         targets: {
           glow: { format: 'rgba8unorm', blend: { color: add, alpha: add } },
-          mark: { format: 'rgba8unorm', writeMask: 0 },
+          mark: { format: 'rgba8unorm' },
+          kept: { format: 'rgba8unorm', writeMask: 0 },
         },
       })
       .withColorAttachment({
-        glow: { view: glow!, loadOp: 'clear', storeOp: 'store', clearValue: [0.25, 0, 0, 1] },
-        mark: { view: mark!, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0.5, 0, 1] },
+        glow: clear(glow, [0.25, 0, 0, 1]),
+        mark: clear(mark, [1, 0, 0, 1]),
+        kept: clear(kept, [0, 0.5, 0, 1]),
       })
       .draw(3);
     expect(await root.device.popErrorScope()).toBeNull();
-    const [glowed, marked] = await Promise.all(
-      textures.map((texture) => readTexture(root.device, root.unwrap(texture))),
+    const pixels = await Promise.all(
+      textures.map(async (texture) =>
+        Array.from((await readTexture(root.device, root.unwrap(texture))).bytes.subarray(0, 4)),
+      ),
     );
-    expect(Array.from(glowed!.bytes.subarray(0, 4))).toEqual([191, 64, 0, 255]);
-    expect(Array.from(marked!.bytes.subarray(0, 4))).toEqual([0, 128, 0, 255]);
+    expect(pixels).toEqual([
+      [191, 64, 0, 255],
+      [0, 0, 255, 255],
+      [0, 128, 0, 255],
+    ]);
   } finally {
     root.destroy();
   }

@@ -45,6 +45,11 @@ export interface RenderState {
   readonly cull: number;
   readonly frontFace: number;
   readonly targets: readonly { readonly blend: BlendState; readonly mask: number }[];
+  /**
+   * The written targets' indices, grouped by blend state and mask. Without
+   * `OES_draw_buffers_indexed` every draw buffer shares one of each, so a draw runs once a group.
+   */
+  readonly shared: readonly (readonly number[])[];
   readonly depthTest: boolean;
   readonly depthFunc: number;
   readonly depthWrite: boolean;
@@ -232,18 +237,15 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
       mask,
     };
   });
-  // Without OES_draw_buffers_indexed, a draw leaves out the targets that write nothing, and the
-  // others share one state
-  const written = targets.filter((target) => target.mask !== 0);
-  if (!ctx.ext.drawBuffersIndexed && written.length > 1) {
-    const first = JSON.stringify(written[0]);
-    if (written.some((target) => JSON.stringify(target) !== first)) {
-      ctx.errors.report(
-        'validation',
-        `The pipeline '${descriptor.label ?? ''}' blends or masks its targets differently, which needs OES_draw_buffers_indexed; every target uses the first one's state.`,
-      );
-    }
-  }
+  const groups = new Map<string, number[]>();
+  targets.forEach((target, i) => {
+    if (target.mask === 0) return;
+    const key = JSON.stringify(target);
+    const group = groups.get(key);
+    if (group) group.push(i);
+    else groups.set(key, [i]);
+  });
+  const shared = [...groups.values()];
   const front = stencilFace(gl, depthStencil?.stencilFront);
   const back = stencilFace(gl, depthStencil?.stencilBack);
   const usesStencil = [front, back].some(
@@ -253,6 +255,19 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
       face.depthFail !== gl.KEEP ||
       face.pass !== gl.KEEP,
   );
+  const writesStencil =
+    usesStencil &&
+    (depthStencil?.stencilWriteMask ?? 0xff) !== 0 &&
+    [front, back].some(
+      (face) => face.fail !== gl.KEEP || face.depthFail !== gl.KEEP || face.pass !== gl.KEEP,
+    );
+  // A draw repeated for each group would test the stencil it wrote itself
+  if (!ctx.ext.drawBuffersIndexed && shared.length > 1 && writesStencil) {
+    ctx.errors.report(
+      'validation',
+      `The pipeline '${descriptor.label ?? ''}' writes stencil and blends or masks its targets differently, which needs OES_draw_buffers_indexed; every target uses the first one's state.`,
+    );
+  }
   const depthFunc = compareFunc(gl, depthStencil?.depthCompare ?? 'always');
   const depthWrite = depthStencil?.depthWriteEnabled ?? false;
   const constant = depthStencil?.depthBias ?? 0;
@@ -263,6 +278,8 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
     // Vertex shaders negate y, which mirrors every triangle's winding
     frontFace: primitive.frontFace === 'cw' ? gl.CCW : gl.CW,
     targets,
+    shared:
+      !ctx.ext.drawBuffersIndexed && shared.length > 1 && writesStencil ? [shared.flat()] : shared,
     depthTest: depthStencil !== undefined && (depthFunc !== gl.ALWAYS || depthWrite),
     depthFunc,
     depthWrite,
