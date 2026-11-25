@@ -52,6 +52,7 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - Reading back a depth or signed-normalised texture needs `EXT_color_buffer_float`.
 - A device created on a canvas presents to that canvas without a copy and to no other. A device created without one presents to any number, each through a bitmap transfer.
 - `firstInstance` and `baseVertex` are emulated with a uniform and offset attribute pointers.
+- WebGL 2 has no indirect draws, so `drawIndirect` and `drawIndexedIndirect` read their arguments on the CPU, and a draw record a GPU-run kernel wrote waits for the GPU each frame. A kernel that writes draw records is cheapest on the CPU here, so the Kit's culling walks its rows there. Drawing a known upper bound of instances and letting the vertex stage collapse those past a count it reads from the buffer would keep the records on the GPU; it is not implemented.
 
 ## Browsers
 
