@@ -470,23 +470,25 @@ function add(left: Own, right: Own): Own | undefined {
   return sum;
 }
 
-/** Whether a `for…of` iterates `tgpu.unroll(…)`, which TypeGPU unrolls as it generates. */
 /**
  * The class of what `tgpu.unroll` gives a shader, which TypeGPU expands a `for…of` over: taken
  * from the real `tgpu.unroll` by calling its code generation once, since TypeGPU does not export
- * it. Undefined if that changes, and then no loop counts as unrolled.
+ * it. The result is known by holding the snippet it was given, not by its class's name, which a
+ * minifier may change. Undefined if that changes, and then no loop counts as unrolled.
  */
 const UNROLLED: (abstract new (...args: never[]) => unknown) | undefined = (() => {
   const callable = tgpu.unroll as unknown as Record<symbol, unknown>;
+  const given = snip(0, d.u32, 'constant');
   for (const key of Object.getOwnPropertySymbols(callable)) {
     const generate = callable[key];
     if (typeof generate !== 'function') continue;
     try {
       const made = (generate as (ctx: unknown, args: unknown[]) => { value?: unknown })(undefined, [
-        snip(0, d.u32, 'constant'),
+        given,
       ]);
-      const kind = (made?.value as object | undefined)?.constructor;
-      if (typeof kind === 'function' && kind.name === 'UnrollableIterable') {
+      const value = made?.value as { snippet?: unknown } | undefined;
+      const kind = value?.constructor;
+      if (typeof kind === 'function' && value?.snippet === given) {
         return kind as abstract new (...args: never[]) => unknown;
       }
     } catch {
@@ -1604,7 +1606,11 @@ uint ${name}() {
    * invocation, private variables, written resources, or functions that may.
    */
   #varies(text: string): boolean {
-    if (/texel|texture/.test(text)) return true;
+    // Texels come through calls: GLSL's `texture…` and `texelFetch…` builtins, the `kit_texel`
+    // that reads a buffer's data texture, and helpers named for either. Any of them may read what
+    // the dispatch writes, so a call whose name holds `texel` or `texture` varies; a local or
+    // member such as `texelSize`, not called, is judged by what it reads like any other
+    if (/(?<![\w.])\w*(?:texel|texture)\w*\s*\(/i.test(text)) return true;
     const varying = new Set([
       GID,
       ...this.#privates.map((each) => each.id),
@@ -2170,7 +2176,7 @@ ${stored.join('\n')}
     }
     this.#relyOnOwn();
     this.#textures.set(texture.id, texture);
-    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    const value = this.argumentOf(args[dimension === '2d-array' ? 3 : 2]);
     const shadow = this.#textureShadow(texture);
     if (owns && this.#maps.has(texture.id)) {
       throw new Ineligible(`stores to '${texture.id}' at texels of two shapes`);
@@ -2191,7 +2197,7 @@ ${stored.join('\n')}
           : dimension === '2d'
             ? `ivec3(${this.ivecOf(args[1], 2)}, 0)`
             : `ivec3(${this.intOf(args[1])}, 0, 0)`;
-    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    const value = this.argumentOf(args[dimension === '2d-array' ? 3 : 2]);
     this.#scatters.set(texture.id, { kind: 'texture', texture });
     return `${this.#putter(texture.id, 'ivec3', this.#texelType(texture))}(${point}, ${value})`;
   }

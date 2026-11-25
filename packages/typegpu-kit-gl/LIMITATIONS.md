@@ -51,7 +51,7 @@ In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `partic
 
 ## Shaders
 
-- A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
+- A function written as a WGSL string cannot be translated, whether a render stage, a compute entry or a helper either calls. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
 - No `textureGather` or `textureGatherCompare`, no `textureNumSamples`, no multisampled or cube-array texture bindings.
 - No `sample_index`, `primitive_index`, `clip_distances` or sample-mask input. A `sample_mask` output discards the fragment when bit 0 is clear, which is exact only without multisampling.
 - No `extractBits`, `insertBits`, `modf` or `frexp`: generation stops with an error that names the builtin. A compute kernel also cannot use `firstLeadingBit`, `ldexp`, `quantizeToF16` or a shift of a vector, which its CPU module lacks and names in its error; render stages can. `ldexp` multiplies by `exp2` of the exponent, so an exponent of 128, whose power alone overflows, gives infinity where WGSL gives a finite value.

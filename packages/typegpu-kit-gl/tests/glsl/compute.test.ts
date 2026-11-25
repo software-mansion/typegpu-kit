@@ -507,6 +507,23 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     },
     'a helper function takes the pointer',
   ],
+  [
+    'writes where a helper moved its index through a pointer',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const bump = tgpu.fn([d.ptrFn(d.u32)])((at) => {
+        'use gpu';
+        at.$ += 64;
+      });
+      return line(({ gid: id }) => {
+        'use gpu';
+        const at = d.ref(d.u32(id.x));
+        bump(at);
+        out.$[at.$] = 1;
+      });
+    },
+    'a helper function takes the pointer',
+  ],
   ...blockKernels(),
   [
     'adds to shared cells inside a loop',
@@ -1379,6 +1396,20 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         'use gpu';
         const from = half.$;
         out.$[id.x + (1 - from) * 64] = out.$[id.x + from * 64] as number;
+      });
+    },
+    1,
+  ],
+  [
+    'writes its own element past an offset a uniform-derived texelSize holds',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const half = root.createUniform(d.u32);
+      return line(({ gid: id }) => {
+        'use gpu';
+        // Named like a texel read, but read from a uniform
+        const texelSize = half.$;
+        out.$[id.x + texelSize * 64] = 1;
       });
     },
     1,
