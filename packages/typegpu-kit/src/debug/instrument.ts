@@ -502,7 +502,11 @@ export function instrument(options: InstrumentOptions = {}): Instrumentation {
   // A browser may define some of WebGPU's interfaces and not the rest, as WebKit does without it
   const own = globalThis as Partial<Interfaces>;
   if (PATCHED.every((name) => own[name] !== undefined)) sets.push(globalThis);
-  if (options.interfaces) sets.push(options.interfaces);
+  // Interfaces that are the browser's own are patched once
+  const given = options.interfaces;
+  const known = (set: Interfaces) =>
+    given !== undefined && PATCHED.every((name) => set[name].prototype === given[name].prototype);
+  if (given && !sets.some(known)) sets.push(given);
   if (sets.length === 0) {
     return {
       start() {},

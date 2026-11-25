@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { install } from '../../src/debug/gpuDebug.ts';
-import { instrument } from '../../src/debug/instrument.ts';
+import { instrument, type Interfaces } from '../../src/debug/instrument.ts';
 import { createRecorder } from '../../src/debug/recorder.ts';
 
 const createCommandEncoder = () => {};
@@ -47,6 +47,40 @@ describe('without WebGPU', () => {
       expect(given!.GPUDevice.prototype.createCommandEncoder).toBe(createCommandEncoder);
     } finally {
       for (const name of some) delete (globalThis as Record<string, unknown>)[name];
+    }
+  });
+
+  it("patches the browser's own interfaces once when they are given too", () => {
+    const names = [
+      'GPUDevice',
+      'GPUTexture',
+      'GPUQueue',
+      'GPUCommandEncoder',
+      'GPUComputePassEncoder',
+      'GPURenderPassEncoder',
+    ];
+    let patched = 0;
+    const counting = new Proxy<Record<string, unknown>>(
+      { createCommandEncoder, createView() {} },
+      {
+        set(target, key, value) {
+          if (key === 'createCommandEncoder') patched++;
+          target[key as string] = value;
+          return true;
+        },
+      },
+    );
+    const own = Object.fromEntries(
+      names.map((name) => [name, { prototype: name === 'GPUDevice' ? counting : {} }]),
+    );
+    Object.assign(globalThis, own);
+    try {
+      const both = instrument({ interfaces: own as unknown as Interfaces });
+      expect(patched).toBe(1);
+      both[Symbol.dispose]();
+      expect(counting.createCommandEncoder).toBe(createCommandEncoder);
+    } finally {
+      for (const name of names) delete (globalThis as Record<string, unknown>)[name];
     }
   });
 });

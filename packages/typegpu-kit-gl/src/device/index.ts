@@ -85,8 +85,12 @@ export interface GLDevice extends GPUDevice {
 
 /** Reports whether this environment can create a WebGL 2 context. */
 export function isSupported(): boolean {
-  if (typeof OffscreenCanvas === 'undefined') return false;
-  return new OffscreenCanvas(1, 1).getContext('webgl2') !== null;
+  // A browser without `OffscreenCanvas` may still give a canvas element a context
+  if (typeof OffscreenCanvas !== 'undefined') {
+    return new OffscreenCanvas(1, 1).getContext('webgl2') !== null;
+  }
+  if (typeof document === 'undefined') return false;
+  return document.createElement('canvas').getContext('webgl2') !== null;
 }
 
 /**

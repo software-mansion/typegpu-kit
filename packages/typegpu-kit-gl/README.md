@@ -40,7 +40,7 @@ A root's `destroy` also frees the WebGL device.
 
 ## Using it outside this repository
 
-Install it beside the Kit and TypeGPU 0.12.11, the version its patch applies to:
+It adds to a project that already builds TypeGPU: keep the bundler plugin and TypeScript settings the Kit's getting-started page sets up. Install it beside the Kit and TypeGPU 0.12.11, the version its patch applies to:
 
 ```sh
 pnpm add @typegpu/kit @typegpu/kit-gl typegpu@0.12.11

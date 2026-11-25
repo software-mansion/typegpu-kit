@@ -1,160 +1,283 @@
 # Notes for TypeGPU
 
-What building the WebGL fallback showed could be better in TypeGPU itself. `PATCHES.md` lists the changes this repository already applies, each with its diff. This file lists what is not a ready patch: limits that needed a workaround here, with the reason, a small reproduction and a way to fix each upstream. An entry that a patch already covers says so and stays short.
+Each entry is a limit of TypeGPU 0.12.11 that the WebGL fallback works around. It says what happens, gives a reproduction against `typegpu` alone, names the file in this package that works around it, and names the place in TypeGPU's repository where a change would go. `PATCHES.md` holds the changes this repository already applies as diffs; an entry that a patch covers points at it.
 
-Each entry names where the workaround lives, so it can be deleted once TypeGPU changes.
+Paths under `src/` and `tests/` are relative to this package. Paths under `packages/typegpu/src/` are relative to TypeGPU's repository. The reproductions were run against 0.12.11 with this repository's patch applied; none of them depends on what the patch changes.
+
+## Summary
+
+Tier 1 entries are small, additive changes. Tier 2 entries are hooks that delete the most workaround code. Tier 3 entries are larger designs or remove little.
+
+| #   | Entry                                                     | Kind         | Patch               | Tier |
+| --- | --------------------------------------------------------- | ------------ | ------------------- | ---- |
+| 1   | Root's generator class must claim WGSL                    | API gap      |                     | 1    |
+| 2   | Generator is not told what it generates                   | missing hook |                     | 2    |
+| 3   | Render pipeline is one module for both stages             | missing hook |                     | 3    |
+| 4   | Shader text is the only channel to the device             | missing hook |                     | 2    |
+| 5   | Generator cannot resolve a pipeline a second way          | missing hook |                     | 2    |
+| 6   | Code written as WGSL text bypasses the generator          | API gap      | core 6, partly      | 2    |
+| 7   | `WgslGenerator` has few seams for another target          | missing hook | core 3 to 5, partly | 3    |
+| 8   | Shader-function calls bypass `emitCall`                   | missing hook |                     | 2    |
+| 9   | Atomic targets arrive as text                             | missing hook |                     | 2    |
+| 10  | Barriers carry no per-function effect                     | missing hook |                     | 3    |
+| 11  | Sibling blocks reuse names without stable identities      | missing hook |                     | 3    |
+| 12  | One function variant per argument type only               | missing hook |                     | 2    |
+| 13  | Buffer access is text before the generator sees it        | API gap      |                     | 2    |
+| 14  | Ternary is emitted as `select` past `emitCall`            | missing hook | gl F, partly        | 1    |
+| 15  | `determineReturnType` must be called, undocumented        | API gap      |                     | 1    |
+| 16  | Generators replace context methods, read untyped members  | API gap      |                     | 3    |
+| 17  | Second resolution renumbers bindings                      | missing hook |                     | 2    |
+| 18  | `@invariant` position rejected by `vertexFn` types        | bug          |                     | 1    |
+| 19  | Swizzle validation tied to the `Swizzle` class            | missing hook |                     | 3    |
+| 20  | Local mutability decided after its declaration            | API gap      |                     | 1    |
+| 21  | Generator cannot ask what a function reads                | missing hook |                     | 3    |
+| 22  | Local liveness and callee effects not exposed             | missing hook |                     | 3    |
+| 23  | `configureContext` assumes a WebGPU canvas context        | API gap      |                     | 3    |
+| 24  | Constant namespaces read from the global scope            | bug          |                     | 1    |
+| 25  | Running a kernel on the CPU needs a second generator      | API gap      |                     | 3    |
+| 26  | Cube or array viewing unknown at texture creation         | API gap      |                     | 3    |
+| 27  | Internal blits allocate and submit their own encoder      | performance  |                     | 3    |
+| 28  | Stored local copy is still treated as a reference         | API gap      |                     | 3    |
+| 29  | Bitwise and shift operators are not folded                | bug          |                     | 1    |
+| 30  | Language features come from `navigator.gpu`               | missing hook |                     | 1    |
+| 31  | Multi-declarator statements fail at transform             | API gap      |                     | 3    |
+| 32  | Matrix `columns` typed readonly                           | API gap      |                     | 1    |
+| 33  | Captured names hit `Object.prototype` methods             | bug          |                     | 1    |
+| 34  | Helper generated inside its caller's statement            | bug          |                     | 1    |
+| 35  | No whole-pipeline view before emitting                    | missing hook |                     | 3    |
+| 36  | Calling `'use gpu'` code in JavaScript is slow on vectors | performance  |                     | 3    |
+| 37  | Unrolled `for…of` loops are not visible to generators     | missing hook |                     | 1    |
+
+Several entries want the same change, and upstreaming that change once settles each of them:
+
+- Passing the pipeline kind and item to `initGenerator` settles notes 2 and 5.
+- Routing every call, operator, atomic and barrier through `emitCall` or a typed hook settles notes 7, 8, 9, 10 and 14.
+- A structured place for buffer, member and index access settles notes 9, 13 and 19.
+- A per-function summary of reads, writes and barriers, built before text is emitted, settles notes 10, 21, 22 and 35.
+- Options on `initFromDevice` for presenting and language features settle notes 23 and 30.
+- A CPU executor with dispatch settles notes 25 and 36.
 
 ## Generators
 
 ### 1. A root's generator class must claim to generate WGSL
 
-`tgpu.init` and `tgpu.initFromDevice` type `unstable_shaderGeneratorClass` as `WgslGeneratorClass`, a class whose instances have `languageKey: 'wgsl'`. A root over another device accepts another language, which is the point of passing a generator.
+`tgpu.init` and `tgpu.initFromDevice` type `unstable_shaderGeneratorClass` as `WgslGeneratorClass`, whose instances must have `languageKey: 'wgsl'`. `WgslGenerator` types `languageKey` as `string`, so the option rejects TypeGPU's own generator and every subclass of it, as well as a generator for another language.
 
 ```ts
 class Glsl extends WgslGenerator {
-  override languageKey = 'glsl';
+  override readonly languageKey = 'glsl';
 }
-// Type 'typeof Glsl' is not assignable to type 'ShaderGeneratorClass<ShaderGenerator & { languageKey: "wgsl" }>'
+// Type 'typeof Glsl' is not assignable to type
+// 'ShaderGeneratorClass<ShaderGenerator & { languageKey: "wgsl"; }>'
 tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: Glsl });
+// The same error: Type 'string' is not assignable to type '"wgsl"'
+tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: WgslGenerator });
+// Both should compile, as `tgpu.resolve` accepts any `ShaderGenerator`
 ```
 
-**Upstream.** Type the option as `ShaderGeneratorClass`, or make the root generic over the language its device accepts. In `packages/typegpu/src/core/root/init.ts`.
+**Fallback.** `KitGenerator` in `src/generator.ts` declares `languageKey = 'wgsl' as const`. So `std.getTargetShaderLanguage()`, which returns `ctx.gen.languageKey`, says `'wgsl'` in shaders the fallback writes as GLSL or JavaScript.
 
-**Workaround.** `KitGenerator` in `src/generator.ts` declares `languageKey = 'wgsl' as const`.
+**Upstream.** In `packages/typegpu/src/core/root/init.ts`, `InitOptions`, `InitFromDeviceOptions` and the `TgpuRootImpl` constructor: type the generator class as `ShaderGeneratorClass`, as `ExperimentalTgpuRoot['shaderGeneratorClass']` in `core/root/rootTypes.ts` already is. Additive, since the type only widens.
 
 ### 2. A generator is not told what it is generating
 
-TypeGPU builds one generator per pipeline with `new root.shaderGeneratorClass()`: no arguments, no pipeline kind, no stage. A generator that emits GLSL for render pipelines and something else for compute pipelines has to find out the kind by itself.
-
-- The first call it receives is not always `functionDefinition` for the entry: `declareGlobalVar` or `emitTypeAnnotation` can come first. `KitGenerator` reads `ctx.topFunctionScope?.functionType`. This is exposed by the internal `ResolutionCtx` type, but couples backend selection to the resolver's current stack.
-- A compute entry written as a WGSL template never calls `functionDefinition` at all (see entry 6).
+`ComputePipelineCore.resolveAndCreateShaderModule` and `RenderPipelineCore.resolveAndCreateShaderModule` create the generator with `new root.shaderGeneratorClass()`, and the `ResolutionCtxImpl` constructor calls `initGenerator(ctx)` with nothing about the pipeline. A generator can read the kind from `ctx.topFunctionScope?.functionType` once a function is being generated. An entry written as a WGSL template never reaches `functionDefinition`, and the calls the generator does get, `declareGlobalVar` and `emitTypeAnnotation`, come with no function scope.
 
 ```ts
-class Either implements ShaderGenerator {
-  initGenerator(ctx: ResolutionCtx) {
-    // Render or compute? Nothing here says.
+class Spy extends WgslGenerator {
+  #ctx: ResolutionCtx | undefined;
+  override initGenerator(ctx: ResolutionCtx) {
+    this.#ctx = ctx; // the only argument
+    super.initGenerator(ctx);
+  }
+  override declareGlobalVar(options: VariableDefinitionOptions) {
+    console.log(this.#ctx?.topFunctionScope?.functionType); // undefined
+    return super.declareGlobalVar(options);
+  }
+  override functionDefinition(options: FunctionDefinitionOptions) {
+    console.log('functionDefinition'); // never logged
+    return super.functionDefinition(options);
   }
 }
+const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: Spy as never }); // note 1
+const data = root.createMutable(d.f32);
+const main = tgpu.computeFn({ workgroupSize: [1] })`{ data = 1; }`.$uses({ data });
+root.unwrap(root.createComputePipeline({ compute: main }));
+// Logs `undefined` once. The generator should know it builds a compute pipeline from the start.
 ```
 
-**Upstream.** Pass what is being resolved to the generator, for example `initGenerator(ctx, { kind: 'render' | 'compute', item })`, or let a root take a generator per pipeline kind. In `core/pipeline/renderPipeline.ts` and `computePipeline.ts`, where `resolve(this, { shaderGenerator: new root.shaderGeneratorClass() })` is called.
+**Fallback.** `KitGenerator.#use` in `src/generator.ts` picks the CPU backend when `ctx.topFunctionScope?.functionType` is `'compute'` and GLSL otherwise, and `KitGenerator.functionDefinition` corrects the choice when a compute entry arrives first.
 
-**Workaround.** `KitGenerator.#use` in `src/generator.ts`.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, `resolve` and the `ResolutionCtxImpl` constructor: take an optional `target: { kind: 'render' | 'compute'; item: object }` in `ResolutionCtxImplOptions` and call `initGenerator(ctx, target)`. The two `resolveAndCreateShaderModule` methods in `core/pipeline/computePipeline.ts` and `core/pipeline/renderPipeline.ts` pass it. Additive, since existing generators ignore the second argument. Note 5 needs the same `item`.
 
 ### 3. A render pipeline is one module, so one generator run must emit both stages
 
-`RenderPipelineCore.resolveAndCreateShaderModule` resolves once and gives the same `GPUShaderModule` to `vertex` and `fragment`. GLSL needs a source per stage, and a vertex source that merely contains an unused function calling `dFdx` or `discard` does not compile. Upstream's `GlslGenerator` takes the stage as a constructor argument and needs two resolutions (`dualGlOptions()`), which a root cannot do.
+`RenderPipelineCore.resolveAndCreateShaderModule` resolves once, calls `device.createShaderModule` once and gives the same `GPUShaderModule` to `vertex` and `fragment`. GLSL needs a source per stage, and a vertex source fails to compile when it contains a function that calls `dFdx` or uses `discard`, even if nothing calls it. `@typegpu/gl`'s `GlslGenerator` takes the stage as a constructor argument, and its own root in `tgpuRootWebGL.ts` resolves each pipeline twice; a root from `tgpu.initFromDevice` cannot.
 
 ```ts
-const pipeline = root.createRenderPipeline({ vertex, fragment, targets: { format } });
-root.unwrap(pipeline); // one createShaderModule call, one string, used for both stages
+const pipeline = root.createRenderPipeline({
+  vertex: common.fullScreenTriangle,
+  fragment,
+  targets: { format: 'rgba8unorm' },
+});
+root.unwrap(pipeline);
+// One createShaderModule call; the pipeline descriptor's vertex.module === fragment.module
 ```
 
-**Upstream.** Either let a generator ask for one module per stage, or have `GlslGenerator` emit both stages from one resolution with the chunks marked, as `KitGlslGenerator` does. The second needs no core change.
+**Fallback.** `KitGlslGenerator` in `src/glsl/generator.ts` tags each declaration as a `shared`, `vertex` or `fragment` chunk, and `parse` in `src/glsl/renderModule.ts` keeps per stage what that stage's `main` reaches.
 
-**Workaround.** `src/glsl/generator.ts` tags each declaration as shared, vertex or fragment, and `parse` in `src/glsl/renderModule.ts` keeps per stage what its `main` reaches.
+**Upstream.** Either let `GlslGenerator` in `packages/typegpu-gl/src/glslGenerator.ts` emit both stages from one resolution with the chunks marked, as `KitGlslGenerator` does, which needs no core change. Or, in `packages/typegpu/src/core/pipeline/renderPipeline.ts`, `RenderPipelineCore.resolveAndCreateShaderModule`: let a generator return one module per stage through the hook of note 4. Additive either way.
 
 ### 4. The only channel from generator to device is the shader text
 
-A device that is not WebGPU needs more than code: which GLSL sampler pairs which texture and sampler, which uniform reads which binding, the workgroup size, which bindings a kernel writes. TypeGPU passes `code` to `device.createShaderModule` and nothing else, so the fallback encodes all of it as `//#` comment lines and parses them back. It also relies on TypeGPU replacing bind group placeholders in the whole string, comments included.
+A device that is not WebGPU needs more than code: which GLSL sampler pairs which texture and sampler, which uniform reads which binding, the workgroup size, which bindings a kernel writes. Both pipeline cores call `device.createShaderModule({ label, code })` and nothing else, so the fallback encodes all of it as `//#` comment lines and parses them back. Group indices in those lines are right only because `resolve` in `resolutionCtx.ts` replaces the bind group placeholders in the whole string, comments included.
 
 ```ts
-// All a device receives for a pipeline's shaders:
-device.createShaderModule({ code }); // so `code` carries `//#buffer 0 1 …` lines
+class Tagged extends WgslGenerator {
+  override declareGlobalVar(options: VariableDefinitionOptions) {
+    const result = super.declareGlobalVar(options);
+    return { ...result, value: `// binding ${options.group} ${options.binding}\n${result.value}` };
+  }
+}
+// On a root over `Tagged`, the createShaderModule descriptor has only `label` and `code`,
+// and `code` contains `// binding 0 0`: the comment's `#CATCHALL#` was replaced too.
 ```
 
-**Upstream.** Let a generator return data beside the code, and pass it on, for example as an extra field of the `GPUShaderModuleDescriptor` that a custom device can read. In `resolutionCtx.ts` `resolve` and the two pipeline cores.
+**Fallback.** The directive formats: `KitGlslGenerator` writes `//#chunk`, `//#buffer`, `//#block`, `//#texture` and `//#levels`, which `parse` in `src/glsl/renderModule.ts` reads; `CpuGenerator` in `src/cpu/generator.ts` writes `//#entry`, `//#binding` and `//#scope`, which `compile` in `src/cpu/index.ts` reads; and `attachComputeForm` in `src/glsl/compute.ts` appends the compute form as a `//#kit-gl gpu` line, which `gpuFormOf` and `parseCompute` in `src/glsl/computeModule.ts` read.
 
-**Workaround.** The directive formats in `src/glsl/renderModule.ts`, `src/glsl/computeModule.ts` and `src/cpu/index.ts`.
+**Upstream.** In `packages/typegpu/src/tgsl/shaderGenerator.ts`, add an optional `ShaderGenerator.moduleData?(replace: (text: string) => string): unknown`. `resolve` in `resolutionCtx.ts` calls it with a function that applies the placeholder replacements it already records for `declarations`, and returns the result in `ResolutionResult`. Both `resolveAndCreateShaderModule` methods pass it in the `GPUShaderModuleDescriptor` under a documented key a custom device reads. Additive.
 
 ### 5. A generator cannot resolve the same pipeline a second way
 
-The fallback wants two forms of a compute pipeline: JavaScript for the CPU, and GLSL fragment passes where the kernel allows. TypeGPU resolves once. The generator captures the pipeline by wrapping `ctx.resolve` on the context instance, then calls `tgpu.resolveWithContext([item], { unstable_shaderGenerator })` for the second form.
+The fallback wants two forms of a compute pipeline: JavaScript for the CPU, and GLSL fragment passes where the kernel allows. A root resolves each pipeline once, and the generator never receives the pipeline it is for (note 2). It captures it by replacing `ctx.resolve` on the context instance, whose first call gets the pipeline's internal `ComputePipelineCore`, then resolves that again with `tgpu.resolveWithContext`.
 
 ```ts
-initGenerator(ctx: ResolutionCtx) {
-  const resolve = ctx.resolve.bind(ctx);
-  let first = true;
-  (ctx as { resolve: unknown }).resolve = (item: unknown, schema?: unknown) => {
-    if (first) (first = false), (this.item = item); // the pipeline core
-    return resolve(item as never, schema as never);
-  };
+let item: unknown;
+class Capture extends WgslGenerator {
+  override initGenerator(ctx: ResolutionCtx) {
+    super.initGenerator(ctx);
+    const resolve = ctx.resolve.bind(ctx);
+    ctx.resolve = (what, schema) => {
+      item ??= what; // the first call gets the pipeline's ComputePipelineCore
+      return resolve(what, schema);
+    };
+  }
 }
+// After root.unwrap(pipeline) on a root over `Capture`, a second form:
+tgpu.resolveWithContext([item as never], { unstable_shaderGenerator: new WgslGenerator() });
+// The generator should receive the item, not take it from a replaced method
 ```
 
-The second resolution gives the same `@group` and `@binding` numbers only because both walk the functions in the same order: the catch-all group numbers fixed resources in order of first use. The device cross-checks the two binding tables and drops the second form on a mismatch.
+The second resolution numbers the catch-all group in its own visiting order, which note 17 covers.
 
-**Upstream.** Give the generator the item (entry 2), and make catch-all binding numbers independent of visiting order, or expose them so a second resolution can reuse them.
+**Fallback.** `attachComputeForm` in `src/glsl/compute.ts` replaces `ctx.resolve` and appends the form that `computeForm` returns. `prepareGpu` in `src/device/gpuCompute.ts` checks the form's bindings against the CPU module's; on a mismatch the compute pipeline in `src/device/pipeline.ts` records the reason in `ctx.stats.fallbacks` and runs the kernel on the CPU.
 
-**Workaround.** `KitGenerator` in `src/generator.ts`; the cross-check in `src/device/shader.ts`.
+**Upstream.** Same hook as note 2. With the `item` passed to `initGenerator`, the second resolution needs only the public `tgpu.resolveWithContext`. Note 17 covers the binding numbers.
 
 ### 6. Code written as WGSL text is invisible to other generators
 
-A function implemented with a WGSL template goes into the output as written. Three places in TypeGPU itself do this:
+A function implemented with a WGSL template goes into the output as written, without `functionDefinition`. Three places in TypeGPU 0.12.11 do this:
 
-- `createGuardedComputePipeline`'s entry. Patched: `PATCHES.md`, core patch 6. The source comment says why it is WGSL: TypeGPU does not run `unplugin-typegpu` on its own package. Running the plugin on TypeGPU's source at build time, or attaching the metadata by hand as the patch does, removes the whole class.
-- `common.fullScreenTriangle`. Not patched: `src/glsl/generator.ts` recognises it and substitutes GLSL.
-- The mipmap and resampling shaders in `core/texture/textureUtils.ts`, which `texture.generateMipmaps()` and a resizing `texture.write()` compile through `device.createShaderModule` directly, bypassing the root's generator. Not patched: the device recognises the fullscreen vertex shader and the sampling and gathering fragment shaders by fragments of their WGSL text and substitutes GLSL programs of its own, so any edit to those strings upstream silently breaks mipmaps on the fallback.
+- `createGuardedComputePipeline`'s entry, in `core/root/init.ts`. Its source comment says it is WGSL because TypeGPU does not run `unplugin-typegpu` on its own package.
+- `common.fullScreenTriangle`, in `common/fullScreenTriangle.ts`.
+- The mipmap and resampling shaders in `core/texture/textureUtils.ts`, which `texture.generateMipmaps()` and a resizing `texture.write()` compile with `device.createShaderModule` directly, bypassing the root's generator.
 
 ```ts
-const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: Glsl });
-root.createRenderPipeline({ vertex: common.fullScreenTriangle, fragment, targets });
-// The module the device receives still contains `@vertex fn fullScreenTriangle(...)`
+class Marked extends WgslGenerator {
+  override functionDefinition(options: FunctionDefinitionOptions) {
+    return `/* generated */ ${super.functionDefinition(options)}`;
+  }
+}
+// On a root over `Marked`, a pipeline with `vertex: common.fullScreenTriangle` gets a module
+// with `/* generated */ @fragment fn fragment(...)`, but the vertex function as written:
+// `@vertex fn item(@builtin(vertex_index) vertexIndex: u32) -> _Output { ... }`.
+// Every function should reach the root's generator.
 ```
 
-**Upstream.** Write the three as `'use gpu'` functions. For the mipmap shaders, build them with the root's generator like any other pipeline.
+**Fallback.** `KitGlslGenerator.#foreign` in `src/glsl/generator.ts` recognises `fullScreenTriangle`'s WGSL through a replaced `ctx.addDeclaration` and substitutes GLSL. `builtin` in `src/device/shader.ts` recognises the mipmap shaders by fragments of their WGSL text (`isBlitVertex`, `SAMPLE_FRAGMENT`, `GATHER_FRAGMENT`) and substitutes GLSL programs of its own, so an edit to those strings upstream breaks mipmaps on the fallback without an error.
 
-**Workaround.** As listed per item; the shader substitution is `builtin` in `src/device/shader.ts`.
+**Patched.** The guarded entry is covered by PATCHES.md, core patch 6.
+
+**Upstream.** In `packages/typegpu/src/common/fullScreenTriangle.ts`, write `fullScreenTriangle` as a `'use gpu'` function. In `packages/typegpu/src/core/texture/textureUtils.ts`, `generateTextureMipmaps` and `writeImages`: take the texture's root instead of its device and build the blit as a TypeGPU render pipeline, so it goes through the root's generator. Building TypeGPU with `unplugin-typegpu` turns all three into `'use gpu'` source, as patch 6 does by hand. Additive, since the WGSL output stays equivalent.
 
 ### 7. `WgslGenerator` has few seams for another target
 
-Retargeting by subclassing works well where a hook exists (`emitCall`, `emitBinaryOp`, `typeInstantiation`, `numericLiteral`, `_emitVarDecl`, `functionDefinition`, `declareGlobalVar`). Where none exists a subclass overrides `_expression` or `_statement` and inspects AST nodes itself. Cases the fallback hit: unary operators, member and index access on buffer memory, assignment to a place that is not a variable, post-increment, `return` in an entry function, and builtins that were emitted as text rather than through `emitCall` (patched: `PATCHES.md`, core patches 3 to 5).
+A subclass retargets well where a hook exists: `emitCall`, `emitBinaryOp`, `typeInstantiation`, `numericLiteral`, `functionDefinition`, `declareGlobalVar`, `call`, and the protected `_emitVarDecl`, `_return`, `_block`, `_callShellless`, `_aliasConstStatement` and `_emitSwitchStatement`. Elsewhere it overrides `_expression` or `_statement` and matches tinyest nodes itself. In 0.12.11 these bypass every hook:
+
+- unary `-`, through `neg` in `std/operators.ts`, which writes `-(x)` with `stitch`, and `!` and `~`, written inline in `_expressionImpl`;
+- `i++` and `i--`, written as `${argStr}${op}` in `_statement`;
+- member and index access, and so the left side of an assignment, which reaches `emitBinaryOp` as text (note 13);
+- ternaries (note 14), calls to user functions (note 8), atomics (note 9) and barriers (note 10).
 
 ```ts
-class Target extends WgslGenerator {
-  // No hook for `-x`, `a[i].b = v` or `i++`: override `_expression` and `_statement` and match
-  // tinyest nodes by hand
-}
+// `probe`, here and in notes 8 to 13, is a `WgslGenerator` subclass that records its hook calls
+const f = tgpu.fn(
+  [d.f32],
+  d.f32,
+)((x) => {
+  'use gpu';
+  let i = d.i32(0);
+  i++;
+  return -x + d.f32(i);
+});
+tgpu.resolve([f], { unstable_shaderGenerator: probe });
+// `i++;` and `-(x)` are in the output; only `+` reached `emitBinaryOp`, nothing reached `emitCall`
 ```
 
-**Upstream.** Split `_expressionImpl` and `_statement` into one overridable method per node kind, and route every operator and access through a typed hook the way binary operators are.
+**Fallback.** `src/cpu/generator.ts` overrides `CpuGenerator._expression` for unary minus on vectors and `i32`, member access and swizzles, and `CpuGenerator._statement` to rewrite `i++` as `+=`. `packages/typegpu-gl/src/glslGenerator.ts` overrides `_expression` for ternaries and `_return` for entry outputs.
 
-**Workaround.** The overrides in `src/cpu/generator.ts` and `packages/typegpu-gl/src/glslGenerator.ts`.
+**Patched.** Texture builtins, plain `name(args)` builtins and `for…of` declarations: PATCHES.md, core patches 3 to 5.
+
+**Upstream.** In `packages/typegpu/src/std/operators.ts`, `neg`: emit through a hook, such as `ctx.gen.emitUnaryOp('-', arg)`, and use the same hook for `!` and `~` in `_expressionImpl` and for update statements in `_statement`, both in `packages/typegpu/src/tgsl/wgslGenerator.ts`. Additive: WGSL output stays the same. The other gaps have their own entries: notes 8, 9, 10, 13 and 14.
 
 ### 8. Shader-function calls bypass `emitCall`
 
-User functions use `stitch` to assemble `name(args)` directly. Overriding `emitCall` therefore changes builtin calls that use that hook, but does not change calls to `tgpu.fn` or shellless shader functions. A backend that passes vector components as separate numeric parameters must change both the definition and every call.
+Calls to a `tgpu.fn` are written by its `codegenImpl` in `core/function/tgpuFn.ts` as ``stitch`${name}(${args})` ``, and calls to shellless functions the same way in `WgslGenerator._callShellless`. Overriding `emitCall` changes builtins but no user call. A backend that passes a vector as separate numeric parameters must change both the definition and every call.
 
 ```ts
-const twice = tgpu.fn([d.vec2f], d.vec2f)((v) => v * 2);
-const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+const twice = tgpu.fn([d.vec2f], d.vec2f)((v) => std.mul(v, 2));
+const half = (v: d.v2f) => {
   'use gpu';
-  output.$ = twice(d.vec2f(1, 2));
+  return std.mul(v, 0.5);
+};
+const main = tgpu.fn(
+  [],
+  d.vec2f,
+)(() => {
+  'use gpu';
+  return half(twice(d.vec2f(1, 2)));
 });
-// A backend defining twice(x, y) still receives a generated twice(vec2f(1, 2)) call.
+tgpu.resolve([main], { unstable_shaderGenerator: probe });
+// Output: `half(twice(vec2f(1, 2)))`; `emitCall` saw neither `twice` nor `half`
 ```
 
-**Upstream.** Route the `codegenImpl` in `core/function/tgpuFn.ts` and shellless calls through `ctx.gen.emitCall`, after argument conversion and function resolution. Keep the converted argument snippets typed until that hook.
+**Fallback.** `CpuGenerator.call` in `src/cpu/generator.ts` lets the base generator write the call, reads the callee's name from the text, splits the arguments again with `callArguments` from `src/cpu/references.ts` and re-emits the call through `emitCall`.
 
-**Workaround.** `CpuGenerator.call` resolves the call result and `callArguments` in `src/cpu/references.ts` splits its text before re-emitting it. Remove this parsing once all function calls use the hook.
+**Upstream.** In `packages/typegpu/src/core/function/tgpuFn.ts`, both `codegenImpl`s, and in `packages/typegpu/src/tgsl/wgslGenerator.ts`, `_callShellless`: return `ctx.gen.emitCall(name, [], convertedArgs)` with the converted argument snippets still typed. Additive: `WgslGenerator.emitCall` writes the same text.
 
-### 9. Atomic references arrive as pointer-shaped text
+### 9. Atomic references arrive as text
 
-The generic call hook has a typed snippet, but its lvalue has already become WGSL pointer syntax. A backend using indexed typed arrays needs the target array and index separately to implement an atomic operation without reading or writing adjacent fields.
+The `call` hook receives an atomic's target as a typed snippet whose value is already text: `rows[i].count`, or `(*row).count` when the row was bound to a `const` first, since that `const` becomes an implicit pointer. The atomics in `std/atomic.ts` then write `` stitch`atomicAdd(&${target}, …)` `` and never reach `emitCall`; core patch 4 leaves them alone. A backend that stores buffers as typed arrays needs the array and the index separately to update one field without touching its neighbours.
 
 ```ts
-const row = rows.$[id.x];
-std.atomicAdd(row.count, 1);
-// The backend must recover the address from an expression such as (&row.count).
+const Row = d.struct({ count: d.atomic(d.u32), other: d.u32 });
+const layout = tgpu.bindGroupLayout({ rows: { storage: d.arrayOf(Row, 16), access: 'mutable' } });
+const f = tgpu.fn([d.u32])((i) => {
+  'use gpu';
+  const row = layout.$.rows[i];
+  std.atomicAdd(row.count, 1);
+});
+tgpu.resolve([f], { unstable_shaderGenerator: probe });
+// `call` receives the target as the string '(*row).count'; `emitCall` is never called
 ```
 
-**Upstream.** Expose a typed lvalue representation and an atomic-operation hook in `tgsl/shaderGenerator.ts`. Keep member/index accesses structured through the pointer conversion in `tgsl/wgslGenerator.ts` and `data/ref.ts`.
+**Fallback.** `CpuGenerator.call` in `src/cpu/generator.ts` handles every `atomic*` before the base generator: `lowerReferences` rewrites `(*row)` and `(&x)` text, and `addressParts` in `src/cpu/references.ts` splits the last `[i]` or `.field` off the target.
 
-**Workaround.** `addressParts` and `lowerReferences` in `src/cpu/references.ts`, plus atomic handling in `CpuGenerator.call`, parse and lower pointer text.
+**Upstream.** In `packages/typegpu/src/std/atomic.ts`, each atomic's `codegenImpl`: emit through `ctx.gen.emitCall(name, [], [target, …])`, with the target as a typed pointer snippet. Additive. Getting the array and index back out of that pointer needs the structured place of note 13: same hook as note 13.
 
 ### 10. Barrier suspension and its call graph are not generator metadata
 
-A CPU backend must suspend every lane at a barrier, including barriers reached through helpers. There is no function property or barrier hook reporting that requirement, so the fallback recognises emitted barrier calls and propagates generator-function status through helper calls. A loose substring check even misclassified a helper named `yields` as a suspension.
+`workgroupBarrier`, `storageBarrier` and `textureBarrier` in `std/atomic.ts` return the text `workgroupBarrier()` without `emitCall`. The `call` hook sees `std.workgroupBarrier` itself, but nothing tells a generator that a function contains a barrier, or that a call reaches one through a helper. A CPU backend must suspend every lane at each barrier, including those in helpers.
 
 ```ts
 const sync = () => {
@@ -165,260 +288,393 @@ const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
   'use gpu';
   sync();
 });
-// The entry must suspend although its body contains no direct barrier call.
+tgpu.resolve([kernel], { unstable_shaderGenerator: probe });
+// `emitCall` never sees the barrier; the entry's `sync()` call carries no mark that it suspends
 ```
 
-**Upstream.** Add typed barrier emission and function effects, including reachable barriers, to `tgsl/shaderGenerator.ts`; preserve calls as structured nodes until function emission in `tgsl/wgslGenerator.ts`.
+**Fallback.** `CpuGenerator.functionDefinition` in `src/cpu/generator.ts` replaces barrier text with `(yield)` by regular expression, records the function in `#generators`, and rewrites calls to those functions as `(yield* name(…))`. `expandBarrierHelpers` in `src/cpu/phase-helpers.ts` inlines straight-line scalar helpers, `splitPhases` in `src/cpu/phases.ts` splits unconditional entry barriers into phase functions, and `src/cpu/index.ts` runs the phases across lanes. Other barriers keep JavaScript generator functions.
 
-**Workaround.** `CpuGenerator.functionDefinition` lowers barrier text to `yield`, then propagates `yield*`. `src/cpu/phase-helpers.ts` parses and inlines straight-line scalar barrier helpers; `src/cpu/phases.ts` splits unconditional entry barriers into plain phase functions. It turns entry returns into completion flags, which `src/cpu/index.ts` checks across lanes before the next phase. Other control-flow barriers retain generator functions. Structured function effects and barrier nodes would remove these text passes.
+**Upstream.** In `packages/typegpu/src/std/atomic.ts`, the three barriers: emit through `ctx.gen.emitCall`. Additive. Then record per generated function whether it reaches a barrier, directly or through its callees, and pass it to `functionDefinition` and with each call's snippet, in `packages/typegpu/src/core/function/fnCore.ts` and the function scope in `packages/typegpu/src/resolutionCtx.ts`. Additive. Same per-function summary as notes 21 and 22.
 
-### 11. Local names are reusable across sibling blocks, without scope hooks
+### 11. Local names are reused across sibling blocks, without stable identities
 
-Reusing names is valid WGSL, but a backend that caches scalar components or buffer offsets by emitted name needs to retire that cache on block exit. The generator exposes no enter/leave-block hooks with stable variable identities. Reusing a cached temporary can leak an address from a previous sibling block and produce `ReferenceError: cpuAddress_4 is not defined` in generated JavaScript.
+`makeUniqueIdentifier(name, 'block')` returns the JavaScript name unchanged when no visible scope has it, so sibling blocks declare the same identifier. That is valid WGSL, but a backend that keeps facts per emitted name, such as a local's buffer address or its vector components, carries them into the sibling block. `_block` is overridable and wraps every block body, but loop headers push their own scope in `_statement`, and a variable has no identity beyond its printed name.
 
 ```ts
-if (first) {
-  const item = rows.$[i];
-  consume(item.position);
-}
-if (second) {
-  const item = rows.$[j];
-  consume(item.position);
-}
-// Both blocks may receive the same local identifier; they are different bindings.
+const layout = tgpu.bindGroupLayout({
+  rows: { storage: d.arrayOf(d.vec4f, 16), access: 'readonly' },
+});
+const f = tgpu.fn(
+  [d.u32, d.u32, d.bool],
+  d.f32,
+)((i, j, first) => {
+  'use gpu';
+  let sum = d.f32(0);
+  if (first) {
+    const item = layout.$.rows[i];
+    sum += item.x;
+  } else {
+    const item = layout.$.rows[j];
+    sum += item.y;
+  }
+  return sum;
+});
+tgpu.resolve([f]);
+// Both blocks declare `let item = (&rows[…]);`: two bindings, one identifier
 ```
 
-**Upstream.** Expose block-scope lifecycle hooks or stable variable identities in `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Backend metadata should be keyed by binding identity, not printed text.
+**Fallback.** `src/cpu/generator.ts` names its own temporaries with `ctx.makeUniqueIdentifier(…, 'global')` and resets `#addresses` and `#vectors` at each `functionDefinition`, but still keys user locals by name. `KitGlslComputeGenerator._emitVarDecl` in `src/glsl/compute.ts` forgets what it knew about a name whenever a declaration reuses it. `ctx.getById` does not help: it takes the JavaScript identifier, not the emitted one.
 
-**Workaround.** Compiler-owned address/vector/argument temporaries in `src/cpu/generator.ts` use `ctx.makeUniqueIdentifier(..., 'global')`, with maps saved and restored per function. User-local names are never substituted throughout the whole function body.
-
-The GLSL compute generator hits the same limit with facts rather than caches: "this local holds `gid.x`" keyed by the emitted name would carry into a sibling block's `const i = gid.x + 1` and prove a write own that is not. `KitGlslComputeGenerator._emitVarDecl` in `src/glsl/compute.ts` forgets a name whenever any declaration reuses it. `ctx.getById` cannot help: it takes the JavaScript identifier, not the emitted one.
+**Upstream.** In `packages/typegpu/src/tgsl/wgslGenerator.ts`, `_statement`: open the loop-header scopes of `for`, `while` and `for…of` through one protected method, so a subclass sees every scope enter and exit. Additive. Then give each local a stable identity that reaches `_emitVarDecl`, `_aliasConstStatement` and the snippets that read it, in `packages/typegpu/src/resolutionCtx.ts` `defineVariable`. Same identities as note 22.
 
 ### 12. A function is generated once per argument type, never per argument value
 
-The shellless repository keys variants by argument types, and a `tgpu.fn` with a shell is generated once for all callers. GLSL needs a body per call site in two cases: a texture or sampler argument, because GLSL samples through one combined uniform, so `blurred(a, s, uv)` and `blurred(b, s, uv)` need two bodies; and an argument that is the invocation's own index, because a helper writing `buf[i]` runs as a fragment pass only for calls that pass the own index. Tagging the argument's schema does not make a variant: textures compare equal by sample type, samplers entirely.
+`ShelllessRepository.get` in `tgsl/shellless.ts` keys variants by argument types, and a `tgpu.fn` with a shell is generated once per resolution for all callers. GLSL needs a body per call site in two cases. A texture or sampler argument needs one, because GLSL samples through one combined uniform, so `blurred(a, s, uv)` and `blurred(b, s, uv)` need two bodies. An argument that is the invocation's own index needs one, because a helper writing `buf[i]` runs as a fragment pass only for calls that pass the own index. Tagging the argument's schema does not make a variant: `schemasEqualNominally` compares textures by sample type and samplers by kind alone.
 
 ```ts
+const layout = tgpu.bindGroupLayout({
+  a: { texture: d.texture2d() },
+  b: { texture: d.texture2d() },
+  s: { sampler: 'filtering' },
+});
 const blurred = (map: d.texture2d<d.F32>, s: d.sampler, uv: d.v2f) => {
   'use gpu';
   return std.textureSample(map, s, uv);
 };
-blurred(layout.$.a, layout.$.s, uv);
-blurred(layout.$.b, layout.$.s, uv); // reuses the body generated for `a`
+const main = tgpu.fn(
+  [d.vec2f],
+  d.vec4f,
+)((uv) => {
+  'use gpu';
+  return std.add(blurred(layout.$.a, layout.$.s, uv), blurred(layout.$.b, layout.$.s, uv));
+});
+tgpu.resolve([main]);
+// One `fn blurred`, called with `a` and with `b`
 ```
 
-**Upstream.** A generator hook that adds a key per argument to the variant lookup, such as `variantKey(arg: Snippet): string | undefined`, used by `ShelllessRepository.get` in `tgsl/shellless.ts` and by shelled function resolution in `core/function/fnCore.ts`.
+**Fallback.** For texture and sampler arguments of shellless functions, `KitGlslGenerator._callShellless` in `src/glsl/generator.ts` swaps `ctx.shelllessRepo.cache` for a list keyed by the handles while the lookup runs. For own-index arguments, of shellless and shelled functions alike, `KitGlslComputeGenerator.#calling` in `src/glsl/compute.ts` keeps the body generated for the first call's own arguments and rejects the kernel when a later call passes others.
 
-**Workaround.** For shellless functions, `KitGlslGenerator._callShellless` in `src/glsl/generator.ts` swaps `ctx.shelllessRepo.cache` while the lookup runs. For shelled functions, such as a guarded pipeline's callback, there is no seam: `KitGlslComputeGenerator` in `src/glsl/compute.ts` generates the function for its first call's own arguments and rejects the kernel when a later call passes others to a function that depends on them.
+**Upstream.** In `packages/typegpu/src/tgsl/shellless.ts`, `ShelllessRepository.get`: ask the generator for an extra key per argument, such as `variantKey(arg: Snippet): string | undefined`, and match it with the types. For shelled functions, in `packages/typegpu/src/core/function/tgpuFn.ts`, `codegenImpl`: resolve a separate body per distinct key. Additive: `WgslGenerator` returns `undefined` and keeps one variant.
 
 ### 13. Buffer access becomes text before a generator sees what it reads
 
-`layout.$.items[i].position.x` resolves the binding to its identifier and `accessProp`/`accessIndex` stitch the access together. A backend that reads buffers another way (the fallback reads words from a data texture, and must not load a whole element to read one field) gets no structured place. Overriding `_expression` catches access in the AST, but access through a value proxy at the JavaScript level is stitched at once. A generator cannot hold its own object as a snippet's value either: an object without `$comptimeValueOf` counts as known at compile time, so `place < 1` throws "requires numeric operands", and the symbol is not exported.
+`accessProp` and `accessIndex` in `tgsl/accessProp.ts` and `tgsl/accessIndex.ts` write member and index access with `stitch`, so `layout.$.items[i].weight` reaches the generator as the string `items[i].weight`. A backend that reads buffers another way, such as words from a data texture, cannot load one field without first parsing the text. Overriding `_expression` catches access in the AST, but access on a value proxy goes through `valueProxyHandler` in `core/valueProxyUtils.ts`, which calls the same functions. A generator cannot keep its own object as a snippet's value either: `asComptime` in `types.ts` treats an object without `[$comptimeValueOf]` as known at compile time, so a comparison with it throws "requires numeric operands", and neither `$comptimeValueOf` nor `runtimeOnly` is exported.
 
 ```ts
-const x = layout.$.items[i].position.x; // reaches the generator as the text `items[i].position.x`
+const Item = d.struct({ position: d.vec3f, weight: d.f32 });
+const layout = tgpu.bindGroupLayout({
+  items: { storage: d.arrayOf(Item, 16), access: 'readonly' },
+});
+const f = tgpu.fn(
+  [d.u32],
+  d.f32,
+)((i) => {
+  'use gpu';
+  return layout.$.items[i].weight + 1;
+});
+tgpu.resolve([f], { unstable_shaderGenerator: probe });
+// `emitBinaryOp` receives the left side as the string 'items[i].weight'
 ```
 
-**Upstream.** Represent buffer, member and index access as a place the generator turns into code (`emitLoad(place)`), and export `$comptimeValueOf` or `runtimeOnly` from `typegpu/~internal`. In `tgsl/accessProp.ts`, `tgsl/accessIndex.ts` and `types.ts`.
+**Fallback.** `KitGlslGenerator._expression` in `src/glsl/generator.ts` narrows places itself and keeps each place's load expression as the snippet's value, with `#places` mapping that text back to the place. `CpuGenerator._expression` in `src/cpu/generator.ts` recovers buffer offsets from the text with regular expressions and keeps them in `#addresses`.
 
-**Workaround.** `KitGlslGenerator._expression` in `src/glsl/generator.ts` narrows places itself and keeps each place's load expression as the snippet's value, with a map from that text back to the place.
+**Upstream.** In `packages/typegpu/src/tgsl/accessProp.ts` and `packages/typegpu/src/tgsl/accessIndex.ts`: represent buffer, member and index access as a place the generator turns into code, such as `emitLoad(place)`, with the WGSL generator writing today's text. Additive. Export `runtimeOnly` and `$comptimeValueOf` from `typegpu/~internal`, in `packages/typegpu/src/internal.ts`. Additive. Atomics (note 9), assignment targets (note 7) and swizzle provenance (note 19) need the same place.
 
 ### 14. A ternary is written as WGSL's `select`
 
-`_expressionImpl` emits a JavaScript ternary as `select(f, t, c)` through `stitch`, past `emitCall`. GLSL has no `select`.
+`WgslGenerator._expressionImpl` writes a runtime ternary as `select(f, t, c)` with `stitch`, so it never reaches `emitCall`. `std.select` does go through `emitCall('select', …)`. GLSL and JavaScript have no `select`.
 
 ```ts
-const y = x < 0.5 ? 1 : 2; // select(2, 1, (x < 0.5)) in every target language
+class Recording extends WgslGenerator {
+  calls: string[] = [];
+  override emitCall(name: string, t: readonly Snippet[], a: readonly Snippet[]): string {
+    this.calls.push(name);
+    return super.emitCall(name, t, a);
+  }
+}
+const f = tgpu.fn(
+  [d.f32],
+  d.f32,
+)((x) => {
+  'use gpu';
+  return x < 0.5 ? 1 : 2;
+});
+const gen = new Recording();
+tgpu.resolveWithContext([f], { unstable_shaderGenerator: gen });
+// Code has `select(2i, 1i, (x < 0.5f))`, but `gen.calls` has no 'select'.
+// It should, as it does for `std.select(d.f32(2), d.f32(1), x < 0.5)`.
 ```
 
-**Upstream.** Emit the conditional through `emitCall('select', …)` or an `emitConditional` hook, in `tgsl/wgslGenerator.ts`.
+**Fallback.** `GlslGenerator._expression` in `packages/typegpu-gl/src/glslGenerator.ts` declares `SELECT_OVERLOADS` when a ternary's text starts with `select(`. `CpuGenerator._expression` in `src/cpu/generator.ts` parses the `select(…)` text back into three arguments and passes them to `emitCall('select', …)`.
 
-**Workaround.** `SELECT_OVERLOADS` in `packages/typegpu-gl/src/glslGenerator.ts`, declared when a ternary's output starts with `select(`. CPU `CpuGenerator._expression` also detects this resolved conditional and routes its arguments through `emitCall('select', ...)`, after the base generator has validated the branches. Without that step, a rare runtime branch in falling-sand reaches an undefined JavaScript `select`.
+**Patched.** The GLSL half is `@typegpu/gl` fork patch F in PATCHES.md. The CPU half is not patched.
+
+**Upstream.** In `packages/typegpu/src/tgsl/wgslGenerator.ts`, `_expressionImpl`, the `NODE.conditionalExpr` branch: return `this.emitCall('select', [], [alt, con, convertedTest])` in place of the `stitch`. The WGSL output stays the same. Additive for WGSL; a generator that overrides `emitCall('select')` now also sees ternaries.
 
 ### 15. `functionDefinition` must call `determineReturnType`, which nothing says
 
-A generator that builds an entry function itself and never calls `options.determineReturnType()` fails with `Failed to determine return type` from `resolveFunction`, far from the cause.
+`ResolutionCtxImpl.resolveFunction` sets the return type only inside the `determineReturnType` callback it passes to `gen.functionDefinition`. A generator that never calls it fails afterwards with `Failed to determine return type`, which does not name the cause. `FunctionDefinitionOptions.determineReturnType` has no doc comment.
 
 ```ts
-override functionDefinition(options: FunctionDefinitionOptions) {
-  return myOwnEntry(options); // throws later unless it calls options.determineReturnType()
+class OwnEntry extends WgslGenerator {
+  override functionDefinition(options: FunctionDefinitionOptions): string {
+    return `fn ${options.name}() {}`;
+  }
 }
+const main = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+});
+tgpu.resolveWithContext([main], { unstable_shaderGenerator: new OwnEntry() });
+// Throws 'Failed to determine return type'; should work or say to call determineReturnType()
 ```
 
-**Upstream.** Document it on `FunctionDefinitionOptions`, or call it in `resolveFunction` when the generator did not. In `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`.
+**Fallback.** Every generator that writes its own function calls it: `KitGlslComputeGenerator.computeEntry` in `src/glsl/compute.ts`, `KitGlslGenerator.#entryDefinition` in `src/glsl/generator.ts` and `CpuGenerator.functionDefinition` in `src/cpu/generator.ts`.
 
-**Workaround.** `KitGlslComputeGenerator.computeEntry` in `src/glsl/compute.ts` calls it.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, `resolveFunction`: when `returnType` is still unset after `functionDefinition` returns, call the same callback instead of throwing. Document on `FunctionDefinitionOptions.determineReturnType` in `packages/typegpu/src/tgsl/shaderGenerator.ts` that it must run after the body is generated. Additive.
 
-### 16. Generators reach into `ResolutionCtx` members its type does not promise
+### 16. Generators replace `ResolutionCtx` methods and read members its type lacks
 
-The GLSL generators use `ctx.topFunctionScope` (which function is being generated), `ctx.shelllessRepo.cache` (entry 12), `ctx.setBlockExternals` to bind an already generated snippet to a temporary name, because `defineVariable` rejects snippets of unknown type such as a namespace or a comptime object, and replacements of `ctx.resolve` (entry 5) and `ctx.addDeclaration` (to translate `common.fullScreenTriangle`, entry 6) on the context instance. Each can break in a patch release.
+The exported `ResolutionCtx` type in `typegpu/~internal` already has `topFunctionScope`, `shelllessRepo`, `setBlockExternals`, `addDeclaration` and `resolve`. It lacks `fixedBindings` and `bindGroupLayoutsToPlaceholderMap`, which only `ResolutionCtxImpl` has. The generators also replace `ctx.resolve`, `ctx.addDeclaration` and `ctx.shelllessRepo.cache` on the instance, which nothing promises TypeGPU will keep calling. And they bind a generated snippet to a temporary external with `setBlockExternals` so that `_expression` can continue a member or index access from it, because `accessProp` and `accessIndex` are not exported.
 
 ```ts
-const scope = (ctx as unknown as { topFunctionScope: unknown }).topFunctionScope;
+import type { ResolutionCtx } from 'typegpu/~internal';
+declare const ctx: ResolutionCtx;
+ctx.topFunctionScope?.functionType; // typed
+ctx.shelllessRepo.cache; // typed
+ctx.fixedBindings; // TS2339: not on ResolutionCtx
+ctx.bindGroupLayoutsToPlaceholderMap; // TS2339: not on ResolutionCtx
 ```
 
-**Upstream.** Add what a generator needs to the public `ResolutionCtx` type, and let `_expression` continue from a snippet instead of an AST node, such as `_access(target: Snippet, node)`. In `types.ts` and `tgsl/wgslGenerator.ts`.
+**Fallback.** `#numbered` in `src/glsl/compute.ts` casts the context to read the two binding members (note 17). `attachComputeForm` in `src/glsl/compute.ts` replaces `ctx.resolve` to capture the pipeline (note 5). `KitGlslGenerator.initGenerator` in `src/glsl/generator.ts` replaces `ctx.addDeclaration` to translate WGSL-text declarations (note 6). `KitGlslGenerator._callShellless` swaps `shelllessRepo.cache` (note 12). `KitGlslGenerator.#bind` in `src/glsl/generator.ts` calls `setBlockExternals` and re-enters `_expression` with a synthetic AST node.
 
-**Workaround.** `src/glsl/generator.ts`, `src/glsl/compute.ts` and `src/generator.ts`.
+**Upstream.** In `packages/typegpu/src/internal.ts`, export `accessProp` (`tgsl/accessProp.ts`) and `accessIndex` (`tgsl/accessIndex.ts`), so a generator continues an access from a snippet without `#bind`. Additive. Same hooks as notes 5, 6, 12 and 17 for the rest.
 
 ### 17. A second resolution of a pipeline numbers its bindings its own way
 
-The catch-all group's bindings are numbered in the order a resolution reaches its resources (`allocateFixedEntry`), and a layout without an explicit index takes the next free group in the order it is reached. A generator that resolves the same pipeline again in another order, as the GPU form of a compute pipeline does while it analyses what the kernel writes, gets other numbers than the resolution the pipeline is created from, and nothing says so: the form bound the wrong textures in two examples until a check compared it with the WGSL.
+`ResolutionCtxImpl.allocateFixedEntry` numbers the catch-all group's bindings in the order a resolution first reaches each resource. `allocateLayoutEntry` gives layouts without an explicit index placeholders in the order they are reached, and `resolve` turns those into group indices in that order. Resolving the same pipeline again in another order gives other numbers.
 
 ```ts
 const a = root.createReadonly(d.arrayOf(d.f32, 4));
 const b = root.createMutable(d.arrayOf(d.f32, 4));
-// WGSL: `a` at @binding(0), `b` at @binding(1); a generator that reaches `b` first numbers them the other way
+const ab = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  const x = a.$[0];
+  b.$[0] = x;
+});
+const ba = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  const y = b.$[1];
+  b.$[0] = a.$[0] + y;
+});
+tgpu.resolve([ab]); // `a` at @binding(0)
+tgpu.resolve([ba]); // `a` at @binding(1): numbers follow first use, not the resources
 ```
 
-**Upstream.** Let a nested resolution inherit its parent's binding numbers, for example by taking the parent's `fixedBindings` and placeholders as an option of `resolveWithContext`, or give each fixed binding a stable index when it is created. In `resolutionCtx.ts`.
+**Fallback.** The GPU form of a compute pipeline resolves it again with `KitGlslComputeGenerator`. `KitGlslComputeGenerator.#numbered` in `src/glsl/compute.ts` maps each binding to the outer resolution's catch-all index or layout placeholder through `fixedBindings` and `bindGroupLayoutsToPlaceholderMap`, and writes `#KIT_OUTER_` placeholders that the outer resolution replaces.
 
-**Workaround.** `KitGlslComputeGenerator.#numbered` in `src/glsl/compute.ts` maps each binding to the outer resolution's catch-all index or layout placeholder, through `fixedBindings` and `bindGroupLayoutsToPlaceholderMap`, and writes placeholders the outer resolution replaces.
+**Upstream.** In `packages/typegpu/src/core/resolve/tgpuResolve.ts`, `resolveWithContext`: accept the parent `ResolutionCtx` as an option, and in `packages/typegpu/src/resolutionCtx.ts`, `allocateFixedEntry` and `allocateLayoutEntry`, return the parent's binding and placeholder for a resource or layout it already has. Additive. The smaller step is adding `readonly fixedBindings` and `readonly bindGroupLayoutsToPlaceholderMap` to `ResolutionCtx` in `packages/typegpu/src/types.ts`, which makes `#numbered` typed but keeps it. Note 5 asks for the same.
 
 ### 18. A vertex output position cannot be typed `@invariant`
 
-`d.invariant(d.builtin.position)` is a valid vertex output, and TypeGPU emits `@invariant` for it, but the types of `tgpu.vertexFn`'s `out` accept only `d.builtin.position` with its one attribute.
+`d.invariant(d.builtin.position)` returns `Decorated<Vec4f, [Builtin<'position'>, Invariant]>`, and resolution emits `@invariant @builtin(position)` for it. `tgpu.vertexFn`'s `out` type does not accept it, because `AnyVertexOutputBuiltin` has only `BuiltinPosition` and `BuiltinClipDistances`.
 
 ```ts
-tgpu.vertexFn({ out: { position: d.invariant(d.builtin.position) } }); // type error
+tgpu.vertexFn({ out: { position: d.builtin.position } }); // accepted
+tgpu.vertexFn({ out: { position: d.invariant(d.builtin.position) } });
+// TS2769: not assignable to VertexOutConstrained; should be accepted
 ```
 
-**Upstream.** Accept `Decorated<Vec4f, [Builtin<'position'>, Invariant]>` in `AnyVertexOutputBuiltin`. In `core/function/tgpuVertexFn.ts` and `data/wgslTypes.ts`.
+**Fallback.** `packages/typegpu-kit/src/passes.ts` casts `tgpu.vertexFn` to its own `Shell` type for `vertexShell`, which `vertexOf` calls with the invariant position. `tests/glsl/stages.test.ts` casts the schema through `unknown`.
 
-**Workaround.** The Kit's `passes.ts` builds its vertex shell untyped; tests cast through `unknown`.
+**Upstream.** In `packages/typegpu/src/builtin.ts`, add `Decorated<Vec4f, [Builtin<'position'>, Invariant]>` to `AnyVertexOutputBuiltin`, which `VertexOutConstrained` in `packages/typegpu/src/core/function/tgpuVertexFn.ts` reads. Additive.
 
 ### 19. Swizzle mutation validation depends on the emitted value's class
 
-`validateSnippetMutation` is private and recognises `instanceof Swizzle`. A swizzle is a fresh value when read, but assignment validates its base's mutability. Replacing it with a target-language string loses that distinction: keeping its runtime origin rejects valid writes; changing its origin to the base's makes valid reads look like reference assignments.
+`WgslGenerator.validateSnippetMutation` is private and checks `mutated.value instanceof Swizzle`. For a swizzle it validates the base's origin; for anything else, the snippet's own. `Swizzle[$resolve]` in `tgsl/swizzle.ts` writes `base.components` itself. A generator that emits swizzles in another form must replace the snippet's value, and then either valid writes or valid copies fail. `accessIndex` also makes a `Swizzle` for a constant vector index, so `v[0]` takes the same path.
 
 ```ts
-let value = d.vec4f(1, 2, 3, 4);
-value.yx = d.vec2f(value.xy); // Valid, but a string-valued swizzle is rejected as a non-reference.
-value = value.yxwz; // Valid, but giving the swizzle a local-variable origin rejects this copy.
+// A generator whose `_expression` returns a Swizzle's text as a string snippet
+const write = tgpu.fn([])(() => {
+  'use gpu';
+  const value = d.vec4f(1, 2, 3, 4);
+  value.yx = d.vec2f(value.xy); // with the swizzle's origin: "not a reference to an existing value"
+});
+const copy = tgpu.fn([])(() => {
+  'use gpu';
+  let value = d.vec4f(1, 2, 3, 4);
+  value = value.yxwz; // with the base's origin: "references cannot be assigned"
+});
+// Both resolve with the plain WgslGenerator; both should with any emitted form
 ```
 
-Constant vector indexing takes this same path: `state.$[0]` becomes a `Swizzle` in `tgsl/accessIndex.ts` and resolves to `state.x`. A subclass that only retargets member-access AST nodes misses indexed reads and writes. On an array-valued CPU backend this produced undefined reads in `randf`'s private state and an all-zero random stream.
+**Fallback.** `CpuGenerator.#lowerSwizzle` in `src/cpu/generator.ts` clones the `Swizzle` instance and uses `makeResolvable` to change only its emitted code, for member and index access alike.
 
-**Upstream.** Keep lvalue provenance separate from emitted text, and expose swizzle emission with the original base and components. Mutation validation in `tgsl/wgslGenerator.ts` should consume that provenance without requiring a concrete `tgsl/swizzle.ts` instance.
-
-**Workaround.** `CpuGenerator.#lowerSwizzle` clones the original Swizzle instance and uses `makeResolvable` to change only its emitted code. This retains readonly and nested-swizzle validation while lowering components to JavaScript indices.
+**Upstream.** In `packages/typegpu/src/tgsl/swizzle.ts`, `Swizzle[$resolve]`: emit through a new optional `ShaderGenerator.emitSwizzle(base: Snippet, components: string): string` in `packages/typegpu/src/tgsl/shaderGenerator.ts`, defaulting to `${base}.${components}`. The value stays a `Swizzle`, so validation is unchanged. Additive.
 
 ### 20. Whether a local is reassigned is decided after its declaration is generated
 
-A `let` whose reassignment may sit in a pruned branch reaches `_emitVarDecl` with a placeholder keyword, `#VAR_n#`, which the function scope replaces once the body is done; a JavaScript `const` that holds a struct copy gets one too. A generator that wants to know whether a variable keeps its first value, such as the GPU compute form deciding whether `view.cursor` still holds a uniform's value at a condition, cannot ask at that point.
+`WgslGenerator._letStatement`, and `_constStatement` for a new struct or array value such as `View(layout.$.view)`, pass `_emitVarDecl` a placeholder keyword `#VAR_n#`. `WgslGenerator.functionDefinition` replaces it with `var` or `let` after the body, from `FunctionScopeLayer.modifiedVariables`. That set is readable through `ctx.topFunctionScope` once the body is generated, but not at the declaration, and its contract is undocumented.
 
 ```ts
-const view = View(layout.$.view); // `#VAR_0# view_1 = …`: let or var is decided later
-if (id.x === d.u32(view.cursor.x)) pick.$ = …;
+const f = tgpu.fn(
+  [d.u32],
+  d.u32,
+)((x) => {
+  'use gpu';
+  let a = x;
+  let b = x;
+  if (x > 2) {
+    b = 1;
+  }
+  return a + b;
+});
+// `_emitVarDecl` gets '#VAR_0#' and '#VAR_1#'. After the body,
+// `ctx.topFunctionScope.modifiedVariables` holds `b` only, and the code has `let a` and `var b`.
 ```
 
-**Upstream.** Pass the generator the variable's final mutability, or a hook called when placeholders are resolved, with each variable and whether it was reassigned. In `tgsl/wgslGenerator.ts` and the function scope in `resolutionCtx.ts`.
+**Fallback.** `KitGlslComputeGenerator.#checkWrite` in `src/glsl/compute.ts` records the root name of every assignment and post-update target in `frame.assigned`, and `KitGlslComputeGenerator.functionDefinition` rejects the kernel when a name in `frame.choosing` was assigned. It decides at the function's end, so it could read `ctx.topFunctionScope.modifiedVariables` instead.
 
-**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` records every assignment's root name per function and rejects the kernel at the function's end when a choice of invocation read a variable that was reassigned.
+**Upstream.** In `packages/typegpu/src/types.ts`, document `FunctionScopeLayer.modifiedVariables` and `placeholderForVariable` as what a generator reads after `_block` returns to learn each local's final mutability. Additive. A generator that needs it at the declaration cannot have it without a second pass.
 
 ### 21. A generator cannot ask what a function reads
 
-An accessor filled with a function, such as `tgpu.accessor(Pass, () => Pass(layout.$.pass))`, reaches a kernel as a call to a generated function. A generator that needs to know whether a value is the same for every invocation, as the GPU compute form does for an offset like `cells[own + (1 - current.$.source) * n]`, sees only the call. TypeGPU records which bindings a resolution reaches (`bindingUseProbe`) but not per function, nor whether a function reads private variables or the invocation's builtins.
+An accessor filled with a function reaches a kernel as a call to a generated function, and `FunctionDefinitionOptions` gives a generator only the function's type, name, workgroup size, arguments and body. `ResolutionCtxImpl._getOrInstantiate` keeps a `ProbeFrame` per resolved item, but it is private, and its only probe, `bindingUseProbe`, records fixed bindings from `allocateFixedEntry`; `allocateLayoutEntry`, private variables and builtins report nothing.
 
 ```ts
+const Pass = d.struct({ source: d.u32 });
+const layout = tgpu.bindGroupLayout({
+  pass: { uniform: Pass },
+  cells: { storage: d.arrayOf(d.f32, 8), access: 'mutable' },
+});
 const current = tgpu.accessor(Pass, () => {
   'use gpu';
-  return Pass(layout.$.pass); // reads a uniform only, but the caller sees `current()`
+  return Pass(layout.$.pass);
 });
+const main = tgpu.computeFn({ workgroupSize: [1], in: { gid: d.builtin.globalInvocationId } })((
+  input,
+) => {
+  'use gpu';
+  layout.$.cells[input.gid.x + (1 - current.$.source) * 4] = 1;
+});
+tgpu.resolve([main], { unstable_shaderGenerator: new Spy() }); // Spy extends WgslGenerator
+// Emits `cells[(gid.x + ((1u - current().source) * 4u))]`. `Spy.functionDefinition` gets the same
+// six fields for `current` as for `main`: nothing says `current` reads only a uniform.
 ```
 
-**Upstream.** Record, per generated function, the bindings, private variables and builtins it reads, transitively, and expose it to generators beside the function's snippet. In `core/function/fnCore.ts` and `resolutionCtx.ts`.
+**Fallback.** `KitGlslComputeGenerator.functionDefinition` in `src/glsl/compute.ts` adds a function to `#pure` when it has no parameters and `#varies` finds in its generated GLSL no invocation id, private variable, written buffer or texture, or function outside `#pure`.
 
-**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` marks a function as shared when it has no parameters and its generated body names no private variable, written resource, invocation id or function that is not shared itself.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, report a probe from `allocateLayoutEntry`, from private and workgroup variable access in `packages/typegpu/src/core/variable/tgpuVariable.ts`, and from builtin access, and let a generator read the probe set of a resolved callee, for example `ctx.probesOf(item)`. Additive. One per-function summary serves notes 10, 21 and 22.
 
 ### 22. Local liveness and callee effects are not exposed together
 
-Function arguments expose `used`, but local declarations have no equivalent hook and function definitions carry no reusable purity summary. When a specialised callback ignores an argument, a backend can omit the call's argument but still computes the local that supplied it. In stampede's culling this left an unused default bounding sphere, including its transforms, in every row's visibility check.
+`FunctionArgument.used` tells a generator whether a body read an argument, but locals have no equivalent: `_emitVarDecl` gets strings at the declaration, before any use. Every call to a `'use gpu'` function has `possibleSideEffects: true` (`sideEffects: true` in `core/function/tgpuFn.ts`, the default of `snip` for shellless calls in `tgsl/wgslGenerator.ts`), so a generator cannot tell that dropping an unused initializer is safe. Record arguments and returns carry no field use either.
 
 ```ts
-const fallback = sphereOf(row);
-return customBounds(row, fallback); // This fill never reads its second argument.
-// A backend can emit customBounds(row, undefined) but still emits sphereOf(row).
-return placementOf(row).position; // The helper still computes rotation and scale.
+const double = (x: number) => {
+  'use gpu';
+  return x * 2;
+};
+const f = (x: number) => {
+  'use gpu';
+  const unused = double(x);
+  return x;
+};
+tgpu.resolve([tgpu.fn([d.f32], d.f32)((x) => f(x))]);
+// Emits `let unused = double(x);`. Nothing tells a generator that `unused` is never read and
+// that `double` has no effects, so it cannot drop the call.
 ```
 
-**Upstream.** Expose local use counts or stable binding identities, field use paths on record arguments and returns, and a function effect summary covering writes and barriers, through `tgsl/shaderGenerator.ts` and `resolutionCtx.ts`. Then a backend can remove unused pure initializers and record fields before emitting text.
+**Fallback.** `CpuGenerator` in `src/cpu/generator.ts` keeps `#functionEffects` per generated function. `prunePureLocals` in `src/cpu/dead-locals.ts` drops unused declarations whose initializer `isPureExpression` accepts, and `usedRecordFields` and `projectRecordBody` in `src/cpu/record-fields.ts` project pure helpers onto the record fields their callers read.
 
-**Workaround.** `CpuGenerator` tracks function effects; `src/cpu/dead-locals.ts` conservatively removes unused generated declarations whose calls are known pure. `src/cpu/record-fields.ts` projects pure helpers onto the record fields their callers use, preserving eager snapshots and argument evaluation. Unknown calls, mutations, escaping records and field dependencies keep the original calculation.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, count reads per variable that `defineVariable` registers and expose the counts when a function body is done. In `packages/typegpu/src/tgsl/wgslGenerator.ts`, set a user function call's `possibleSideEffects` from its callee's effect summary instead of `true`. Additive: the WGSL output does not change. Same per-function summary as note 21; note 10 adds reachable barriers to it.
 
 ## Roots and devices
 
 ### 23. `root.configureContext` assumes a WebGPU canvas context
 
-It calls `canvas.getContext('webgpu')` and `navigator.gpu.getPreferredCanvasFormat()`. A root over a device that presents another way, such as the fallback's, cannot be configured through it, and `navigator.gpu` does not exist where the fallback is needed.
+`configureContext` in `core/root/init.ts` calls `canvas.getContext('webgpu')`, then `navigator.gpu.getPreferredCanvasFormat()` when no `format` is given. Its options take a canvas only, never a context, so a root over a device that presents another way cannot use it. The default target format in `core/pipeline/connectTargetsToShader.ts` reads `navigator.gpu` too.
 
 ```ts
 const root = tgpu.initFromDevice({ device: webglDevice });
-root.configureContext({ canvas }); // Unable to initialize 'webgpu' context on the provided canvas.
+root.configureContext({ canvas, format: 'rgba8unorm' });
+// Throws "Unable to initialize 'webgpu' context on the provided canvas."
+// It should ask the device's presenter for the context.
 ```
 
-**Upstream.** Let the device supply the context, for example an optional `configureCanvas` member TypeGPU prefers when present.
+**Fallback.** `web.surface` in `packages/typegpu-kit/src/web.ts` calls `backends.of(root).configure` from `packages/typegpu-kit/src/backends.ts` instead of `root.configureContext` when the backend is not WebGPU. The fallback device supplies `configure` and `preferredCanvasFormat` under the `brand` symbol in `src/device/index.ts`, through `configure` in `src/device/canvas.ts`.
 
-**Workaround.** `backends.of(root).configure` in `packages/typegpu-kit/src/backends.ts`, which `web.surface` calls.
+**Upstream.** In `packages/typegpu/src/core/root/init.ts`, accept an optional presenter in `initFromDevice`'s options, `{ getContext(canvas): GPUCanvasContext | null; preferredFormat: GPUTextureFormat }`, and use it in `configureContext` and in `connectTargetsToShader` in place of `canvas.getContext('webgpu')` and `navigator.gpu.getPreferredCanvasFormat()`. Additive. It extends the same `initFromDevice` options as note 30.
 
 ### 24. TypeGPU reads WebGPU's constant namespaces from the global scope
 
-`GPUBufferUsage`, `GPUTextureUsage`, `GPUShaderStage`, `GPUMapMode` and `GPUColorWrite` are read as globals when a buffer, texture or layout is created. A browser without WebGPU does not define them, so creating a uniform throws `ReferenceError: GPUBufferUsage is not defined` before any device is involved.
+`GPUBufferUsage`, `GPUTextureUsage`, `GPUShaderStage` and `GPUMapMode` are read as globals when a buffer, texture, query set or layout is created. A browser without WebGPU does not define them, so creating a uniform throws before any device is involved.
 
 ```ts
-tgpu.initFromDevice({ device: webglDevice }).createUniform(d.f32); // ReferenceError without WebGPU
+tgpu.initFromDevice({ device: webglDevice }).createUniform(d.f32);
+// ReferenceError: GPUBufferUsage is not defined. It should need no global.
 ```
 
-**Upstream.** Keep the constants in TypeGPU. The specification fixes their values.
+**Fallback.** `defineConstants` in `src/globals.ts`, called by `init` in `src/webgl.ts`, defines the missing namespaces, and `GPUColorWrite` for user code.
 
-**Workaround.** `defineConstants` in `src/globals.ts` defines the missing ones.
+**Upstream.** Keep the constants in a TypeGPU module, since the WebGPU specification fixes their values, and import them in `packages/typegpu/src/core/buffer/buffer.ts`, `packages/typegpu/src/core/texture/texture.ts`, `packages/typegpu/src/core/texture/textureUtils.ts`, `packages/typegpu/src/core/querySet/querySet.ts` and `packages/typegpu/src/tgpuBindGroupLayout.ts`. Additive.
 
 ### 25. Running a kernel on the CPU needs a second code generator
 
-TypeGPU can call a `'use gpu'` function in JavaScript, but not a whole kernel: `tgpu.simulate` runs one invocation, the texture functions throw `MissingCpuImplError`, atomics have no CPU implementation, the barriers do nothing, and values are generic vector objects. So the fallback generates its own JavaScript from the typed AST. [TypeGPU #3220](https://github.com/software-mansion/TypeGPU/pull/3220) adds slots and accessors to CPU execution; the rest is open.
+Calling a `'use gpu'` function in JavaScript runs one invocation without its kernel. `tgpu['~unstable'].simulate` fixes the dispatch at one workgroup of one invocation. `workgroupBarrier`, `storageBarrier` and the atomics throw `MissingCpuImplError`, and so do the sampling, load and store texture functions. A slot or accessor read outside resolution throws. [TypeGPU #3220](https://github.com/software-mansion/TypeGPU/pull/3220) adds them to CPU execution; it is not in 0.12.11.
 
 ```ts
-const kernel = tgpu.computeFn({ workgroupSize: [64] })(() => {
+const counter = tgpu.workgroupVar(d.atomic(d.u32));
+const barrier = () => {
   'use gpu';
-  std.workgroupBarrier(); // nothing on the CPU runs this kernel, its barriers or its atomics
-});
+  std.workgroupBarrier();
+};
+barrier(); // MissingCpuImplError: workgroupBarrier is a no-op outside of CODEGEN mode.
+tgpu['~unstable'].simulate(() => std.atomicAdd(counter.$, 1)); // MissingCpuImplError
+tgpu['~unstable'].simulate(() => 1).privateVars.flat(2).length; // 1: one invocation, no dispatch
+// A kernel should run on the CPU over a dispatch, with its barriers and atomics.
 ```
 
-**Upstream.** A supported CPU executor for compute pipelines, taking bound resources and a dispatch size, would let `tgpu.simulate`, tests and fallbacks share one implementation.
+**Fallback.** `CpuGenerator` in `src/cpu/generator.ts` generates JavaScript from the typed AST, and `compile` in `src/cpu/index.ts` runs it over the dispatch, with atomics in the generator and texture access in `src/cpu/textures.ts`.
 
-**Workaround.** `src/cpu`.
+**Upstream.** In `packages/typegpu/src/core/simulate/tgpuSimulate.ts`, `simulate`: a CPU executor that takes an entry, bound resources and dispatch dimensions. Additive. Same executor as note 36, which gives its design; barriers need note 10.
 
 ### 26. A texture's cube or array viewing is unknown when it is created
 
-WebGPU lets a 6-layer texture be viewed as `cube` or `2d-array`; WebGL 2 must pick `TEXTURE_CUBE_MAP` or `TEXTURE_2D_ARRAY` when it allocates storage. WebGPU's compatibility mode solves the same problem with `textureBindingViewDimension` on `GPUTextureDescriptor`, but TypeGPU never passes it: `INTERNAL_createTexture` materialises the texture from `props` alone, and views are created later, when a bind group first unwraps them. A texture written before its first cube view is created ends up stored as an array, and every cube view of it then samples a copy the device refreshes whenever the texture changes.
+WebGPU lets a 6-layer texture be viewed as `cube` or `2d-array`, but WebGL 2 picks `TEXTURE_CUBE_MAP` or `TEXTURE_2D_ARRAY` when it allocates storage. `GPUTextureDescriptor.textureBindingViewDimension` carries that choice, but TypeGPU's texture props have no such field. `materialize` in `TgpuTextureImpl` creates the texture from `props` alone, and a view reaches `GPUTexture.createView` only when a bind group first unwraps it.
 
 ```ts
 const sky = root
   .createTexture({ size: [256, 256, 6], format: 'rgba16float' })
   .$usage('sampled', 'render');
-sky.write(faces); // allocates storage now, before any view exists
-const cube = sky.createView(d.textureCube(d.f32)); // on WebGL: a copy, re-blitted after each write
+sky.write(faces); // device.createTexture now, without textureBindingViewDimension
+const cube = sky.createView(d.textureCube(d.f32)); // reaches the device only at the first bind
+// createTexture should receive textureBindingViewDimension: 'cube'.
 ```
 
-**Upstream.** Accept `textureBindingViewDimension` in texture props, or infer it from the first view schema created before materialisation, and pass it to `device.createTexture`. In `core/texture/texture.ts`.
+**Fallback.** `src/device/texture.ts` stores the texture as the views created before allocation ask, through `hint` in `makeView` and `chooseTarget`. `sampled` reallocates it if the first sampled view disagrees and nothing was written yet, and otherwise `derivedCopy` keeps a copy per view that it refreshes after each write. `createTexture` there already reads `textureBindingViewDimension`.
 
-**Workaround.** `sampled` and `derivedCopy` in `src/device/texture.ts`: storage is chosen from the views created before allocation, reallocated if the first sampled view disagrees and nothing was written yet, and otherwise copied per view.
+**Upstream.** In `packages/typegpu/src/core/texture/textureProps.ts`, add `textureBindingViewDimension` to `TextureProps`, and pass it to `device.createTexture` in `materialize` in `packages/typegpu/src/core/texture/texture.ts`. Additive.
 
 ### 27. TypeGPU's internal blits allocate per call and submit their own encoder
 
-`blit` in `core/texture/textureUtils.ts` creates a bind group on every call, and `generateTextureMipmaps` and `writeImages` each create a command encoder and submit it at once. A module that regenerates mipmaps every frame, such as one mipmapping a rendered target, allocates bind groups each frame and submits outside the frame's encoder, so its work cannot be ordered with the frame's passes.
+`blit` in `core/texture/textureUtils.ts` caches its pipeline but creates a bind group and two texture views on every call. `generateTextureMipmaps`, `writeImages` and `clearTextureWithColor` each create a command encoder and submit it at once, as does `copyFrom` in `core/texture/texture.ts`. A module that regenerates mips every frame therefore allocates each frame and submits outside the frame's encoder, so its work cannot be ordered with the frame's passes.
 
 ```ts
-target.generateMipmaps(); // its own encoder and submit, a new bind group per level and layer
+const target = root
+  .createTexture({ size: [8, 8], format: 'rgba8unorm', mipLevelCount: 4 })
+  .$usage('sampled', 'render');
+target.generateMipmaps();
+// 3 bind groups, 6 texture views, 1 command encoder and 1 submit, again on every call.
+// It should reuse them and record into an encoder it is given.
 ```
 
-**Upstream.** Cache the bind group per source view, and give `generateMipmaps` an optional encoder to record into. In `core/texture/textureUtils.ts` and `core/texture/texture.ts`.
+**Fallback.** The fallback device runs each submit as it comes and replaces the blit shaders, as note 6 says. The Kit's `mipmaps` module in `packages/typegpu-kit/src/mipmaps.ts` records mip levels into the frame's encoder instead, and `images` in `packages/typegpu-kit/src/images.ts` calls `generateMipmaps` only at setup.
 
-**Workaround.** None in the fallback; the device runs each submit as it comes.
+**Upstream.** In `packages/typegpu/src/core/texture/textureUtils.ts`, `blit`: cache the bind group and views per source view. In `packages/typegpu/src/core/texture/texture.ts`, `generateMipmaps`: take an optional command encoder to record into, and submit only without one. Additive.
 
-### 28. A copy of a local array element is still a reference when assigned back
+### 28. A copy bound to a local is still a reference when stored into an array
 
-Inside a `'use gpu'` function, `d.vec2u(group[1])` makes a copy, and binding it to a `const` should leave a value. Assigning that `const` to another element of the same local array is rejected as a reference assignment, so a compare-and-swap over a local array needs a second copy constructor at each store. A bitonic step does exactly this: it reads two elements, compares them and writes them back swapped.
+`_binaryOrAssignmentExpression` rejects `x = b` whenever `b` names a local vector, matrix, struct or array, because in JavaScript the store would alias the two. Binding a fresh copy, `const b = d.vec2u(group[1])`, does not change this. A compare-and-swap over a local array therefore wraps each store in a second constructor, which emits the same WGSL.
 
 ```ts
 const Pairs = d.arrayOf(d.vec2u, 8);
@@ -429,18 +685,20 @@ const swap = tgpu.fn(
   'use gpu';
   const group = Pairs();
   const b = d.vec2u(group[1]);
-  group[0] = b; // "references cannot be assigned. Try 'group[0] = vec2u(b)'"
+  group[0] = b; // throws: "references cannot be assigned. Try 'group[0] = vec2u(b)'"
   return group[0].x;
 });
+tgpu.resolve([swap]);
+// With `group[0] = d.vec2u(b)` it resolves to `group[0i] = b;`: the copy changes no WGSL.
 ```
 
-**Upstream.** Track the result of a schema call as a value, not a reference, through a `const` binding, so assigning it copies without another constructor. In the code generator's assignment check.
+**Fallback.** Not in the fallback. The `merge` kernel of `bitonic` in `packages/typegpu-kit/src/grid.ts` writes `group[e] = d.vec2u(b)` and `group[e | apart] = d.vec2u(a)`.
 
-**Workaround.** Wrap each stored value in its constructor again, `group[0] = d.vec2u(b)`, as the grid's bitonic `merge` kernel does.
+**Upstream.** In `packages/typegpu/src/tgsl/wgslGenerator.ts`, `_binaryOrAssignmentExpression`: accept `=` from a local that is neither read nor written after the store, since no alias can then be observed. Additive. It needs the per-local liveness that note 22 asks to expose.
 
-### 29. A shift of module constants is not folded where a schema needs a count
+### 29. Bitwise and shift operators on known numbers are not folded
 
-`d.arrayOf(T, n)` inside a `'use gpu'` function needs `n` known when the shader resolves. `2 ** N` with a module constant `N` folds and resolves, but `1 << N` does not: it is resolved as a runtime expression and the schema call fails. A module that sizes a local array by a bit count has to write the power or hoist the schema.
+`d.arrayOf(T, n)` inside a `'use gpu'` function needs `n` known at resolution. `_binaryOrAssignmentExpression` folds known operands only for `+`, `-`, `*`, `/`, `**` (through `binaryOpCodeToCodegen`) and the comparisons. `%`, `&`, `|`, `^`, `<<`, `>>` and `>>>` become runtime expressions, so `1 << N` with a module constant `N` cannot be a count.
 
 ```ts
 const N = 3;
@@ -449,35 +707,39 @@ const f = tgpu.fn(
   d.u32,
 )(() => {
   'use gpu';
-  const group = d.arrayOf(d.vec2u, 1 << N)(); // "Called comptime function with runtime-known values: '1 << N'"
+  const group = d.arrayOf(d.vec2u, 1 << N)(); // `2 ** N` resolves, `1 << N` and `N & 1` do not
   return group[0].x;
 });
+tgpu.resolve([f]); // "Called comptime function with runtime-known values: '1 << N'"
 ```
 
-**Upstream.** Fold bitwise and shift operators on known numbers as the other arithmetic operators are folded. In the code generator's binary-expression handling.
+**Fallback.** Not in the fallback. `packages/typegpu-kit/src/grid.ts` declares `Gathered = d.arrayOf(d.vec2u, 2 ** STEPS)` at module scope for the `merge` kernel of `bitonic`.
 
-**Workaround.** Hoist the schema to module scope, `const Gathered = d.arrayOf(d.vec2u, 2 ** STEPS)`, and call `Gathered()` in the body, as `grid.ts` does.
+**Upstream.** In `packages/typegpu/src/tgsl/wgslGenerator.ts`, `_binaryOrAssignmentExpression`: add `'%': mod` to `binaryOpCodeToCodegen`, and fold the bitwise and shift operators when `asComptime` knows both operands, as the comparisons already do. Additive.
 
 ### 30. WGSL language features come from the global GPU, not the root's device
 
-`root.enabledWgslLanguageFeatures` returns `navigator.gpu.wgslLanguageFeatures`, even for a root made with `initFromDevice` over another backend. A CPU or WebGL root can therefore advertise immediates merely because the machine also has a WebGPU adapter, despite its own `maxImmediateSize` being zero.
+`enabledWgslLanguageFeatures` on `TgpuRootImpl` returns `navigator.gpu.wgslLanguageFeatures` whatever device the root holds, and `initFromDevice` has no option to set it. A root over a WebGL or CPU device advertises `immediate_address_space` when the browser's WebGPU has it. A check like the `jump-flood` example's then picks `tgpu.immediateVar` on a device whose `maxImmediateSize` is 0.
 
 ```ts
-const root = tgpu.initFromDevice({ device: fallbackDevice });
-root.device.limits.maxImmediateSize; // 0
-root.enabledWgslLanguageFeatures.has('immediate_address_space'); // true on some WebGPU hosts
-// An example selects immediateVar and fails to compile on the fallback.
+// A host whose WebGPU has immediates, and a device that has none
+Object.defineProperty(navigator, 'gpu', {
+  value: { wgslLanguageFeatures: new Set(['immediate_address_space']) },
+});
+const device = { limits: { maxImmediateSize: 0 } } as unknown as GPUDevice;
+const root = tgpu.initFromDevice({ device });
+root.enabledWgslLanguageFeatures.has('immediate_address_space'); // true, should be false
 ```
 
-**Upstream.** Accept supported language features in `initFromDevice`, or derive them from the selected generator/device instead of the global adapter, in `packages/typegpu/src/core/root/init.ts`.
+**Fallback.** `init` in `src/webgl.ts` redefines `enabledWgslLanguageFeatures` on the root as an empty set. `cpuRoot` in `tests/cpu/device.ts` does the same.
 
-**Workaround.** `src/webgl.ts` and the CPU test root in `tests/cpu/device.ts` supply an empty `enabledWgslLanguageFeatures` set. Device limits alone cannot affect the current getter.
+**Upstream.** In `packages/typegpu/src/core/root/init.ts`: add `unstable_wgslLanguageFeatures?: ReadonlySet<string>` to `InitFromDeviceOptions`, keep it in `TgpuRootImpl`, and return it from `enabledWgslLanguageFeatures` when given. Additive. Note 23 is another place where the root reads `navigator.gpu` instead of asking its device.
 
 ## Source transforms
 
 ### 31. Multiple declarations in one shader statement fail before resolution
 
-`tinyest-for-wgsl` rejects a JavaScript declaration containing more than one declarator. The generator never sees it, although its equivalent separate statements work. Copying a numerical reference implementation with `const a = ..., b = ...` into a shader therefore fails during the build.
+`VariableDeclaration` in tinyest-for-wgsl throws for a declaration with more than one declarator. unplugin-typegpu runs it at build time, so `const a = ..., b = ...` in a `'use gpu'` body fails the build and no generator sees it.
 
 ```ts
 const kernel = tgpu.fn(
@@ -486,21 +748,21 @@ const kernel = tgpu.fn(
 )(() => {
   'use gpu';
   const a = d.f32(1),
-    b = d.f32(2);
+    b = a + 1;
   return a + b;
 });
-// Error: Currently only one declaration in a statement is supported.
+// unplugin-typegpu fails the build: "Currently only one declaration in a statement is supported."
 ```
 
-**Upstream.** Lower the declarators to separate tinyest declaration statements in source order, preserving initializer dependencies, in `tinyest-for-wgsl`'s `transpilers.ts` variable-declaration handler.
+**Fallback.** No workaround code. Shader bodies declare one name per statement.
 
-**Workaround.** Split declarations in shader bodies, as in `tests/cpu/curve-thresholds.test.gpu.ts`. This is needed before either the WGSL or CPU generator can run.
+**Upstream.** In `packages/tinyest-for-wgsl/src/transpilers.ts`: have `VariableDeclaration` return one `const` or `let` node per declarator in source order, and have `BlockStatement` splice them into its body. Order is kept, so a declarator that reads an earlier one still works. In a `for` init, wrap the declarations and the loop in a block. Additive.
 
 ## Value types
 
 ### 32. Matrix column references are writable in WGSL but readonly in TypeScript
 
-The matrix `columns` tuple has a readonly index signature. Replacing a column of a local matrix therefore fails TypeScript checking even though TypeGPU resolves the assignment and Dawn executes it correctly. Component assignments through the same view are accepted by the types.
+The `mat2x2`, `mat3x3` and `mat4x4` interfaces type `columns` as a readonly tuple, so assigning a column of a local matrix fails type checking: TS2540 with a literal index, TS2542 with a computed one. TypeGPU resolves the assignment and runs it on the CPU. Component assignments such as `matrix.columns[1].y = 9` already type-check.
 
 ```ts
 const kernel = tgpu.fn(
@@ -508,72 +770,85 @@ const kernel = tgpu.fn(
   d.mat2x2f,
 )(() => {
   'use gpu';
-  let matrix = d.mat2x2f();
-  matrix.columns[0] = d.vec2f(7, 8);
-  return d.mat2x2f(matrix);
+  const matrix = d.mat2x2f();
+  matrix.columns[0] = d.vec2f(7, 8); // TS2540: '0' is a read-only property
+  return matrix;
 });
-// TS2542: Index signature in type 'readonly [v2f, v2f]' only permits reading.
+tgpu.resolve([kernel]); // `matrix[0i] = vec2f(7, 8);`
+kernel(); // mat2x2f(7, 8, 0, 0) on the CPU
 ```
 
-**Upstream.** Expose a writable column view, with matching CPU assignment semantics, in `packages/typegpu/src/data/wgslTypes.ts` and `data/matrix.ts`, or provide a typed column setter that lowers to a WGSL column assignment.
+**Fallback.** The column-assignment case in `tests/cpu/indexed.ts` casts `matrix.columns` to `[d.v2f, d.v2f]`.
 
-**Workaround.** The matrix-column regression in `tests/cpu/indexed.ts` casts the columns to a mutable tuple. The CPU generator already writes the underlying column components.
+**Upstream.** In `packages/typegpu/src/data/wgslTypes.ts`, `mat2x2`, `mat3x3` and `mat4x4`, and in `data/matrix.ts`, `MatBase` and the `mat*Impl` classes: drop the inner `readonly` from the `columns` tuple and keep the property readonly. Additive for code that only reads `columns`. A store of a local vector is already rejected by the check in note 28, which keeps the CPU alias out of shaders.
 
 ## Name resolution
 
 ### 33. Captured names can resolve to inherited Object prototype methods
 
-Function argument lookup indexes `layer.argAccess[id]` without checking whether the property belongs to that argument table. A captured function named `valueOf` instead finds `Object.prototype.valueOf` and invokes it with no receiver, failing before either shader generator can resolve the captured function.
+`ItemStateStackImpl.getSnippetById` reads `layer.argAccess[id]` without an own-property check, and `resolveFunction` creates that table as `{}`. A captured function named `valueOf`, `toString` or `hasOwnProperty` finds the `Object.prototype` method instead, which is called as an argument accessor and throws.
 
 ```ts
 const valueOf = () => {
   'use gpu';
   return d.u32(23);
 };
-const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+const kernel = tgpu.fn(
+  [],
+  d.u32,
+)(() => {
   'use gpu';
-  output.$ = valueOf();
+  return valueOf(); // finds Object.prototype.valueOf, not the captured function
 });
-// Cannot convert undefined or null to object, in ItemStateStackImpl.getSnippetById.
+tgpu.resolve([kernel]); // "Cannot convert undefined or null to object"
 ```
 
-**Upstream.** Use a null-prototype argument table or an own-property check in `packages/typegpu/src/resolutionCtx.ts`, in `ItemStateStackImpl.getSnippetById`.
+**Fallback.** The effectful helper in `tests/cpu/indexed.ts` is named `nextValue` instead of `valueOf`.
 
-**Workaround.** The effectful RHS helper in `tests/cpu/indexed.ts` is named `nextValue` instead of `valueOf`.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, `ItemStateStackImpl.getSnippetById`: check `Object.hasOwn(layer.argAccess, id)`, as the same function already does for `externalMap`, or create the table with `Object.create(null)` in `resolveFunction`. Additive.
 
 ## Resolution order
 
 ### 34. A helper is generated inside the statement that first calls it
 
-TypeGPU generates a function's definition when a call first reaches it, in the middle of generating the caller. Whatever the generator tracks about the statement it is in, such as how many `if`s or loops surround it or which condition it is generating, still describes the caller while the helper's body is generated. A check meant for the helper's own top level, such as "this early return is the first statement, outside any branch", then depends on where the first call happened to be. The GPU compute form refused falling-sand's block writes when the first `put` sat inside an `if`, because the helper's guard looked nested.
+TypeGPU generates a function when a call first reaches it, so `ResolutionCtxImpl.resolveFunction` calls `ShaderGenerator.functionDefinition` in the middle of the caller's statement. State a generator keeps per statement still describes the caller while the helper's body is generated. `WgslGenerator` itself leaks its private `#unrollingChain` this way: a helper first called inside a `tgpu.unroll` loop fails on a `break` in its own `switch`, and its own unrolled loops get the caller's labels.
 
 ```ts
-const put = (p: d.v2i, value: number) => {
+const pick = (k: number) => {
   'use gpu';
-  if (!inside(p)) return; // generated while the entry is inside `if (g.x % 2 === 0)`
-  cells.$[d.u32(p.y) * W + d.u32(p.x)] = value;
+  let r = d.f32();
+  switch (k) {
+    case 0:
+      r = 1;
+      break;
+    default:
+      r = 2;
+  }
+  return r;
 };
-const kernel = tgpu.computeFn({ workgroupSize: [4, 4], in: { gid: d.builtin.globalInvocationId } })(
-  ({ gid: g }) => {
-    'use gpu';
-    if (g.x % 2 === 0) put(d.vec2i(g.xy) * 2, d.u32(1));
-    put(d.vec2i(g.xy) * 2 + d.vec2i(1, 0), d.u32(2));
-  },
-);
+const entry = () => {
+  'use gpu';
+  let t = d.f32();
+  for (const k of tgpu.unroll([0, 1])) t += pick(d.i32(k));
+  return t;
+};
+tgpu.resolve([entry]); // throws 'Cannot unroll loop containing `break`'
+// Resolves when `entry` first calls `pick(d.i32(0))` outside the loop: it should resolve either way
 ```
 
-**Upstream.** Generate a function's definition outside the caller's statement, or give generators a hook around `functionDefinition` that saves and restores their per-statement state, in `tgsl/wgslGenerator.ts` where calls resolve their callee.
+**Fallback.** The GPU compute form only accepts an early `return` as a function's guard at the function's own top level. `KitGlslComputeGenerator.functionDefinition` in `src/glsl/compute.ts` records the `if` depth at entry as `Frame.depth`, and `_statement` compares `#branches` against it.
 
-**Workaround.** Each function's frame in `KitGlslComputeGenerator` (`src/glsl/compute.ts`) records the generator's branch depth when the function's generation began (`Frame.depth`), and the guard check compares against it.
+**Upstream.** In `packages/typegpu/src/tgsl/wgslGenerator.ts`, `WgslGenerator.functionDefinition`: save `#unrollingChain`, set it to `[]` for the body, and restore it after. Document on `ShaderGenerator.functionDefinition` in `tgsl/shaderGenerator.ts` that it runs nested inside the caller's statement, so a generator saves its per-statement state there. Additive.
 
 ### 35. A generator cannot see the whole pipeline before it emits
 
-Whether a kernel has a GPU form, and how to emit it, depends on facts spread over its functions: every atomic on a buffer anywhere in the kernel, how many records each helper adds summed over its calls, whether a taken value reaches a branch in another function. TypeGPU emits each function as it reaches it, helpers before the code after the call, so a helper is written before the generator knows how many record slots it needs or whether the kernel loads the buffer it adds to.
+TypeGPU emits each function as the first call reaches it: `fnCore` passes the text `ctx.resolveFunction` returns straight to `ctx.addDeclaration`. A helper's text is final before the generator has seen the rest of its caller. Facts spread over the kernel, such as every atomic on a buffer or the summed additions of a helper over all its calls, are known only after the code that depends on them is written.
 
 ```ts
+const counts = tgpu.workgroupVar(d.arrayOf(d.atomic(d.u32), 8));
 const count = (cell: number) => {
   'use gpu';
-  std.atomicAdd(counts.$[cell % 8], 1); // emitted before the entry's other additions are seen
+  std.atomicAdd(counts.$[cell % 8], 1);
 };
 const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
   gid,
@@ -581,57 +856,58 @@ const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.global
   'use gpu';
   count(gid.x);
   count(gid.x + 1);
-  const seen = std.atomicLoad(counts.$[0]); // refuses the form for `counts`, after `count` was emitted
+  const seen = std.atomicLoad(counts.$[0]);
 });
+// A generator logging `functionDefinition` and `_statement` sees:
+// ['count emitted', 'const seen', 'kernel emitted']
+// `count` is final before the load of `counts` is reached; nothing lets a generator revise it
 ```
 
-**Upstream.** Offer generators a pass over the resolved call graph before any text is emitted, such as each reachable function's AST with its externals and call sites, or let a generator replace a function's emitted text once the resolution ends. In `resolutionCtx.ts` and `tgsl/shaderGenerator.ts`.
+**Fallback.** `computeForm` in `src/glsl/compute.ts` resolves the pipeline at least twice with `KitGlslComputeGenerator`. The first run has no plan: it walks the kernel and throws `Ineligible` or builds the plan, and repeats when a `NotBlocks` error names new buffers. The second emits from the plan and throws if it reaches a write the plan did not list. This adds to the CPU module's own resolution (note 5).
 
-**Workaround.** `computeForm` in `src/glsl/compute.ts` resolves the pipeline twice: a first `KitGlslComputeGenerator` without a plan walks the kernel and throws `Ineligible` or returns the plan, and a second emits from it, throwing if it reaches a write the plan did not list. Beside the resolution of the CPU module (entry 5), every compute pipeline is resolved twice more.
+**Upstream.** In `packages/typegpu/src/resolutionCtx.ts`, `ResolutionCtxImpl.resolve` at item depth 0, before it joins `_declarations`: call an optional `ShaderGenerator.finalizeDeclarations(declarations)` that may rewrite each declaration's code. The module function `resolve` in the same file already replaces bind group placeholders after the whole item resolves. Additive. A pre-pass over the call graph would also answer notes 21 and 22.
 
 ## CPU execution
 
-### 36. Direct CPU execution pays for generic vector operations and cannot dispatch
+### 36. Calling `'use gpu'` code in JavaScript is slow on vectors
 
-Tests and tools calling `'use gpu'` code in JavaScript pay for generic operand classification, intermediate argument arrays and vector objects. In the shared-body benchmark on an Apple M5 Pro, the thirty-vector-operation particle body runs at 0.030 million invocations/s through `tgpu.fn` and 0.027 million through `tgpu['~unstable'].simulate`, versus 10.05 million with scalarized generated code. The direct-source vector cases are 79.7× faster generated for transforms and 316× for particles; the scalar integer hash gains only 2.01×. These compare TypeGPU's current JS implementations, not hand-optimized JavaScript. As entry 25 notes, `simulate` models one thread and offers no compute dispatch, so even this comparison supplies its own invocation loop.
-
-The particle body has this shape inside a `'use gpu'` function:
+Each `std.add` or `std.mul` runs `cpuAdd` or `cpuMul` in `std/operators.ts`, which checks operand kinds, up-casts and allocates a new vector. The particle body below runs 316 times slower called directly than as the fallback's scalarized code (`tests/cpu/NOTES.md`).
 
 ```ts
-let position = d.vec3f(row.position);
-for (let i = 0; i < 10; i++)
-  position = std.add(std.mul(position, 0.999), std.mul(row.velocity, 0.01));
-return d.vec4f(position, row.life - 0.01);
+const step = (position: d.v3f, velocity: d.v3f) => {
+  'use gpu';
+  let p = d.vec3f(position);
+  for (let i = 0; i < 10; i++) p = std.add(std.mul(p, 0.999), std.mul(velocity, 0.01));
+  return p;
+};
+// About 0.04 million calls/s in Node: 30 vector operations allocate 30 vectors per call
+for (let i = 0; i < 20000; i++) step(d.vec3f(1, 2, 3), d.vec3f(0.5, 0.25, 0.125));
 ```
 
-Reproduce all three kernels, validation and fifteen warmed samples per path with:
+**Fallback.** `src/cpu/generator.ts` generates scalarized JavaScript over typed-array views, run by `compile` in `src/cpu/index.ts`. From the repository root, `CPU_SOURCE_BENCHMARK=1 npx vitest run --project 'typegpu-kit-gl (unit)' tests/cpu/source-performance.test.ts` compares it with direct calls, `tgpu.fn` and `simulate`, and rewrites `tests/cpu/results.json`.
 
-```sh
-CPU_SOURCE_BENCHMARK=1 npx vitest run --project 'typegpu-kit-gl (unit)' tests/cpu/source-performance.test.ts
-```
-
-**Upstream.** Add a compiled CPU executor behind `core/simulate/tgpuSimulate.ts`, accepting an entry, bound resources and dispatch dimensions, and cache compiled kernels across dispatches. Reuse normal typed resolution and the existing `ShaderGenerator` hooks for function definitions, resource declarations, calls, binary operations, constructors and literals. Scalarize vector/matrix temporaries and address buffers through typed-array views. To avoid the fallback's text parsing, extend `tgsl/shaderGenerator.ts`, `tgsl/wgslGenerator.ts` and `resolutionCtx.ts` with structured lvalues and user-function calls, stable variable identities, and barrier/callee effects (entries 7–11, 13 and 22); pass binding and workgroup metadata beside code (entry 4). Dispatch execution also needs workgroup state, barrier scheduling and CPU resource/builtin implementations, rather than repeated calls to the present single-thread simulator. An explicitly selected relaxed JS-number mode could accompany an f32-rounded mode: intermediate f32 rounding costs 29–52% execution time in these two vector fixtures, but preserves rounding-sensitive seeds and threshold decisions. The fallback keeps f32 rounding enabled.
-
-**Workaround.** `src/cpu/generator.ts` and the runtime in `src/cpu/index.ts`; `tests/cpu/source-performance.ts` measures generated, direct-source, `tgpu.fn` and simulation paths in one native Node process. `tests/cpu/NOTES.md` records representation differences and the discarded Vitest-loader artifact; `tests/cpu/results.json` holds every final sample. This can become one shared upstream executor instead of a fallback-specific implementation.
+**Upstream.** In `packages/typegpu/src/std/operators.ts`, `cpuAdd`, `cpuSub`, `cpuMul` and `cpuDiv`: a fast path for two vectors of the same type, or a vector and a number, before the generic kind checks. Additive. A compiled executor that scalarizes vector temporaries is the executor note 25 asks for.
 
 ## Loops
 
 ### 37. Nothing tells a generator which `for…of` loops TypeGPU unrolled
 
-TypeGPU expands a `for…of` whose iterable resolves to an `UnrollableIterable`, the value `tgpu.unroll` gives a shader, and generates the body once per element; any other `for…of` stays a runtime loop. The decision is made inside the generator's own `forOf` handling, from the resolved value, and nothing exported tells an overriding generator which way it went. A generator that bounds what a kernel does per invocation, as the GPU compute forms do for additions and writes, must treat a runtime loop as unbounded and an unrolled one as straight-line code. The call's spelling is no evidence: a module may bind `tgpu` to something else, and the real function may be reached through an alias or a member.
+`WgslGenerator._statement` unrolls a `for…of` when its iterable's value is an `UnrollableIterable`, the value `tgpu.unroll` gives a shader. Any other `for…of` stays a runtime loop. `UnrollableIterable` is not exported from `typegpu` or `typegpu/~internal`, so an overriding generator cannot tell the two apart. The call's spelling is no evidence, since `tgpu` may be rebound and `unroll` aliased.
 
 ```ts
 import { d, std, tgpu as real } from 'typegpu';
+
 const tgpu = { unroll: std.range }; // spelled `tgpu.unroll`, but a runtime range
 const unroll = real.unroll; // the real one under another name
+const cells = real.workgroupVar(d.arrayOf(d.atomic(d.u32), 4));
 const kernel = real.computeFn({ workgroupSize: [4] })(() => {
   'use gpu';
-  for (const v of tgpu.unroll(4)) std.atomicOr(cells.$[v], 1); // four iterations at run time
-  for (const v of unroll([0, 1, 2, 3])) std.atomicOr(cells.$[v], 1); // expanded four times
+  for (const v of tgpu.unroll(4)) std.atomicOr(cells.$[v], 1); // a `for` loop in WGSL
+  for (const v of unroll([0, 1, 2, 3])) std.atomicOr(cells.$[v], 1); // four unrolled copies
 });
-// A generator sees `forOf` for both and has to tell them apart by the iterable's resolved value
+// Both reach a generator as `forOf`; only `instanceof UnrollableIterable` tells them apart
 ```
 
-**Upstream.** Export `UnrollableIterable`, or a predicate such as `isUnrollable(value)`, from `typegpu/~internal`; or pass the decision to generators, for instance as an `unrolled` flag to a hook around a `for…of`'s body. In `core/unroll/tgpuUnroll.ts` and `tgsl/wgslGenerator.ts`.
+**Fallback.** The GPU compute form bounds additions and writes per invocation, so it counts a runtime loop as unbounded. `UNROLLED` in `src/glsl/compute.ts` recovers the class by calling `tgpu.unroll`'s gpu-callable symbol once and reading the result's constructor. `KitGlslComputeGenerator._expression` stops counting a `for…of` as a loop once its iterable resolves to an instance of it. If the class cannot be recovered, every loop counts and `tests/glsl/unroll-hidden.test.ts` checks that kernels then run on the CPU.
 
-**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` recovers the class once, by calling `tgpu.unroll`'s gpu-callable symbol on a dummy snippet and reading the result's constructor, and counts a `for…of` as a loop until its own iterable resolves to an instance of it. If the class cannot be recovered, no loop counts as unrolled and kernels with additions or writes in unrolled loops run on the CPU; `tests/glsl/unroll-hidden.test.ts` checks that.
+**Upstream.** In `packages/typegpu/src/internal.ts`: export `UnrollableIterable` from `core/unroll/tgpuUnroll.ts`, whose own doc comment already tells shader generators to check for it. Additive.

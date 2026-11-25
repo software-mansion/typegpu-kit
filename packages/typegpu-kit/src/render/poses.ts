@@ -17,7 +17,8 @@
  * `seconds`, the plays, the clips, the clock and the poses' slots
  * @owns a table, 4 buffers, a uniform, a pipeline: the plays, the clips' keys and spans, the joints'
  * parents, inverse binds, bind origins and masks, every pose's joints in two halves, the clock,
- * and the kernel that finds them
+ * and the kernel that finds them. Where compute runs on the CPU, three pipelines instead: one
+ * finds each joint, and two copy fresh poses into the last frame's half and clear their `born`
  * @records `animate(pass, time)` once a frame in a compute pass, after the kernels that call the
  * verbs and before the passes that draw the poses: it uploads what changed and finds every pose's
  * joints.

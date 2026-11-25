@@ -15,7 +15,10 @@
     "src",
     "patches",
     "README.md",
-    "LIMITATIONS.md"
+    "LIMITATIONS.md",
+    "ARCHITECTURE.md",
+    "PATCHES.md",
+    "TYPEGPU_NOTES.md"
   ],
   "type": "module",
   "sideEffects": false,
