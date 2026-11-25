@@ -573,7 +573,7 @@ export function createRules(
 
   const kept = root.pipe(cells.fromKept);
   const settling = alone
-    ? root.createComputePipeline({ compute: settleEach }).$name('settling')
+    ? kept.createComputePipeline({ compute: settleEach }).$name('settling')
     : undefined;
   const placing = alone
     ? root.createComputePipeline({ compute: placeEach }).$name('placing')
@@ -614,6 +614,9 @@ export function createRules(
       pass.setPipeline(ticking);
       pass.dispatchWorkgroups(1);
       if (settling && placing && affecting && flowsEach) {
+        // Rules read a copy the GPU made, so the device keeps them there: the embers last wrote
+        // the cells on the CPU
+        cells.keep(pass);
         pass.setPipeline(settling);
         pass.dispatchWorkgroups(BLOCK_GROUPS.x, BLOCK_GROUPS.y);
         pass.setPipeline(placing);
