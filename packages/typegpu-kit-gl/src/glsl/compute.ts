@@ -711,6 +711,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #inCall: Frame | undefined;
   /** Counters whose values the kernel takes: atomic additions of 1 whose results it uses. */
   readonly #takes = new Set<string>();
+  /** Buffers the kernel loads atomically anywhere, in whatever order its functions resolve. */
+  readonly #loads = new Set<string>();
+  /** Every function's code, which the takes are checked over once the walk has seen it all. */
+  readonly #codes: string[] = [];
   #slots = 0;
   /** Runtime loops around the statement being generated. */
   #loops = 0;
@@ -1007,7 +1011,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     ) {
       return this.#add(name, place, args[1], inner);
     }
-    if (name === 'atomicLoad') return snip(value, inner, 'runtime', false);
+    if (name === 'atomicLoad') {
+      this.#loads.add(id);
+      return snip(value, inner, 'runtime', false);
+    }
     if (
       name === 'atomicAdd' &&
       !dropped &&
@@ -1016,6 +1023,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
         this.#plan?.takes?.has(id) ||
         (!place.element && !this.#single && !this.#buffers.has(id) && !this.#adds.has(id)))
     ) {
+      if (!d.isAtomic(undecorate(place.buffer.schema))) {
+        throw new Ineligible(`takes from '${id}', which is more than one atomic`);
+      }
       return this.#take(place, args[1]);
     }
     this.#recordPlace(place, `'${name}' on`);
@@ -1130,16 +1140,25 @@ uint ${name}() {
   }
 
   /**
-   * Refuses a function where a taken value could change how many values the invocation takes:
-   * where one, or a variable made from one, decides a branch or a loop, is returned, or is passed
-   * to a function of the kernel. Indices and stored values may use it.
+   * Refuses a kernel where a taken value could change how many values an invocation takes: where
+   * one, or a variable stored from one in any way, decides a branch or a loop, is returned, or is
+   * passed to a function of the kernel. Indices and stored values may use it. Run over every
+   * function's code once the walk is done, so the order functions resolve in does not matter.
    */
   #checkTakes(code: string): void {
     const body = code.slice(code.indexOf('{'));
+    // A function that hands values back through its parameters could carry a taken one out
+    if (/\b(inout|out)\s+\w/.test(body)) {
+      throw new Ineligible('takes from a counter beside a function that writes its arguments');
+    }
     const tainted = new Set<string>();
+    // Every store taints the variable it stores into, through any index, member or swizzle, and
+    // compound assignments too; the variables here span every function, as private ones do
+    const stores =
+      /\b([A-Za-z_]\w*)(?:\s*(?:\[[^\]]*\]|\.\w+))*\s*(?:<<|>>|[-+*/%&|^])?=(?!=)\s*([^;]*);/g;
     for (let grown = true; grown;) {
       grown = false;
-      for (const [, name, rhs] of body.matchAll(/\b(\w+)\s*[-+*/%&|^]?=\s*([^;]*);/g)) {
+      for (const [, name, rhs] of body.matchAll(stores)) {
         if (!name || rhs === undefined || tainted.has(name)) continue;
         const names = [TAKE, ...tainted];
         if (names.some((each) => new RegExp(`\\b${each}`).test(rhs))) {
@@ -1914,7 +1933,7 @@ ${stored.join('\n')}
         throw new Ineligible(`finds its cells through '${name}', which it reassigns`);
       }
     }
-    if (code.includes(TAKE)) this.#checkTakes(code);
+    this.#codes.push(code);
     const scattered = code.indexOf(SCATTERED);
     if (scattered >= 0) {
       const id = /^(\w+?)_\d+/.exec(code.slice(scattered + SCATTERED.length))?.[1];
@@ -1981,6 +2000,14 @@ ${stored.join('\n')}
       if (buffers.length + this.#textures.size + this.#scatters.size + this.#adds.size === 0) {
         throw new Ineligible('writes nothing');
       }
+      // Decided from the whole walk, not where it met them: a helper resolved before the kernel's
+      // addition still reads what it adds to
+      for (const id of this.#adds.keys()) {
+        if (this.#loads.has(id)) {
+          throw new Ineligible(`reads '${id}' with atomicLoad, which it adds to or takes from`);
+        }
+      }
+      if (this.#takes.size > 0) this.#checkTakes([...this.#codes, kernel].join('\n'));
       // Writes the counts missed, through a route other than a call, would overrun the records
       for (const id of this.#scatters.keys()) {
         if (!this.#records.get(id)) throw new Ineligible(`writes '${id}' where it cannot count`);

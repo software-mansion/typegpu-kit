@@ -384,6 +384,41 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     "adds other than 1 to 'head",
   ],
   [
+    'reads cells it writes at computed cells through a helper resolved first',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const peek = (i: number) => {
+        'use gpu';
+        return out.$[i] as number;
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const seen = peek((id.x + 1) % 64);
+        out.$[(id.x * 5) % 64] = seen + 1;
+      });
+    },
+    "reads 'out",
+  ],
+  [
+    'takes from a counter through a pointer',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const ring = root.createMutable(d.arrayOf(d.u32, 64));
+      const take = tgpu.fn(
+        [d.ptrStorage(d.atomic(d.u32), 'read-write')],
+        d.u32,
+      )((counter) => {
+        'use gpu';
+        return std.atomicAdd(counter as unknown as d.atomicU32, 1);
+      });
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        ring.$[take(head.$ as never) % 64] = id.x;
+      });
+    },
+    'a helper function takes the pointer',
+  ],
+  [
     'adds to shared cells inside a loop',
     (root) => {
       const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
