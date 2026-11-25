@@ -144,9 +144,9 @@ const transformRows = tgpu.computeFn({
 const columns = tgpu.workgroupVar(d.arrayOf(d.vec2f, SIGNALS * N));
 
 /**
- * One radix-2 Stockham step of an inverse transform, from `from` into `into`, for backends where
- * workgroups share nothing. Each invocation gathers its own output element from two inputs, half
- * the line apart, so the steps read and write natural order.
+ * Radix-2 Stockham steps of an inverse transform, from `from` into `into`, for backends where
+ * workgroups share nothing. Each invocation gathers its own output element, so the steps read and
+ * write natural order; a pass takes three steps.
  */
 const stageLayout = tgpu.bindGroupLayout({
   from: { storage: d.arrayOf(d.vec2f), access: 'readonly' },
@@ -167,20 +167,6 @@ const pairOf = (o: number, span: number) => {
   'use gpu';
   return std.intdiv(o, span * 2) * span + (o % span);
 };
-
-/** Steps every row of every signal, `gid` being (x, row, signal of a cascade). */
-const rowStage = tgpu.computeFn({
-  workgroupSize: [64],
-  in: { gid: d.builtin.globalInvocationId },
-})(({ gid }) => {
-  'use gpu';
-  const span = stageLayout.$.span;
-  const line = (gid.z * N + gid.y) * N;
-  const j = pairOf(gid.x, span);
-  const a = d.vec2f(stageLayout.$.from[line + j]);
-  const b = d.vec2f(stageLayout.$.from[line + j + HALF_N]);
-  stageLayout.$.into[line + gid.x] = butterfly(gid.x, span, a, b);
-});
 
 /**
  * Two radix-2 steps in one, spans `span` and `2 * span`: output `o` of the second gathers the two
@@ -239,19 +225,6 @@ const columnStages = tgpu.computeFn({
   stageLayout.$.into[plane + gid.y * N] = thrice(gid.y, stageLayout.$.span, plane, d.u32(N));
 });
 
-/** Steps every column of every signal, `gid` being (column, y, signal of a cascade). */
-const columnStage = tgpu.computeFn({
-  workgroupSize: [64],
-  in: { gid: d.builtin.globalInvocationId },
-})(({ gid }) => {
-  'use gpu';
-  const span = stageLayout.$.span;
-  const plane = gid.z * N * N;
-  const j = pairOf(gid.y, span);
-  const a = d.vec2f(stageLayout.$.from[plane + j * N + gid.x]);
-  const b = d.vec2f(stageLayout.$.from[plane + (j + HALF_N) * N + gid.x]);
-  stageLayout.$.into[plane + gid.y * N + gid.x] = butterfly(gid.y, span, a, b);
-});
 const columnButterflies = butterfliesOf(columns, SIGNALS);
 
 export type Waves = ReturnType<typeof createWaves>;
@@ -501,28 +474,22 @@ export function createWaves(root: TgpuRoot) {
     : undefined;
   // Steps go three spans a pass, LOG2N being a multiple of three: an odd number of passes, as of
   // steps, so rows step from the lattice and end in the spare one, columns step back
-  const passes = STRIDES.filter((_, s) => s % 3 === 0).map((span) => ({
-    span: root.createUniform(d.u32, span),
-    twice: true,
-  }));
+  const spans = cpu ? STRIDES.filter((_, s) => s % 3 === 0) : [];
   const stagesOf = (start: 'lattice' | 'spare') =>
-    (cpu ? passes : []).map(({ span, twice: both }, s) => {
+    spans.map((first, s) => {
+      const span = root.createUniform(d.u32, first);
       const fromLattice = (s % 2 === 0) === (start === 'lattice');
       const group = root.createBindGroup(stageLayout, {
         from: fromLattice ? lattice : (spare as typeof lattice),
         into: fromLattice ? (spare as typeof lattice) : lattice,
         span,
       });
-      return { group, twice: both };
+      return group;
     });
   const rowPasses = stagesOf('lattice');
   const columnPasses = stagesOf('spare');
   const evolveSignalPipeline = cpu
     ? root.createComputePipeline({ compute: evolveSignal })
-    : undefined;
-  const rowStagePipeline = cpu ? root.createComputePipeline({ compute: rowStage }) : undefined;
-  const columnStagePipeline = cpu
-    ? root.createComputePipeline({ compute: columnStage })
     : undefined;
   const rowStagesPipeline = cpu ? root.createComputePipeline({ compute: rowStages }) : undefined;
   const columnStagesPipeline = cpu
@@ -598,8 +565,6 @@ export function createWaves(root: TgpuRoot) {
           ? [
               initialPipeline,
               evolveSignalPipeline!,
-              rowStagePipeline!,
-              columnStagePipeline!,
               rowStagesPipeline!,
               columnStagesPipeline!,
               packPipeline!,
@@ -651,14 +616,14 @@ export function createWaves(root: TgpuRoot) {
       if (cpu) {
         const lines = [N / 64, N, CASCADES * SIGNALS] as const;
         evolveSignalPipeline!.with(pass).dispatchWorkgroups(...lines);
-        for (const { group, twice: both } of rowPasses) {
-          (both ? rowStagesPipeline! : rowStagePipeline!)
+        for (const group of rowPasses) {
+          rowStagesPipeline!
             .with(pass)
             .with(group)
             .dispatchWorkgroups(...lines);
         }
-        for (const { group, twice: both } of columnPasses) {
-          (both ? columnStagesPipeline! : columnStagePipeline!)
+        for (const group of columnPasses) {
+          columnStagesPipeline!
             .with(pass)
             .with(group)
             .dispatchWorkgroups(...lines);
