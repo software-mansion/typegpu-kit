@@ -9,7 +9,7 @@ The kit requires core WebGPU. The kit's renderers can read vertices from storage
 
 ## Browsers without WebGPU
 
-`@typegpu/kit-gl` runs a scene on WebGL 2 where WebGPU is missing. Give its fallback to [`web.host`](/kit/hosting/#where-webgpu-is-missing). Most kernels then run on the GPU. Kernels that share workgroup memory or atomics run on the CPU, so size simulations for it, or choose other kernels, with `backends.of(root)`.
+`@typegpu/kit-gl` runs a scene on WebGL 2 where WebGPU is missing. Give its fallback to [`web.host`](/kit/hosting/#where-webgpu-is-missing). Most kernels then run on the GPU. Kernels that share workgroup memory, or atomics beyond counting and taking slots, run on the CPU, so size simulations for it, or choose other kernels, with `backends.of(root)`.
 
 ## Chrome and Edge
 
