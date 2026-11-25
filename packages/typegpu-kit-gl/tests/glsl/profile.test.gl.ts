@@ -42,6 +42,13 @@ for (const key of keys) {
       warmed++;
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+    // Frames to run once ready, so a scene that builds up, such as a filling tank, is measured full
+    const settle = Number(import.meta.env.VITE_PROFILE_FRAMES ?? 0);
+    for (let i = 0; i < settle; i++) {
+      loop.run(seconds);
+      seconds += 0.04;
+      if (i % 20 === 19) await root.device.queue.onSubmittedWorkDone();
+    }
     device.stats.reset();
     const steady = 3;
     const start = performance.now();
