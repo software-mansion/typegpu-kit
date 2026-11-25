@@ -556,6 +556,9 @@ export function runGpu(
         state.vertexArray(null);
         // A draw needs a complete framebuffer even with the rasterizer discarded
         state.drawFramebuffer(null);
+        // A buffer bound for transform feedback may be bound nowhere else, as the points drawn
+        // from the last records left it on ARRAY_BUFFER
+        state.arrayBuffer(null);
         gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, feedbackOf(ctx));
         gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, records);
         state.enable(gl.RASTERIZER_DISCARD, true);
