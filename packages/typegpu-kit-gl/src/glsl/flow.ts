@@ -7,7 +7,9 @@
  * load as `kit_ld__<id>(<place>)`. A function's code is parsed into statements, `if` arms, loops and
  * returns; a call to another function of the kernel applies that function's summary where its
  * arguments end. Whatever this cannot order, it orders the cautious way: a ternary's or a
- * `switch`'s arms count as if each ran, and a loop's body as if it ran twice.
+ * `switch`'s arms count as if each ran one after another, and a loop's body as if it ran twice.
+ * Inside a `switch` or a loop, where `break` and `continue` can leave a path before a `return`
+ * ends it, a `return` ends nothing: every way out of them carries no more than the whole body.
  */
 
 /** Marks an addition to a summed buffer in the first resolution: `kit_ad__<id>()`. */
@@ -47,7 +49,8 @@ type Statement =
       readonly yes: Statement;
       readonly otherwise: Statement | undefined;
     }
-  | { readonly kind: 'loop'; readonly events: readonly Event[]; readonly body: Statement };
+  | { readonly kind: 'loop'; readonly events: readonly Event[]; readonly body: Statement }
+  | { readonly kind: 'switch'; readonly events: readonly Event[]; readonly body: Statement };
 
 interface State {
   readonly added: Set<string>;
@@ -124,9 +127,7 @@ function parseStatement(
       }
       return [{ kind: 'if', events, yes: body, otherwise: undefined }, next];
     }
-    // A switch's cases run as if each did, which counts no more than one of them would
-    if (token === 'switch')
-      return [{ kind: 'block', body: [{ kind: 'events', events }, body] }, next];
+    if (token === 'switch') return [{ kind: 'switch', events, body }, next];
     return [{ kind: 'loop', events, body }, next];
   }
   if (token === 'do') {
@@ -135,6 +136,7 @@ function parseStatement(
     const events = eventsOf(tokens.slice(next + 1, end + 1), functions);
     return [{ kind: 'loop', events, body }, end + 2];
   }
+  if (token === 'else') throw new Error('@typegpu/kit-gl: an else without an if in a compute form');
   if (token === 'case' || token === 'default') {
     let i = at;
     while (i < tokens.length && tokens[i] !== ':') i++;
@@ -156,6 +158,7 @@ function run(
   state: State,
   summaries: ReadonlyMap<string, Summary>,
   out: { late: Set<string>; most: Map<string, number>; loads: Set<string> },
+  lenient = false,
 ): State | undefined {
   const apply = (events: readonly Event[], into: State) => {
     for (const event of events) {
@@ -190,19 +193,19 @@ function run(
     case 'return':
       apply(statement.events, state);
       ends(state);
-      return undefined;
+      return lenient ? state : undefined;
     case 'block': {
       let at: State | undefined = state;
       for (const each of statement.body) {
         if (!at) break;
-        at = run(each, at, summaries, out);
+        at = run(each, at, summaries, out, lenient);
       }
       return at;
     }
     case 'if': {
       apply(statement.events, state);
       const arms = [statement.yes, statement.otherwise].map((arm) =>
-        arm ? run(arm, copy(state), summaries, out) : copy(state),
+        arm ? run(arm, copy(state), summaries, out, lenient) : copy(state),
       );
       const through = arms.filter((arm): arm is State => arm !== undefined);
       if (through.length === 0) return undefined;
@@ -221,10 +224,15 @@ function run(
       let at: State = state;
       for (let turn = 0; turn < 2; turn++) {
         apply(statement.events, at);
-        const after = run(statement.body, copy(at), summaries, out);
+        const after = run(statement.body, copy(at), summaries, out, true);
         if (after) at = merge(at, after);
       }
       return at;
+    }
+    case 'switch': {
+      // Its cases one after another, none ending the path: a superset of any one case's events
+      apply(statement.events, state);
+      return run(statement.body, state, summaries, out, true);
     }
   }
 }

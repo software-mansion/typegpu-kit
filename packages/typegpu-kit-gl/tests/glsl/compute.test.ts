@@ -564,6 +564,64 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     'inside a loop',
   ],
   [
+    'takes again only when a taken value decides a short-circuit',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const first = std.atomicAdd(head.$, 1);
+        const again = first > 2 && std.atomicAdd(head.$, 1) > 0;
+        out.$[id.x] = d.u32(again);
+      });
+    },
+    'by a value it takes',
+  ],
+  [
+    'loads after adding in a switch case beside one that adds and returns',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        switch (id.x) {
+          case 0: {
+            std.atomicAdd(a.$[0], 1);
+            return;
+          }
+          default: {
+            std.atomicAdd(a.$[1], 1);
+            std.atomicAdd(a.$[2], 1);
+            out.$[id.x] = std.atomicLoad(a.$[1]);
+          }
+        }
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    'loads after a loop that adds and breaks out before returning',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const add = () => {
+        'use gpu';
+        std.atomicAdd(a.$[1], 1);
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 2 === 0) {
+          add();
+          for (let k = d.u32(0); k < 4; k++) {
+            if (k === id.x % 3) break;
+          }
+        }
+        out.$[id.x] = std.atomicLoad(a.$[1]);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
     'uses the old value an addition returns',
     (root) => {
       const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
@@ -1040,6 +1098,34 @@ function blockKernels(): [string, Make, number | string][] {
         });
       },
       'blocks of two shapes',
+    ],
+    [
+      'guards its block write only inside a switch case',
+      (root) => {
+        const cells = root.createMutable(d.arrayOf(d.u32, W * 6));
+        const inside = (p: d.v2i) => {
+          'use gpu';
+          return std.all(std.ge(p, d.vec2i())) && p.x < W && p.y < 6;
+        };
+        const put = (p: d.v2i, value: number) => {
+          'use gpu';
+          switch (p.y) {
+            case 0: {
+              if (!inside(p)) return;
+              break;
+            }
+            default: {
+              break;
+            }
+          }
+          cells.$[d.u32(p.y) * W + d.u32(p.x)] = value;
+        };
+        return tgpu.computeFn({ workgroupSize: [4, 2], in: gid })(({ gid: g }) => {
+          'use gpu';
+          put(d.vec2i(g.xy) * 2 + d.vec2i(9, 0), d.u32(7));
+        });
+      },
+      'at a column it does not keep',
     ],
   ];
 }
