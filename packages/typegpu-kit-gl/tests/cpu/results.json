@@ -4691,5 +4691,58 @@
     "milliseconds": 77.61462500000002,
     "invocationsPerSecond": 67550155.65687521,
     "executionRevision": "a4cf5089"
+  },
+  "fallingSandSimulation": {
+    "prewarmSteps": 450,
+    "prewarmMilliseconds": 4123.05625,
+    "steadySteps": 45,
+    "dispatches": [
+      {
+        "entry": "step_1",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 5.837999999999738,
+        "fixedMilliseconds": 0.002333340000004682,
+        "nanosecondsPerInvocation": 361.83449032736445,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.4242920000006052,
+        "fixedMilliseconds": 0.0012045799999941664,
+        "nanosecondsPerInvocation": 26.23309895837122,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.40795799999978044,
+        "fixedMilliseconds": 0.0011675000000013825,
+        "nanosecondsPerInvocation": 25.222625248002174,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.42208300000038435,
+        "fixedMilliseconds": 0.001306670000003578,
+        "nanosecondsPerInvocation": 26.089802207364883,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.43641699999989214,
+        "fixedMilliseconds": 0.0014129099999991013,
+        "nanosecondsPerInvocation": 26.971979786699716,
+        "measurements": 45
+      }
+    ],
+    "note": "Same cells/cave/rules/embers as the scene. Light/render passes omitted. Steady medians exclude prewarm. Fixed cost measured with zero workgroups over the same bindings."
   }
 }
