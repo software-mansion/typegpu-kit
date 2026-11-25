@@ -16,14 +16,14 @@
     {
       "example": "classroom",
       "status": "pass",
-      "modules": 8,
-      "uniqueModules": 8
+      "modules": 7,
+      "uniqueModules": 7
     },
     {
       "example": "night-market",
       "status": "pass",
-      "modules": 17,
-      "uniqueModules": 15
+      "modules": 15,
+      "uniqueModules": 13
     },
     {
       "example": "afterimage",
@@ -40,8 +40,8 @@
     {
       "example": "fireworks",
       "status": "pass",
-      "modules": 36,
-      "uniqueModules": 31
+      "modules": 31,
+      "uniqueModules": 26
     },
     {
       "example": "hex-isle",
@@ -70,8 +70,8 @@
     {
       "example": "falling-sand",
       "status": "pass",
-      "modules": 66,
-      "uniqueModules": 66
+      "modules": 62,
+      "uniqueModules": 62
     },
     {
       "example": "ocean",
@@ -94,8 +94,8 @@
     {
       "example": "dominoes",
       "status": "pass",
-      "modules": 14,
-      "uniqueModules": 14
+      "modules": 13,
+      "uniqueModules": 13
     },
     {
       "example": "sph-sculpt",
@@ -106,38 +106,38 @@
     {
       "example": "fishtank",
       "status": "pass",
-      "modules": 33,
-      "uniqueModules": 30
+      "modules": 31,
+      "uniqueModules": 29
     },
     {
       "example": "benthos",
       "status": "pass",
-      "modules": 7,
-      "uniqueModules": 7
+      "modules": 6,
+      "uniqueModules": 6
     },
     {
       "example": "ember-mirror",
       "status": "pass",
-      "modules": 7,
-      "uniqueModules": 7
+      "modules": 6,
+      "uniqueModules": 6
     },
     {
       "example": "stampede",
       "status": "pass",
-      "modules": 43,
-      "uniqueModules": 43
+      "modules": 42,
+      "uniqueModules": 42
     },
     {
       "example": "skeletons",
       "status": "pass",
-      "modules": 38,
-      "uniqueModules": 35
+      "modules": 36,
+      "uniqueModules": 33
     },
     {
       "example": "jellies",
       "status": "pass",
-      "modules": 11,
-      "uniqueModules": 11
+      "modules": 10,
+      "uniqueModules": 10
     },
     {
       "example": "spider",
@@ -172,20 +172,20 @@
     {
       "example": "platformer",
       "status": "pass",
-      "modules": 19,
-      "uniqueModules": 15
+      "modules": 17,
+      "uniqueModules": 14
     },
     {
       "example": "blockfall",
       "status": "pass",
-      "modules": 15,
-      "uniqueModules": 14
+      "modules": 13,
+      "uniqueModules": 12
     },
     {
       "example": "lattice",
       "status": "pass",
-      "modules": 6,
-      "uniqueModules": 6
+      "modules": 5,
+      "uniqueModules": 5
     },
     {
       "example": "raymarch",
@@ -660956,5 +660956,176 @@
         "speedupVsSimulate": 146.29967356924408
       }
     ]
+  },
+  "conversionPerformancePaired": {
+    "node": "v26.13.1",
+    "cpu": "Apple M5 Pro",
+    "date": "2026-11-25T14:33:48.777Z",
+    "execution": "native Node imports; all paths in one process; interleaved rotating sample order",
+    "validationRows": 130,
+    "relaxedSemantics": "remove generated Math.fround calls; retain f32 literals and buffer stores",
+    "samples": 15,
+    "minimumSampleMs": 20,
+    "results": [
+      {
+        "name": "particles",
+        "count": 16384,
+        "maximumAbsoluteError": 9.5367431640625e-7,
+        "intermediateRoundingCalls": 18,
+        "measurements": {
+          "generated": {
+            "repeats": 32,
+            "samplesMs": [
+              56.21937500000058, 48.697541999999885, 49.07429200000115, 47.94854200000191,
+              48.062291999998706, 57.62970800000039, 49.3782919999976, 49.07929199999853,
+              48.19320799999696, 48.84041700000307, 49.21187500000087, 49.09070900000006,
+              48.83354200000031, 48.112208999998984, 48.995583000003535
+            ],
+            "medianMs": 48.995583000003535,
+            "invocationsPerSecond": 10700719.69548688
+          },
+          "generatedWithoutIntermediateRounding": {
+            "repeats": 32,
+            "samplesMs": [
+              38.09916599999997, 33.45545800000036, 44.82749999999942, 33.10974999999962,
+              33.471292000001995, 34.38191600000209, 33.96258300000045, 34.19637500000317,
+              33.2464579999978, 34.1473339999975, 34.197582999997394, 33.82816699999967,
+              34.023583999998664, 36.16254200000185, 34.109833000002254
+            ],
+            "medianMs": 34.109833000002254,
+            "invocationsPerSecond": 15370582.435861394
+          },
+          "source": {
+            "repeats": 1,
+            "samplesMs": [
+              437.27666600000157, 442.05762499999946, 531.4528750000009, 436.65962500000023,
+              433.85720800000126, 518.1055420000012, 436.1437920000026, 448.57666699999754,
+              437.48666700000103, 434.91962499999863, 442.2205419999991, 436.2149580000005,
+              430.55612499999916, 438.58558300000004, 443.11954200000037
+            ],
+            "medianMs": 437.48666700000103,
+            "invocationsPerSecond": 37450.28417060299
+          },
+          "rawSource": {
+            "repeats": 1,
+            "samplesMs": [
+              421.06162499999846, 420.98612499999945, 479.5430840000008, 443.71491700000115,
+              409.6521250000005, 511.731584000001, 416.9031249999971, 422.94766700000037,
+              417.58904099999927, 420.1723750000019, 416.03379199999836, 416.8015419999974,
+              404.5653749999983, 408.0722910000004, 412.58595900000364
+            ],
+            "medianMs": 417.58904099999927,
+            "invocationsPerSecond": 39234.74610532231
+          },
+          "simulate": {
+            "repeats": 1,
+            "samplesMs": [
+              458.3754169999993, 456.31766699999935, 478.6471249999995, 464.64512500000274,
+              464.8681250000009, 472.0217920000032, 455.01691700000083, 458.58379200000127,
+              452.4785410000004, 460.91858299999876, 466.044084000001, 453.86083300000246,
+              454.0117500000015, 457.6777910000019, 457.02212499999587
+            ],
+            "medianMs": 458.3754169999993,
+            "invocationsPerSecond": 35743.62715005728
+          },
+          "previousGenerated": {
+            "repeats": 32,
+            "samplesMs": [
+              48.262165999998615, 48.28095799999937, 50.06720900000073, 48.00666700000147,
+              48.60874999999942, 48.584624999999505, 56.70770800000173, 48.54608400000143,
+              48.486791999999696, 49.647625000001426, 49.24141700000109, 49.35375000000204,
+              50.78120800000033, 48.050374999998894, 48.38020799999504
+            ],
+            "medianMs": 48.584624999999505,
+            "invocationsPerSecond": 10791232.823141176
+          }
+        },
+        "roundingTimeOverhead": 0.43640641688278836,
+        "speedupVsSource": 285.73133508787976,
+        "speedupVsRawSource": 272.73579563282294,
+        "speedupVsSimulate": 299.3741975475406
+      },
+      {
+        "name": "floatIndices",
+        "count": 16384,
+        "maximumAbsoluteError": 0,
+        "intermediateRoundingCalls": 2,
+        "measurements": {
+          "generated": {
+            "repeats": 256,
+            "samplesMs": [
+              57.196084000002884, 67.1977079999997, 57.96433400000387, 59.29937499999505,
+              62.85529200000019, 58.81037500000093, 57.893167000001995, 71.67837500000314,
+              92.09549999999581, 84.87979199999972, 86.47612500000105, 74.62320799999725,
+              79.72374999999738, 85.1135409999988, 76.25762499999837
+            ],
+            "medianMs": 71.67837500000314,
+            "invocationsPerSecond": 58515612.27496879
+          },
+          "generatedWithoutIntermediateRounding": {
+            "repeats": 256,
+            "samplesMs": [
+              56.804667000003974, 57.22483300000022, 58.083707999998296, 58.49070899999788,
+              58.901833000003535, 57.5333329999994, 58.49704099999508, 66.96012499999779,
+              184.6690000000017, 79.85416700000496, 85.18108400000347, 83.34187500000553,
+              78.61633399999846, 76.38237499999377, 69.48912500000006
+            ],
+            "medianMs": 66.96012499999779,
+            "invocationsPerSecond": 62638831.692744575
+          },
+          "source": {
+            "repeats": 32,
+            "samplesMs": [
+              30.911791999998968, 31.06562500000291, 30.797500000000582, 30.721209000003,
+              31.163832999998704, 31.739125000000058, 31.230499999997846, 34.08933299999626,
+              44.77862499999901, 42.3793749999968, 93.76891700000124, 47.0301249999975,
+              42.12945800000307, 44.19841699999961, 39.26612500000192
+            ],
+            "medianMs": 34.08933299999626,
+            "invocationsPerSecond": 15379825.70677043
+          },
+          "rawSource": {
+            "repeats": 512,
+            "samplesMs": [
+              39.273832999999286, 39.47704099999828, 39.57404200000019, 39.55404099999578,
+              39.250374999995984, 39.65733299999556, 41.37879100000282, 63.11820799999987,
+              104.16133300000365, 61.96791700000176, 98.49116700000013, 54.51716699999815,
+              58.12412499999482, 47.98341600000276, 51.26299999999901
+            ],
+            "medianMs": 47.98341600000276,
+            "invocationsPerSecond": 174823068.03666326
+          },
+          "simulate": {
+            "repeats": 8,
+            "samplesMs": [
+              50.33170899999823, 49.937082999997074, 49.99279099999694, 50.48937500000466,
+              50.776167000003625, 50.95804100000532, 50.68316700000287, 51.570207999997365,
+              72.89654100000189, 98.45658399999957, 76.94487500000105, 75.06570799999463,
+              72.07325000000128, 71.57766699999775, 62.858124999998836
+            ],
+            "medianMs": 51.570207999997365,
+            "invocationsPerSecond": 2541622.4809488202
+          },
+          "previousGenerated": {
+            "repeats": 256,
+            "samplesMs": [
+              57.37329200000386, 57.997542000004614, 57.86479200000031, 57.939833000004,
+              59.081083999997645, 59.004124999999476, 66.6126249999943, 62.80758400000195,
+              108.23841700000048, 99.0883329999997, 85.015625, 84.34233400000085, 76.97812500000146,
+              84.96829199999775, 76.10866600000008
+            ],
+            "medianMs": 66.6126249999943,
+            "invocationsPerSecond": 62965601.4907138
+          }
+        },
+        "roundingTimeOverhead": 0.0704635781370706,
+        "speedupVsSource": 3.804699311332855,
+        "speedupVsRawSource": 0.33471333578642554,
+        "speedupVsSimulate": 23.022936220301357
+      }
+    ],
+    "baselineGeneratorCommit": "49d175b2",
+    "updatedGeneratorCommit": "dd8facbf",
+    "comparison": "baseline and updated generated paths interleaved in one warmed native Node process, same current runtime"
   }
 }

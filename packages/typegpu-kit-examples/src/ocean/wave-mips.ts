@@ -3,14 +3,20 @@ import {
   d,
   std,
   tgpu,
+  common,
+  type RenderFlag,
   type SampledFlag,
   type StorageFlag,
+  type TgpuCommandEncoder,
   type TgpuComputePass,
+  type TgpuRenderPassDescriptor,
   type TgpuRoot,
   type TgpuTexture,
 } from 'typegpu';
 
 const GROUP = 16;
+/** The layers of a wave map, one a cascade. */
+const LAYERS = 4;
 const storage = d.textureStorage2dArray('rgba16float', 'write-only');
 const layout = tgpu.bindGroupLayout({
   src: { texture: d.texture2dArray(d.f32) },
@@ -87,23 +93,35 @@ const fillThree = tgpu.computeFn({
 
 const oneLayout = tgpu.bindGroupLayout({
   src: { texture: d.texture2dArray(d.f32) },
-  into: { storageTexture: storage },
 });
 
-/** Each thread averages a texel of one level, for backends where workgroups share nothing. */
-const fillOne = tgpu.computeFn({
-  workgroupSize: [GROUP, GROUP],
-  in: { gid: d.builtin.globalInvocationId },
-})(({ gid }) => {
+/** The average of the four texels of layer `layer` under the texel at `at` of the next level. */
+const averageUnder = (at: d.v2u, layer: number) => {
   'use gpu';
-  if (!std.all(std.lt(gid.xy, std.textureDimensions(oneLayout.$.into)))) return;
-  const at = gid.xy * 2;
   const sum =
-    std.textureLoad(oneLayout.$.src, at, gid.z, 0) +
-    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 0), gid.z, 0) +
-    std.textureLoad(oneLayout.$.src, at + d.vec2u(0, 1), gid.z, 0) +
-    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 1), gid.z, 0);
-  std.textureStore(oneLayout.$.into, gid.xy, gid.z, asStored(sum * 0.25));
+    std.textureLoad(oneLayout.$.src, at, layer, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 0), layer, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(0, 1), layer, 0) +
+    std.textureLoad(oneLayout.$.src, at + d.vec2u(1, 1), layer, 0);
+  return asStored(sum * 0.25);
+};
+
+/**
+ * Each fragment averages a texel of one level in every layer, a target each, for backends where
+ * workgroups share nothing.
+ */
+const fillOne = tgpu.fragmentFn({
+  in: { position: d.builtin.position },
+  out: { first: d.vec4f, second: d.vec4f, third: d.vec4f, fourth: d.vec4f },
+})(({ position }) => {
+  'use gpu';
+  const at = d.vec2u(position.xy) * 2;
+  return {
+    first: averageUnder(at, 0),
+    second: averageUnder(at, 1),
+    third: averageUnder(at, 2),
+    fourth: averageUnder(at, 3),
+  };
 });
 
 type WaveMap = TgpuTexture<{
@@ -145,28 +163,62 @@ export function createWaveMips(root: TgpuRoot, maps: readonly WaveMap[]) {
     record(pass: TgpuComputePass) {
       for (const dispatch of dispatches) dispatch(pass);
     },
+    recordPasses(_encoder: TgpuCommandEncoder) {},
   };
 }
 
 function levelByLevel(root: TgpuRoot, maps: readonly WaveMap[]) {
-  const pipeline = root.createComputePipeline({ compute: fillOne }).$name('waveMips');
-  const dispatches = maps.flatMap((map) => {
+  const pipeline = root
+    .createRenderPipeline({
+      vertex: common.fullScreenTriangle,
+      fragment: fillOne,
+      targets: {
+        first: { format: 'rgba16float' },
+        second: { format: 'rgba16float' },
+        third: { format: 'rgba16float' },
+        fourth: { format: 'rgba16float' },
+      },
+    })
+    .$name('waveMips');
+  const passes = maps.flatMap((map) => {
     const { size, mipLevelCount = 1 } = map.props;
-    return Array.from({ length: mipLevelCount - 1 }, (_, i) => {
+    if (size[2] !== LAYERS) throw new Error(`Wave maps have ${LAYERS} layers, not ${size[2]}.`);
+    const drawn = map as WaveMap & RenderFlag;
+    return Array.from({ length: mipLevelCount - 1 }, (_level, i) => {
       const group = root.createBindGroup(oneLayout, {
         src: map.createView(d.texture2dArray(d.f32), only(i)),
-        into: map.createView(storage, only(i + 1)),
       });
-      const x = Math.ceil(Math.max(size[0] >> (i + 1), 1) / GROUP);
-      const y = Math.ceil(Math.max(size[1] >> (i + 1), 1) / GROUP);
-      return (pass: TgpuComputePass) =>
-        pipeline.with(pass).with(group).dispatchWorkgroups(x, y, size[2]);
+      // Layer by layer, in the order of the fragment's outputs
+      const colorAttachments = Array.from({ length: LAYERS }, (_layer, layer) => {
+        const view = drawn.createView('render', {
+          ...only(i + 1),
+          baseArrayLayer: layer,
+          arrayLayerCount: 1,
+        });
+        // Create the views and groups now, so the first record allocates nothing
+        root.unwrap(view);
+        return { view, loadOp: 'clear' as const, storeOp: 'store' as const };
+      });
+      root.unwrap(group);
+      return {
+        group,
+        descriptor: { colorAttachments } satisfies TgpuRenderPassDescriptor,
+      };
     });
   });
   return {
     pipeline,
-    record(pass: TgpuComputePass) {
-      for (const dispatch of dispatches) dispatch(pass);
+    /** Mips go in passes of their own, `recordPasses` records them. */
+    record(_pass: TgpuComputePass) {},
+    /** Records a render pass a level, each level drawn from the one above. */
+    recordPasses(encoder: TgpuCommandEncoder) {
+      for (const { group, descriptor } of passes) {
+        const pass = encoder.beginRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(group);
+        pass.draw(3);
+        pass.end();
+      }
     },
   };
 }

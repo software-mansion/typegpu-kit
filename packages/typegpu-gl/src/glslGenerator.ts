@@ -505,6 +505,57 @@ const BIT_POLYFILLS: Record<string, (value: number) => number> = {
   },
 };
 
+const SHIFTS = new Set<string>(['<<', '>>', '<<=', '>>=', '>>>', '>>>=']);
+
+/** WGSL's `quantizeToF16` on one component: GLSL ES 3.00 has no `f16`, but it packs halves. */
+const quantizeToF16 = (value: number): number => {
+  'use gpu';
+  return std.unpack2x16float(std.pack2x16float(d.vec2f(value, 0))).x;
+};
+
+/**
+ * Builtins the generator writes with an argument repeated or skipped, called through these when an
+ * argument may have side effects. Inside, every argument is a parameter, evaluated once at the call.
+ */
+const EVALUATED_ONCE: Record<string, (...args: never[]) => unknown> = {
+  select: (f: number, t: number, cond: boolean): number => {
+    'use gpu';
+    return std.select(f, t, cond);
+  },
+  dot: (a: d.v4i, b: d.v4i): number => {
+    'use gpu';
+    return std.dot(a, b);
+  },
+  countOneBits: (value: number): number => {
+    'use gpu';
+    return std.countOneBits(value);
+  },
+  countLeadingZeros: (value: number): number => {
+    'use gpu';
+    return std.countLeadingZeros(value);
+  },
+  countTrailingZeros: (value: number): number => {
+    'use gpu';
+    return std.countTrailingZeros(value);
+  },
+  firstTrailingBit: (value: number): number => {
+    'use gpu';
+    return std.firstTrailingBit(value);
+  },
+  firstLeadingBit: (value: number): number => {
+    'use gpu';
+    return std.firstLeadingBit(value);
+  },
+  reverseBits: (value: number): number => {
+    'use gpu';
+    return std.reverseBits(value);
+  },
+  quantizeToF16: (value: number): number => {
+    'use gpu';
+    return std.quantizeToF16(value);
+  },
+};
+
 /**
  * `select` for every type a WGSL `select` takes, as the WGSL generator writes it for ternaries.
  * Like WGSL's, it evaluates both branches.
@@ -842,6 +893,24 @@ export class GlslGenerator extends WgslGenerator {
     this.ctx.addDeclaration(code);
   }
 
+  /** Whether the code `emitCall` writes for `name` evaluates an argument other than once. */
+  #repeatsArguments(name: string, args: readonly Snippet[]): boolean {
+    const isVector = (arg: Snippet | undefined) =>
+      !!arg && arg.dataType !== UnknownData && arg.dataType.type.startsWith('vec');
+    if (name === 'select') {
+      // A scalar condition becomes a ternary, which skips a branch
+      return !isVector(args[2]);
+    }
+    if (name === 'dot') {
+      return !!args[0] && isIntegerVector(args[0].dataType);
+    }
+    if (name === 'firstLeadingBit') {
+      return true;
+    }
+    // The rest repeat a vector argument once per component
+    return isVector(args[0]);
+  }
+
   /** Applies `scalar` to each component of a vector, or to the value itself. */
   #componentwise(arg: Snippet | undefined, scalar: (component: Snippet) => string): string {
     if (!arg || arg.dataType === UnknownData) {
@@ -881,6 +950,14 @@ export class GlslGenerator extends WgslGenerator {
     if (renamed) {
       return super.emitCall(renamed, templateParams, args);
     }
+    const once = EVALUATED_ONCE[name];
+    if (once && args.some((arg) => arg.possibleSideEffects) && this.#repeatsArguments(name, args)) {
+      const result = this._callShellless(once, args);
+      if (!result) {
+        throw new Error(`Invalid argument passed to ${name}()`);
+      }
+      return result.value;
+    }
     if (name === 'fma') {
       const [a, b, c] = args.map((arg) => this.ctx.resolveSnippet(arg).value);
       return `((${a} * ${b}) + ${c})`;
@@ -908,7 +985,31 @@ export class GlslGenerator extends WgslGenerator {
         return component.dataType === d.i32 ? `int(${result})` : result;
       });
     }
-    if (name === 'extractBits' || name === 'insertBits') {
+    if (name === 'quantizeToF16') {
+      return this.#componentwise(args[0], (component) => {
+        const result = this._callShellless(quantizeToF16, [component]);
+        if (!result) {
+          throw new Error(`Invalid argument passed to ${name}()`);
+        }
+        return result.value;
+      });
+    }
+    if (name === 'ldexp') {
+      const [value, exponent] = args;
+      if (!value || !exponent || value.dataType === UnknownData) {
+        throw new Error(`Invalid number of arguments for 'ldexp'`);
+      }
+      const size = (value.dataType as d.Vec2f).componentCount;
+      const float = size ? `vec${size}` : 'float';
+      return `(${this.ctx.resolveSnippet(value).value} * exp2(${float}(${this.ctx.resolveSnippet(exponent).value})))`;
+    }
+    if (
+      name === 'extractBits' ||
+      name === 'insertBits' ||
+      // GLSL's take an `out` parameter where WGSL's return a struct
+      name === 'modf' ||
+      name === 'frexp'
+    ) {
       throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
     }
     if (name === 'dot' && args[0] && isIntegerVector(args[0].dataType)) {
@@ -1038,6 +1139,15 @@ export class GlslGenerator extends WgslGenerator {
       }
       if (sourceSchema.type === targetSchema.type) {
         return this.ctx.resolveSnippet(source).value;
+      }
+      // GLSL's conversions between int and uint keep the bits
+      const integers = ['i32', 'u32'];
+      if (
+        integers.includes(sourcePrimitive.type) &&
+        integers.includes(targetPrimitive.type) &&
+        sourceSchema.type.startsWith('vec') === targetSchema.type.startsWith('vec')
+      ) {
+        return `${this.ctx.resolve(targetSchema).value}(${this.ctx.resolveSnippet(source).value})`;
       }
 
       throw new Error(`Cannot bitcast from ${String(sourceSchema)} to ${String(targetSchema)}`);
@@ -1227,9 +1337,31 @@ export class GlslGenerator extends WgslGenerator {
     );
   }
 
+  /**
+   * WGSL shifts by the count modulo the bit width; GLSL leaves a count of 32 or more undefined. A
+   * constant count is already in range, since WGSL rejects a larger one.
+   */
+  #wrapShiftCount(count: Snippet): Snippet {
+    if (
+      count.dataType === UnknownData ||
+      typeof count.value === 'number' ||
+      count.origin === 'constant' ||
+      count.origin === 'constant-immutable-def'
+    ) {
+      return count;
+    }
+    const type = count.dataType as d.Vec2u;
+    const primitive = type.type.startsWith('vec') ? type.primitive : type;
+    const mask = primitive.type === 'u32' ? '31u' : '31';
+    return snip(`(${this.ctx.resolveSnippet(count).value} & ${mask})`, count.dataType, 'runtime');
+  }
+
   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
     lhs = this.#matchVectorComponent(lhs, rhs);
     rhs = this.#matchVectorComponent(rhs, lhs);
+    if (SHIFTS.has(op)) {
+      rhs = this.#wrapShiftCount(rhs);
+    }
     const comparisonBuiltin = vectorComparisonBuiltins[op];
     if (
       comparisonBuiltin &&

@@ -33,7 +33,9 @@ export interface PassTargets {
         readonly clearStencil: number | undefined;
         readonly depthReadOnly: boolean;
         readonly stencilReadOnly: boolean;
-        readonly store: boolean;
+        /** Whether the pass keeps the depth it wrote; false with `depthStoreOp: 'discard'`. */
+        readonly storeDepth: boolean;
+        readonly storeStencil: boolean;
       }
     | undefined;
 }
@@ -100,7 +102,8 @@ export function resolveTargets(descriptor: GPURenderPassDescriptor): PassTargets
               : undefined,
           depthReadOnly: depthStencil.depthReadOnly ?? false,
           stencilReadOnly: depthStencil.stencilReadOnly ?? false,
-          store: depthStencil.depthStoreOp !== 'discard',
+          storeDepth: depthStencil.depthStoreOp !== 'discard',
+          storeStencil: depthStencil.stencilStoreOp !== 'discard',
         }
       : undefined,
   };
@@ -197,12 +200,18 @@ export function endRender(pass: RenderPass): void {
     if (target.store) written(ctx, target.attachment.texture);
     else discards.push(gl.COLOR_ATTACHMENT0 + i);
   });
-  if (targets.depth) {
-    if (targets.depth.store) written(ctx, targets.depth.attachment.texture);
-    else {
-      const { info } = targets.depth.attachment.texture;
-      discards.push(info.hasStencil ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT);
+  const depth = targets.depth;
+  if (depth) {
+    const { info } = depth.attachment.texture;
+    const discardDepth = info.hasDepth && !depth.storeDepth;
+    const discardStencil = info.hasStencil && !depth.storeStencil;
+    if ((info.hasDepth && !discardDepth) || (info.hasStencil && !discardStencil)) {
+      written(ctx, depth.attachment.texture);
     }
+    // Each aspect is discarded alone: invalidating a combined attachment loses both
+    if (discardDepth && discardStencil) discards.push(gl.DEPTH_STENCIL_ATTACHMENT);
+    else if (discardDepth) discards.push(gl.DEPTH_ATTACHMENT);
+    else if (discardStencil) discards.push(gl.STENCIL_ATTACHMENT);
   }
   if (discards.length > 0) {
     state.drawFramebuffer(pass.fbo);
@@ -293,6 +302,7 @@ function targetGroup(pass: RenderPass, s: RenderState, group: number): void {
  */
 function issue(pass: RenderPass, pipeline: RenderPipelineImpl, call: () => void): void {
   const s = pipeline.state;
+  if (!s.writes) return;
   call();
   if (pass.ctx.ext.drawBuffersIndexed || s.shared.length < 2) return;
   const { gl, state } = pass.ctx;
@@ -336,6 +346,15 @@ function prepare(
     const buffer = vertexBuffer(ctx, bound.buffer);
     const base = bound.offset + (slot.instance ? instanceOffset : vertexOffset) * slot.stride;
     if (slot.buffer === buffer && slot.base === base) continue;
+    const first = Math.min(...slot.attributes.map((attribute) => attribute.offset));
+    if (base + first < 0) {
+      // baseVertex moves the attribute pointers, which cannot start before the buffer
+      ctx.errors.report(
+        'validation',
+        `The draw with pipeline '${pipeline.label}' has baseVertex ${vertexOffset}, which starts vertex buffer ${slot.slot} ${-(base + first)} bytes before its bound range; WebGL 2 cannot draw it.`,
+      );
+      return undefined;
+    }
     for (const attribute of slot.attributes) {
       if (attribute.integer) {
         gl.vertexAttribIPointer(

@@ -2,7 +2,7 @@ import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { common, d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
 import { mat4 } from 'wgpu-matrix';
-import { cameras, dof, passes, targets } from '../../src/index.ts';
+import { backends, cameras, dof, passes, targets } from '../../src/index.ts';
 
 const SIZE = 64;
 const FOV = 0.8;
@@ -56,8 +56,8 @@ interface Run {
   readonly pull?: number;
 }
 
-/** The radius stored at the middle, and the output's middle row, after one `record`. */
-async function blurred(root: TgpuRoot, { settings, radius, split = false, dt, pull }: Run) {
+/** Depth of field over a wall, recording a frame at a time. */
+async function staged(root: TgpuRoot, { settings, radius, split = false, pull }: Run) {
   const view = cameras.custom(root);
   view.write(mat4.lookAt([0, 0, 0], [0, 0, -1], [0, 1, 0]), mat4.perspective(FOV, 1, 0.1, 100));
 
@@ -85,52 +85,68 @@ async function blurred(root: TgpuRoot, { settings, radius, split = false, dt, pu
     fragment: halves,
     targets: { format: 'rgba16float' },
   });
-  await Promise.all([blur.initAsync(), prepass.initAsync()]);
-
-  const encoder = root.createCommandEncoder();
-  const picture = encoder.beginRenderPass({
-    colorAttachments: [
-      { view: screen.views.hdr, loadOp: 'clear', storeOp: 'store', clearValue: COLOR },
-    ],
-  });
-  if (split) {
-    picture.setPipeline(paint);
-    picture.draw(3);
-  }
-  picture.end();
-  prepass.record(encoder, drawn);
-  if (dt !== undefined) blur.aim(0.5, 0.5);
-  blur.record(encoder, dt === undefined ? {} : { dt });
-  encoder.submit();
-
   // The radius the prepare pass stored, through `dof.circle`
   const out = root.createBuffer(d.f32).$usage('storage');
   const written = out.as('mutable');
-  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
-    'use gpu';
-    written.$ = dof.circle(d.vec2f(0.75, 0.5));
+  const probe = root.pipe(blur.inject()).createComputePipeline({
+    compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      written.$ = dof.circle(d.vec2f(0.75, 0.5));
+    }),
   });
-  root.pipe(blur.inject()).createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
-  const stored = await out.read();
+  await Promise.all([blur.initAsync(), prepass.initAsync()]);
 
-  const bytesPerRow = SIZE * 8;
-  const buffer = root.device.createBuffer({
-    size: bytesPerRow * SIZE,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-  const copy = root.device.createCommandEncoder();
-  copy.copyTextureToBuffer({ texture: root.unwrap(blur.output) }, { buffer, bytesPerRow }, [
-    SIZE,
-    SIZE,
-  ]);
-  root.device.queue.submit([copy.finish()]);
-  await buffer.mapAsync(GPUMapMode.READ);
-  const pixels = new Float16Array(buffer.getMappedRange().slice(0));
-  buffer.destroy();
+  /** Draws the picture and its depth, then records the depth of field, by `dt` if given. */
+  const record = (dt?: number) => {
+    const encoder = root.createCommandEncoder();
+    const picture = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: screen.views.hdr, loadOp: 'clear', storeOp: 'store', clearValue: COLOR },
+      ],
+    });
+    if (split) {
+      picture.setPipeline(paint);
+      picture.draw(3);
+    }
+    picture.end();
+    prepass.record(encoder, drawn);
+    blur.record(encoder, dt === undefined ? {} : { dt });
+    encoder.submit();
+  };
 
-  const row = pixels.subarray((SIZE / 2) * SIZE * 4, (SIZE / 2 + 1) * SIZE * 4);
-  const at = (x: number) => [...row.subarray(x * 4, x * 4 + 4)];
-  return { radius: stored, at };
+  /** The radius stored at the middle, and the output's middle row. */
+  const read = async () => {
+    probe.dispatchWorkgroups(1);
+    const stored = await out.read();
+
+    const bytesPerRow = SIZE * 8;
+    const buffer = root.device.createBuffer({
+      size: bytesPerRow * SIZE,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const copy = root.device.createCommandEncoder();
+    copy.copyTextureToBuffer({ texture: root.unwrap(blur.output) }, { buffer, bytesPerRow }, [
+      SIZE,
+      SIZE,
+    ]);
+    root.device.queue.submit([copy.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const pixels = new Float16Array(buffer.getMappedRange().slice(0));
+    buffer.destroy();
+
+    const row = pixels.subarray((SIZE / 2) * SIZE * 4, (SIZE / 2 + 1) * SIZE * 4);
+    const at = (x: number) => [...row.subarray(x * 4, x * 4 + 4)];
+    return { radius: stored, row: [...row], at };
+  };
+  return { blur, record, read };
+}
+
+/** The radius stored at the middle, and the output's middle row, after one `record`. */
+async function blurred(root: TgpuRoot, run: Run) {
+  const { blur, record, read } = await staged(root, run);
+  if (run.dt !== undefined) blur.aim(0.5, 0.5);
+  record(run.dt);
+  return read();
 }
 
 it('has no radius at the focus, and keeps an even picture as it is', async () => {
@@ -158,6 +174,62 @@ it('gives the thin-lens radius in front of and behind the focus, within the limi
     expect(channel).toBeCloseTo(COLOR[i], 2);
   }
   root.destroy();
+});
+
+/** The radius and the output's middle row after each of a pull's frames. */
+async function pulled(compute: 'gpu' | 'cpu') {
+  const root = await gpuRoot();
+  // A device that says its compute runs on the CPU reads the focus from the focus buffer, on a GPU
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
+  const { blur, record, read } = await staged(root, {
+    settings: { focus: 10, aperture: 1, limit: 1 },
+    pull: 2,
+    split: true,
+  });
+  const frames: Awaited<ReturnType<typeof read>>[] = [];
+  const next = async (dt: number) => {
+    record(dt);
+    frames.push(await read());
+  };
+  await next(0.1);
+  // A focus written before an aim takes over at once
+  blur.settings.patch({ focus: 8 });
+  await next(0.1);
+  blur.aim(0.5, 0.5);
+  for (let i = 0; i < 3; i++) await next(0.1);
+  // A focus written during a pull is where the pull goes on from, even the one it started at
+  blur.settings.patch({ focus: 8 });
+  await next(0.1);
+  blur.settings.patch({ aperture: 1 });
+  for (let i = 0; i < 2; i++) await next(0.1);
+  await next(10);
+  root.destroy();
+  return frames;
+}
+
+it('pulls the focus alike where compute runs on the CPU', async () => {
+  const [gpu, cpu] = [await pulled('gpu'), await pulled('cpu')];
+  // Each frame closes 1 - e^-0.2 of the way in blur towards the wall
+  const step = 1 - Math.exp(-0.2);
+  const expected = [10, 8];
+  const towards = (from: number) => 1 / (1 / from + (1 / DISTANCE - 1 / from) * step);
+  for (let i = 0; i < 3; i++) expected.push(towards(expected.at(-1)!));
+  expected.push(towards(8));
+  for (let i = 0; i < 2; i++) expected.push(towards(expected.at(-1)!));
+  expected.push(DISTANCE);
+
+  for (const [i, focus] of expected.entries()) {
+    expect(gpu[i]!.radius).toBeCloseTo(thinLens(1, focus, DISTANCE), 3);
+    expect(cpu[i]!.radius).toBe(gpu[i]!.radius);
+    expect(cpu[i]!.row).toEqual(gpu[i]!.row);
+  }
+  // The picture blurs while the focus is off the wall and is sharp once it gets there
+  expect(gpu[2]!.at(SIZE / 2 + 1)[0]).toBeGreaterThan(0.05);
+  expect(gpu.at(-1)!.at(SIZE / 2 + 1)[0]).toBeLessThan(0.01);
 });
 
 it('pulls the focus towards what is under the aim, evenly in blur', async () => {

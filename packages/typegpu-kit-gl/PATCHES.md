@@ -443,4 +443,129 @@ New.
 +export { CrossShaderStageState, GlslGenerator } from './glslGenerator.ts';
 ```
 
+### J. `bitcast` between `i32` and `u32`
+
+New.
+
+**Why.** The radix sort orders `i32` keys by their bits, `std.bitcast(d.i32, d.u32)(v) ^ 0x80000000` (`sortableI32` in `@typegpu/kit`'s `src/sort/radix/key.ts`). The generator translated bitcasts to and from `f32` only.
+
+**Reproduction.** `const f = tgpu.fn([d.i32], d.u32)((v) => { 'use gpu'; return std.bitcast(d.i32, d.u32)(v); });` resolved with `glOptions()` throws "Cannot bitcast from i32 to u32". Patched, `return uint(v);`. `tests/glsl/semantics.test.gl.ts` compares scalars and vectors both ways with WebGPU.
+
+**Diff.**
+
+```diff
+       if (sourceSchema.type === targetSchema.type) {
+         return this.ctx.resolveSnippet(source).value;
+       }
++      // GLSL's conversions between int and uint keep the bits
++      const integers = ['i32', 'u32'];
++      if (
++        integers.includes(sourcePrimitive.type) &&
++        integers.includes(targetPrimitive.type) &&
++        sourceSchema.type.startsWith('vec') === targetSchema.type.startsWith('vec')
++      ) {
++        return `${this.ctx.resolve(targetSchema).value}(${this.ctx.resolveSnippet(source).value})`;
++      }
+```
+
+### K. `ldexp` and `quantizeToF16`, and `modf` and `frexp` refused by name
+
+New.
+
+**Why.** GLSL ES 3.00 has no `ldexp` or `quantizeToF16`, and its `modf` and `frexp` take an `out` parameter where WGSL's return a struct. The generator passed all four through by name, so a shader that called one failed to link with the driver's message. `censer` quantizes its smoke's carried velocities with `quantizeToF16`, in a kernel the fallback runs on the CPU today.
+
+**Reproduction.** `std.ldexp(x, 2)` or `std.quantizeToF16(x)` in a fragment: "'ldexp' : no matching overloaded function found". Patched, `(x * exp2(float(2)))` and a helper over `packHalf2x16` and `unpackHalf2x16`, componentwise for vectors; `std.modf(x)` throws "'modf' is not supported by the GLSL generator yet." `tests/glsl/semantics.test.gl.ts` compares both builtins with WebGPU.
+
+**Diff.**
+
+```diff
++const quantizeToF16 = (value: number): number => {
++  'use gpu';
++  return std.unpack2x16float(std.pack2x16float(d.vec2f(value, 0))).x;
++};
+ …
++    if (name === 'quantizeToF16') {
++      return this.#componentwise(args[0], (component) => this._callShellless(quantizeToF16, [component]).value);
++    }
++    if (name === 'ldexp') {
++      const size = (value.dataType as d.Vec2f).componentCount;
++      const float = size ? `vec${size}` : 'float';
++      return `(${value} * exp2(${float}(${exponent})))`;
++    }
+-    if (name === 'extractBits' || name === 'insertBits') {
++    if (
++      name === 'extractBits' ||
++      name === 'insertBits' ||
++      // GLSL's take an `out` parameter where WGSL's return a struct
++      name === 'modf' ||
++      name === 'frexp'
++    ) {
+       throw new Error(`'${name}' is not supported by the GLSL generator yet.`);
+```
+
+### L. Runtime shift counts wrap at the bit width
+
+New.
+
+**Why.** WGSL shifts by the count modulo 32; GLSL leaves a count of 32 or more undefined. Counts the kit computes at run time reach the shift unmasked: the grid's cell bits (`@typegpu/kit`'s `src/grid.ts`) and `jelly-world`'s land mask (`src/jelly-world/land.ts`).
+
+**Reproduction.** `const f = tgpu.fn([d.u32, d.u32], d.u32)((x, n) => { 'use gpu'; return x << n; });` gives `return (x << n);`, which for `n = 32u` is 0 or `x` as the driver decides; WGSL's is `x`. ANGLE on Metal happens to wrap the count, so `tests/glsl/semantics.test.gl.ts` checks the generated text as well as comparing results with WebGPU. Patched, `return (x << (n & 31u));`. A constant count is left as written.
+
+**Diff.**
+
+```diff
++const SHIFTS = new Set<string>(['<<', '>>', '<<=', '>>=', '>>>', '>>>=']);
+ …
++  #wrapShiftCount(count: Snippet): Snippet {
++    if (count.dataType === UnknownData || typeof count.value === 'number' ||
++        count.origin === 'constant' || count.origin === 'constant-immutable-def') {
++      return count;
++    }
++    const type = count.dataType as d.Vec2u;
++    const primitive = type.type.startsWith('vec') ? type.primitive : type;
++    const mask = primitive.type === 'u32' ? '31u' : '31';
++    return snip(`(${this.ctx.resolveSnippet(count).value} & ${mask})`, count.dataType, 'runtime');
++  }
++
+   override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
+     lhs = this.#matchVectorComponent(lhs, rhs);
+     rhs = this.#matchVectorComponent(rhs, lhs);
++    if (SHIFTS.has(op)) {
++      rhs = this.#wrapShiftCount(rhs);
++    }
+```
+
+### M. Builtin arguments with side effects are evaluated once
+
+New.
+
+**Why.** WGSL evaluates every argument of a call once. The generator wrote a scalar `select` as a ternary, which skips one branch, and expanded integer `dot`, the bit builtins on vectors, `quantizeToF16` on vectors and `firstLeadingBit` by repeating their arguments. An argument that calls a function, such as `slime-mould`'s `randFloat01()` or `star-map`'s `byEye(candidate)`, ran a different number of times than on WebGPU.
+
+**Reproduction.** With `const bump = () => { 'use gpu'; counter.$ += 1; return counter.$; };` over a private `u32`, `std.select(bump(), bump() + 10, flag)` gives `(flag ? (bump() + 10u) : bump())`, and `std.countOneBits(d.vec4u(bump()))` calls `bump` four times. Patched, both arguments of the `select` and the vector are evaluated once, through a function whose parameters the expansion repeats. `tests/glsl/semantics.test.gl.ts` counts the calls on WebGPU and WebGL.
+
+**Diff.** Arguments without possible side effects, by TypeGPU's own flag, keep the inline form, so only calls whose arguments call a function change:
+
+```diff
++const EVALUATED_ONCE: Record<string, (...args: never[]) => unknown> = {
++  select: (f: number, t: number, cond: boolean): number => {
++    'use gpu';
++    return std.select(f, t, cond);
++  },
++  dot: …, countOneBits: …, countLeadingZeros: …, countTrailingZeros: …, firstTrailingBit: …,
++  firstLeadingBit: …, reverseBits: …, quantizeToF16: …,
++};
+ …
++  #repeatsArguments(name: string, args: readonly Snippet[]): boolean {
++    if (name === 'select') return !isVector(args[2]);  // a scalar condition becomes a ternary
++    if (name === 'dot') return isIntegerVector(args[0].dataType);
++    if (name === 'firstLeadingBit') return true;
++    return isVector(args[0]);  // the rest repeat a vector argument once per component
++  }
+ …
++    const once = EVALUATED_ONCE[name];
++    if (once && args.some((arg) => arg.possibleSideEffects) && this.#repeatsArguments(name, args)) {
++      return this._callShellless(once, args).value;
++    }
+```
+
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.

@@ -2,12 +2,20 @@ import { bindings, cameras, finish, targets } from '@typegpu/kit';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { d, std, tgpu } from 'typegpu';
 import { describe, expect, it } from 'vitest';
-import { dof } from '../../src/index.ts';
+import { backends, dof } from '../../src/index.ts';
 import { recorded } from '../recorded.ts';
 
-function setup(options: { radius?: dof.Radius; rings?: 2 | 3 } = {}) {
+function setup({
+  compute = 'gpu',
+  ...options
+}: { radius?: dof.Radius; rings?: 2 | 3; compute?: 'gpu' | 'cpu' } = {}) {
   const recording = recordingRoot();
   const { root } = recording;
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...webgl, compute } satisfies backends.Backend,
+    });
+  }
   const size = { width: 64, height: 32 };
   const screen = targets.create(root, size, {
     hdr: { format: 'rgba16float', sampled: true },
@@ -32,6 +40,16 @@ function setup(options: { radius?: dof.Radius; rings?: 2 | 3 } = {}) {
 }
 
 const pass = ['begin-render', 'draw', 'end-render'];
+
+/** A backend that runs compute on the CPU, without a canvas. */
+const webgl = {
+  kind: 'webgl',
+  compute: 'cpu',
+  preferredCanvasFormat: 'rgba8unorm',
+  configure: () => {
+    throw new Error('No canvas in this test.');
+  },
+} satisfies backends.Backend;
 
 /** The gather's WGSL with `rings`. */
 const gatherWith = async (rings: 2 | 3) => {
@@ -86,6 +104,31 @@ describe('dof', () => {
       'begin-render',
     ]);
     expect(recording.log.writes.length).toBe(aimed + 1);
+  });
+
+  it('reads the pulled focus from its buffer where compute runs on the CPU, writing nothing in a steady frame', async () => {
+    const { recording, blur, frame } = setup({ compute: 'cpu' });
+    await blur.initAsync();
+    expect(recording.log.pipelines).toBe(6);
+    // The prepare and the composite call `focus`, the default radius
+    const drawn = recording.log.shaders.filter((wgsl) => wgsl.includes('@fragment'));
+    expect(drawn.filter((wgsl) => wgsl.includes('var<storage, read> state'))).toHaveLength(2);
+    expect(drawn.filter((wgsl) => wgsl.includes('var<storage, read_write'))).toHaveLength(0);
+
+    blur.aim(0.5, 0.5);
+    frame();
+    const counts = recording.log.counts();
+    const writes = recording.log.writes.length;
+    // The copy marks the settings' focus unset rather than reading the moved one back
+    expect(recorded(recording.log, frame).slice(0, 5)).toEqual([
+      'begin-compute',
+      'dispatch',
+      'end-compute',
+      'copy-buffer',
+      'begin-render',
+    ]);
+    expect(recording.log.counts()).toEqual(counts);
+    expect(recording.log.writes.length).toBe(writes + 1);
   });
 
   it('reads each ring four taps a quarter turn apart, without trigonometry', async () => {
