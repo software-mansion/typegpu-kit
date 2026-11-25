@@ -177,8 +177,12 @@ interface Group {
   /** Windows judged together so far, and member dispatches in the open window. */
   windows: number;
   dispatches: number;
-  /** Member dispatches since the leader's last. */
+  /** Member dispatches since the leader's last, and the most it has gone between its own. */
   sinceLeader: number;
+  cadence: number;
+  /** The device's readback wait per round before the move, and when the judged span began. */
+  readonly deviceBefore: number;
+  waitAt: number;
 }
 
 /** A dispatch's GPU time in flight: a timer query, or fences before and after its draws. */
@@ -563,6 +567,12 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
     windows: 0,
     dispatches: 0,
     sinceLeader: 0,
+    // The other members' GPU dispatches per one of the leader's, from all they made before
+    cadence:
+      [...members].reduce((sum, member) => sum + (member === leader ? 0 : member.written), 0) /
+      Math.max(1, leader.written),
+    deviceBefore: (waitedOf(ctx).ms - leader.waitAt) / Math.max(1, leader.dispatches),
+    waitAt: waitedOf(ctx).ms,
   };
   const others = [...members].filter((member) => member !== leader);
   const names = others.map((member) => `'${member.label}'`).join(', ');
@@ -581,6 +591,9 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
     member.why = 'readback';
     member.settling = false;
     member.group = group;
+    // Its blockers are its group now, and the group must not keep them alive through it
+    member.blockers = new Set();
+    member.lastBlockers = new Set();
     if (member !== leader) {
       ctx.stats.placement.set(
         member.label,
@@ -591,7 +604,10 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
   return true;
 }
 
-/** The records of a group whose pipelines are still alive. */
+/**
+ * The records of a group whose pipelines are still alive. `WeakRef` is in every browser with
+ * WebGL 2 the fallback supports: Chrome 84, Firefox 79 and Safari 14.1 on.
+ */
 function membersOf(group: Group): Record[] {
   return group.list.map((each) => each.deref()).filter((each) => each !== undefined);
 }
@@ -626,8 +642,16 @@ function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
   record.spanRuns++;
   group.dispatches++;
   const members = membersOf(group);
-  if (record === group.leader.deref()) group.sinceLeader = 0;
-  else if (++group.sinceLeader > WINDOW * members.length) {
+  // A member whose pipeline was collected ends the trial for the rest, as any return does
+  if (members.length < group.list.length) {
+    return breakGroup(ctx, group, 'a form of its group is gone');
+  }
+  if (record === group.leader.deref()) {
+    group.cadence = Math.max(group.cadence, group.sinceLeader);
+    group.sinceLeader = 0;
+  } else if (
+    ++group.sinceLeader > Math.max(WINDOW * members.length, 4 * (Math.ceil(group.cadence) + 1))
+  ) {
     return breakGroup(ctx, group, 'the form that led its group stopped dispatching');
   }
   if (group.dispatches < WINDOW * members.length) return;
@@ -636,6 +660,7 @@ function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
     if (!group.settling) judge(ctx, group, members);
     group.settling = false;
     group.windows = 0;
+    group.waitAt = waitedOf(ctx).ms;
     for (const member of members) {
       member.spanMs = 0;
       member.spanRuns = 0;
@@ -643,20 +668,24 @@ function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
   }
 }
 
-/** Keeps a group on the CPU or sends it back for good, from its members' spans. */
+/**
+ * Keeps a group on the CPU or sends it back for good, from its members' spans, per dispatch of
+ * its leader. A readback's wait is the GPU finishing earlier work, which moves to the next
+ * readback when one goes, so the waits charged to the members' outputs before the move are only
+ * a bound: the group is credited no more than the device as a whole stopped waiting.
+ */
 function judge(ctx: Ctx, group: Group, members: readonly Record[]): void {
   let extra = 0;
-  let saved = 0;
-  let runs = 0;
+  let charged = 0;
   for (const member of members) {
     extra += member.spanMs - member.baseGpu * member.spanRuns;
-    saved += member.baseWait * member.spanRuns;
-    runs += member.spanRuns;
+    charged += member.baseWait * member.spanRuns;
   }
-  // Per round of the group, one dispatch of each member
-  const rounds = runs / members.length;
+  const rounds = Math.max(1, group.leader.deref()?.spanRuns ?? 1);
   extra /= rounds;
-  saved /= rounds;
+  charged /= rounds;
+  const deviceAfter = (waitedOf(ctx).ms - group.waitAt) / rounds;
+  const saved = Math.min(charged, group.deviceBefore - deviceAfter);
   const cost = `CPU runs of its group cost ${extra.toFixed(2)} ms more than their GPU forms, and saved ${saved.toFixed(2)} ms of readback waits`;
   if (extra > CHEAP_MS && extra > saved) return breakGroup(ctx, group, cost, true);
   const leader = group.leader.deref();

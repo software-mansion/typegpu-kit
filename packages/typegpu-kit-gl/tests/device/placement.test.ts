@@ -599,3 +599,42 @@ test('a group is credited only the waits charged to its own outputs', async () =
     /^gpu: CPU runs of its group cost 5\.80 ms more than their GPU forms, and saved 0\.83 ms/,
   );
 });
+
+test('a wait that moves to another readback is not credited to the group that left it', async () => {
+  // The group's output pays a 10 ms wait a frame on the GPU; on the CPU an unrelated readback
+  // pays the same wait, so the device waits as before while the group costs 3 ms a CPU run
+  const { ctx, frame } = await grouped({ wait: 10 });
+  const where: string[][] = [];
+  for (let i = 0; i < 30; i++) {
+    where.push(frame(3).where);
+    readBack(ctx, buffer('unrelated'), 10);
+    await task();
+  }
+  expect(where.at(-1)).toEqual(['gpu', 'gpu']);
+  expect(ctx.stats.placement.get('shells')).toMatch(
+    /^gpu: CPU runs of its group cost 5\.80 ms more than their GPU forms, and saved -\d/,
+  );
+});
+
+test('a leader that dispatches once to a partner thirteen times keeps its group', async () => {
+  const { ctx } = fakeCtx({ timer: true, gpuMs: 0.1 });
+  const [x, y, z] = [buffer('x'), buffer('y'), buffer('z')];
+  const stars = form(ctx, 'stars', [x], [x, z]);
+  const shells = form(ctx, 'shells', [x], [x, y]);
+  const bind = binding(ctx, y);
+  const frame = () => {
+    const where = Array.from({ length: 13 }, () => stars());
+    where.push(shells());
+    bind();
+    return where;
+  };
+  for (let i = 0; i < 8; i++) {
+    frame();
+    await task();
+  }
+  for (let i = 0; i < 10; i++) {
+    expect(new Set(frame())).toEqual(new Set(['cpu']));
+    await task();
+  }
+  expect(ctx.stats.placement.get('stars')).toMatch(/moved with it$/);
+});
