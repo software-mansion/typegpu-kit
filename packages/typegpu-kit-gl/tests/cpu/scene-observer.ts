@@ -11,6 +11,7 @@ export interface Resource {
   destroyed: boolean;
   reasons: Set<string>;
   order: Set<string>;
+  halfStoreLinks?: number;
   approximate: boolean;
   quotient: boolean;
   layout?: Layout | undefined;
@@ -157,6 +158,7 @@ export function observeScene() {
       for (const input of inputs) {
         for (const reason of input.reasons) output.reasons.add(reason);
         for (const order of input.order) output.order.add(order);
+        output.halfStoreLinks = Math.max(output.halfStoreLinks ?? 0, input.halfStoreLinks ?? 0);
         output.approximate ||= input.approximate;
         output.quotient ||= input.quotient;
       }
@@ -311,7 +313,12 @@ export function observeScene() {
                   outputs,
                   used.map((item) => item.resource),
                 );
+                const halfDepth = Math.max(
+                  0,
+                  ...used.map((item) => item.resource.halfStoreLinks ?? 0),
+                );
                 for (const output of outputs) {
+                  if (output.format?.includes('16float')) output.halfStoreLinks = halfDepth + 1;
                   output.written = true;
                   output.quotient ||= /[/%]/.test(pipeline.code.replace(/\/\/[^\n]*/g, ''));
                   output.approximate ||=
@@ -336,6 +343,7 @@ export function observeScene() {
                 pass.setBindGroup(index, group, offsets);
               },
               dispatchWorkgroups: (x: number, y?: number, z?: number) => {
+                if (x === 0 || y === 0 || z === 0) return;
                 dispatch();
                 pass.dispatchWorkgroups(x, y, z);
               },

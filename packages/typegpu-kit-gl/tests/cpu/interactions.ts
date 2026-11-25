@@ -16,7 +16,7 @@ export async function interact(
   const act = async (label: string, action: () => unknown) => {
     try {
       await action();
-      await run(2);
+      await run(1);
       report.completed.push(label);
     } catch (error) {
       throw new Error(`Interaction ${label}: ${String(error)}`, { cause: error });

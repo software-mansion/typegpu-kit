@@ -63,7 +63,7 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
             roots = d.vec4f(z, v, std.cos(v), std.sin(v));
           }
           output.$[id.x * 3] = d.vec4f(p, q, h, kx);
-          output.$[id.x * 3 + 1] = roots;
+          output.$[id.x * 3 + 1] = d.vec4f(roots);
           output.$[id.x * 3 + 2] = d.vec4f(point, sdBezier(point, A, B, C), 0);
         },
       ),

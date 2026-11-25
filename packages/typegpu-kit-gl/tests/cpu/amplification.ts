@@ -9,6 +9,14 @@ interface Mechanism {
 
 const mechanisms: Mechanism[] = [
   {
+    example: 'kinetic',
+    resource: /^(?:texture:<unnamed>:host#[01]|buffer:shBuffer:host#0)$/,
+    mechanism:
+      'atmosphere radius-minus-Earth cancellation followed by half stores, mipmaps and harmonic projection',
+    evidence:
+      'thresholds.test.gpu.ts atmosphericHeights: affected cube texels have at most one f32 ulp radius difference; subtracting 6360 amplifies it to 0.00048828125 km (up to 8.3% of height). Replay of procedural daylight has no texture sampling and differs in only 73 base-level channels per output',
+  },
+  {
     example: 'flow-field',
     resource: /^buffer:particles:/,
     mechanism:

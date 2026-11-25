@@ -176,7 +176,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         steady = false;
         const interactions =
           process.env.CPU_INTERACT === '1'
-            ? await interact(scene, example.ui ?? {}, (count) => driver.run(count))
+            ? await interact(scene, example.ui ?? {}, (count) => driver.run(count, 1 / 60))
             : undefined;
         const rawCompute = recording.log.shaders.find(
           (code) => !isCpuModule(code) && /@compute\b/.test(code),

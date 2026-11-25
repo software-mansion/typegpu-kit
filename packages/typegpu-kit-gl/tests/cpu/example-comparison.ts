@@ -257,6 +257,15 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
       ...expected.skipped.map((item) => ({ ...item, side: 'dawn' })),
       ...actual.skipped.map((item) => ({ ...item, side: 'CPU' })),
     ];
+  const halfRounding: {
+    key: string;
+    maxUlps: number;
+    cpuAbove: number;
+    cpuBelow: number;
+    adjacent: number;
+    cpuStoreLinksUpperBound: number;
+    dawnStoreLinksUpperBound: number;
+  }[] = [];
   let compared = 0;
   const matched = new Set<string>();
   for (const cpu of actual.resources) {
@@ -275,6 +284,15 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
     const first: string[] = [];
     let words = 0;
     let readLevel = false;
+    const half = {
+      key: cpu.key,
+      maxUlps: 0,
+      cpuAbove: 0,
+      cpuBelow: 0,
+      adjacent: 0,
+      cpuStoreLinksUpperBound: cpu.halfStoreLinks ?? 0,
+      dawnStoreLinksUpperBound: gpu.halfStoreLinks ?? 0,
+    };
     const order = [...new Set([...cpu.order, ...gpu.order])];
     if (cpu.levels.length !== gpu.levels.length) {
       words++;
@@ -359,6 +377,16 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
             bv = new Float32Array(Uint32Array.of(rightBits).buffer)[0]!;
           }
           const ulps = Math.abs(leftBits - rightBits);
+          if (bits === 16 && Number.isFinite(av) && Number.isFinite(bv) && av !== bv) {
+            const distance = Math.abs(
+              (leftBits & 0x8000 ? -(leftBits & 0x7fff) : leftBits) -
+                (rightBits & 0x8000 ? -(rightBits & 0x7fff) : rightBits),
+            );
+            half.maxUlps = Math.max(half.maxUlps, distance);
+            if (Math.abs(bv) > Math.abs(av)) half.cpuAbove++;
+            else half.cpuBelow++;
+            if (distance <= 1) half.adjacent++;
+          }
           if (av === bv || (Number.isNaN(av) && Number.isNaN(bv))) continue;
           let magnitude = Math.max(Math.abs(av), Math.abs(bv));
           if (cpu.layout && field.type === 'f32' && bits === 32) {
@@ -385,6 +413,7 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
           );
       }
     }
+    if (cpu.format?.includes('16float')) halfRounding.push(half);
     if (readLevel || words) compared++;
     if (words) differences.push({ key: cpu.key, words, first, order });
   }
@@ -412,6 +441,7 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
       : [],
   );
   return {
+    halfRounding,
     decoded,
     compared,
     differences,

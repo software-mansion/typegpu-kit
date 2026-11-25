@@ -9,23 +9,35 @@ import { captureScene } from './example-comparison.ts';
 import { replay, snapshotDispatch, type ReplaySnapshot } from './replay.ts';
 import { recordResults } from './results.ts';
 
-const batch = [
-  { example: 'spider', label: '.*', resource: 'buffer:grid:', skip: 0 },
-  { example: 'survey-model', label: '^tracing$', resource: 'buffer:contours_points:', skip: 0 },
-  { example: 'stampede', label: '.*', resource: 'buffer:positionData:.*#0$', skip: 0 },
-  { example: 'jellies', label: '^trailing$', resource: 'buffer:pointBuffer:', skip: 15 },
-  { example: 'sph-sculpt', label: '^heighting$', resource: 'buffer:heights:', skip: 0 },
-  { example: 'censer', label: '^advect$', resource: 'texture:smoke advected:', skip: 1 },
-];
+const batch: { example: string; label: string; resource: string; skip: number; entry?: string }[] =
+  [
+    { example: 'kinetic', label: '.*', resource: 'texture:<unnamed>:host#0', skip: 0 },
+    { example: 'spider', label: '.*', resource: 'buffer:grid:', skip: 0 },
+    { example: 'survey-model', label: '^tracing$', resource: 'buffer:contours_points:', skip: 0 },
+    {
+      example: 'stampede',
+      label: '^<unnamed>$',
+      entry: '^item$',
+      resource: 'buffer:positionData:.*#0$',
+      skip: 0,
+    },
+    { example: 'jellies', label: '^trailing$', resource: 'buffer:pointBuffer:', skip: 15 },
+    { example: 'sph-sculpt', label: '^heighting$', resource: 'buffer:heights:', skip: 0 },
+    { example: 'censer', label: '^advect$', resource: 'texture:smoke advected:', skip: 1 },
+  ];
 const probes =
   process.env.CPU_REPLAY_BATCH === '1'
-    ? batch
+    ? batch.filter(
+        (probe) =>
+          !process.env.CPU_EXAMPLES || process.env.CPU_EXAMPLES.split(',').includes(probe.example),
+      )
     : [
         {
           example: process.env.CPU_EXAMPLES ?? 'flow-field',
           label: process.env.CPU_REPLAY_PIPELINE ?? 'step',
           resource: process.env.CPU_REPLAY_RESOURCE ?? '.*',
           skip: Number(process.env.CPU_REPLAY_SKIP ?? 0),
+          entry: process.env.CPU_REPLAY_ENTRY,
         },
       ];
 for (const probe of probes)
@@ -35,7 +47,12 @@ for (const probe of probes)
       const { example, skip } = probe;
       const label = new RegExp(probe.label);
       const resource = new RegExp(probe.resource);
+      const bootstrap = await gpuRoot();
+      const adapter = await navigator.gpu.requestAdapter();
+      const maximum = Math.min(16, adapter!.limits.maxStorageBuffersPerShaderStage);
+      bootstrap.destroy();
       const dawn = await gpuRoot({
+        limits: { maxStorageBuffersPerShaderStage: maximum },
         optionalFeatures: ['indirect-first-instance', 'depth32float-stencil8'],
       });
       Object.defineProperty(dawn.device, backends.brand, { value: cpuBackend });
@@ -52,7 +69,13 @@ for (const probe of probes)
         observeDevice: cpuObserver.device,
         beforeDispatch(code, pipeline, dispatch) {
           seen.add(pipeline);
+          if (dispatch.workgroups.some((count) => count === 0)) return;
           if (!label.test(pipeline)) return;
+          if (
+            probe.entry &&
+            !new RegExp(probe.entry).test(JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name)
+          )
+            return;
           const keys = dispatch.module.bindings
             .filter((use) => use.writes)
             .flatMap((use) => {
