@@ -29,6 +29,12 @@ const curtain = veil(cover, { cell: 4, poster: posterOf(element('#example').data
 const notice = element<HTMLOutputElement>('#notice');
 const pause = element<HTMLButtonElement>('#pause');
 
+/**
+ * `?stats` exposes the WebGL fallback's device statistics as `globalThis.kitGlStats()`, with the
+ * frames the scene has drawn, for `packages/typegpu-kit-gl/scripts/examples.ts --stats`.
+ */
+const statsAsked = new URLSearchParams(location.search).has('stats');
+
 function lift() {
   cover.classList.add('lifting');
   void curtain.lift().then(() => cover.remove());
@@ -222,6 +228,7 @@ export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted
   );
   let shown: Shown | undefined;
   let drawn = 0;
+  let frames = 0;
   const hold = (on: boolean) => {
     if (on) hosted.pause();
     else hosted.resume();
@@ -232,7 +239,14 @@ export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted
     say,
     webgl,
     onError: fail,
-    attach: ({ scene }) => {
+    attach: ({ scene, root }) => {
+      if (statsAsked) {
+        void import('@typegpu/kit-gl').then((gl) => {
+          Object.assign(globalThis, {
+            kitGlStats: () => ({ frames, stats: gl.webgl.statsOf(root) }),
+          });
+        });
+      }
       const gui =
         scene.settings || picks
           ? panel(scene.settings, example.title.toLowerCase(), fail)
@@ -247,6 +261,7 @@ export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted
       };
     },
     onFrame: (stage) => {
+      frames++;
       shown?.update();
       if (stage.ready && drawn < WARMUP_FRAMES && ++drawn === WARMUP_FRAMES) {
         lift();
