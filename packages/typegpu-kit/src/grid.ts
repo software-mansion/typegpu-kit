@@ -948,6 +948,11 @@ export function create<T extends d.AnyWgslData = never>(
     const listArgs = root
       .createBuffer(d.arrayOf(d.u32, 3), [0, 1, 1])
       .$usage('storage', 'indirect');
+    // `dispatch` covers every slot from arguments no kernel writes, so the device need not read
+    // the sorted count back before each walk
+    const everySlot = root
+      .createBuffer(d.arrayOf(d.u32, 3), [Math.ceil(capacity / WORKGROUP), 1, 1])
+      .$usage('indirect');
     const flagging = flags.as('mutable');
     const flagsIn = flags.as('readonly');
     const totalling = totals.as('mutable');
@@ -1093,8 +1098,9 @@ export function create<T extends d.AnyWgslData = never>(
     return {
       pipelines: [...run, placing, ...(copying ? [copyingPipeline] : [])],
       listArgs,
+      everySlot,
       destroy: () => {
-        for (const buffer of [flags, totals, listArgs]) buffer.destroy();
+        for (const buffer of [flags, totals, listArgs, everySlot]) buffer.destroy();
       },
       /** Empties the last sort's ranges, before the binning sorts again. */
       clear(pass: TgpuComputePass, rows: number) {
@@ -1282,7 +1288,7 @@ export function create<T extends d.AnyWgslData = never>(
 
     dispatch(pass) {
       binned();
-      pass.dispatchWorkgroupsIndirect(header, 0);
+      pass.dispatchWorkgroupsIndirect(lone?.everySlot ?? header, 0);
     },
 
     dispatchBlocks(pass) {
