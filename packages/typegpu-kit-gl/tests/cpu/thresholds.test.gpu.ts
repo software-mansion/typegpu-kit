@@ -164,8 +164,8 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
         if (!same && actual[offset + 11] !== expected[offset + 11] && amplified.length < 20)
           amplified.push({
             row,
-            cpu: [...actual.slice(offset, offset + 16)],
-            dawn: [...expected.slice(offset, offset + 16)],
+            cpu: Array.from(actual.subarray(offset, offset + 16)),
+            dawn: Array.from(expected.subarray(offset, offset + 16)),
           });
       }
       recordResults('flowFieldThresholds', {
