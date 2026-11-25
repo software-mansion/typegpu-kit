@@ -471,4 +471,27 @@ root.enabledWgslLanguageFeatures.has('immediate_address_space'); // true on some
 
 **Upstream.** Accept supported language features in `initFromDevice`, or derive them from the selected generator/device instead of the global adapter, in `packages/typegpu/src/core/root/init.ts`.
 
-**Workaround.** The CPU test root in `tests/cpu/device.ts` supplies an empty `enabledWgslLanguageFeatures` set. Device limits alone cannot affect the current getter.
+**Workaround.** `src/webgl.ts` and the CPU test root in `tests/cpu/device.ts` supply an empty `enabledWgslLanguageFeatures` set. Device limits alone cannot affect the current getter.
+
+## Source transforms
+
+### 31. Multiple declarations in one shader statement fail before resolution
+
+`tinyest-for-wgsl` rejects a JavaScript declaration containing more than one declarator. The generator never sees it, although its equivalent separate statements work. Copying a numerical reference implementation with `const a = ..., b = ...` into a shader therefore fails during the build.
+
+```ts
+const kernel = tgpu.fn(
+  [],
+  d.f32,
+)(() => {
+  'use gpu';
+  const a = d.f32(1),
+    b = d.f32(2);
+  return a + b;
+});
+// Error: Currently only one declaration in a statement is supported.
+```
+
+**Upstream.** Lower the declarators to separate tinyest declaration statements in source order, preserving initializer dependencies, in `tinyest-for-wgsl`'s `transpilers.ts` variable-declaration handler.
+
+**Workaround.** Split declarations in shader bodies, as in `tests/cpu/curve-thresholds.test.gpu.ts`. This is needed before either the WGSL or CPU generator can run.
