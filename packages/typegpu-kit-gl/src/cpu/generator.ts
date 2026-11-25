@@ -1876,7 +1876,7 @@ export class CpuGenerator extends WgslGenerator {
       return `((${letters.join(',')})=>${result ?? `$vector([${parts!.join(',')}])`})(${values.join(',')})`;
     }
     if (name === 'reverseBits')
-      return `((a)=>{let r=0;for(let i=0;i<32;i++){r=(r<<1)|(a&1);a>>>=1;}return r>>>0;})(${values[0]})`;
+      return `((a)=>{let r=0;for(let i=0;i<32;i++){r=(r<<1)|(a&1);a>>>=1;}return r${scalar(args[0]!.dataType) === 'i32' ? '|0' : '>>>0'};})(${values[0]})`;
     if (name === 'countOneBits')
       return `((a)=>{a=a-((a>>>1)&0x55555555);a=(a&0x33333333)+((a>>>2)&0x33333333);return Math.imul((a+(a>>>4))&0x0f0f0f0f,0x01010101)>>>24;})(${values[0]})`;
     const expressions: Record<string, string> = {
@@ -1896,8 +1896,11 @@ export class CpuGenerator extends WgslGenerator {
       firstTrailingBit: 'a===0?4294967295:31-Math.clz32((a&-a)>>>0)',
     };
     const floatResult = scalar(args[0]!.dataType) === 'f32';
-    const rounded = (value: string) =>
-      floatResult && !EXACT_FLOAT_BUILTINS.has(name) ? f32(value) : value;
+    const rounded = (value: string) => {
+      const type = scalar(args[0]!.dataType);
+      if (type === 'i32' || type === 'u32') return integerCast(value, type, type === 'u32');
+      return floatResult && !EXACT_FLOAT_BUILTINS.has(name) ? f32(value) : value;
+    };
     if (expressions[name]) return `((a,b,c)=>(${rounded(expressions[name])}))(${values.join(',')})`;
     for (const arg of args) {
       if (
