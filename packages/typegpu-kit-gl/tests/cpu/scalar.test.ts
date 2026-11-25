@@ -1,3 +1,5 @@
+import { bitcasts } from './bitcasts.ts';
+import { cpuRoot } from './device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -137,4 +139,25 @@ it('reports an offending generated line for syntax errors', () => {
       '//#kit-gl compute\n//#entry {"name":"kernel","size":[1,1,1],"inputs":[]}\nfunction kernel(){\nconst broken = );\n}',
     ),
   ).toThrow('Generated line 4: const broken = );');
+});
+
+it('reinterprets scalar and vector buffer loads without changing their bits', async () => {
+  const root = cpuRoot();
+  try {
+    const floats = [...new Uint32Array(Float32Array.of(-0, 0.1, -123.5, 2 ** -100).buffer)];
+    const integers = [0x80000000, 1, -123 >>> 0, 0x7fffffff];
+    const expected = [
+      ...floats,
+      ...integers,
+      ...floats,
+      floats[2],
+      integers[2],
+      floats[0],
+      0x3e4ccccd,
+      ...floats,
+    ];
+    expect(await bitcasts(root)).toEqual(expected);
+  } finally {
+    root.destroy();
+  }
 });

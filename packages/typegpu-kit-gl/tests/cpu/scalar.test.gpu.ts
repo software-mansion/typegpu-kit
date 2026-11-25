@@ -1,3 +1,5 @@
+import { bitcasts } from './bitcasts.ts';
+import { cpuRoot } from './device.ts';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -40,5 +42,16 @@ it('matches dawn for integer hash arithmetic and all invocation coordinates', as
     expect([...new Uint32Array(bytes)]).toEqual(await data.read());
   } finally {
     root.destroy();
+  }
+});
+
+it('matches dawn for scalar and vector bitcasts of buffer loads and computed values', async () => {
+  const gpu = await gpuRoot(),
+    cpu = cpuRoot();
+  try {
+    expect(await bitcasts(cpu)).toEqual(await bitcasts(gpu));
+  } finally {
+    gpu.destroy();
+    cpu.destroy();
   }
 });

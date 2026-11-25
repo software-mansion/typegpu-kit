@@ -1473,7 +1473,33 @@ export class CpuGenerator extends WgslGenerator {
     }
     if (/^bitcast(F32|I32|U32)to(F32|I32|U32)$/.test(name)) {
       const match = /^bitcast(F32|I32|U32)to(F32|I32|U32)$/.exec(name)!;
-      return `$bits.${match[1]!.toLowerCase()}_${match[2]!.toLowerCase()}(${this.#value(args[0]!)})`;
+      const to = match[2]!.toLowerCase();
+      const source = scalar(args[0]!.dataType);
+      const address = this.#addresses.get(this.ctx.resolveSnippet(args[0]!).value);
+      if (source.startsWith('vec')) {
+        const count = Number(source[3]);
+        const schema = d[`vec${count}${to[0]}` as 'vec2f'];
+        if (address)
+          return this.#vector(
+            schema,
+            Array.from({ length: count }, (_, i) =>
+              readAddress({
+                ...address,
+                offset: `(${address.offset})+${i * 4}`,
+                layout: { type: to, size: 4 },
+              }),
+            ),
+          );
+        const components = this.#parts(args[0]!);
+        if (components && !args[0]!.possibleSideEffects)
+          return this.#vector(
+            schema,
+            components.map((value) => `$bits.${match[1]!.toLowerCase()}_${to}(${value})`),
+          );
+        return `((v)=>$vector([${Array.from({ length: count }, (_, i) => `$bits.${match[1]!.toLowerCase()}_${to}(v[${i}])`).join(',')}]))(${this.#value(args[0]!)})`;
+      }
+      if (address) return readAddress({ ...address, layout: { type: to, size: 4 } });
+      return `$bits.${match[1]!.toLowerCase()}_${to}(${this.#value(args[0]!)})`;
     }
     if (name === 'textureStore') this.#effects = true;
     if (name.startsWith('texture')) {
@@ -1492,6 +1518,7 @@ export class CpuGenerator extends WgslGenerator {
     if (name === 'bitcast') {
       const target = this.ctx.resolveSnippet(templates[0]!).value;
       const source = scalar(args[0]!.dataType);
+      const address = this.#addresses.get(this.ctx.resolveSnippet(args[0]!).value);
       const targetSchema = [...this.#types].find(([, typeName]) => typeName === target)?.[0];
       if (source.startsWith('vec') && targetSchema?.type.startsWith('vec')) {
         const from = source.endsWith('f') ? 'f32' : source.endsWith('i') ? 'i32' : 'u32';
@@ -1503,6 +1530,17 @@ export class CpuGenerator extends WgslGenerator {
         const count = Number(source[3]);
         if (count !== Number(targetSchema.type[3]))
           unsupported('bitcast with different vector sizes');
+        if (address)
+          return this.#vector(
+            targetSchema,
+            Array.from({ length: count }, (_, i) =>
+              readAddress({
+                base: address.base,
+                offset: `(${address.offset})+${i * 4}`,
+                layout: { type: to, size: 4 },
+              }),
+            ),
+          );
         const components = this.#parts(args[0]!);
         if (components && !args[0]!.possibleSideEffects)
           return this.#vector(
@@ -1513,6 +1551,7 @@ export class CpuGenerator extends WgslGenerator {
       }
       if (!['u32', 'i32', 'f32'].includes(target) || !['u32', 'i32', 'f32'].includes(source))
         unsupported(`bitcast ${source} to ${target}`);
+      if (address) return readAddress({ ...address, layout: { type: target, size: 4 } });
       return `$bits.${source}_${target}(${this.#value(args[0]!)})`;
     }
     if (templates.length) unsupported(`template call ${name}`);

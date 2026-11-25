@@ -86,18 +86,32 @@ export function compile(code: string): CpuModule {
         if (!Number.isInteger(count) || count < 0)
           throw new Error('@typegpu/kit-gl CPU: invalid dispatch size');
       const scratch = new ArrayBuffer(4);
-      const views = {
-        u32: new Uint32Array(scratch),
-        i32: new Int32Array(scratch),
-        f32: new Float32Array(scratch),
+      const u32 = new Uint32Array(scratch);
+      const i32 = new Int32Array(scratch);
+      const f32 = new Float32Array(scratch);
+      const bits = {
+        u32_u32: (value: number) => value >>> 0,
+        i32_i32: (value: number) => value | 0,
+        f32_f32: Math.fround,
+        u32_i32: (value: number) => value | 0,
+        i32_u32: (value: number) => value >>> 0,
+        u32_f32: (value: number) => {
+          u32[0] = value;
+          return f32[0]!;
+        },
+        i32_f32: (value: number) => {
+          i32[0] = value;
+          return f32[0]!;
+        },
+        f32_u32: (value: number) => {
+          f32[0] = value;
+          return u32[0]!;
+        },
+        f32_i32: (value: number) => {
+          f32[0] = value;
+          return i32[0]!;
+        },
       };
-      const bits: Record<string, (value: number) => number> = {};
-      for (const from of ['u32', 'i32', 'f32'] as const)
-        for (const to of ['u32', 'i32', 'f32'] as const)
-          bits[`${from}_${to}`] = (value) => {
-            views[from][0] = value;
-            return views[to][0]!;
-          };
       const shared = new Map<string, unknown>();
       // Generated uniform caches belong to this dispatch, so every new binding/write is visible.
       const instantiate = () =>
