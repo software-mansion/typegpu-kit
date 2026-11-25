@@ -1,6 +1,7 @@
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { expect, it } from 'vitest';
 import {
+  conditionalValues,
   callSnapshot,
   callSwizzles,
   callValues,
@@ -23,6 +24,7 @@ it('matches dawn for helper argument order, composite snapshots and vector barri
   const cpu = cpuRoot();
   try {
     for (const run of [
+      conditionalValues,
       callValues,
       callSnapshot,
       callSwizzles,

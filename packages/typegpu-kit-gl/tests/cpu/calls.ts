@@ -529,3 +529,31 @@ export async function addressReturns(root: TgpuRoot): Promise<number[]> {
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return (await output.read()).flatMap((row) => [...row]);
 }
+
+export async function conditionalValues(root: TgpuRoot): Promise<number[]> {
+  const output = root.createMutable(d.arrayOf(d.vec4f, 4));
+  const count = tgpu.privateVar(d.u32);
+  const next = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    count.$ += 1;
+    return d.u32(count.$);
+  });
+  const pipeline = root.createComputePipeline({
+    compute: tgpu.computeFn({ workgroupSize: [4], in: { id: d.builtin.globalInvocationId } })(
+      ({ id }) => {
+        'use gpu';
+        const burning = id.x % 2 === 0;
+        const spreading = burning ? 0.3 : 0.1;
+        const vector = burning ? d.vec2f(2, 3) : d.vec2f(4, 5);
+        const nested = burning ? spreading : id.x > 2 ? d.f32(8) : d.f32(6);
+        const both = std.select(next(), next(), burning);
+        output.$[id.x] = d.vec4f(vector, nested, d.f32(both * 10 + count.$));
+      },
+    ),
+  });
+  pipeline.dispatchWorkgroups(1);
+  return (await output.read()).flatMap((value) => [...value]);
+}

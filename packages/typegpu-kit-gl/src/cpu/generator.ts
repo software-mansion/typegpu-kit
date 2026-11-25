@@ -345,6 +345,30 @@ export class CpuGenerator extends WgslGenerator {
     let result = super._expression(expression);
     if (
       Array.isArray(expression) &&
+      expression[0] === NODE.conditionalExpr &&
+      result.origin !== 'constant'
+    ) {
+      const call = completeCall(this.ctx.resolveSnippet(result).value);
+      if (call?.name === 'select' && call.arguments.length === 3) {
+        const [alternative, consequent, condition] = call.arguments;
+        result = snip(
+          this.emitCall(
+            'select',
+            [],
+            [
+              snip(alternative!, result.dataType, 'runtime', false),
+              snip(consequent!, result.dataType, 'runtime', false),
+              snip(condition!, d.bool, 'runtime', result.possibleSideEffects),
+            ],
+          ),
+          result.dataType,
+          result.origin,
+          result.possibleSideEffects,
+        );
+      }
+    }
+    if (
+      Array.isArray(expression) &&
       expression[0] === NODE.memberAccess &&
       typeof result.dataType !== 'symbol' &&
       result.origin !== 'constant'
@@ -1870,7 +1894,10 @@ export class CpuGenerator extends WgslGenerator {
         return `((a)=>{const f=Math.floor(a);return a-f===0.5?(f%2===0?f:f+1):Math.round(a);})(${values[0]})`;
       return rounded(`Math.${name}(${values.join(',')})`);
     }
-    if (name === 'select') return `(${values[2]} ? ${values[1]} : ${values[0]})`;
+    if (name === 'select')
+      return args.some((arg) => arg.possibleSideEffects)
+        ? `((a,b,c)=>c?b:a)(${values.join(',')})`
+        : `(${values[2]} ? ${values[1]} : ${values[0]})`;
     return unsupported(`builtin ${name}`);
   }
 }

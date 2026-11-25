@@ -233,7 +233,7 @@ const y = x < 0.5 ? 1 : 2; // select(2, 1, (x < 0.5)) in every target language
 
 **Upstream.** Emit the conditional through `emitCall('select', …)` or an `emitConditional` hook, in `tgsl/wgslGenerator.ts`.
 
-**Workaround.** `SELECT_OVERLOADS` in `packages/typegpu-gl/src/glslGenerator.ts`, declared when a ternary's output starts with `select(`.
+**Workaround.** `SELECT_OVERLOADS` in `packages/typegpu-gl/src/glslGenerator.ts`, declared when a ternary's output starts with `select(`. CPU `CpuGenerator._expression` also detects this resolved conditional and routes its arguments through `emitCall('select', ...)`, after the base generator has validated the branches. Without that step, a rare runtime branch in falling-sand reaches an undefined JavaScript `select`.
 
 ### 15. `functionDefinition` must call `determineReturnType`, which nothing says
 
