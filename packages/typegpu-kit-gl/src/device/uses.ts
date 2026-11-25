@@ -132,6 +132,21 @@ export function setInt(
  * Binds what a program reads from `groups`, with the program in use. Returns what is missing, or
  * undefined once everything is bound.
  */
+/** Formats each device reported sampling with filtering it cannot do, so it reports each once. */
+const unfilteredFormats = new WeakMap<Ctx, Set<GPUTextureFormat>>();
+
+function reportUnfiltered(ctx: Ctx, format: GPUTextureFormat): void {
+  let reported = unfilteredFormats.get(ctx);
+  if (!reported) unfilteredFormats.set(ctx, (reported = new Set()));
+  if (reported.has(format)) return;
+  reported.add(format);
+  // WebGPU rejects this too, without the `float32-filterable` feature this device then lacks
+  ctx.errors.report(
+    'validation',
+    `A filtering sampler reads a '${format}' texture, which needs OES_texture_float_linear on WebGL 2; it samples with nearest filtering.`,
+  );
+}
+
 export function bindUses(
   ctx: Ctx,
   uses: Uses,
@@ -167,8 +182,12 @@ export function bindUses(
         return `sampler @group(${use.sampler.group}) @binding(${use.sampler.binding})`;
       }
       const impl = samplerEntry.sampler;
-      const filterable = entry.view.texture.info.filterable;
-      sampler = use.comparison || (filterable && !use.depth) ? impl.sampler : impl.unfiltered();
+      const { info } = entry.view.texture;
+      sampler =
+        use.comparison || (info.filterable && !use.depth) ? impl.sampler : impl.unfiltered();
+      if (impl.filtering && !info.filterable && info.kind === 'float' && !use.comparison) {
+        reportUnfiltered(ctx, entry.view.texture.format);
+      }
     }
     state.sampler(use.unit, sampler);
   }

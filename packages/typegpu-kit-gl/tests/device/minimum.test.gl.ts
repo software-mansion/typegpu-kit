@@ -1,4 +1,4 @@
-import { common, d, tgpu, type TgpuRoot } from 'typegpu';
+import { common, d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
 import { glRoot, hasWebGpu, readTexture } from './compare.ts';
@@ -132,6 +132,38 @@ test('a draw that blends, writes and masks its targets differently needs no inde
       [0, 0, 255, 255],
       [0, 128, 0, 255],
     ]);
+  } finally {
+    root.destroy();
+  }
+});
+
+test('filtering a 32-bit float texture without its extension is an error that names it', async () => {
+  const root = glRoot();
+  try {
+    const image = root.createTexture({ size: [2, 2], format: 'r32float' }).$usage('sampled');
+    image.write(new Float32Array([0, 1, 1, 0]));
+    const view = image.createView(d.texture2d(d.f32));
+    const sampler = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    const fragment = tgpu.fragmentFn({ in: { pos: d.builtin.position }, out: d.vec4f })(({
+      pos,
+    }) => {
+      'use gpu';
+      return d.vec4f(std.textureSample(view.$, sampler.$, pos.xy / 4).x, 0, 0, 1);
+    });
+    const target = root
+      .createTexture({ size: [4, 4], format: 'rgba8unorm' })
+      .$usage('render', 'sampled');
+    root.device.pushErrorScope('validation');
+    root
+      .createRenderPipeline({
+        vertex: common.fullScreenTriangle,
+        fragment,
+        targets: { format: 'rgba8unorm' },
+      })
+      .withColorAttachment({ view: target.createView('render') })
+      .draw(3);
+    const error = await root.device.popErrorScope();
+    expect(error?.message).toContain('OES_texture_float_linear');
   } finally {
     root.destroy();
   }
