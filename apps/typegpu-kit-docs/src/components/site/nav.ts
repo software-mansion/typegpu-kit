@@ -50,6 +50,7 @@ const guides = [
       { label: 'How to read the docs', page: 'how-to-read' },
       { label: 'Starter scenes', page: 'starter-scenes' },
       { label: 'Platforms', page: 'platforms' },
+      { label: 'Running on WebGL 2', page: 'webgl' },
     ],
   },
   {

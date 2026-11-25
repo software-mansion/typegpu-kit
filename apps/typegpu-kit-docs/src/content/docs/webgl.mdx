@@ -1,0 +1,277 @@
+---
+title: Running on WebGL 2
+description: Run a scene in a browser without WebGPU, see where each of its kernels runs, and keep the costly ones on the GPU.
+readFirst:
+  page: kit/hosting
+  for: for hosting a scene with the fallback
+---
+
+import Rules from '../../components/site/Rules.astro';
+
+Some browsers give a page no WebGPU device. `@typegpu/kit-gl` runs the same scene there on WebGL 2. Its root is TypeGPU's own, on a device that draws with WebGL 2, so your scene file and its modules stay as they are. Drawing works the same. WebGL 2 has no compute stage, so the fallback draws each kernel on the GPU where it can prove the kernel's writes safe, and runs it on the CPU otherwise. This page shows which kernels stay on the GPU, how to see where yours ran, and what to do when one is too slow.
+
+## Turning it on
+
+[Hosting scenes](/kit/hosting/#where-webgpu-is-missing) shows how `web.host` takes `webgl.fallback()`. A program that makes its own root calls `await webgl.initWithFallback({ canvas })`, which returns a WebGPU root where the browser gives a device and a WebGL 2 root otherwise. `webgl.supported()` reports whether the browser can create a WebGL 2 context.
+
+To see a scene on the fallback in a browser that has WebGPU, force it:
+
+```ts twoslash
+import type { Frame, Surface } from '@typegpu/kit';
+import type { TgpuRoot } from 'typegpu';
+declare function createScene(root: TgpuRoot, surface: Surface): { frame(frame: Frame): void };
+declare const canvas: HTMLCanvasElement;
+// ---cut---
+import * as web from '@typegpu/kit/web';
+import { webgl } from '@typegpu/kit-gl';
+
+const force = new URLSearchParams(location.search).get('backend') === 'webgl';
+const hosted = web.host(createScene, { canvas, fallback: webgl.fallback({ force }) });
+```
+
+The [examples](/examples/) do the same: add `?backend=webgl` to an example's address.
+
+### Installing it
+
+The package depends on a patch to TypeGPU 0.12.11 that it ships. Install it beside the kit and that TypeGPU:
+
+```sh
+pnpm add @typegpu/kit @typegpu/kit-gl typegpu@0.12.11
+```
+
+Copy `node_modules/@typegpu/kit-gl/patches/typegpu@0.12.11.patch` into your project, such as into `patches/`, and register it with your package manager. With pnpm, in `pnpm-workspace.yaml`:
+
+```yaml
+patchedDependencies:
+  typegpu@0.12.11: patches/typegpu@0.12.11.patch
+```
+
+Then install again. Without the patch, `webgl.init` throws an error that names it.
+
+## What runs on the GPU
+
+Render pipelines draw with WebGL 2 as they do with WebGPU. Their shaders compile to GLSL, and a buffer that a shader reads reaches it as a texture.
+
+A kernel runs on the GPU when the fallback can prove where each thread writes. These shapes qualify:
+
+<Rules>
+
+- **Own cells** Each thread writes its own element, such as `gid.x`, or its own texel, such as `gid.xy`. A binding that only one chosen thread writes counts too. The kernel runs as fragment passes.
+- **Blocks** Each thread owns a constant block of up to 8 cells of a grid, as a 2 × 2 Margolus step does. It writes them through a helper that returns early unless the cell is inside the grid.
+- **Computed cells** A thread writes whole elements or texels at cells it computes, outside runtime loops, and the kernel never reads that resource. The kernel runs as points.
+- **Sums** The kernel only adds to a buffer with `atomicAdd` or `atomicSub` and drops the results, as a [counter](/kit/counters/)'s `add` does.
+- **Combined values** The kernel only changes a buffer with one of `atomicMin`, `atomicMax`, `atomicOr` or `atomicAnd` and drops the results. `atomicMin` and `atomicMax` take `u32` cells.
+- **Takes** The kernel adds 1 to one `atomic<u32>` counter and uses the value it gets, as [`particles`](/kit/particles/)' `emit` does. The value decides no branch or loop, and the kernel never returns it or passes it to a function.
+
+</Rules>
+
+Each of these kernels runs on the GPU:
+
+```ts twoslash
+import { d, std, tgpu } from 'typegpu';
+const root = await tgpu.init();
+const heights = root.createMutable(d.arrayOf(d.f32, 4096));
+const cells = root.createMutable(d.arrayOf(d.u32, 4096));
+const positions = root.createReadonly(d.arrayOf(d.vec2f, 4096));
+const hits = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+const keys = root.createReadonly(d.arrayOf(d.u32, 4096));
+const nearest = root.createMutable(d.atomic(d.u32));
+const head = root.createMutable(d.atomic(d.u32));
+const ring = root.createMutable(d.arrayOf(d.vec2f, 1024));
+const shift = root.createUniform(d.vec2u);
+const at = { gid: d.builtin.globalInvocationId };
+// ---cut---
+// Own cells: each thread writes its own element
+const settle = tgpu.computeFn({ workgroupSize: [64], in: at })(({ gid }) => {
+  'use gpu';
+  heights.$[gid.x] *= 0.99;
+});
+
+// Blocks: each thread swaps the two cells of a 1 × 2 block on a 64 × 64 grid
+const inside = (p: d.v2i) => {
+  'use gpu';
+  return std.all(std.ge(p, d.vec2i())) && p.x < 64 && p.y < 64;
+};
+const read = (p: d.v2i) => {
+  'use gpu';
+  if (!inside(p)) return d.u32(0);
+  return cells.$[d.u32(p.y) * 64 + d.u32(p.x)] as number;
+};
+const put = (p: d.v2i, value: number) => {
+  'use gpu';
+  if (!inside(p)) return;
+  cells.$[d.u32(p.y) * 64 + d.u32(p.x)] = value;
+};
+const swap = tgpu.computeFn({ workgroupSize: [8, 8], in: at })(({ gid }) => {
+  'use gpu';
+  const corner = d.vec2i(gid.xy) * 2 - d.vec2i(shift.$);
+  const below = read(corner);
+  put(corner, read(corner + d.vec2i(0, 1)));
+  put(corner + d.vec2i(0, 1), below);
+});
+
+// Computed cells: each thread marks the cell under its position
+const mark = tgpu.computeFn({ workgroupSize: [64], in: at })(({ gid }) => {
+  'use gpu';
+  const p = positions.$[gid.x];
+  cells.$[d.u32(p.y) * 64 + d.u32(p.x)] = gid.x;
+});
+
+// Sums, combined values and takes
+const tally = tgpu.computeFn({ workgroupSize: [64], in: at })(({ gid }) => {
+  'use gpu';
+  std.atomicAdd(hits.$[d.u32(positions.$[gid.x].x)], 1);
+});
+const least = tgpu.computeFn({ workgroupSize: [64], in: at })(({ gid }) => {
+  'use gpu';
+  std.atomicMin(nearest.$, keys.$[gid.x] as number);
+});
+const spawn = tgpu.computeFn({ workgroupSize: [64], in: at })(({ gid }) => {
+  'use gpu';
+  if (positions.$[gid.x].y > 0) return;
+  ring.$[std.atomicAdd(head.$, 1) % 1024] = d.vec2f(positions.$[gid.x]);
+});
+```
+
+`tgpu.unroll` loops count as straight code, so a write inside one still qualifies. A kernel on the GPU differs from WebGPU in a few ways:
+
+<Rules>
+
+- **Reads in a dispatch** A read of a cell that another thread writes in the same dispatch returns the value from before the dispatch. WebGPU leaves such a read a data race, so a kernel that is correct there doesn't depend on it.
+- **Out of range** A write at a computed cell outside its texture, or outside a buffer's bound range, is dropped.
+- **Many outputs** A fragment pass runs the whole kernel once for each resource it writes. A kernel that writes many resources or large structs costs a multiple of its WebGPU cost.
+- **Wide dispatches** A kernel that writes at `row * width + col` with a constant `width` needs a dispatch no wider than `width`, or an early return such as `if (gid.x >= width) return;` at its top. A wider dispatch runs on the CPU.
+- **Order of takes** Threads take values in the order of their index. Which slot of a ring a thread gets can differ from a WebGPU run, where it differs from run to run too.
+
+</Rules>
+
+## What runs on the CPU
+
+Every other kernel runs on the CPU as generated JavaScript, one thread after another. These send a kernel there:
+
+- workgroup variables and `workgroupBarrier`
+- an atomic whose result the kernel uses, other than a take
+- writes at computed cells inside a runtime loop, or into a resource the kernel also reads
+- two kinds of atomics on one buffer, such as `atomicMin` and `atomicMax`, or `atomicMin` and `atomicMax` on `i32` cells
+- a dispatch past a shape's limits, such as a take in a dispatch of more than 65 536 threads
+
+On the CPU, a simple kernel costs about 0.04 microseconds a thread, and one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A kernel the size of a texture that stays on the CPU is not.
+
+The device may also move a kernel that can run on the GPU to the CPU. It does so for a small kernel whose inputs are on the CPU and whose outputs the CPU reads back, which saves waiting for the GPU. It also tries the CPU once for a kernel that takes the GPU 8 ms or more a dispatch, such as one whose atomics pile onto a few cells, and keeps whichever costs less.
+
+A CPU kernel rounds `f32` values at each operation and wraps integers at 32 bits. A GPU may still reorder or fuse operations, store half floats differently and weigh filtered samples with fewer bits, so results differ slightly. Simulations can amplify the difference:
+
+<Rules>
+
+- **Exact texels** Use `textureLoad` where a simulation needs a texel's exact value.
+- **Random streams** Seed random streams from integer ids and explicit seeds, not computed positions.
+- **Angles** Handle zero axes before `atan2`. The CPU returns zero for `atan2(0, 0)`, and WebGPU need not.
+
+</Rules>
+
+## Seeing where kernels ran
+
+The fallback's device keeps `stats` on itself. Reach it through `root.device`. The package exports no type for it, so type the fields you read:
+
+```ts twoslash
+import type { TgpuRoot } from 'typegpu';
+declare const root: TgpuRoot;
+// ---cut---
+import { backends } from '@typegpu/kit';
+
+interface KernelStats {
+  readonly kernels: Map<string, { ms: number; dispatches: number }>;
+  readonly fallbacks: Map<string, string>;
+  readonly placement: Map<string, string>;
+  reset(): void;
+}
+
+if (backends.of(root).kind === 'webgl') {
+  const { stats } = root.device as GPUDevice & { readonly stats: KernelStats };
+  for (const [label, { ms, dispatches }] of stats.kernels) console.log(label, ms / dispatches);
+  for (const [label, why] of stats.fallbacks) console.log(label, why);
+  for (const [label, where] of stats.placement) console.log(label, where);
+  stats.reset();
+}
+```
+
+Each map is keyed by the pipeline's label, so name your pipelines with `$name`. Read them after a few frames:
+
+<Rules>
+
+- **`kernels`** Milliseconds the CPU spent on each pipeline's dispatches, and their count, since the last `reset()`. A label that ends in ` (gpu)` ran on the GPU, and a bare label ran on the CPU.
+- **`fallbacks`** Why a pipeline ran on the CPU, such as `CPU only: writes 'cells' at computed cells inside a loop`. It also names a GPU program that failed to link, or a dispatch that did not fit one.
+- **`placement`** Where each pipeline that can run on the GPU runs and why, starting with `gpu:` or `cpu:`.
+- **`reset()`** Clears the times and counts. `fallbacks` and `placement` stay.
+
+</Rules>
+
+The device's `stats` also count what CPU kernels read back from the GPU, uploads and draw calls. To compare, create the root with `webgl.init({ canvas, gpuCompute: false })`, which runs every kernel on the CPU, or `placement: false`, which keeps every kernel that can run on the GPU there. `webgl.fallback()` takes both options too.
+
+## Choosing other kernels
+
+`backends.of(root)` reports the root's `kind`, `'webgpu'` or `'webgl'`, and `compute`, `'gpu'` or `'cpu'`. The fallback reports `'cpu'`, since kernels that share workgroup memory run there. Read it where you create your pipelines, and choose a design the fallback keeps on the GPU. The WebGPU path stays as it was.
+
+[`exposure`](/kit/finish/#adapting-exposure) branches this way. On WebGPU, one workgroup sums samples of the frame's brightness in workgroup memory. On the fallback, each thread writes its own sample, and one thread adds them up. Both kernels run as fragment passes:
+
+```ts twoslash
+import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+declare const root: TgpuRoot;
+const meter = tgpu.computeFn({ workgroupSize: [256] })(() => {
+  'use gpu';
+});
+const brightness = (i: number) => {
+  'use gpu';
+  return d.f32(i);
+};
+// ---cut---
+import { backends } from '@typegpu/kit';
+
+const SAMPLES = 256;
+const average = root.createMutable(d.f32);
+const cpu = backends.of(root).compute === 'cpu';
+
+const logs = root.createMutable(d.arrayOf(d.f32, SAMPLES));
+const sample = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.globalInvocationId } })(({
+  gid,
+}) => {
+  'use gpu';
+  logs.$[gid.x] = std.log2(brightness(gid.x));
+});
+const add = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  let total = d.f32(0);
+  for (let i = d.u32(0); i < SAMPLES; i++) total += logs.$[i] as number;
+  average.$ = total / SAMPLES;
+});
+
+const pipelines = cpu
+  ? [root.createComputePipeline({ compute: sample }), root.createComputePipeline({ compute: add })]
+  : [root.createComputePipeline({ compute: meter })];
+```
+
+The kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` branch for you. Branch in your own module when a kernel would stay on the CPU and be too slow there:
+
+<Rules>
+
+- **Workgroup memory** A kernel shares workgroup memory behind barriers, such as an FFT or a reduction. Choose kernels without workgroup memory, as `exposure` does, or a smaller size.
+- **Used atomics** A kernel counts per cell and uses the counts it gets back. Let each thread mark its own row and one thread list the marked rows, as the kit's culling does.
+- **Crowded cells** Atomics put many writes onto a few cells. The GPU blends those one after another, so let each cell gather what reaches it instead.
+- **Takes in loops** A kernel takes a ring slot inside a loop, or passes it on to a callback. Let each slot find what fills it and one thread move the head, as `particles` does for bursts. A particle system with `born` keeps its emitters on the CPU.
+
+</Rules>
+
+## Limits
+
+<Rules>
+
+- **No timestamps** The device has no timestamp or occlusion queries, so [`profiler`](/kit/profiler/) is inert. Read `stats` instead.
+- **Waiting for the GPU** A CPU kernel that reads what a draw or a GPU kernel wrote waits for the GPU and reads it back, every dispatch. The wait includes every other page's GPU work in the same browser, so two such pages slow each other far more than they share the GPU.
+- **Indirect draws** WebGL 2 has no indirect draws, so the device reads their arguments on the CPU. A draw record a GPU kernel wrote waits for the GPU each frame.
+- **Extensions** An HDR target needs `EXT_color_buffer_half_float` or `EXT_color_buffer_float`. A 32-bit float target needs `EXT_color_buffer_float`, and blending into one `EXT_float_blend`, or fails with an error that names it. Sums, minimums and maximums need both, and run on the CPU without them.
+- **Content security** The device compiles CPU kernels with `new Function`. A page whose content security policy forbids `unsafe-eval` cannot run them.
+- **Browsers** The fallback is checked in Chromium and WebKit, not in Safari or Firefox. Firefox's WebGL on macOS skips the shader translator the other two share, so it is the likeliest to reject a shader.
+
+</Rules>
+
+A feature the device lacks, such as `textureGather`, `f16` or a missing extension, throws an error that names it. `LIMITATIONS.md`, which the package ships, lists every limit.
