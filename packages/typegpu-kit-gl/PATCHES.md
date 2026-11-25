@@ -89,7 +89,7 @@ New.
 **Diff** (`std/texture.ts`, the same change for `textureStore`, `textureNumLayers`, `textureNumLevels`, `textureNumSamples`, `textureGather`, `textureGatherCompare`, `textureSampleCompare`, `textureSampleCompareLevel`, `textureSampleGrad` and `textureSampleBaseClampToEdge`):
 
 ```diff
--    codegenImpl: (_ctx, args) => stitch `textureSampleCompareLevel(${args})`,
+-    codegenImpl: (ctx, args) => stitch `textureSampleCompareLevel(${args})`,
 +    codegenImpl: (ctx, args) => ctx.gen.emitCall('textureSampleCompareLevel', [], compactSnippetArgs(args)),
 ```
 
@@ -243,6 +243,8 @@ New.
 +      return `${this.ctx.resolve(returnType).value}${resolveArraySizeSuffix(this.ctx, returnType)} ${options.name}(${argList}) ${body || '{}'}`;
 ```
 
+`resolveArraySizeSuffix` never reads its `ctx` parameter, which the fork renames `_ctx` for this repository's lint; upstream can leave it.
+
 ### D. Zero-argument matrix and struct constructors
 
 New.
@@ -350,6 +352,8 @@ New.
 +      // Generating a ternary expression, which GLSL has for any type with a scalar condition
 ```
 
+`correspondingBooleanVectorSchema`, whose only caller was the removed `mix`, goes with it.
+
 ### G. `_declareHelper`, a hook for code the output relies on
 
 New.
@@ -389,6 +393,21 @@ New.
    override emitBinaryOp(lhs: Snippet, op: BinaryOperator, rhs: Snippet): string {
 +    lhs = this.#matchVectorComponent(lhs, rhs);
 +    rhs = this.#matchVectorComponent(rhs, lhs);
+```
+
+### I. The package exports its generator
+
+New.
+
+**Why.** The kit's generator, `src/glsl/generator.ts`, extends `GlslGenerator` and reads `CrossShaderStageState` to lay out render modules, so every example the fallback draws needs them. `@typegpu/gl` exported only its roots and options.
+
+**Reproduction.** `import { GlslGenerator } from '@typegpu/gl';` fails: the module has no export of that name.
+
+**Diff** (`src/index.ts`):
+
+```diff
+ export { isGLRoot } from './tgpuRootWebGL.ts';
++export { CrossShaderStageState, GlslGenerator } from './glslGenerator.ts';
 ```
 
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.
