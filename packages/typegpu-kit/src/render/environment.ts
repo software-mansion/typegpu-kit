@@ -743,9 +743,10 @@ const UNTIMED = {};
  * radiance and reflection cubes, the settings and the harmonics; the kernels that read a panorama,
  * read a cube, halve the radiance, blur the reflections and sum the harmonics; a group per mip
  * level and per added texture. Both cubes hold the mirror level, since a dispatch can't sample a
- * texture it writes
+ * texture it writes. Where compute runs on the CPU, one more buffer and pipeline: each row of the
+ * harmonics' faces sums into a partial, which a second kernel adds
  * @records `bake(frame, source)` when the source changes, before the passes that shade: one
- * compute pass with a dispatch per mip level of both cubes and one for the harmonics
+ * compute pass with a dispatch per mip level of both cubes and one for the harmonics, or two there
  * @param options.size the side of each cube face, which sets memory and bake time
  * @returns an environment you bake and destroy
  */

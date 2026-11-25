@@ -115,7 +115,8 @@ const Step = d.struct({ region: d.vec2f, dt: d.f32 });
  *
  * @allocates on resize: a bind group for a new source
  * @owns 3 buffers, a sampler, a pipeline and a bind group: the settings, the frame's region and
- * time, the exposure, and a group for the source
+ * time, the exposure, and a group for the source. Where compute runs on the CPU, one more buffer
+ * and pipeline: the samples' logs, which a second kernel sums
  * @injects member `exposure.current`, for the final pass or shaders of your own
  * @binds 1 storage: `exposure.current`, read-only
  * @records `record` after whatever wrote the source, before the final pass that reads it
