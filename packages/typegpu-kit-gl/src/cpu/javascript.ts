@@ -3,7 +3,9 @@ export function compileJavascript(
   source: string,
 ): (...args: unknown[]) => unknown {
   try {
-    return new Function(...parameters, source) as (...args: unknown[]) => unknown;
+    return new Function(...parameters, `'use strict';\n${source}`) as (
+      ...args: unknown[]
+    ) => unknown;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     const lines = source.split('\n');
@@ -14,7 +16,7 @@ export function compileJavascript(
       const candidate = [...lines];
       candidate[index] = '';
       try {
-        Function(...parameters, candidate.join('\n'));
+        Function(...parameters, `'use strict';\n${candidate.join('\n')}`);
       } catch {
         continue;
       }
