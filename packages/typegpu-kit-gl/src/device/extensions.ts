@@ -28,6 +28,7 @@ export interface Anisotropic {
 export interface TimerQuery {
   readonly TIME_ELAPSED_EXT: number;
   readonly TIMESTAMP_EXT: number;
+  readonly QUERY_COUNTER_BITS_EXT: number;
   readonly GPU_DISJOINT_EXT: number;
   queryCounterEXT(query: WebGLQuery, target: number): void;
 }

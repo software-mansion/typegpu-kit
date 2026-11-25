@@ -31,6 +31,7 @@ import { createShaderModule, type Prebuilt, PREBUILT } from './shader.ts';
 export type { Prebuilt } from './shader.ts';
 import { createState } from './state.ts';
 import { createTexture, textureImpl } from './texture.ts';
+import { canTime, createQuerySet } from './timestamps.ts';
 import { copyExternalImageToTexture, importExternalTexture, writeTexture } from './transfer.ts';
 
 export interface DeviceOptions {
@@ -124,6 +125,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
   if (!gl) throw new Error('@typegpu/kit-gl: WebGL 2 is not available.');
 
   const ext = enableExtensions(gl);
+  const timed = canTime(gl, ext.timerQuery);
   const defines: string[] = [];
   if (ext.clipControl) {
     ext.clipControl.clipControlEXT(ext.clipControl.LOWER_LEFT_EXT, ext.clipControl.ZERO_TO_ONE_EXT);
@@ -296,7 +298,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     gl,
     stats: ctx.stats,
     [BACKEND]: backend,
-    features: featuresOf(ext, formats),
+    features: featuresOf(ext, formats, timed),
     limits: limitsOf(gl),
     adapterInfo,
     queue,
@@ -328,15 +330,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     createCommandEncoder: (descriptor?: GPUCommandEncoderDescriptor) =>
       createCommandEncoder(ctx, descriptor),
     createRenderBundleEncoder: createRenderBundleEncoder,
-    createQuerySet(descriptor: GPUQuerySetDescriptor) {
-      return {
-        __brand: 'GPUQuerySet',
-        label: descriptor.label ?? '',
-        type: descriptor.type,
-        count: descriptor.count,
-        destroy() {},
-      } as unknown as GPUQuerySet;
-    },
+    createQuerySet: (descriptor: GPUQuerySetDescriptor) => createQuerySet(ctx, descriptor, timed),
     pushErrorScope: (filter: GPUErrorFilter) => errors.push(filter),
     popErrorScope: () => errors.pop(),
     addEventListener: errors.target.addEventListener.bind(errors.target),
