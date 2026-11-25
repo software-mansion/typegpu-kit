@@ -107,8 +107,8 @@ interface Record {
   held: string;
   /** Whether GL rewrote an input before the last dispatch, which a CPU run would read back. */
   heldNow: boolean;
-  /** The GPU form's write each GL-newer input held when this pipeline last dispatched over it. */
-  readonly seen: WeakMap<BufferImpl | TextureImpl, Writer>;
+  /** The GPU form's write each GL-newer buffer held when this pipeline last dispatched over it. */
+  readonly seen: WeakMap<BufferImpl, Writer>;
   /** The invocations of the last dispatch. */
   upcoming: number;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
@@ -284,11 +284,12 @@ function restart(ctx: Ctx, record: Record): void {
 
 /**
  * The label of a resource the dispatch binds that GL rewrote since this pipeline's last dispatch,
- * which a CPU run would read back each time, or undefined when there is none. An input GL holds
+ * which a CPU run would read back each time, or undefined when there is none. A buffer GL holds
  * that no GPU form wrote again costs a CPU run one readback in all, after which it stays current
  * on the CPU, so it counts only the first time this pipeline sees it, or when no GPU form is known
- * to have written it. What the pipeline's own GPU form wrote last does not count: on the CPU, the
- * pipeline would have written it there.
+ * to have written it. Only GPU forms leave a buffer with GL; a texture draws and copies write as
+ * well, so one GL holds counts at every dispatch. What the pipeline's own GPU form wrote last
+ * does not count: on the CPU, the pipeline would have written it there.
  */
 function heldOnGl(
   module: CpuModule,
@@ -296,11 +297,11 @@ function heldOnGl(
   record: Record,
 ): string | undefined {
   let held: string | undefined;
-  const rewritten = (resource: BufferImpl | TextureImpl) => {
-    const writer = writers.get(resource);
+  const rewritten = (buffer: BufferImpl) => {
+    const writer = writers.get(buffer);
     if (writer?.record === record) return false;
-    const again = writer === undefined || record.seen.get(resource) !== writer;
-    if (writer) record.seen.set(resource, writer);
+    const again = writer === undefined || record.seen.get(buffer) !== writer;
+    if (writer) record.seen.set(buffer, writer);
     return again;
   };
   for (const use of module.bindings) {
@@ -315,7 +316,8 @@ function heldOnGl(
     const entry = groups[use.group]?.group.entries.get(use.binding);
     if (entry?.kind === 'texture') {
       const { texture } = entry.view;
-      if (texture.written && texture.home === 'gl' && rewritten(texture)) {
+      // Draws and copies write textures too and leave no writer, so one GL holds always counts
+      if (texture.written && texture.home === 'gl' && writers.get(texture)?.record !== record) {
         held ??= texture.label || 'a texture';
       }
     }
