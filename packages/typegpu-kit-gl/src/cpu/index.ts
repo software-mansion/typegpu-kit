@@ -30,6 +30,44 @@ interface Execution {
 }
 type ViewConstructor = typeof Uint32Array | typeof Int32Array | typeof Float32Array;
 
+const ASSIGNS = /^(?:=(?![=>])|(?:\+|-|\*\*?|\/|%|&&?|\|\|?|\^|<<|>>>?|\?\?)=|\+\+|--)/;
+
+/**
+ * Whether a mutable buffer binding is only ever read, so a dispatch leaves GL's copy current:
+ * every use of the typed arrays declared over it is an element read, `name[…]` neither assigned
+ * nor stepped. Any other use, such as an atomic helper or a pointer taking the array whole, counts
+ * as a write, so the answer errs towards one.
+ */
+function onlyRead(code: string, use: CpuBindingUse): boolean {
+  const declared = new RegExp(
+    `^const ([A-Za-z_$][\\w$]*) = \\$buffer\\(${use.group}, ?${use.binding}, ?`,
+    'gm',
+  );
+  const names = [...code.matchAll(declared)].map((match) => match[1]!);
+  if (names.length === 0) return false;
+  const body = code
+    .split('\n')
+    .filter((line) => !line.startsWith('//') && !/^const [A-Za-z_$][\w$]* = \$buffer\(/.test(line))
+    .join('\n');
+  for (const name of names) {
+    const uses = new RegExp(`(?<![\\w$.])${name.replaceAll('$', '\\$')}(?![\\w$])`, 'g');
+    for (const match of body.matchAll(uses)) {
+      const at = match.index;
+      if (/(?:\+\+|--)[\s(]*$/.test(body.slice(Math.max(0, at - 8), at))) return false;
+      let i = at + name.length;
+      if (body[i] !== '[') return false;
+      for (let depth = 0; i < body.length; i++) {
+        if (body[i] === '[') depth++;
+        else if (body[i] === ']' && --depth === 0) break;
+      }
+      i++;
+      while (i < body.length && /[\s)]/.test(body[i]!)) i++;
+      if (ASSIGNS.test(body.slice(i, i + 4))) return false;
+    }
+  }
+  return true;
+}
+
 export function compile(code: string): CpuModule {
   if (!isCpuModule(code)) throw new Error('@typegpu/kit-gl CPU: missing compute marker');
   const entryLine = code.split('\n').find((line) => line.startsWith('//#entry '));
@@ -46,7 +84,10 @@ export function compile(code: string): CpuModule {
     .filter((line) => line.startsWith('//#binding '))
     .map((line) => {
       const value = JSON.parse(line.slice(11)) as CpuBindingUse;
-      return { ...value, group: Number(value.group) };
+      const use = { ...value, group: Number(value.group) };
+      return use.kind === 'buffer' && use.writes && onlyRead(code, use)
+        ? { ...use, writes: false }
+        : use;
     });
   const privateNames = [...code.matchAll(/^\/\/#private (\w+)$/gm)].map((match) => match[1]!);
   const workgroupState = code.includes('//#scope workgroup');
