@@ -10,7 +10,11 @@ import {
   TAKE_WIDTH,
   accumulateFragment,
   ACCUMULATED_FRAGMENT,
+  bitsFragment,
+  combiningFragment,
   type ComputeModule,
+  MINMAX_FRAGMENT,
+  type Operation,
   MOST_ADDED,
   MOST_TAKEN,
   type Scatter,
@@ -59,6 +63,8 @@ interface Points {
   readonly lanes: number;
   /** Whether the pass adds its records to the target instead of writing them. */
   readonly accumulate: boolean;
+  /** How an accumulating pass combines its records with the target's words. */
+  readonly operation: Operation;
   /** For a counter the kernel takes values of, the `kit_aim` of its bases. */
   readonly takes: number | undefined;
   readonly capture: Program;
@@ -202,6 +208,7 @@ function preparePoints(
     words: scatter.words,
     lanes: scatter.lanes,
     accumulate: scatter.accumulate === true,
+    operation: scatter.operation ?? 'add',
     takes: scatter.takes,
     capture,
     captureUses,
@@ -356,6 +363,211 @@ function accumulate(
     old = combined;
   }
   for (const texture of sums) give(ctx, gl.RGBA32F, width, height, texture);
+  return made as WebGLTexture;
+}
+
+/** `MIN` or `MAX` blending: each point keeps the least or greatest of it and what its texel holds. */
+const blendingBy = (equation: number): BlendState => ({
+  enabled: true,
+  colorOp: equation,
+  colorSrc: 1,
+  colorDst: 1,
+  alphaOp: equation,
+  alphaSrc: 1,
+  alphaDst: 1,
+});
+
+const minmaxCombiners = new WeakMap<Ctx, Program | string>();
+const bitsCombiners = new WeakMap<Ctx, Program | string>();
+
+/** Draws every record of an accumulating pass once per site into the bound draw framebuffer. */
+function drawRecords(ctx: Ctx, points: Points, count: number, pointAt: (site: number) => void) {
+  for (let slot = 0; slot < (count > 0 ? points.sites : 0); slot++) {
+    pointAt(slot);
+    ctx.gl.drawArrays(ctx.gl.POINTS, 0, count);
+  }
+  ctx.state.vertexArray(null);
+}
+
+/** Readies the scratch draw framebuffer for a pass's own draws over a `width` by `height` target. */
+function drawingInto(ctx: Ctx, width: number, height: number): void {
+  const { gl, state } = ctx;
+  state.drawFramebuffer(ctx.scratch.draw);
+  state.viewport(0, 0, width, height);
+  writeEverything(ctx);
+  for (const cap of [
+    gl.SCISSOR_TEST,
+    gl.DEPTH_TEST,
+    gl.STENCIL_TEST,
+    gl.CULL_FACE,
+    gl.RASTERIZER_DISCARD,
+    gl.SAMPLE_ALPHA_TO_COVERAGE,
+    gl.POLYGON_OFFSET_FILL,
+  ]) {
+    state.enable(cap, false);
+  }
+}
+
+/**
+ * Renders `program` once over a fresh `RGBA32UI` texture of the target's size, with `sources`
+ * bound by uniform name, and returns that texture.
+ */
+function renderWords(
+  ctx: Ctx,
+  program: Program,
+  sources: readonly [string, WebGLTexture][],
+  width: number,
+  height: number,
+): WebGLTexture {
+  const { gl, state } = ctx;
+  const made = take(ctx, gl.RGBA32UI, width, height);
+  drawingInto(ctx, width, height);
+  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, made, 0);
+  state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  state.blend(0, NO_BLEND);
+  state.colorMask(0, 0xf);
+  state.program(program.program);
+  sources.forEach(([name, texture], unit) => {
+    state.texture(unit, gl.TEXTURE_2D, texture);
+    state.sampler(unit, ctx.nearest);
+    setInt(gl, program.uniforms.get(name) ?? null, unit);
+  });
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  for (let unit = 0; unit < sources.length; unit++) state.texture(unit, gl.TEXTURE_2D, null);
+  return made;
+}
+
+/**
+ * Combines an accumulating pass's records with its buffer's words by `min`, `max`, `or` or
+ * `and`, as `combiningFragment` describes, and returns the texture of the new words. None of these
+ * has a bound on the records a word takes, so a dispatch is drawn whole.
+ */
+function combine(
+  ctx: Ctx,
+  pass: GpuPass,
+  points: Points,
+  buffer: BufferImpl,
+  count: number,
+  pointAt: (site: number) => void,
+  rebind: () => void,
+  width: number,
+  height: number,
+): WebGLTexture | string {
+  const { gl, state } = ctx;
+  const { operation } = points;
+  const uniform = (name: string) => pass.program.uniforms.get(name) ?? null;
+  if (operation === 'min' || operation === 'max') {
+    let combiner = minmaxCombiners.get(ctx);
+    if (!combiner) {
+      const linked = link(ctx, PASS_VERTEX, MINMAX_FRAGMENT, 'combining a buffer');
+      combiner = linked.ok ? linked.program : linked.message;
+      minmaxCombiners.set(ctx, combiner);
+    }
+    if (typeof combiner === 'string') return combiner;
+    const neutral = operation === 'min' ? 65536 : -1;
+    const rounds = [0, 1].map(() => take(ctx, gl.RGBA32F, width, height)) as [
+      WebGLTexture,
+      WebGLTexture,
+    ];
+    for (const round of [0, 1]) {
+      drawingInto(ctx, width, height);
+      const into = rounds[round] as WebGLTexture;
+      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, into, 0);
+      state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      state.colorMask(0, 0xf);
+      gl.clearBufferfv(gl.COLOR, 0, [neutral, neutral, neutral, neutral]);
+      state.blend(0, blendingBy(operation === 'min' ? gl.MIN : gl.MAX));
+      state.program(pass.program.program);
+      setInt(gl, uniform('kit_round'), round);
+      gl.uniform1f(uniform('kit_neutral'), neutral);
+      // Round 1 reads round 0's result; round 0 binds the texture round 1 will draw into, which
+      // it does not read, so no texture is both drawn into and bound
+      state.texture(state.scratchUnit, gl.TEXTURE_2D, rounds[1 - round] as WebGLTexture);
+      state.sampler(state.scratchUnit, ctx.nearest);
+      setInt(gl, uniform('kit_high'), state.scratchUnit);
+      drawRecords(ctx, points, count, pointAt);
+      state.blend(0, NO_BLEND);
+      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+    }
+    state.texture(state.scratchUnit, gl.TEXTURE_2D, null);
+    state.program(combiner.program);
+    setInt(gl, combiner.uniforms.get('kit_max') ?? null, operation === 'max' ? 1 : 0);
+    const made = renderWords(
+      ctx,
+      combiner,
+      [
+        ['kit_old', dataTexture(ctx, buffer).texture],
+        ['kit_high', rounds[0]],
+        ['kit_low', rounds[1]],
+      ],
+      width,
+      height,
+    );
+    for (const texture of rounds) give(ctx, gl.RGBA32F, width, height, texture);
+    return made;
+  }
+
+  let combiner = bitsCombiners.get(ctx);
+  const targets = targetsOf(ctx);
+  if (!combiner) {
+    const linked = link(ctx, PASS_VERTEX, bitsFragment(targets), 'combining a buffer');
+    combiner = linked.ok ? linked.program : linked.message;
+    bitsCombiners.set(ctx, combiner);
+  }
+  if (typeof combiner === 'string') return combiner;
+  const planes = Array.from({ length: targets }, () => take(ctx, gl.RGBA8, width, height));
+  let old = dataTexture(ctx, buffer).texture;
+  let made: WebGLTexture | undefined;
+  for (let group = 0; group < 32 / targets; group++) {
+    // The last round's combine unbound the units the pass reads
+    if (group > 0) rebind();
+    drawingInto(ctx, width, height);
+    state.drawBuffers(planes.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+    planes.forEach((plane, i) => {
+      gl.framebufferTexture2D(
+        gl.DRAW_FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0 + i,
+        gl.TEXTURE_2D,
+        plane,
+        0,
+      );
+      state.colorMask(i, 0xf);
+      gl.clearBufferfv(gl.COLOR, i, [0, 0, 0, 0]);
+      state.blend(i, blendingBy(gl.MAX));
+    });
+    state.program(pass.program.program);
+    setInt(gl, uniform('kit_group'), group);
+    drawRecords(ctx, points, count, pointAt);
+    planes.forEach((_, i) => {
+      state.blend(i, NO_BLEND);
+      gl.framebufferTexture2D(
+        gl.DRAW_FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0 + i,
+        gl.TEXTURE_2D,
+        null,
+        0,
+      );
+    });
+    state.program(combiner.program);
+    setInt(gl, combiner.uniforms.get('kit_group') ?? null, group);
+    setInt(gl, combiner.uniforms.get('kit_and') ?? null, operation === 'and' ? 1 : 0);
+    const combined = renderWords(
+      ctx,
+      combiner,
+      [
+        ['kit_old', old],
+        ...planes.map((plane, k): [string, WebGLTexture] => [`kit_bit${k}`, plane]),
+      ],
+      width,
+      height,
+    );
+    // The last round's result was this round's old words
+    if (made) give(ctx, gl.RGBA32UI, width, height, made);
+    made = combined;
+    old = combined;
+  }
+  for (const plane of planes) give(ctx, gl.RGBA8, width, height, plane);
   return made as WebGLTexture;
 }
 
@@ -625,7 +837,12 @@ export function prepareGpu(
   const passes: GpuPass[] = [];
   for (const pass of module.passes) {
     const vertex = pass.scatter?.vertex ?? PASS_VERTEX;
-    const fragment = pass.scatter?.accumulate ? accumulateFragment(targetsOf(ctx)) : pass.fragment;
+    const operation = pass.scatter?.operation;
+    const fragment = operation
+      ? combiningFragment(operation, targetsOf(ctx))
+      : pass.scatter?.accumulate
+        ? accumulateFragment(targetsOf(ctx))
+        : pass.fragment;
     const linked = link(ctx, vertex, fragment, `a pass of '${label}'`);
     if (!linked.ok) return linked.message;
     const { program } = linked;
@@ -866,8 +1083,13 @@ export function runGpu(
 
   for (const { scatter } of gpu.passes) {
     if (!scatter?.accumulate) continue;
-    if (!ctx.ext.colorBufferFloat || !ctx.ext.floatBlend) {
-      return 'adding needs EXT_color_buffer_float and EXT_float_blend';
+    const { operation } = scatter;
+    // Bits blend into RGBA8, which every WebGL 2 renders and blends
+    if (
+      (operation === 'add' || operation === 'min' || operation === 'max') &&
+      (!ctx.ext.colorBufferFloat || !ctx.ext.floatBlend)
+    ) {
+      return `${operation === 'add' ? 'adding' : `'${operation}' on shared cells`} needs EXT_color_buffer_float and EXT_float_blend`;
     }
     const count = invocations[0] * invocations[1] * invocations[2];
     if (scatter.takes !== undefined && count > MOST_TAKEN) {
@@ -979,7 +1201,7 @@ export function runGpu(
         }
       };
       if (points.accumulate && resource.kind === 'buffer') {
-        const summed = accumulate(
+        const summed = (points.operation === 'add' ? accumulate : combine)(
           ctx,
           pass,
           points,

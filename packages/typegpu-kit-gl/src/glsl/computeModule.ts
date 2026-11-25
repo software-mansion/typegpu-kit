@@ -186,6 +186,11 @@ export interface Scatter {
    */
   readonly accumulate?: true;
   /**
+   * How a pass that accumulates combines its records with each word, as `combiningFragment`
+   * describes; absent, it adds them.
+   */
+  readonly operation?: Exclude<Operation, 'add'>;
+  /**
    * Set for a counter whose values the kernel takes, as `Taking` describes: the `kit_aim` of its
    * `kit_bases<aim>` sampler.
    */
@@ -252,6 +257,125 @@ ${targets === 8 ? '' : 'uniform int kit_group;\n'}${outputs.join('\n')}
 void main() {
   vec4 lane = vec4(equal(uvec4(kit_lane), uvec4(0u, 1u, 2u, 3u)));
 ${sums.join('\n')}
+}`;
+}
+
+/** How a pass that accumulates records into a buffer's words combines them. */
+export type Operation = 'add' | 'min' | 'max' | 'or' | 'and';
+
+/** Operations other than `add`, by the word the accumulate directive names them with. */
+export const OPERATIONS: readonly Exclude<Operation, 'add'>[] = ['min', 'max', 'or', 'and'];
+
+/**
+ * A pass of points that combines records with a buffer's words by `min`, `max`, `or` or `and`,
+ * for those atomics whose results the kernel drops on cells other invocations share, as
+ * `Accumulating` describes for additions. Each record is `value` at word `at`. None of these has a
+ * bound on how many records a word takes, and none depends on their order.
+ *
+ * `min` and `max` on `u32` run in two rounds into one `RGBA32F` texture each, blended with
+ * `MIN` or `MAX`, which compares without arithmetic, so each channel holds exactly the least or
+ * greatest of the values drawn into it. Round 0 (`kit_round` 0) draws `value >> 16`, and round 1
+ * draws `value & 0xffff` for the records whose high half equals the one round 0 kept for their
+ * word, read from `kit_high`; both halves are integers below 2^24, so floats hold them exactly. The
+ * order of `u32` is that of (high half, low half), so the two rounds find the least or greatest
+ * value. Channels no record reaches keep the cleared `kit_neutral`, 65536 for `min` and -1 for
+ * `max`, which no half equals. `MINMAX_FRAGMENT` then renders each word combined with the result.
+ *
+ * `or` and `and` run as bit-planes into `RGBA8` textures blended with `MAX`, one bit of every word
+ * per texture: a record writes 1 where its bit is set, for `and` where it is clear, so a channel
+ * holds whether any record set (or cleared) that bit. A round draws `targets` bits, `kit_group`
+ * times `targets` to that plus `targets - 1`, and `BITS_FRAGMENT` renders each word with those
+ * bits set, or for `and` cleared; the next round starts from that result.
+ */
+export function combiningFragment(operation: Exclude<Operation, 'add'>, targets: 4 | 8): string {
+  if (operation === 'min' || operation === 'max') {
+    return `#version 300 es
+precision highp float;
+precision highp int;
+flat in uint kit_value;
+flat in uint kit_lane;
+uniform int kit_round;
+uniform float kit_neutral;
+uniform highp sampler2D kit_high;
+layout(location = 0) out vec4 kit_part0;
+void main() {
+  vec4 lane = vec4(equal(uvec4(kit_lane), uvec4(0u, 1u, 2u, 3u)));
+  float high = float(kit_value >> 16u);
+  float piece = high;
+  if (kit_round == 1) {
+    if (dot(texelFetch(kit_high, ivec2(gl_FragCoord.xy), 0), lane) != high) discard;
+    piece = float(kit_value & 65535u);
+  }
+  kit_part0 = mix(vec4(kit_neutral), vec4(piece), lane);
+}`;
+  }
+  const outputs = Array.from(
+    { length: targets },
+    (_, k) => `layout(location = ${k}) out vec4 kit_part${k};`,
+  );
+  const bits = Array.from(
+    { length: targets },
+    (_, k) => `  kit_part${k} = lane * float((bits >> uint(${targets} * kit_group + ${k})) & 1u);`,
+  );
+  return `#version 300 es
+precision highp float;
+precision highp int;
+flat in uint kit_value;
+flat in uint kit_lane;
+uniform int kit_group;
+${outputs.join('\n')}
+void main() {
+  vec4 lane = vec4(equal(uvec4(kit_lane), uvec4(0u, 1u, 2u, 3u)));
+  uint bits = ${operation === 'and' ? '~kit_value' : 'kit_value'};
+${bits.join('\n')}
+}`;
+}
+
+/** Renders each word of `kit_old` with the least or greatest value two rounds of `min` or `max` kept. */
+export const MINMAX_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp usampler2D kit_old;
+uniform highp sampler2D kit_high;
+uniform highp sampler2D kit_low;
+uniform int kit_max;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  uvec4 old = texelFetch(kit_old, at, 0);
+  vec4 high = texelFetch(kit_high, at, 0);
+  vec4 low = texelFetch(kit_low, at, 0);
+  uvec4 kept = (uvec4(clamp(high, 0.0, 65535.0)) << 16u) | uvec4(clamp(low, 0.0, 65535.0));
+  bvec4 reached = kit_max == 1 ? greaterThanEqual(high, vec4(0.0)) : lessThan(high, vec4(65536.0));
+  uvec4 combined = kit_max == 1 ? max(old, kept) : min(old, kept);
+  kit_result = uvec4(
+    reached.x ? combined.x : old.x,
+    reached.y ? combined.y : old.y,
+    reached.z ? combined.z : old.z,
+    reached.w ? combined.w : old.w);
+}`;
+
+/** Renders each word of `kit_old` with the bits one round of `or` or `and` drew set or cleared. */
+export function bitsFragment(targets: 4 | 8): string {
+  const planes = Array.from({ length: targets }, (_, k) => `uniform highp sampler2D kit_bit${k};`);
+  const sum = Array.from(
+    { length: targets },
+    (_, k) =>
+      `(uvec4(greaterThan(texelFetch(kit_bit${k}, at, 0), vec4(0.5))) << uint(${targets} * kit_group + ${k}))`,
+  );
+  return `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp usampler2D kit_old;
+${planes.join('\n')}
+uniform int kit_group;
+uniform int kit_and;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  uvec4 old = texelFetch(kit_old, at, 0);
+  uvec4 bits = ${sum.join('\n    | ')};
+  kit_result = kit_and == 1 ? old & ~bits : old | bits;
 }`;
 }
 
@@ -405,6 +529,12 @@ export function parseCompute(
       const [, sites, words = '1', lanes = '1'] = accumulate ? [ACCUMULATE, parts[1]] : parts;
       const taken =
         accumulate && parts[2] === 'take' ? int(parts[3] as string, scatter) : undefined;
+      const named = accumulate ? parts[parts.indexOf('op') + 1] : undefined;
+      const operation =
+        accumulate && parts.includes('op') ? OPERATIONS.find((each) => each === named) : undefined;
+      if (accumulate && parts.includes('op') && !operation) {
+        throw new Error(`@typegpu/kit-gl: an accumulating pass with operation '${named}'`);
+      }
       const stage = `points${chunk.stage.slice('pass'.length)}`;
       const draw = chunks.find((each) => each.stage === stage);
       if (!draw) throw new Error(`@typegpu/kit-gl: a pass of points without its '${stage}'`);
@@ -416,7 +546,11 @@ export function parseCompute(
       }));
       passes.push({
         target,
-        fragment: accumulate ? accumulateFragment(8) : pointFragment(target, options.defines ?? []),
+        fragment: operation
+          ? combiningFragment(operation, 8)
+          : accumulate
+            ? accumulateFragment(8)
+            : pointFragment(target, options.defines ?? []),
         scatter: {
           capture: source(included, options.defines ?? []),
           vertex: source(drawing, options.defines ?? []),
@@ -425,6 +559,7 @@ export function parseCompute(
           words: int(words, scatter),
           lanes: int(lanes, scatter),
           ...(accumulate && { accumulate: true as const }),
+          ...(operation && { operation }),
           ...(taken !== undefined && { takes: taken }),
         },
       });

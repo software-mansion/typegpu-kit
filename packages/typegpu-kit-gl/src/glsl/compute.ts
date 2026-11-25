@@ -22,6 +22,7 @@ import {
   LAYER,
   LAYERS_PER_DRAW,
   ACCUMULATE,
+  type Operation,
   SCATTER,
   TARGET,
   WORKGROUPS,
@@ -227,6 +228,19 @@ const ATOMICS: Record<string, string> = {
   atomicOr: 'o | v',
   atomicXor: 'o ^ v',
   atomicExchange: 'v',
+};
+
+/**
+ * The atomics whose results a kernel may drop on cells other invocations share, by how a pass of
+ * points combines their records with the words: their codes in the records' helper, too.
+ */
+const COMBINED: Record<string, readonly [Operation, number]> = {
+  atomicAdd: ['add', 0],
+  atomicSub: ['add', 0],
+  atomicMin: ['min', 1],
+  atomicMax: ['max', 2],
+  atomicOr: ['or', 3],
+  atomicAnd: ['and', 4],
 };
 
 /** A term of an index that every invocation sees alike, as GLSL, added or subtracted. */
@@ -768,6 +782,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #scatters = new Map<string, Scatter>();
   /** Buffers the kernel adds to at shared cells, dropping the atomics' results. */
   readonly #adds = new Map<string, BufferInfo>();
+  /** How each buffer in `#adds` combines its records, `add` unless another atomic said. */
+  readonly #operations = new Map<string, Operation>();
   /** The most additions each generated function makes, its callees' included. */
   readonly #addsOf = new Map<string, ReadonlyMap<string, number>>();
   /** The most writes at computed cells each generated function makes, per resource. */
@@ -1075,17 +1091,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const id = place.buffer.id;
     const taken = this.#takes.has(id) || this.#plan?.takes?.has(id) === true;
     if (taken && dropped) throw new Ineligible(`takes values of '${id}' and adds to it`);
-    if (
-      this.#adds.has(id) &&
-      !taken &&
-      name !== 'atomicLoad' &&
-      !(dropped && (name === 'atomicAdd' || name === 'atomicSub'))
-    ) {
+    if (this.#adds.has(id) && !taken && name !== 'atomicLoad' && !(dropped && name in COMBINED)) {
       throw new Ineligible(`'${name}' on '${id}', which it adds to at shared cells`);
     }
     if (
       dropped &&
-      (name === 'atomicAdd' || name === 'atomicSub') &&
+      name in COMBINED &&
       (this.#adds.has(id) ||
         (!place.element?.own &&
           !this.#single &&
@@ -1093,7 +1104,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
           !this.#plan?.buffers.has(id) &&
           !this.#chosen.some((each) => each.frame === this.#frame)))
     ) {
-      return this.#add(name, place, args[1], inner);
+      return this.#add(name, place, args[1], inner, value);
     }
     if (name === 'atomicLoad') {
       this.#loads.add(id);
@@ -1157,30 +1168,51 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
    * An atomic addition whose result the kernel drops, on a cell other invocations may add to: the
    * invocation records the word and the amount, and a pass sums every record into the cells.
    */
-  #add(name: string, place: Place, amount: Snippet | undefined, inner: d.BaseData): Snippet {
+  #add(
+    name: string,
+    place: Place,
+    amount: Snippet | undefined,
+    inner: d.BaseData,
+    cell?: string,
+  ): Snippet {
     const { buffer } = place;
     if (this.#buffers.has(buffer.id) || this.#scatters.has(buffer.id)) {
       throw new Ineligible(`adds to '${buffer.id}', which it also writes`);
     }
+    const [operation, code] = COMBINED[name] as readonly [Operation, number];
+    const before = this.#operations.get(buffer.id);
+    if (before !== undefined && before !== operation) {
+      throw new Ineligible(`'${name}' on '${buffer.id}', which it also combines by '${before}'`);
+    }
+    // Unsigned order is not signed order, and the device compares unsigned halves
+    if ((operation === 'min' || operation === 'max') && inner !== d.u32) {
+      throw new Ineligible(`'${name}' on '${buffer.id}', whose cells are not 'u32'`);
+    }
+    this.#operations.set(buffer.id, operation);
     this.#adds.set(buffer.id, buffer);
     this.#added(buffer.id, 1);
     const operand = this.#valueAs(amount, inner);
     const bits = inner === d.u32 ? operand : `uint(${operand})`;
     const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
-    if (!this.#plan) return snip(`${ADD_MARK}${buffer.id}()`, d.Void, 'runtime', true);
+    if (!this.#plan) {
+      // An 'or' names its cell and bits, which the narrow rule for guarded ors compares
+      const marked = operation === 'or' && cell !== undefined ? `${cell}, ${bits}` : '';
+      return snip(`${ADD_MARK}${buffer.id}(${marked})`, d.Void, 'runtime', true);
+    }
     // The records are kept per pass, one buffer's additions each, in arrays the most of them fit
     const slots = Math.max(0, ...(this.#plan.slots?.values() ?? []));
     this.helper(
       ADD,
       `uint ${ADDED};\nuint ${ADDED}_at[${slots}];\nuint ${ADDED}_amount[${slots}];
-void ${ADD}(int aim, uint at, uint amount, uint words, uint first) {
+void ${ADD}(int aim, uint at, uint amount, uint words, uint first, int op) {
   if (${AIM} != aim) return;
   // A buffer of a fixed size keeps a record per word; an access past its words may be discarded
   if (words > 0u) {
     if (at - first >= words) return;
     for (uint i = 0u; i < ${ADDED}; i++) {
       if (${ADDED}_at[i] == at) {
-        ${ADDED}_amount[i] += amount;
+        uint kept = ${ADDED}_amount[i];
+        ${ADDED}_amount[i] = op == 0 ? kept + amount : op == 1 ? min(kept, amount) : op == 2 ? max(kept, amount) : op == 3 ? kept | amount : kept & amount;
         return;
       }
     }
@@ -1194,11 +1226,17 @@ void ${ADD}(int aim, uint at, uint amount, uint words, uint first) {
     const merged = this.#merges(buffer);
     const range = merged ? `${this.#wordsOf(buffer)}u, ${buffer.range as string}.x` : '0u, 0u';
     return snip(
-      `${ADD}(${this.#aim(buffer.id)}, uint(${place.address}), uint(${signed}), ${range})`,
+      `${ADD}(${this.#aim(buffer.id)}, uint(${place.address}), uint(${signed}), ${range}, ${code})`,
       d.Void,
       'runtime',
       true,
     );
+  }
+
+  /** The accumulate directive's operation for `id`, empty for additions. */
+  #operationOf(id: string): string {
+    const operation = this.#operations.get(id);
+    return operation && operation !== 'add' ? ` op ${operation}` : '';
   }
 
   /**
@@ -2711,7 +2749,7 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
     const directive = [TARGET, 'buffer', buffer.group, buffer.binding, buffer.id, 0, 4, 4];
     return `${CHUNK} pass${index} main
 ${directive.join(' ')}
-${ACCUMULATE} ${slots}${this.#takes.has(buffer.id) ? ` take ${this.#aim(buffer.id)}` : ''}
+${ACCUMULATE} ${slots}${this.#takes.has(buffer.id) ? ` take ${this.#aim(buffer.id)}` : ''}${this.#operationOf(buffer.id)}
 ${outputs.join('\n')}
 void main() {
   uint kit_id = uint(gl_VertexID);
