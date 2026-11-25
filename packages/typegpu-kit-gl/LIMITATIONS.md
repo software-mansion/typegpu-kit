@@ -68,6 +68,7 @@ In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `partic
 - No cube-array textures. A multisampled texture can be rendered and resolved, not sampled.
 - A 6-layer texture is stored as a cube or as an array, whichever its first view asks for. A view of the other kind, or of part of a texture's layers, samples a copy the device refreshes after each change.
 - Two views of one texture with different mip ranges cannot be bound in the same draw.
+- No views in another format: a view whose `format` differs from its texture's, such as the `rgba8unorm-srgb` view of an `rgba8unorm` texture that `viewFormats` allows, is an error that names both, and the view reads and writes the texture's format.
 - Without `OES_draw_buffers_indexed`, a pipeline whose colour targets blend or mask differently draws once for each group of targets that agree. Each later draw writes neither depth nor stencil, and one that wrote depth keeps only the fragments that won it, so a later group that blends sees one fragment a pixel where WebGPU blends every fragment that passed. A pipeline that also writes stencil is an error that names the extension.
 - Depth bias has no clamp.
 - No sample mask: a multisampled pipeline whose `multisample.mask` leaves out any of its samples is an error that names it. A single-sampled pipeline whose mask clears bit 0 draws nothing, as on WebGPU.

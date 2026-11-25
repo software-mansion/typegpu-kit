@@ -426,3 +426,21 @@ describe.skipIf(!hasWebGpu)('premultiplied images', () => {
     expect(compare(expected, actual).first).toBeUndefined();
   });
 });
+
+describe.skipIf(!hasWebGpu)('view formats', () => {
+  test('a view in another format than its texture is an error that names both', async () => {
+    const device = gl.device;
+    const texture = device.createTexture({
+      size: [4, 4],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING,
+      viewFormats: ['rgba8unorm-srgb'],
+    });
+    expect(await errorsOf(device, () => texture.createView({ format: 'rgba8unorm' }))).toEqual([]);
+    const messages = await errorsOf(device, () =>
+      texture.createView({ format: 'rgba8unorm-srgb' }),
+    );
+    expect(messages.join('\n')).toMatch(/'rgba8unorm-srgb' view of a 'rgba8unorm' texture/);
+    texture.destroy();
+  });
+});

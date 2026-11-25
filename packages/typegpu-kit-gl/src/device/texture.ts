@@ -703,7 +703,18 @@ export function createTexture(ctx: Ctx, descriptor: GPUTextureDescriptor): GPUTe
     format: descriptor.format,
     usage: descriptor.usage,
     textureBindingViewDimension: viewDimension,
-    createView: (viewDescriptor?: GPUTextureViewDescriptor) => makeView(impl, viewDescriptor),
+    createView(viewDescriptor?: GPUTextureViewDescriptor) {
+      const format = viewDescriptor?.format;
+      const aspect = viewDescriptor?.aspect ?? 'all';
+      // An aspect's view names that aspect's format, which is the texture's storage
+      if (format && format !== impl.format && aspect === 'all') {
+        ctx.errors.report(
+          'validation',
+          `A '${format}' view of a '${impl.format}' texture reads and writes it as '${impl.format}': WebGL 2 has no views in another format.`,
+        );
+      }
+      return makeView(impl, viewDescriptor);
+    },
     destroy() {
       if (impl.destroyed) return;
       impl.destroyed = true;
