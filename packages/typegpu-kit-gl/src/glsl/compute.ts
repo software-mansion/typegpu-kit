@@ -1606,7 +1606,11 @@ uint ${name}() {
    * invocation, private variables, written resources, or functions that may.
    */
   #varies(text: string): boolean {
-    if (/texel|texture/.test(text)) return true;
+    // Texels come through calls: GLSL's `texture…` and `texelFetch…` builtins, the `kit_texel`
+    // that reads a buffer's data texture, and helpers named for either. Any of them may read what
+    // the dispatch writes, so a call whose name holds `texel` or `texture` varies; a local or
+    // member such as `texelSize`, not called, is judged by what it reads like any other
+    if (/(?<![\w.])\w*(?:texel|texture)\w*\s*\(/i.test(text)) return true;
     const varying = new Set([
       GID,
       ...this.#privates.map((each) => each.id),

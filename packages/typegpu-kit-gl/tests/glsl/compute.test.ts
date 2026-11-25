@@ -1384,6 +1384,20 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     1,
   ],
   [
+    'writes its own element past an offset a uniform-derived texelSize holds',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const half = root.createUniform(d.u32);
+      return line(({ gid: id }) => {
+        'use gpu';
+        // Named like a texel read, but read from a uniform
+        const texelSize = half.$;
+        out.$[id.x + texelSize * 64] = 1;
+      });
+    },
+    1,
+  ],
+  [
     'writes at an offset it reads from what it writes',
     (root) => {
       const out = root.createMutable(d.arrayOf(d.u32, 128));
