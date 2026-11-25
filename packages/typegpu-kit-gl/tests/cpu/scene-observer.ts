@@ -1,3 +1,4 @@
+import { encodedFields, type EncodedField } from './encoded-fields.ts';
 import type { Layout } from '../../src/cpu/memory.ts';
 import type { CpuTexture } from '../../src/cpu/types.ts';
 
@@ -15,8 +16,10 @@ export interface Resource {
   layout?: Layout | undefined;
   layoutOffset?: number;
   format?: GPUTextureFormat;
+  encoded?: EncodedField[];
 }
 interface Binding {
+  encoded?: EncodedField[];
   group: number;
   binding: number;
   writes: boolean;
@@ -58,14 +61,15 @@ function shader(code: string): Shader {
     };
   const bindings: Binding[] = [];
   for (const match of code.matchAll(
-    /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]+)>)?\s+\w+\s*:\s*([^;]+);/g,
+    /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]+)>)?\s+(\w+)\s*:\s*([^;]+);/g,
   ))
     bindings.push({
       group: Number(match[1]),
       binding: Number(match[2]),
+      encoded: encodedFields(code, match[4]!),
       writes:
         /read_write/.test(match[3] ?? '') ||
-        /texture_storage.*(?:write|read_write)/.test(match[4]!),
+        /texture_storage.*(?:write|read_write)/.test(match[5]!),
     });
   return { code, bindings };
 }
@@ -246,6 +250,7 @@ export function observeScene() {
                 const buffer = entry.resource as GPUBufferBinding;
                 const resource = handles.get(buffer.buffer ?? entry.resource);
                 if (!resource) return [];
+                if (binding.encoded?.length) resource.encoded = binding.encoded;
                 if (binding.layout) {
                   resource.layout = binding.layout;
                   resource.layoutOffset = buffer.offset ?? 0;

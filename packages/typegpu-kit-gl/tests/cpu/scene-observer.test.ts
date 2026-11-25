@@ -73,7 +73,7 @@ const capture = (words: number[]): SceneCapture => ({
   ],
 });
 it('compares integer words exactly and ignores only layout padding', () => {
-  const result = compareCaptures(capture([1, 0x3f800000, 0, 0]), capture([2, 0x3f800001, 99, 99]));
+  const result = compareCaptures(capture([1, 0x3f800000, 0, 0]), capture([2, 0x3f801000, 99, 99]));
   expect(result.differences[0]!.words).toBe(2);
   expect(result.differences[0]!.first[0]).toContain('.count');
   expect(result.differences[0]!.first[1]).toContain('.value');

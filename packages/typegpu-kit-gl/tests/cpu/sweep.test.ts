@@ -1,6 +1,6 @@
 import { interact } from './interactions.ts';
 import { cpuRoot, cpuBackend } from './device.ts';
-import { recordResults } from './results.ts';
+import { recordResults, recordExampleResults } from './results.ts';
 import { writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
@@ -214,6 +214,16 @@ it.runIf(process.env.CPU_SWEEP === '1')(
                     invocations: timing.invocations / 2,
                   }))
                   .toSorted((a, b) => b.milliseconds - a.milliseconds),
+                undispatched: modules.flatMap((code, index) => {
+                  if ((dispatched.get(code)?.invocations ?? 0) > 0) return [];
+                  const entry = JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name as string;
+                  const reason = /^(spawnEach|advanceKernel)$/.test(entry)
+                    ? 'particle pool compiled burst facilities; no host-queued burst reached this particular pool'
+                    : entry === 'move_1' && example.key === 'hex-isle'
+                      ? 'custom depth-of-field radius bypasses the optional autofocus facility'
+                      : 'not reached by the generic controls; needs source-specific reachability review';
+                  return [{ module: index, entry, reason }];
+                }),
                 unexecutedEntries: modules
                   .filter((code) => !dispatched.has(code))
                   .map((code) => JSON.parse(/^\/\/#entry (.*)$/m.exec(code)![1]!).name),
@@ -265,13 +275,13 @@ it.runIf(process.env.CPU_SWEEP === '1')(
               new URL(process.env.CPU_RESULTS, import.meta.url),
               `${JSON.stringify(results, null, 2)}\n`,
             );
-          else
-            recordResults(process.env.CPU_INTERACT === '1' ? 'interactions' : 'execution', results);
+          else if (process.env.CPU_INTERACT === '1') recordExampleResults('interactions', results);
+          else recordResults('execution', results);
         }
       }
     }
     if (process.env.CPU_EXECUTE !== '1') recordResults('compilation', results);
     expect(results.filter((result) => result.status === 'fail')).toEqual([]);
   },
-  600000,
+  Number(process.env.CPU_SWEEP_TIMEOUT ?? 600000),
 );

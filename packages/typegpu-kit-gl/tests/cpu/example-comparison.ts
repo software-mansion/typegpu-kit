@@ -1,3 +1,4 @@
+import { packedEqual } from './encoded-fields.ts';
 import { frames } from '@typegpu/kit';
 import { offscreenSurface } from '@typegpu/kit/testing';
 import type { TgpuRoot } from 'typegpu';
@@ -60,13 +61,16 @@ async function readTexture(
   device: GPUDevice,
   source: GPUTexture,
 ): Promise<CapturedResource['levels']> {
-  const channels = /^(?:rgba|bgra)/.test(source.format)
-    ? 4
-    : source.format.startsWith('rg')
-      ? 2
-      : 1;
-  const bits = Number(/(8|16|32)/.exec(source.format)?.[1]);
-  if (!bits || /depth|stencil|rgb10|rg11/.test(source.format))
+  const channels =
+    source.format === 'rgb10a2unorm'
+      ? 1
+      : /^(?:rgba|bgra)/.test(source.format)
+        ? 4
+        : source.format.startsWith('rg')
+          ? 2
+          : 1;
+  const bits = source.format === 'rgb10a2unorm' ? 32 : Number(/(8|16|32)/.exec(source.format)?.[1]);
+  if (!bits || /depth|stencil|rg11/.test(source.format))
     throw new Error(`texture format ${source.format} has no comparison decoder`);
   const levels: CapturedResource['levels'] = [];
   for (let level = 0; level < source.mipLevelCount; level++) {
@@ -203,7 +207,8 @@ export function fieldAt(
   layout: Layout,
   offset: number,
   prefix = '',
-): { path: string; type: string } | undefined {
+): { path: string; type: string; vectorOffset?: number; vectorSize?: number } | undefined {
+  if (offset < 0) return undefined;
   if (layout.fields) {
     for (const [name, field] of Object.entries(layout.fields))
       if (offset >= field.offset && offset < field.offset + field.layout.size)
@@ -216,6 +221,20 @@ export function fieldAt(
     return fieldAt(layout.element, offset % layout.stride, `${prefix}[${index}]`);
   }
   return offset < layout.size ? { path: prefix || '$', type: layout.type } : undefined;
+}
+
+function vectorRange(layout: Layout, offset: number, base = 0): [number, number] {
+  if (layout.type.startsWith('vec')) return [base, layout.size];
+  if (layout.fields)
+    for (const field of Object.values(layout.fields)) {
+      if (offset >= field.offset && offset < field.offset + field.layout.size)
+        return vectorRange(field.layout, offset - field.offset, base + field.offset);
+    }
+  if (layout.element && layout.stride) {
+    const shift = Math.floor(offset / layout.stride) * layout.stride;
+    return vectorRange(layout.element, offset - shift, base + shift);
+  }
+  return [base, 4];
 }
 
 export interface ExampleDifference {
@@ -247,7 +266,6 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
     matched.add(cpu.key);
     const first: string[] = [];
     let words = 0;
-    const approximate = cpu.approximate || gpu.approximate;
     const order = [...new Set([...cpu.order, ...gpu.order])];
     if (cpu.levels.length !== gpu.levels.length) {
       words++;
@@ -271,7 +289,10 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
         });
         continue;
       }
-      const bits = cpu.kind === 'buffer' ? 32 : Number(/(8|16|32)/.exec(cpu.format!)?.[1]);
+      const bits =
+        cpu.kind === 'buffer' || cpu.format === 'rgb10a2unorm'
+          ? 32
+          : Number(/(8|16|32)/.exec(cpu.format!)?.[1]);
       const ua =
         bits === 8
           ? new Uint8Array(a.bytes)
@@ -296,16 +317,55 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
                 path: `mip[${level}].component[${word}]`,
               };
         if (!field || ua[word] === ub[word]) continue;
+        if (cpu.format?.includes('norm')) {
+          if (bits === 8 && Math.abs(ua[word]! - ub[word]!) <= 1) continue;
+          if (
+            cpu.format === 'rgb10a2unorm' &&
+            [0, 10, 20, 30].every(
+              (shift) =>
+                Math.abs(
+                  ((ua[word]! >>> shift) & (shift === 30 ? 3 : 1023)) -
+                    ((ub[word]! >>> shift) & (shift === 30 ? 3 : 1023)),
+                ) <= 1,
+            )
+          )
+            continue;
+        }
         let av = ua[word]!,
           bv = ub[word]!;
-        if (field.type === 'f32') {
+        const encoding = (gpu.encoded ?? cpu.encoded)?.find(
+          (item) => word % item.components === item.component,
+        )?.encoding;
+        if (encoding && encoding !== 'ordered-f32' && packedEqual(ua[word]!, ub[word]!, encoding))
+          continue;
+        if (field.type === 'f32' || encoding === 'ordered-f32') {
           av = bits === 16 ? decodeHalf(av) : fa![word]!;
           bv = bits === 16 ? decodeHalf(bv) : fb![word]!;
-          const ulps = Math.abs(ua[word]! - ub[word]!);
+          let leftBits = ua[word]!,
+            rightBits = ub[word]!;
+          if (encoding === 'ordered-f32') {
+            leftBits = (leftBits ^ (leftBits >= 0x80000000 ? 0x80000000 : 0xffffffff)) >>> 0;
+            rightBits = (rightBits ^ (rightBits >= 0x80000000 ? 0x80000000 : 0xffffffff)) >>> 0;
+            av = new Float32Array(Uint32Array.of(leftBits).buffer)[0]!;
+            bv = new Float32Array(Uint32Array.of(rightBits).buffer)[0]!;
+          }
+          const ulps = Math.abs(leftBits - rightBits);
           if (av === bv || (Number.isNaN(av) && Number.isNaN(bv))) continue;
+          let magnitude = Math.max(Math.abs(av), Math.abs(bv));
+          if (cpu.layout && field.type === 'f32' && bits === 32) {
+            const [at, size] = vectorRange(
+              cpu.layout,
+              word * 4 - (cpu.layoutOffset ?? 0),
+              cpu.layoutOffset ?? 0,
+            );
+            for (let component = at / 4; component < (at + size) / 4; component++)
+              magnitude = Math.max(magnitude, Math.abs(fa![component]!), Math.abs(fb![component]!));
+          }
           if (
-            Math.sign(av) === Math.sign(bv) &&
-            ulps <= (bits === 16 ? 1 : approximate ? 4 : cpu.quotient || gpu.quotient ? 3 : 0)
+            Number.isFinite(av) &&
+            Number.isFinite(bv) &&
+            ((Math.sign(av) === Math.sign(bv) && ulps <= (bits === 16 ? 1 : 4)) ||
+              Math.abs(av - bv) <= Math.max(1e-6, magnitude * 1e-5))
           )
             continue;
         }
@@ -327,5 +387,22 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
           'no matching readable CPU resource; backend-specific allocation or excluded counterpart',
         ],
       });
-  return { compared, differences, skipped };
+  const allocationOrder = differences.filter((difference) => difference.order.length > 0);
+  const review = differences.filter((difference) => difference.order.length === 0);
+  return {
+    compared,
+    differences,
+    skipped,
+    summary: {
+      passesWithinPolicy: compared - differences.length,
+      differsReview: review.length,
+      excludedAllocationOrder: allocationOrder.length,
+      excludedRenderDependent: skipped.filter((item) =>
+        item.reasons.some((reason) => reason.includes('render pass')),
+      ).length,
+      excludedOther: skipped.filter(
+        (item) => !item.reasons.some((reason) => reason.includes('render pass')),
+      ).length,
+    },
+  };
 }

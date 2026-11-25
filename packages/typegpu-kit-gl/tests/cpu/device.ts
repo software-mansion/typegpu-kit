@@ -47,7 +47,18 @@ export function cpuRoot(
   const original = recording.root.device;
   const sources = new WeakMap<CpuModule, string>();
   const texture = textureDevice(original);
-  const limits = { ...original.limits, maxStorageBuffersPerShaderStage: 16 };
+  const limits = {
+    ...original.limits,
+    maxStorageBuffersPerShaderStage: 16,
+    maxStorageBuffersInVertexStage: 16,
+    maxStorageBuffersInFragmentStage: 16,
+    maxStorageTexturesPerShaderStage: 8,
+    maxStorageTexturesInVertexStage: 0,
+    maxStorageTexturesInFragmentStage: 0,
+    maxImmediateSize: 0,
+    maxSubgroupSize: 0,
+    minSubgroupSize: 0,
+  };
   const queue = new Proxy(original.queue, {
     get(target, key) {
       if (key === 'writeTexture') return texture.writeTexture;
@@ -62,6 +73,7 @@ export function cpuRoot(
   const device = new Proxy(original, {
     get(target, key) {
       if (key === backends.brand) return cpuBackend;
+      if (key === 'features') return new Set(['indirect-first-instance', 'depth32float-stencil8']);
       if (key === 'limits') return limits;
       if (key === 'queue') return queue;
       if (key === 'createTexture')
@@ -231,7 +243,7 @@ export function cpuRoot(
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  return tgpu.initFromDevice({
+  const root = tgpu.initFromDevice({
     device: options.observeDevice?.(device) ?? device,
     unstable_shaderGeneratorClass:
       options.generator ??
@@ -239,4 +251,6 @@ export function cpuRoot(
         Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
       >),
   });
+  Object.defineProperty(root, 'enabledWgslLanguageFeatures', { value: new Set<string>() });
+  return root;
 }

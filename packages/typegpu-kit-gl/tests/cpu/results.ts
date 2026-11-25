@@ -13,3 +13,15 @@ export function recordResults(section: string, value: unknown): void {
     fileURLToPath(file),
   ]);
 }
+
+export function recordExampleResults(section: string, value: { example: string }[]): void {
+  const file = new URL('./results.json', import.meta.url);
+  const previous = existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>)
+    : {};
+  const old = (previous[section] ?? []) as { example: string }[];
+  recordResults(section, [
+    ...old.filter((entry) => !value.some((current) => current.example === entry.example)),
+    ...value,
+  ]);
+}
