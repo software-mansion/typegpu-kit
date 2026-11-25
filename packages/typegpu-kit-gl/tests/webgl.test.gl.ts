@@ -86,3 +86,28 @@ test('reports no WGSL language features, whatever the browser has', async () => 
   expect(gl.enabledWgslLanguageFeatures.size).toBe(0);
   gl.destroy();
 });
+
+test('gives a fallback root its device stats, and a WebGPU root none', async () => {
+  const gl = await webgl.init();
+  const counted = gl.createMutable(d.arrayOf(d.u32, 64));
+  const count = tgpu.computeFn({
+    workgroupSize: [64],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    counted.$[gid.x] = gid.x;
+  });
+  gl.createComputePipeline({ compute: count }).$name('counting').dispatchWorkgroups(1);
+  expect(await counted.read()).toEqual(Array.from({ length: 64 }, (_, i) => i));
+
+  const stats = webgl.statsOf(gl);
+  expect(stats).toBeDefined();
+  expect([...stats!.kernels.keys()].some((label) => label.startsWith('counting'))).toBe(true);
+  stats!.reset();
+  expect(stats!.kernels.size).toBe(0);
+  gl.destroy();
+
+  const gpu = await tgpu.init();
+  expect(webgl.statsOf(gpu)).toBeUndefined();
+  gpu.destroy();
+});

@@ -171,23 +171,16 @@ A CPU kernel rounds `f32` values at each operation and wraps integers at 32 bits
 
 ## Seeing where kernels ran
 
-The fallback's device keeps `stats` on itself. Reach it through `root.device`. The package exports no type for it, so type the fields you read:
+`webgl.statsOf(root)` returns what a fallback root's device recorded, and `undefined` for a WebGPU root:
 
 ```ts twoslash
 import type { TgpuRoot } from 'typegpu';
 declare const root: TgpuRoot;
 // ---cut---
-import { backends } from '@typegpu/kit';
+import { webgl } from '@typegpu/kit-gl';
 
-interface KernelStats {
-  readonly kernels: Map<string, { ms: number; dispatches: number }>;
-  readonly fallbacks: Map<string, string>;
-  readonly placement: Map<string, string>;
-  reset(): void;
-}
-
-if (backends.of(root).kind === 'webgl') {
-  const { stats } = root.device as GPUDevice & { readonly stats: KernelStats };
+const stats = webgl.statsOf(root);
+if (stats) {
   for (const [label, { ms, dispatches }] of stats.kernels) console.log(label, ms / dispatches);
   for (const [label, why] of stats.fallbacks) console.log(label, why);
   for (const [label, where] of stats.placement) console.log(label, where);
@@ -206,7 +199,7 @@ Each map is keyed by the pipeline's label, so name your pipelines with `$name`. 
 
 </Rules>
 
-The device's `stats` also count what CPU kernels read back from the GPU, uploads and draw calls. To compare, create the root with `webgl.init({ canvas, gpuCompute: false })`, which runs every kernel on the CPU, or `placement: false`, which keeps every kernel that can run on the GPU there. `webgl.fallback()` takes both options too.
+The stats also count what CPU kernels read back from the GPU, uploads and draw calls. To compare, create the root with `webgl.init({ canvas, gpuCompute: false })`, which runs every kernel on the CPU, or `placement: false`, which keeps every kernel that can run on the GPU there. `webgl.fallback()` takes both options too.
 
 ## Choosing other kernels
 

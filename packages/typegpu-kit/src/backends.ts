@@ -1,6 +1,7 @@
 /**
  * Reports which graphics API a root runs on. A module reads it to choose another kernel, capacity
- * or technique on the WebGL fallback of `@typegpu/kit-gl`, where compute runs on the CPU.
+ * or technique on the WebGL fallback of `@typegpu/kit-gl`, where kernels that share workgroup
+ * memory run on the CPU.
  *
  * @module
  * @unstable
