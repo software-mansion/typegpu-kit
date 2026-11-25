@@ -77,10 +77,10 @@ let installed: GpuDebug | undefined;
  * frames draw into
  * @returns a profiler you start and stop, and destroy to remove the patches
  */
-export function install({ interfaces }: InstallOptions = {}): GpuDebug {
+export function install(options: InstallOptions = {}): GpuDebug {
   installed?.destroy();
 
-  const instrumentation = instrument(interfaces ? { interfaces } : {});
+  const instrumentation = instrument(options.interfaces ? { interfaces: options.interfaces } : {});
   let unmount: (() => void) | undefined;
   let recorder: Recorder | undefined;
 
@@ -113,7 +113,7 @@ export function install({ interfaces }: InstallOptions = {}): GpuDebug {
 
       recorder = createRecorder();
       instrumentation.start(recorder);
-      unmount = mountPanel(recorder, (options) => debug.measure(options));
+      unmount = mountPanel(recorder, (given) => debug.measure(given));
     },
     stop,
     get running() {
@@ -122,13 +122,13 @@ export function install({ interfaces }: InstallOptions = {}): GpuDebug {
     capture: () => started().capture(),
     trace: () => started().trace(),
     summary: () => started().summary(),
-    measure(options = {}) {
+    measure(given = {}) {
       const current = started();
       const fps = Math.round(current.fps());
       return measure(instrumentation, {
-        seconds: options.seconds ?? 1,
-        dt: options.dt ?? 1 / (fps > 0 ? fps : 60),
-        detail: options.detail ?? current.detail(),
+        seconds: given.seconds ?? 1,
+        dt: given.dt ?? 1 / (fps > 0 ? fps : 60),
+        detail: given.detail ?? current.detail(),
       });
     },
     get detail() {
