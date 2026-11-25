@@ -147,6 +147,7 @@ export function compile(code: string): CpuModule {
     kind: 'compute',
     workgroupSize: entry.size,
     bindings,
+    entry: entry.name,
     dispatch(x: number, y: number, z: number, resources: CpuResources): void {
       for (const count of [x, y, z])
         if (!Number.isInteger(count) || count < 0)

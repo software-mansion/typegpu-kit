@@ -26,6 +26,8 @@ export interface Stages {
   readonly blocks: readonly BlockBinding[];
   readonly textures: readonly TextureBinding[];
   readonly levels: readonly LevelCountBinding[];
+  /** The entry function of each stage, where the module says. */
+  readonly entries?: { readonly vertex: string | undefined; readonly fragment: string | undefined };
 }
 
 export type ModuleImpl =
@@ -161,6 +163,7 @@ function stagesOf(module: RenderModule): Stages {
     blocks: module.blocks ?? [],
     textures: module.textures,
     levels: module.levels ?? [],
+    ...(module.entries && { entries: module.entries }),
   };
 }
 

@@ -97,7 +97,9 @@ it("steps falling-sand's own kernels on the GPU as WebGPU does, cell for cell", 
   expect(Object.fromEntries(stats.fallbacks)).toEqual({});
   const ran = [...stats.kernels.keys()];
   for (const label of ['stepping', 'ticking', 'kindling']) expect(ran).toContain(`${label} (gpu)`);
-  expect(ran.filter((label) => label.startsWith('<unnamed> (gpu)')).length).toBe(1);
+  // Unlabelled pipelines take their entry functions' names, numbered past the first
+  for (const label of ['flow', 'flow 2', 'copy']) expect(ran).toContain(`${label} (gpu)`);
+  expect(ran.some((label) => label.startsWith('<unnamed>'))).toBe(false);
   const expected = await stepped(gpu);
   for (const [k, grid] of expected.grids.entries()) {
     const other = actual.grids[k] as number[];

@@ -326,6 +326,38 @@ function slotsOf(
   return slots;
 }
 
+/** Per device, the names entry functions gave, by module, and how many modules took each. */
+const entryNames = new WeakMap<
+  Ctx,
+  { byModule: WeakMap<object, string>; taken: Map<string, number> }
+>();
+
+/**
+ * A pipeline's label: the one it was given, or, without one or with TypeGPU's `<unnamed>`, its
+ * entry function's name, so stats and profilers tell unnamed pipelines apart. The fragment entry
+ * names a render pipeline, as it does in WGSL tools, and the vertex entry one without it. TypeGPU
+ * names an entry function no variable holds after its stage, so a name another module took
+ * already gets a number: `compute`, `compute 2`.
+ */
+function labelOf(
+  ctx: Ctx,
+  given: string | undefined,
+  entry: string | undefined,
+  module: object,
+): string {
+  if (given && given !== '<unnamed>') return given;
+  if (entry === undefined) return given ?? '';
+  let names = entryNames.get(ctx);
+  if (!names) entryNames.set(ctx, (names = { byModule: new WeakMap(), taken: new Map() }));
+  const known = names.byModule.get(module);
+  if (known !== undefined) return known;
+  const count = (names.taken.get(entry) ?? 0) + 1;
+  names.taken.set(entry, count);
+  const name = count === 1 ? entry : `${entry} ${count}`;
+  names.byModule.set(module, name);
+  return name;
+}
+
 /** Combines the stages of the vertex and fragment modules, which may be one module or two. */
 function stagesOf(descriptor: GPURenderPipelineDescriptor): Stages | string {
   const vertex = moduleImpl(descriptor.vertex.module);
@@ -354,6 +386,10 @@ function stagesOf(descriptor: GPURenderPipelineDescriptor): Stages | string {
       same || !fragment ? vertex.stages.levels : [...vertex.stages.levels, ...fragment.levels],
     blocks:
       same || !fragment ? vertex.stages.blocks : [...vertex.stages.blocks, ...fragment.blocks],
+    entries: {
+      vertex: vertex.stages.entries?.vertex,
+      fragment: descriptor.fragment ? fragment?.entries?.fragment : undefined,
+    },
   };
 }
 
@@ -426,7 +462,6 @@ function makeRenderPipeline(
   linking: (stages: Stages, label: string) => Linked | Promise<Linked>,
 ): { pipeline: GPURenderPipeline; ready: Promise<void> } {
   const { gl, state } = ctx;
-  const label = descriptor.label ?? '';
   const vao = gl.createVertexArray()!;
   let stages: Stages | string;
   let renderStateValue: RenderState;
@@ -439,6 +474,13 @@ function makeRenderPipeline(
     stages = (error as Error).message;
     renderStateValue = renderState(ctx, { layout: descriptor.layout, vertex: descriptor.vertex });
   }
+  const entries = typeof stages === 'string' ? undefined : stages.entries;
+  const label = labelOf(
+    ctx,
+    descriptor.label,
+    entries?.fragment ?? entries?.vertex,
+    descriptor.fragment?.module ?? descriptor.vertex.module,
+  );
   const impl: RenderPipelineImpl = {
     label,
     program: undefined,
@@ -561,8 +603,13 @@ export function createComputePipeline(
   descriptor: GPUComputePipelineDescriptor,
   eager = false,
 ): GPUComputePipeline {
-  const label = descriptor.label ?? '';
   const module = moduleImpl(descriptor.compute.module);
+  const label = labelOf(
+    ctx,
+    descriptor.label,
+    module.kind === 'compute' ? module.module.entry : undefined,
+    descriptor.compute.module,
+  );
   let error: string | undefined;
   let cpu: CpuModule | undefined;
   if (module.kind === 'compute') cpu = module.module;
