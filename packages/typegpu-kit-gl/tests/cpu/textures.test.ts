@@ -10,6 +10,15 @@ it('round-trips every finite half-float bit pattern', () => {
     if ((bits & 0x7c00) !== 0x7c00) expect(encodeHalf(decodeHalf(bits)), `half ${bits}`).toBe(bits);
 });
 
+it('rounds every finite half-float midpoint to even for both signs', () => {
+  for (let bits = 0; bits < 0x7bff; bits++) {
+    const midpoint = (decodeHalf(bits) + decodeHalf(bits + 1)) / 2;
+    const rounded = bits + (bits & 1);
+    expect(encodeHalf(midpoint), `positive midpoint ${bits}`).toBe(rounded);
+    expect(encodeHalf(-midpoint), `negative midpoint ${bits}`).toBe(rounded | 0x8000);
+  }
+});
+
 it('runs texture sampling and storage from a resolved TypeGPU kernel', () => {
   const { root } = recordingRoot();
   const layout = tgpu.bindGroupLayout({

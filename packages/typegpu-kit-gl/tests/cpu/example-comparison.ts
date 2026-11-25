@@ -154,6 +154,10 @@ export async function captureScene(
       skipped: SceneCapture['skipped'] = [];
     for (const resource of observer.resources.slice()) {
       const reasons = [...resource.reasons];
+      if (key === 'ocean' && resource.kind === 'buffer' && resource.label === 'lattice')
+        reasons.push(
+          'backend-specific FFT scratch: WebGPU retains row transforms, fallback retains column transforms; final wave maps are compared',
+        );
       if (!resource.written)
         reasons.push('no compute writes in these two frames or initialization');
       if (resource.destroyed) reasons.push('destroyed before capture');
@@ -268,6 +272,7 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
     matched.add(cpu.key);
     const first: string[] = [];
     let words = 0;
+    let readLevel = false;
     const order = [...new Set([...cpu.order, ...gpu.order])];
     if (cpu.levels.length !== gpu.levels.length) {
       words++;
@@ -309,7 +314,7 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
             : new Uint32Array(b.bytes);
       const fa = bits === 32 ? new Float32Array(a.bytes) : undefined,
         fb = bits === 32 ? new Float32Array(b.bytes) : undefined;
-      compared++;
+      readLevel = true;
       for (let word = 0; word < ua.length; word++) {
         const field =
           cpu.kind === 'buffer'
@@ -378,6 +383,7 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
           );
       }
     }
+    if (readLevel || words) compared++;
     if (words) differences.push({ key: cpu.key, words, first, order });
   }
   for (const gpu of expected.resources)

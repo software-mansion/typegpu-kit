@@ -131,6 +131,7 @@ it.runIf(process.env.CPU_SWEEP === '1')(
         scene = await begin(
           await createScene(root, surface, {
             ...(await filesOf(example.key, fromDisk)),
+            ...example.fallback,
             ...(process.env.CPU_EXECUTE === '1' && process.env.CPU_DEFAULTS !== '1'
               ? reduced[example.key]
               : {}),

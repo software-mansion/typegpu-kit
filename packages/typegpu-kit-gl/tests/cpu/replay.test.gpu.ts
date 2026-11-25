@@ -17,7 +17,6 @@ it.runIf(process.env.CPU_REPLAY === '1')(
     const resource = new RegExp(process.env.CPU_REPLAY_RESOURCE ?? '.*');
     const skip = Number(process.env.CPU_REPLAY_SKIP ?? 0);
     const dawn = await gpuRoot({
-      limits: { maxStorageBuffersPerShaderStage: 16 },
       optionalFeatures: ['indirect-first-instance', 'depth32float-stencil8'],
     });
     Object.defineProperty(dawn.device, backends.brand, { value: cpuBackend });
