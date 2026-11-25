@@ -9,7 +9,7 @@ import {
   picker,
 } from '@typegpu/kit';
 import { meshes } from '@typegpu/kit/geometry';
-import { d, std, tgpu, type TgpuRoot } from 'typegpu';
+import { d, std, tgpu, type TgpuBuffer, type TgpuRoot } from 'typegpu';
 import { createCulling } from '../../../typegpu-kit/src/render/culling.ts';
 
 export async function cullingValues(root: TgpuRoot): Promise<number[]> {
@@ -185,12 +185,24 @@ export async function focusValues(root: TgpuRoot): Promise<number[]> {
   const depth = root
     .createTexture({ size: [16, 16], format: 'depth32float' })
     .$usage('sampled', 'render');
+  // The moved focus is in the settings only where `dof` copies it there, so read its own buffer
+  const created: TgpuBuffer<d.BaseData>[] = [];
+  const createBuffer = root.createBuffer;
+  root.createBuffer = ((...args: Parameters<typeof createBuffer>) => {
+    const buffer = createBuffer.apply(root, args);
+    created.push(buffer as TgpuBuffer<d.BaseData>);
+    return buffer;
+  }) as typeof createBuffer;
   const blur = dof.create(root, view, {
     source: () => image,
     depth: () => depth,
     pull: 1,
     settings: { focus: 10 },
   });
+  root.createBuffer = createBuffer;
+  const state = created.find(
+    ({ dataType }) => 'propTypes' in dataType && 'goal' in (dataType.propTypes as object),
+  ) as TgpuBuffer<d.WgslStruct<{ focus: d.F32 }>>;
   const results: number[] = [];
   for (const dt of [0.5, 0.5]) {
     const encoder = root.createCommandEncoder();
@@ -208,7 +220,7 @@ export async function focusValues(root: TgpuRoot): Promise<number[]> {
     blur.aim(0.5, 0.5);
     blur.record(encoder, { dt });
     encoder.submit();
-    results.push((await blur.settings.buffer.read()).focus);
+    results.push((await state.read()).focus);
   }
   blur.destroy();
   image.destroy();
