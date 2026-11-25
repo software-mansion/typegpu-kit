@@ -224,3 +224,58 @@ test('a form back from the CPU warms up for four dispatches before it samples ag
   expect(run(SAMPLED)).toBe('gpu');
   expect(made.queries).toHaveLength(sampled + 1);
 });
+
+/**
+ * Wraps `setTimeout` and `clearTimeout` to count the timers placement leaves pending and those
+ * that fired; `pass` lets a task go by through the timer the wrapper does not count.
+ */
+function watchTimers() {
+  const realSet = globalThis.setTimeout;
+  const pending = new Set<unknown>();
+  let fired = 0;
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, ms?: number) => {
+    const handle: unknown = realSet(() => {
+      pending.delete(handle);
+      fired++;
+      callback();
+    }, ms);
+    pending.add(handle);
+    return handle;
+  }) as typeof setTimeout);
+  const realClear = globalThis.clearTimeout;
+  vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((handle: unknown) => {
+    pending.delete(handle);
+    realClear(handle as number);
+  }) as typeof clearTimeout);
+  const pass = () => new Promise((resolve) => realSet(resolve, 0));
+  return { pending, fired: () => fired, pass };
+}
+
+test.each([
+  ['timer queries', true],
+  ['fences', false],
+] as const)('no timer is pending once no sample is in flight, with %s', async (_, timer) => {
+  const { pending, fired, pass } = watchTimers();
+  const { made, deleted, run } = (() => {
+    const fake = fakeCtx({ timer, gpuMs: 1 });
+    return { ...fake, run: kernel(fake.ctx).run };
+  })();
+  // The fifth and sixth dispatches sample; the seventh and eighth poll what is left
+  for (let i = 0; i < 8; i++) {
+    run(SAMPLED);
+    await pass();
+  }
+  for (let i = 0; i < 3; i++) await pass();
+  expect(made.queries.length + made.fences.length).toBeGreaterThan(0);
+  expect(deleted.queries.length + deleted.fences.length).toBe(
+    made.queries.length + made.fences.length,
+  );
+  expect(pending.size).toBe(0);
+  // Dispatches poll timer queries themselves: no timer wakes a page that keeps dispatching
+  if (timer) expect(fired()).toBe(0);
+  // Nothing wakes a page once its samples are read
+  const woken = fired();
+  for (let i = 0; i < 5; i++) await pass();
+  expect(fired()).toBe(woken);
+  expect(pending.size).toBe(0);
+});

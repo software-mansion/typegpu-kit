@@ -68,6 +68,13 @@ const KEEP_SHARE = 0.75;
  * signals, or a query result a context never makes available, would otherwise be polled forever.
  */
 const PROBE_MS = 2000;
+/**
+ * Milliseconds from a sample's start to the first poll of samples in flight that does not wait
+ * for a dispatch, which dispatches every frame make first; each such poll doubles the wait, to
+ * `IDLE_MS` at most, until no sample is in flight.
+ */
+const FIRST_IDLE_MS = 50;
+const IDLE_MS = 400;
 
 interface Record {
   readonly label: string;
@@ -134,32 +141,65 @@ interface Probe {
   ended: number;
 }
 
-/** Each device's records with a probe in flight, and whether a poll is due or done this task. */
-const polls = new WeakMap<Ctx, { probing: Set<Record>; ticking: boolean; polled: boolean }>();
+interface Polls {
+  readonly probing: Set<Record>;
+  /** Whether this task polled, as results change only between tasks. */
+  polled: boolean;
+  /** The timeout that polls fences in flight at the next task, if one is set. */
+  tick: ReturnType<typeof setTimeout> | undefined;
+  /** The timeout that polls samples in flight once dispatches stop, if one is set. */
+  idle: ReturnType<typeof setTimeout> | undefined;
+  /** Milliseconds until that timeout, which doubles at each poll it makes. */
+  wait: number;
+}
 
-function pollsOf(ctx: Ctx) {
+/** Each device's records with a probe in flight, and the timeouts that poll them. */
+const polls = new WeakMap<Ctx, Polls>();
+
+function pollsOf(ctx: Ctx): Polls {
   let state = polls.get(ctx);
   if (!state) {
-    state = { probing: new Set(), ticking: false, polled: false };
+    state = { probing: new Set(), polled: false, tick: undefined, idle: undefined, wait: 0 };
     polls.set(ctx, state);
   }
   return state;
 }
 
 /**
- * Polls samples between tasks while any is in flight, as WebGL updates their status only then:
- * the time fences give is no finer than the time between polls, which dispatches alone space a
- * frame apart. It stops when no sample is left, so a device that stops dispatching keeps none.
+ * Sets the timeouts that poll samples in flight, and clears them when none is. Fences are polled
+ * at every task while one is in flight, as WebGL updates their status only between tasks and the
+ * time they give is no finer than the time between polls. Timer queries give their own time, so
+ * dispatches poll them, and one timeout reads what is left when dispatches stop, sooner first and
+ * then backing off to `IDLE_MS`, until `PROBE_MS` drops it. No timeout is pending while no sample
+ * is in flight, so a page that stops dispatching is left alone.
  */
-function tick(ctx: Ctx): void {
+function schedule(ctx: Ctx, idle = false): void {
   const state = pollsOf(ctx);
-  if (state.ticking || ctx.lost) return;
-  state.ticking = true;
-  setTimeout(() => {
-    state.ticking = false;
-    pollProbes(ctx);
-    if (state.probing.size > 0) tick(ctx);
-  }, 0);
+  if (state.probing.size === 0 || ctx.lost) {
+    if (state.idle !== undefined) clearTimeout(state.idle);
+    if (state.tick !== undefined) clearTimeout(state.tick);
+    state.idle = state.tick = undefined;
+    return;
+  }
+  // A dispatch's poll leaves the timeout as it is: only a page that stops dispatching meets it
+  if (state.idle !== undefined) return pollFences(ctx, state);
+  state.wait = idle ? Math.min(IDLE_MS, state.wait * 2) : FIRST_IDLE_MS;
+  state.idle = setTimeout(() => {
+    state.idle = undefined;
+    pollProbes(ctx, true);
+  }, state.wait);
+  pollFences(ctx, state);
+}
+
+/** Sets the timeout that polls fences in flight at the next task, if any is in flight. */
+function pollFences(ctx: Ctx, state: Polls): void {
+  const fences = [...state.probing].some((record) => record.probe?.after);
+  if (fences && state.tick === undefined) {
+    state.tick = setTimeout(() => {
+      state.tick = undefined;
+      pollProbes(ctx);
+    }, 0);
+  }
 }
 
 /** Deletes every sample in flight on the device, as it is destroyed. */
@@ -170,6 +210,7 @@ export function discardProbes(ctx: Ctx): void {
     record.probe = undefined;
   }
   state.probing.clear();
+  schedule(ctx);
 }
 
 const records = new WeakMap<object, Record>();
@@ -474,11 +515,12 @@ export function endProbe(ctx: Ctx, pipeline: object, probe: Probe | undefined, r
   const after = probe.query
     ? undefined
     : (gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined);
-  // A fence signals only once the commands before it reach the GPU
-  if (after) gl.flush();
+  // A fence signals, and a query's result arrives, only once the commands before it reach the GPU:
+  // a device that idles after this dispatch would otherwise leave the sample in flight
+  gl.flush();
   record.probe = { ...probe, after, ended: performance.now() };
   pollsOf(ctx).probing.add(record);
-  tick(ctx);
+  schedule(ctx);
 }
 
 function discardProbe(ctx: Ctx, probe: Probe): void {
@@ -493,7 +535,7 @@ function discardProbe(ctx: Ctx, probe: Probe): void {
  * between the polls that first saw each signalled, which errs by up to the time between polls,
  * as much either way, since each fence signals at some time before the poll that sees it.
  */
-function pollProbes(ctx: Ctx): void {
+function pollProbes(ctx: Ctx, idle = false): void {
   const state = pollsOf(ctx);
   // Results change only between tasks, and the disjoint flag may cost a round trip to read: a
   // task polls once, however many dispatches it makes
@@ -503,7 +545,7 @@ function pollProbes(ctx: Ctx): void {
     state.polled = false;
   });
   const now = performance.now();
-  if (state.probing.size === 0) return;
+  if (state.probing.size === 0) return schedule(ctx, idle);
   const { gl } = ctx;
   const timer = ctx.ext.timerQuery;
   const disjoint = timer ? disjointFor(ctx, state) : false;
@@ -533,6 +575,7 @@ function pollProbes(ctx: Ctx): void {
     state.probing.delete(record);
     if (ms !== undefined) sampled(ctx, record, ms);
   }
+  schedule(ctx, idle);
 }
 
 /** Takes a GPU time sample, and tries the CPU module once two samples running pass `COSTLY_MS`. */
