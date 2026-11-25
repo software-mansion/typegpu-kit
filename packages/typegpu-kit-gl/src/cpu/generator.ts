@@ -32,6 +32,14 @@ function scalar(schema: d.BaseData | symbol): string {
   return schema.type;
 }
 
+function integerCast(value: string, source: string, unsigned: boolean): string {
+  const floating = /^(f32|f16|abstractFloat|vec[234][fh])$/.test(source);
+  const converted = floating
+    ? `Math.min(Math.max(${value},${unsigned ? 0 : -2147483648}),${unsigned ? 4294967040 : 2147483520})`
+    : value;
+  return `((${converted})${unsigned ? '>>>0' : '|0'})`;
+}
+
 const EXACT_FLOAT_BUILTINS = new Set([
   'abs',
   'ceil',
@@ -903,9 +911,9 @@ export class CpuGenerator extends WgslGenerator {
       const components = Array.from({ length: count }, (_, i) => {
         const value = parts.length === 1 ? parts[0]! : (parts[i] ?? '0');
         return schema.type.endsWith('u')
-          ? `((${value})>>>0)`
+          ? integerCast(value, types[parts.length === 1 ? 0 : i] ?? '', true)
           : schema.type.endsWith('i')
-            ? `((${value})|0)`
+            ? integerCast(value, types[parts.length === 1 ? 0 : i] ?? '', false)
             : /^(f32|vec[234]f)$/.test(types[parts.length === 1 ? 0 : i] ?? '')
               ? value
               : f32(value);
@@ -919,6 +927,11 @@ export class CpuGenerator extends WgslGenerator {
     if (vectorType) {
       const count = Number(vectorType[1]);
       const components: string[] = [];
+      const componentTypes = args.flatMap((arg) =>
+        Array.from({ length: Number(/^vec([234])/.exec(scalar(arg.dataType))?.[1] ?? 1) }, () =>
+          scalar(arg.dataType),
+        ),
+      );
       args.forEach((arg, index) => {
         const width = /^vec([234])/.exec(scalar(arg.dataType));
         if (width) for (let i = 0; i < Number(width[1]); i++) components.push(`a${index}[${i}]`);
@@ -927,9 +940,9 @@ export class CpuGenerator extends WgslGenerator {
       const values = Array.from({ length: count }, (_, i) => {
         const value = components.length === 1 ? components[0]! : (components[i] ?? '0');
         return vectorType[2] === 'u'
-          ? `((${value})>>>0)`
+          ? integerCast(value, componentTypes[components.length === 1 ? 0 : i] ?? '', true)
           : vectorType[2] === 'i'
-            ? `((${value})|0)`
+            ? integerCast(value, componentTypes[components.length === 1 ? 0 : i] ?? '', false)
             : f32(value);
       });
       return snip(
@@ -969,9 +982,9 @@ export class CpuGenerator extends WgslGenerator {
     if (args.length > 1) unsupported(`constructor ${type}`);
     const code =
       type === 'u32'
-        ? `((${value}) >>> 0)`
+        ? integerCast(value, args.length ? scalar(args[0]!.dataType) : '', true)
         : type === 'i32'
-          ? `((${value}) | 0)`
+          ? integerCast(value, args.length ? scalar(args[0]!.dataType) : '', false)
           : type === 'bool'
             ? `Boolean(${value})`
             : args.length && scalar(args[0]!.dataType) === 'f32'
