@@ -317,12 +317,14 @@ function slotsOf(
   for (const layout of buffers) {
     const slot = index++;
     if (!layout) continue;
-    if (layout.arrayStride > MAX_STRIDE && layout.attributes.length > 0) {
+    // Attributes may be any iterable, read once
+    const listed = Array.from(layout.attributes);
+    if (layout.arrayStride > MAX_STRIDE && listed.length > 0) {
       throw new Error(
         `The pipeline '${label}' reads vertex buffer ${slot} with an arrayStride of ${layout.arrayStride} bytes; WebGL 2 reads attributes at strides of at most ${MAX_STRIDE}.`,
       );
     }
-    const attributes = Array.from(layout.attributes).map((attribute) => {
+    const attributes = listed.map((attribute) => {
       const info = vertexFormatInfo(ctx.gl, attribute.format);
       return {
         location: attribute.shaderLocation,
