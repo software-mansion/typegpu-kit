@@ -48,7 +48,7 @@ export async function recordFields(root: TgpuRoot): Promise<number[]> {
     'use gpu';
     return d.vec4f(row.position.x, d.f32(row.member), row.position.yz);
   });
-  const output = root.createMutable(d.arrayOf(d.vec4f, 4));
+  const output = root.createMutable(d.arrayOf(d.vec4f, 5));
   const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
     'use gpu';
     const before = make(next());
@@ -59,6 +59,9 @@ export async function recordFields(root: TgpuRoot): Promise<number[]> {
     const affected = effectful(2).position;
     output.$[2] = d.vec4f(affected, d.f32(count.$));
     output.$[3] = consume(make(0));
+    const local = make(0);
+    source.$[0].position.y = 95;
+    output.$[4] = d.vec4f(local.position, d.f32(local.member));
   });
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return (await output.read()).flatMap((value) => [value.x, value.y, value.z, value.w]);

@@ -52,6 +52,15 @@ export class CpuGenerator extends WgslGenerator {
       return wanted?.length ? (this.#projectRecord(value, wanted, false) ?? value) : value;
     });
   }
+  #projectLocalRecords(body: string): string {
+    for (const local of body.matchAll(/^(let|const) ([A-Za-z_$][\w$]*) = ([^\n]*);$/gm)) {
+      const fields = usedRecordFields(body.replace(local[0], ''), local[2]!);
+      if (!fields?.length) continue;
+      const projected = this.#projectRecord(local[3]!, fields, false);
+      if (projected) body = body.replace(local[0], `${local[1]} ${local[2]} = ${projected};`);
+    }
+    return body;
+  }
   #projectRecord(value: string, fields: readonly string[], unwrap: boolean): string | undefined {
     const call = completeCall(value);
     const definition = call && this.#recordFunctions.get(call.name);
@@ -1083,7 +1092,7 @@ export class CpuGenerator extends WgslGenerator {
         const address = this.#addresses.get(name);
         return address ? readAddress(address) : name;
       });
-      body = prunePureLocals(body, this.#functionEffects);
+      body = prunePureLocals(this.#projectLocalRecords(body), this.#functionEffects);
       this.#functionEffects.set(options.name, this.#effects);
       this.#functionBodies.set(options.name, body);
       this.#functionUsed.set(
