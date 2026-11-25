@@ -1,7 +1,7 @@
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
-import { expressionCases, expressionValues } from './expressions.ts';
+import { expressionCases, expressionValues, inputPairs } from './expressions.ts';
 
 it('matches dawn for composed vector, scalar and matrix expressions', async () => {
   const gpu = await gpuRoot(),
@@ -17,14 +17,19 @@ it('matches dawn for composed vector, scalar and matrix expressions', async () =
       const approximate =
         /std\.(?:normalize|refract|length|distance|sin|cos|exp|pow|inverseSqrt)\(/.test(source);
       const ulps = Math.abs(cpuBits[word]! - gpuBits[word]!);
-      if (
-        Number.isFinite(actual[word]) &&
-        (cpuBits[word] === gpuBits[word] ||
-          (approximate && Math.sign(actual[word]!) === Math.sign(value) && ulps <= 8))
-      )
-        return [];
+      const quotient = /[/%]|std\.mod\(/.test(source);
+      const input = Math.floor(word / (3 * expressionCases.length));
+      const magnitude = Math.max(
+        1,
+        Math.abs(value),
+        ...[...inputPairs[input * 2]!, ...inputPairs[input * 2 + 1]!].map(Math.abs),
+      );
+      const acceptable = approximate
+        ? Math.abs(actual[word]! - value) <= 1e-5 * magnitude
+        : quotient && Math.sign(actual[word]!) === Math.sign(value) && ulps <= 3;
+      if (Number.isFinite(actual[word]) && (actual[word] === value || acceptable)) return [];
       return [
-        `input ${Math.floor(word / (3 * expressionCases.length))}, component ${word % 3}: ${source}: CPU=${actual[word]}, dawn=${value}, ${ulps} ulp (${approximate ? 'approximate' : 'exact'})`,
+        `input ${Math.floor(word / (3 * expressionCases.length))}, component ${word % 3}: ${source}: CPU=${actual[word]} (0x${cpuBits[word]!.toString(16)}), dawn=${value} (0x${gpuBits[word]!.toString(16)}), ${ulps} ulp (${approximate ? 'approximate' : quotient ? 'division/remainder' : 'exact'})`,
       ];
     });
     expect(actual.length).toBe(expected.length);

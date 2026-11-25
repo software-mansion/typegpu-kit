@@ -1479,7 +1479,11 @@ export class CpuGenerator extends WgslGenerator {
       return `$bits.${source}_${target}(${this.#value(args[0]!)})`;
     }
     if (templates.length) unsupported(`template call ${name}`);
-    const values = args.map((arg) => this.#value(arg));
+    const floatArguments = args.some((arg) => /^(f32|vec[234]f)$/.test(scalar(arg.dataType)));
+    const values = args.map((arg) => {
+      const value = this.#value(arg);
+      return floatArguments && /^abstract/.test(scalar(arg.dataType)) ? f32(value) : value;
+    });
     if (this.#functions.has(name)) {
       if (this.#functionEffects.get(name) ?? true) this.#effects = true;
       const used = this.#functionUsed.get(name);

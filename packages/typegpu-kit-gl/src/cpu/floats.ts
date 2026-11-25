@@ -1,16 +1,32 @@
+import { completeCall } from './record-fields.ts';
+
+function unparenthesized(value: string): string {
+  let result = value.trim();
+  while (result.startsWith('(') && completeCall(`value${result}`)?.arguments.length === 1)
+    result = result.slice(1, -1).trim();
+  return result;
+}
+
+export function f32Literal(value: string): string {
+  const literal = unparenthesized(value);
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(literal)) return value;
+  const rounded = Math.fround(Number(literal));
+  return Object.is(rounded, -0) ? '-0' : String(rounded);
+}
+
 /** Round constants while generating code and runtime results at each f32 operation. */
 export function f32(value: string): string {
-  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())) {
-    const rounded = Math.fround(Number(value));
-    return Object.is(rounded, -0) ? '-0' : String(rounded);
-  }
+  value = unparenthesized(value);
+  const literal = f32Literal(value);
+  if (literal !== value || /^[-+\d.e]+$/i.test(value)) return literal;
   if (value.startsWith('Math.fround(') && completeCall(value.replace('Math.fround', 'fround')))
     return value;
   return `Math.fround(${value})`;
 }
 
 export function f32op(left: string, op: string, right: string): string {
-  return f32(`(${f32(left)})${op}(${f32(right)})`);
+  // Non-literal operands are already typed f32 values; only abstract literals need conversion.
+  return f32(`(${f32Literal(left)})${op}(${f32Literal(right)})`);
 }
 
 export function f32sum(values: string[]): string {
@@ -20,4 +36,3 @@ export function f32sum(values: string[]): string {
 export function f32dot(left: string[], right: string[]): string {
   return f32sum(left.map((value, i) => f32op(value, '*', right[i]!)));
 }
-import { completeCall } from './record-fields.ts';
