@@ -7,7 +7,10 @@ import type { GLState } from './state.ts';
 
 /** Where the device spent its time since the last `reset`, for finding slow frames. */
 export interface DeviceStats {
-  /** Milliseconds and dispatches per compute pipeline, by label. */
+  /**
+   * Milliseconds the CPU spent on each compute pipeline's dispatches and their count, by label. A
+   * label that ends in ` (gpu)` ran as a GPU form, a bare label on the CPU.
+   */
   readonly kernels: Map<string, { ms: number; dispatches: number }>;
   /** Texture reads from GL into CPU copies for kernels. */
   readonly readback: { ms: number; textures: number };

@@ -72,7 +72,10 @@ export interface BackendInfo {
 
 export interface GLDevice extends GPUDevice {
   readonly gl: WebGL2RenderingContext;
-  /** Time spent in CPU kernels, readback and uploads since `stats.reset()`. */
+  /**
+   * Time spent per kernel, on the GPU and on the CPU, with readback and uploads, since
+   * `stats.reset()`, and where each pipeline runs and why.
+   */
   readonly stats: DeviceStats;
   readonly [BACKEND]: BackendInfo;
 }

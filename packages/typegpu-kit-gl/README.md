@@ -34,7 +34,7 @@ A root's `destroy` also frees the WebGL device.
 - `webgl.fallback({ force: true })` hosts on WebGL 2 in a browser that has WebGPU too. The docs' example pages do the same with `?backend=webgl`.
 - `webgl.init({ gpuCompute: false })` runs every kernel on the CPU, to compare a GPU form with the CPU module.
 - `webgl.init({ placement: false })` keeps every GPU form on the GPU, where placement would move one whose outputs the CPU reads back or one that costs more there than on the CPU, to test the forms themselves.
-- The device's `stats` report the time spent per kernel, readback and uploads, why each pipeline ran on the CPU, and in `placement` why a pipeline with a GPU form moved to the CPU. `stats.reset()` starts over.
+- `webgl.statsOf(root)` returns the device's `stats`, which report the time spent per kernel, readback and uploads, why each pipeline ran on the CPU, and in `placement` why a pipeline with a GPU form moved to the CPU. `stats.reset()` starts over.
 - `pnpm test:gl` runs `*.test.gl.ts` in headless Chromium, on WebGL 2 beside WebGPU; install that Chromium once with `npx playwright install chromium`. `tests/device/diff.ts` runs a scene on both and compares every texture and buffer.
 - `node packages/typegpu-kit-gl/scripts/examples.ts --base <docs server> --backend both --reference <dir>` opens every example page on both backends, reports which ones draw and their frame rates, and scores screenshots against references.
 
