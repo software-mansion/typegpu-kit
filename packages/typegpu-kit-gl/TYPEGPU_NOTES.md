@@ -613,3 +613,25 @@ CPU_SOURCE_BENCHMARK=1 npx vitest run --project 'typegpu-kit-gl (unit)' tests/cp
 **Upstream.** Add a compiled CPU executor behind `core/simulate/tgpuSimulate.ts`, accepting an entry, bound resources and dispatch dimensions, and cache compiled kernels across dispatches. Reuse normal typed resolution and the existing `ShaderGenerator` hooks for function definitions, resource declarations, calls, binary operations, constructors and literals. Scalarize vector/matrix temporaries and address buffers through typed-array views. To avoid the fallback's text parsing, extend `tgsl/shaderGenerator.ts`, `tgsl/wgslGenerator.ts` and `resolutionCtx.ts` with structured lvalues and user-function calls, stable variable identities, and barrier/callee effects (entries 7–11, 13 and 22); pass binding and workgroup metadata beside code (entry 4). Dispatch execution also needs workgroup state, barrier scheduling and CPU resource/builtin implementations, rather than repeated calls to the present single-thread simulator. An explicitly selected relaxed JS-number mode could accompany an f32-rounded mode: intermediate f32 rounding costs 29–52% execution time in these two vector fixtures, but preserves rounding-sensitive seeds and threshold decisions. The fallback keeps f32 rounding enabled.
 
 **Workaround.** `src/cpu/generator.ts` and the runtime in `src/cpu/index.ts`; `tests/cpu/source-performance.ts` measures generated, direct-source, `tgpu.fn` and simulation paths in one native Node process. `tests/cpu/NOTES.md` records representation differences and the discarded Vitest-loader artifact; `tests/cpu/results.json` holds every final sample. This can become one shared upstream executor instead of a fallback-specific implementation.
+
+## Loops
+
+### 37. Nothing tells a generator which `for…of` loops TypeGPU unrolled
+
+TypeGPU expands a `for…of` whose iterable resolves to an `UnrollableIterable`, the value `tgpu.unroll` gives a shader, and generates the body once per element; any other `for…of` stays a runtime loop. The decision is made inside the generator's own `forOf` handling, from the resolved value, and nothing exported tells an overriding generator which way it went. A generator that bounds what a kernel does per invocation, as the GPU compute forms do for additions and writes, must treat a runtime loop as unbounded and an unrolled one as straight-line code. The call's spelling is no evidence: a module may bind `tgpu` to something else, and the real function may be reached through an alias or a member.
+
+```ts
+import { d, std, tgpu as real } from 'typegpu';
+const tgpu = { unroll: std.range }; // spelled `tgpu.unroll`, but a runtime range
+const unroll = real.unroll; // the real one under another name
+const kernel = real.computeFn({ workgroupSize: [4] })(() => {
+  'use gpu';
+  for (const v of tgpu.unroll(4)) std.atomicOr(cells.$[v], 1); // four iterations at run time
+  for (const v of unroll([0, 1, 2, 3])) std.atomicOr(cells.$[v], 1); // expanded four times
+});
+// A generator sees `forOf` for both and has to tell them apart by the iterable's resolved value
+```
+
+**Upstream.** Export `UnrollableIterable`, or a predicate such as `isUnrollable(value)`, from `typegpu/~internal`; or pass the decision to generators, for instance as an `unrolled` flag to a hook around a `for…of`'s body. In `core/unroll/tgpuUnroll.ts` and `tgsl/wgslGenerator.ts`.
+
+**Workaround.** `KitGlslComputeGenerator` in `src/glsl/compute.ts` recovers the class once, by calling `tgpu.unroll`'s gpu-callable symbol on a dummy snippet and reading the result's constructor, and counts a `for…of` as a loop until its own iterable resolves to an instance of it. If the class cannot be recovered, no loop counts as unrolled and kernels with additions or writes in unrolled loops run on the CPU; `tests/glsl/unroll-hidden.test.ts` checks that.
