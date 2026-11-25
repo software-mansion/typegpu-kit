@@ -2343,9 +2343,10 @@ ${lines.join('\n')}
           : Array.from({ length: vectors }, (_, j) => j)
               .toReversed()
               .reduce(
+                // Words below 4 (j + 1) are in vector j or an earlier one
                 (rest, j) =>
                   rest
-                    ? `(${k} < ${4 * j}u ? ${rest} : kit_a_v${j}[${k} - ${4 * j}u])`
+                    ? `(${k} < ${4 * (j + 1)}u ? kit_a_v${j}[${k} - ${4 * j}u] : ${rest})`
                     : `kit_a_v${j}[${k} - ${4 * j}u]`,
                 '',
               );

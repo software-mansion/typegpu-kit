@@ -403,3 +403,31 @@ it('writes cells it computes through a helper called twice, as WebGPU does', asy
   expect(onGpu('helped')).toBe(true);
   expect(actual).toEqual(await helped(gpu));
 });
+
+/** Scatters elements of eight words, two captured vectors each, over two dispatches. */
+async function wide(root: TgpuRoot) {
+  const Pair = d.struct({ a: d.vec4u, b: d.vec4u });
+  const out = root.createMutable(d.arrayOf(Pair, 6));
+  const layout = tgpu.bindGroupLayout({ round: { uniform: d.u32 } });
+  const kernel = tgpu.computeFn({ workgroupSize: [3], in: gid })(({ gid: at }) => {
+    'use gpu';
+    const round = layout.$.round;
+    out.$[((at.x + 1) % 3) + round * 3] = Pair({
+      a: d.vec4u(1, 2, 3, 4) + at.x,
+      b: d.vec4u(5, 6, 7, 8) * (round + 1) + at.x,
+    });
+  });
+  const pipeline = root.createComputePipeline({ compute: kernel }).$name('wide');
+  for (const round of [0, 1]) {
+    pipeline
+      .with(root.createBindGroup(layout, { round: root.createUniform(d.u32, round).buffer }))
+      .dispatchWorkgroups(1);
+  }
+  return (await out.read()).map(({ a, b }) => [a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w]);
+}
+
+it('scatters elements wider than four words whole, as WebGPU does', async () => {
+  const actual = await wide(gl);
+  expect(onGpu('wide')).toBe(true);
+  expect(actual).toEqual(await wide(gpu));
+});
