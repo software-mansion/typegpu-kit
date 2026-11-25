@@ -21,6 +21,7 @@ import {
   setBindGroup,
   setPipeline,
 } from './render.ts';
+import { shaped } from './interfaces.ts';
 import { textureImpl } from './texture.ts';
 import { carry, querySetImpl, resolve, write, writesOf } from './timestamps.ts';
 import {
@@ -201,7 +202,7 @@ export function createCommandEncoder(
         record((exec) => {
           if (exec.render) command(exec.render);
         });
-      return {
+      return shaped('GPURenderPassEncoder', {
         __brand: 'GPURenderPassEncoder',
         label: passDescriptor.label ?? '',
         ...renderRecorder(inPass),
@@ -262,7 +263,7 @@ export function createCommandEncoder(
             }
           });
         },
-      } as unknown as GPURenderPassEncoder;
+      }) as unknown as GPURenderPassEncoder;
     },
 
     beginComputePass(passDescriptor: GPUComputePassDescriptor = {}): GPUComputePassEncoder {
@@ -277,7 +278,7 @@ export function createCommandEncoder(
         record((exec) => {
           if (exec.compute) command(exec.compute);
         });
-      return {
+      return shaped('GPUComputePassEncoder', {
         __brand: 'GPUComputePassEncoder',
         label: passDescriptor.label ?? '',
         setPipeline(pipeline: GPUComputePipeline) {
@@ -315,7 +316,7 @@ export function createCommandEncoder(
             write(ctx, writes, 'end');
           });
         },
-      } as unknown as GPUComputePassEncoder;
+      }) as unknown as GPUComputePassEncoder;
     },
 
     copyBufferToBuffer(
@@ -419,7 +420,7 @@ export function createCommandEncoder(
       } as unknown as GPUCommandBuffer;
     },
   };
-  return encoder as unknown as GPUCommandEncoder;
+  return shaped('GPUCommandEncoder', encoder) as unknown as GPUCommandEncoder;
 }
 
 /** Runs a command buffer's commands. */

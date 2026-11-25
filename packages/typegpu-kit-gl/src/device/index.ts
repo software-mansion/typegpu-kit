@@ -32,6 +32,7 @@ export type { Prebuilt } from './shader.ts';
 import { createState } from './state.ts';
 import { createTexture, textureImpl } from './texture.ts';
 import { canTime, createQuerySet } from './timestamps.ts';
+import { shaped } from './interfaces.ts';
 import { copyExternalImageToTexture, importExternalTexture, writeTexture } from './transfer.ts';
 
 export interface DeviceOptions {
@@ -199,7 +200,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
   const onContextLost = () => lose('unknown', 'The WebGL context was lost.');
   canvas.addEventListener('webglcontextlost', onContextLost as EventListener);
 
-  const queue = {
+  const queue = shaped('GPUQueue', {
     __brand: 'GPUQueue',
     label: '',
     submit(buffers: Iterable<GPUCommandBuffer>) {
@@ -270,7 +271,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
         setTimeout(poll, 0);
       });
     },
-  };
+  });
 
   const debug = ext.debugRendererInfo;
   const adapterInfo = {
@@ -349,6 +350,6 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
       gl.getExtension('WEBGL_lose_context')?.loseContext();
     },
   };
-  device = deviceObject as unknown as GLDevice;
+  device = shaped('GPUDevice', deviceObject) as unknown as GLDevice;
   return device;
 }
