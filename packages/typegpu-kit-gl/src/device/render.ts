@@ -346,6 +346,15 @@ function prepare(
     const buffer = vertexBuffer(ctx, bound.buffer);
     const base = bound.offset + (slot.instance ? instanceOffset : vertexOffset) * slot.stride;
     if (slot.buffer === buffer && slot.base === base) continue;
+    const first = Math.min(...slot.attributes.map((attribute) => attribute.offset));
+    if (base + first < 0) {
+      // baseVertex moves the attribute pointers, which cannot start before the buffer
+      ctx.errors.report(
+        'validation',
+        `The draw with pipeline '${pipeline.label}' has baseVertex ${vertexOffset}, which starts vertex buffer ${slot.slot} ${-(base + first)} bytes before its bound range; WebGL 2 cannot draw it.`,
+      );
+      return undefined;
+    }
     for (const attribute of slot.attributes) {
       if (attribute.integer) {
         gl.vertexAttribIPointer(

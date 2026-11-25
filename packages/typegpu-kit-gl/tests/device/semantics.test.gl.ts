@@ -284,3 +284,50 @@ describe.skipIf(!hasWebGpu)('sample masks', () => {
     expect(messages.join('\n')).toMatch(/multisample\.mask/);
   });
 });
+
+const Point = d.struct({ position: d.vec2f });
+const points = tgpu.vertexLayout(d.arrayOf(Point));
+
+/** Draws vertices 0 to 2 as indices 1 to 3 with a base vertex of -1. */
+function negativeBaseVertex(root: TgpuRoot) {
+  const color = root
+    .createTexture({ size: [SIZE, SIZE], format: 'rgba8unorm' })
+    .$usage('render', 'sampled');
+  const vertices = root
+    .createBuffer(d.arrayOf(Point, 4), [
+      { position: d.vec2f(-1, -1) },
+      { position: d.vec2f(3, -1) },
+      { position: d.vec2f(-1, 3) },
+      { position: d.vec2f(0, 0) },
+    ])
+    .$usage('vertex');
+  const indices = root.createBuffer(d.arrayOf(d.u16, 4), [1, 2, 3, 0]).$usage('index');
+  const vertex = tgpu.vertexFn({
+    in: { position: d.vec2f },
+    out: { position: d.builtin.position },
+  })(({ position }) => {
+    'use gpu';
+    return { position: d.vec4f(position, 0, 1) };
+  });
+  root
+    .createRenderPipeline({
+      attribs: points.attrib,
+      vertex,
+      fragment: solid(d.vec4f(1, 0, 0, 1)),
+      targets: { format: 'rgba8unorm' },
+    })
+    .with(points, vertices)
+    .withIndexBuffer(indices)
+    .withColorAttachment({ view: color, clearValue: [0, 0, 1, 1] })
+    .drawIndexed(3, 1, 0, -1);
+  return color;
+}
+
+describe.skipIf(!hasWebGpu)('base vertices', () => {
+  test('a negative base vertex before the start of a vertex buffer is an error that names it', async () => {
+    const expected = await compareRoots(gpu, gpu, negativeBaseVertex);
+    expect(pixel(expected.expected, 2, 2)).toEqual([255, 0, 0, 255]);
+    const messages = await errorsOf(gl.device, () => negativeBaseVertex(gl));
+    expect(messages.join('\n')).toMatch(/baseVertex -1/);
+  });
+});
