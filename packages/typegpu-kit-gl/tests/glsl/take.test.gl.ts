@@ -1,3 +1,4 @@
+import { cameras, Particle, particles } from '@typegpu/kit';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
@@ -87,4 +88,77 @@ it('takes ring slots in some order WebGPU may give, over several dispatches', as
   // No emission overwrites another, so which slot each took does not change the pool's contents
   expect(actual).toEqual(await emitted(gpu));
   expect(actual.head).toBe(183);
+});
+
+/**
+ * Emits Kit particles, sixteen words a row, from a kernel through `emit`, as stampede's dust and
+ * ember-mirror's embers do, over three dispatches, and reads every field of the pool.
+ */
+async function emittedParticles(root: TgpuRoot) {
+  const view = cameras.flat(root, { size: { width: 8, height: 8 }, height: 10 });
+  view.update(0);
+  const sparks = particles.create(root, view, { capacity: 256, step: 1 / 60 });
+  const layout = tgpu.bindGroupLayout({ round: { uniform: d.u32 } });
+  const kernel = tgpu.computeFn({ workgroupSize: [16], in: gid })(({ gid: at }) => {
+    'use gpu';
+    const round = layout.$.round;
+    if ((at.x + round) % 3 === 0) return;
+    const i = d.f32(at.x);
+    const r = d.f32(round);
+    sparks.emit(
+      Particle({
+        position: d.vec3f(i, r, i * r + 0.5),
+        age: r * 0.25,
+        velocity: d.vec3f(-i, 2 * r, 3),
+        life: 1 + i * 0.125,
+        color: d.vec4f(i / 16, r / 3, 0.5, 1 - i / 32),
+        size: 0.25 + r,
+        seed: i * 0.0625 + r,
+      }),
+    );
+  });
+  const pipeline = root
+    .pipe(sparks.inject())
+    .createComputePipeline({ compute: kernel })
+    .$name('emitting particles');
+  for (const round of [0, 1, 2]) {
+    const encoder = root.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(
+      layout,
+      root.createBindGroup(layout, { round: root.createUniform(d.u32, round).buffer }),
+    );
+    pass.dispatchWorkgroups(2);
+    pass.end();
+    encoder.submit();
+  }
+  const rows = (await sparks.pool.read()).map((p) => [
+    p.position.x,
+    p.position.y,
+    p.position.z,
+    p.age,
+    p.velocity.x,
+    p.velocity.y,
+    p.velocity.z,
+    p.life,
+    p.color.x,
+    p.color.y,
+    p.color.z,
+    p.color.w,
+    p.size,
+    p.seed,
+  ]);
+  sparks.destroy();
+  return rows.toSorted((a, b) => {
+    for (const [k, value] of a.entries()) if (value !== b[k]) return value - (b[k] as number);
+    return 0;
+  });
+}
+
+it('emits whole particle rows through a kernel as WebGPU does, every field', async () => {
+  const actual = await emittedParticles(gl);
+  expect(onGpu('emitting particles')).toBe(true);
+  expect(actual.filter((row) => row.some((value) => value !== 0)).length).toBe(64);
+  expect(actual).toEqual(await emittedParticles(gpu));
 });
