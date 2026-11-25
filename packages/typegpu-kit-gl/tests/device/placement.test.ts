@@ -89,7 +89,7 @@ function kernel(ctx: Ctx) {
     passes: outputs.map((_, i) => ({ target: { kind: 'buffer', group: 0, binding: i + 1 } })),
   } as unknown as GpuCompute;
   const run = (invocations: number, cpuMs = 1): 'gpu' | 'cpu' => {
-    if (runsOnGpu(ctx, pipeline, 'kernel', module, groups)) {
+    if (runsOnGpu(ctx, pipeline, 'kernel', module, groups, invocations)) {
       const probe = beginProbe(ctx, pipeline, 'kernel', invocations);
       endProbe(ctx, pipeline, probe, true);
       ranOnGpu(ctx, pipeline, 'kernel', gpu, groups, 0.1, invocations);
@@ -106,6 +106,45 @@ const task = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+const SAMPLED = 100_000;
+
+/** Six dispatches of `SAMPLED` invocations whose fifth and sixth sample 10 ms on the GPU. */
+async function costly(timer: boolean) {
+  const fake = fakeCtx({ timer, gpuMs: 10 });
+  const { input, run } = kernel(fake.ctx);
+  for (let i = 0; i < 6; i++) {
+    expect(run(SAMPLED)).toBe('gpu');
+    await task();
+  }
+  return { ...fake, input, run };
+}
+
+test('two costly samples move the next dispatch to the CPU, and its trial after it', async () => {
+  const { run } = await costly(true);
+  expect(run(SAMPLED)).toBe('cpu');
+  await task();
+  expect(run(SAMPLED)).toBe('cpu');
+});
+
+test('a costly form whose next dispatch outgrows the CPU trial stays on the GPU', async () => {
+  const { run, ctx } = await costly(true);
+  expect(run(2 ** 21)).toBe('gpu');
+  expect(ctx.stats.placement.get('kernel')).toMatch(/^gpu: .*2097152 invocations are too many/);
+});
+
+test('a costly form whose next dispatch binds an input only GL holds stays on the GPU', async () => {
+  const { run, input } = await costly(true);
+  input.gpuNewer = true;
+  expect(run(SAMPLED)).toBe('gpu');
+});
+
+test("a costly form's judged trial is capped at the trial's size", async () => {
+  const { run } = await costly(true);
+  expect(run(SAMPLED)).toBe('cpu');
+  await task();
+  expect(run(2 ** 21)).toBe('gpu');
 });
 
 test('a readback of three outputs of one dispatch counts that dispatch once', async () => {

@@ -94,6 +94,8 @@ interface Record {
   held: string;
   /** Whether GL alone held an input at the last dispatch, which a CPU run would read back. */
   heldNow: boolean;
+  /** The invocations of the last dispatch. */
+  upcoming: number;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
   why: 'readback' | 'costly';
   /** The GPU time of the form's last sampled dispatches, in milliseconds. */
@@ -186,6 +188,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       waitBefore: 0,
       held: '',
       heldNow: false,
+      upcoming: 0,
       why: 'readback',
       samples: [],
       probe: undefined,
@@ -243,23 +246,63 @@ function heldOnGl(
   return undefined;
 }
 
-/** Whether the dispatch should run its GPU form. */
+/**
+ * Whether the dispatch should run its GPU form. A move for cost takes this dispatch's size and
+ * inputs: samples that arrive now judge it, and a form on the CPU for cost returns to the GPU
+ * before a run past `MOST_TRIED` invocations or one that would read back what GL alone holds.
+ */
 export function runsOnGpu(
   ctx: Ctx,
   pipeline: object,
   label: string,
   module: CpuModule,
   groups: readonly (Bound | undefined)[],
+  invocations: number,
 ): boolean {
   if (!ctx.placement) return true;
-  pollProbes(ctx);
   const record = recordOf(ctx, pipeline, label);
   record.dispatches++;
   const held = heldOnGl(module, groups, record);
   record.heldNow = held !== undefined;
   if (held === undefined) record.cpuInputs++;
   else record.held = held;
+  record.upcoming = invocations;
+  pollProbes(ctx);
+  if (record.onCpu && record.why === 'costly') {
+    const why = costlyRefusal(record);
+    if (why !== undefined) {
+      backFromCost(ctx, record);
+      ctx.stats.placement.set(record.label, `gpu: ${why}`);
+    }
+  }
   return !record.onCpu;
+}
+
+/** Why a CPU run of the next dispatch cannot try or keep a costly form, if it cannot. */
+function costlyRefusal(record: Record): string | undefined {
+  if (record.upcoming > MOST_TRIED) {
+    return `${record.upcoming} invocations are too many to try on the CPU`;
+  }
+  if (record.heldNow) {
+    return `GL alone holds its input '${record.held}', which a CPU run would read back`;
+  }
+  return undefined;
+}
+
+/**
+ * Sends a form moved for cost back to the GPU before a dispatch the CPU cannot take. One that ran
+ * on the CPU counts as a return, so a form whose dispatches alternate settles on the GPU.
+ */
+function backFromCost(ctx: Ctx, record: Record): void {
+  if (!record.settling) {
+    record.costReturns++;
+    record.triedCost = record.costReturns >= MOST_RETURNS;
+  }
+  record.onCpu = false;
+  record.settling = false;
+  record.trial = false;
+  record.samples = [];
+  restart(ctx, record);
 }
 
 /** Notes a GPU form's dispatch: its targets now hold this pipeline's output. */
@@ -481,10 +524,11 @@ function sampled(ctx: Ctx, record: Record, ms: number): void {
   // does not count
   const cpuMs = record.invocations * CPU_NS * 1e-6;
   if (least < COSTLY_MS || cpuMs >= least * KEEP_SHARE || record.heldNow) return;
-  if (record.invocations > MOST_TRIED) {
+  const most = Math.max(record.invocations, record.upcoming);
+  if (most > MOST_TRIED) {
     ctx.stats.placement.set(
       record.label,
-      `gpu: its GPU form took ${least.toFixed(1)} ms a dispatch on the GPU, but ${record.invocations} invocations are too many to try on the CPU`,
+      `gpu: its GPU form took ${least.toFixed(1)} ms a dispatch on the GPU, but ${most} invocations are too many to try on the CPU`,
     );
     return;
   }

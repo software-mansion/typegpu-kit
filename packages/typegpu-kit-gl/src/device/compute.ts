@@ -92,7 +92,7 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   const size = pipeline.gpu?.module.workgroupSize ?? module.workgroupSize;
   const invocations = x * y * z * size[0] * size[1] * size[2];
   const gpu = pipeline.gpu;
-  if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups)) {
+  if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups, invocations)) {
     const start = performance.now();
     const probe = beginProbe(ctx, pipeline, pipeline.label, invocations);
     let reason: string | undefined;
