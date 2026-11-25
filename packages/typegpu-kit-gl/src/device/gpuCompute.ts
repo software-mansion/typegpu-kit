@@ -8,9 +8,11 @@
 import type { CpuModule } from '../cpu/types.ts';
 import {
   TAKE_WIDTH,
-  ACCUMULATED_FRAGMENT,
+  accumulateFragment,
+  accumulatedFragment,
   type ComputeModule,
-  MOST_ADDED,
+  mostAdded,
+  MOST_TAKEN,
   type Scatter,
   type ScatterField,
   type ComputeTarget,
@@ -221,12 +223,28 @@ const ADDING: BlendState = {
 };
 
 const combiners = new WeakMap<Ctx, Program | string>();
+const partsByCtx = new WeakMap<Ctx, 4 | 8>();
 
-/** The program that adds the four byte sums to a data texture. */
+/** How many pieces a pass of sums splits each word into: nibbles where eight targets fit. */
+function partsOf(ctx: Ctx): 4 | 8 {
+  let parts = partsByCtx.get(ctx);
+  if (!parts) {
+    const { gl } = ctx;
+    const targets = Math.min(
+      gl.getParameter(gl.MAX_DRAW_BUFFERS) as number,
+      gl.getParameter(gl.MAX_COLOR_ATTACHMENTS) as number,
+    );
+    parts = targets >= 8 ? 8 : 4;
+    partsByCtx.set(ctx, parts);
+  }
+  return parts;
+}
+
+/** The program that adds the pieces' sums to a data texture. */
 function combinerOf(ctx: Ctx): Program | string {
   let combiner = combiners.get(ctx);
   if (!combiner) {
-    const linked = link(ctx, PASS_VERTEX, ACCUMULATED_FRAGMENT, 'adding to a buffer');
+    const linked = link(ctx, PASS_VERTEX, accumulatedFragment(partsOf(ctx)), 'adding to a buffer');
     combiner = linked.ok ? linked.program : linked.message;
     combiners.set(ctx, combiner);
   }
@@ -234,7 +252,7 @@ function combinerOf(ctx: Ctx): Program | string {
 }
 
 /**
- * Sums an accumulating pass's records into four float textures, a byte of every amount each, and
+ * Sums an accumulating pass's records into float textures, one piece of every amount each, and
  * renders the buffer's data texture plus those sums into a texture of the pool, which it returns.
  */
 function accumulate(
@@ -250,7 +268,8 @@ function accumulate(
   const { gl, state } = ctx;
   const combiner = combinerOf(ctx);
   if (typeof combiner === 'string') return combiner;
-  const sums = [0, 1, 2, 3].map(() => take(ctx, gl.RGBA32F, width, height));
+  const parts = partsOf(ctx);
+  const sums = Array.from({ length: parts }, () => take(ctx, gl.RGBA32F, width, height));
   const attachments = sums.map((_, i) => gl.COLOR_ATTACHMENT0 + i);
   state.drawFramebuffer(ctx.scratch.draw);
   sums.forEach((texture, i) =>
@@ -276,7 +295,7 @@ function accumulate(
   ]) {
     state.enable(cap, false);
   }
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < parts; i++) {
     state.colorMask(i, 0xf);
     gl.clearBufferfv(gl.COLOR, i, [0, 0, 0, 0]);
     state.blend(i, ADDING);
@@ -287,7 +306,7 @@ function accumulate(
     gl.drawArrays(gl.POINTS, 0, count);
   }
   state.vertexArray(null);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < parts; i++) {
     state.blend(i, NO_BLEND);
     gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, null, 0);
   }
@@ -299,7 +318,7 @@ function accumulate(
   state.colorMask(0, 0xf);
   state.program(combiner.program);
   const sources = [dataTexture(ctx, buffer).texture, ...sums];
-  ['kit_old', 'kit_sum0', 'kit_sum1', 'kit_sum2', 'kit_sum3'].forEach((name, unit) => {
+  ['kit_old', ...sums.map((_, k) => `kit_sum${k}`)].forEach((name, unit) => {
     state.texture(unit, gl.TEXTURE_2D, sources[unit] as WebGLTexture);
     state.sampler(unit, ctx.nearest);
     setInt(gl, combiner.uniforms.get(name) ?? null, unit);
@@ -578,7 +597,8 @@ export function prepareGpu(
   const passes: GpuPass[] = [];
   for (const pass of module.passes) {
     const vertex = pass.scatter?.vertex ?? PASS_VERTEX;
-    const linked = link(ctx, vertex, pass.fragment, `a pass of '${label}'`);
+    const fragment = pass.scatter?.accumulate ? accumulateFragment(partsOf(ctx)) : pass.fragment;
+    const linked = link(ctx, vertex, fragment, `a pass of '${label}'`);
     if (!linked.ok) return linked.message;
     const { program } = linked;
     const uses = connectUses(ctx, label, module, program);
@@ -821,8 +841,13 @@ export function runGpu(
     if (!ctx.ext.colorBufferFloat || !ctx.ext.floatBlend) {
       return 'adding needs EXT_color_buffer_float and EXT_float_blend';
     }
-    const records = invocations[0] * invocations[1] * invocations[2] * scatter.sites;
-    if (records > MOST_ADDED) return `the dispatch may add ${records} times to one cell`;
+    const count = invocations[0] * invocations[1] * invocations[2];
+    const records = count * scatter.sites;
+    const most = mostAdded(partsOf(ctx));
+    if (records > most) return `the dispatch may add ${records} times to one cell, past ${most}`;
+    if (scatter.takes !== undefined && count > MOST_TAKEN) {
+      return `the dispatch takes from ${count} invocations, past ${MOST_TAKEN}`;
+    }
   }
 
   const resolved: Resolved[] = [];

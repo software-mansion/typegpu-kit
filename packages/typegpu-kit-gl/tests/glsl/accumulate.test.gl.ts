@@ -1,7 +1,9 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
-import { roots } from '../device/compare.ts';
+import { mostAdded } from '../../src/glsl/computeModule.ts';
+import { glRoot, roots } from '../device/compare.ts';
+import { install } from '../device/minimum.ts';
 
 let gpu: TgpuRoot;
 let gl: TgpuRoot;
@@ -108,35 +110,73 @@ it('adds through helpers at shared cells as WebGPU does, over several dispatches
   expect(actual).toEqual(await counted(gpu, 300, 'counted'));
 });
 
+/** The most records the device of `root` sums exactly into one cell: nibbles with eight targets. */
+function mostOf(root: TgpuRoot) {
+  const { gl: context } = root.device as unknown as GLDevice;
+  const targets = Math.min(
+    context.getParameter(context.MAX_DRAW_BUFFERS) as number,
+    context.getParameter(context.MAX_COLOR_ATTACHMENTS) as number,
+  );
+  return mostAdded(targets >= 8 ? 8 : 4);
+}
+
 it('runs a dispatch on the CPU where a cell could take more records than a sum keeps exact', async () => {
-  // 16 448 invocations of four additions each pass 65 536 records
-  const actual = await counted(gl, 16_448, 'crowded');
-  expect(stats().fallbacks.get('crowded')).toBe('the dispatch may add 65792 times to one cell');
-  expect(actual).toEqual(await counted(gpu, 16_448, 'crowded'));
+  // Four additions an invocation, one invocation past the bound's quarter; the device counts
+  // every invocation of the workgroups dispatched
+  const invocations = Math.floor(mostOf(gl) / 4) + 1;
+  const actual = await counted(gl, invocations, 'crowded');
+  expect(stats().fallbacks.get('crowded')).toBe(
+    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 4} times to one cell, past ${mostOf(gl)}`,
+  );
+  expect(actual).toEqual(await counted(gpu, invocations, 'crowded'));
 });
 
-/** Adds the largest amount four times an invocation to one cell, `invocations` times over. */
-async function crowded(root: TgpuRoot, invocations: number) {
+/**
+ * Adds the largest amount once an invocation to one cell from `workgroups` groups of 241: both
+ * bounds, 2^24 / 15 = 241 * 4641 and 2^24 / 255 = 241 * 273, are whole dispatches of them.
+ */
+async function crowded(root: TgpuRoot, workgroups: number, label: string) {
   const counts = root.createMutable(d.arrayOf(d.atomic(d.u32), 2), [7, 0]);
-  const kernel = tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+  const kernel = tgpu.computeFn({ workgroupSize: [241] })(() => {
     'use gpu';
-    if (id.x >= invocations) return;
-    std.atomicAdd(counts.$[0], 0xffffffff);
-    std.atomicAdd(counts.$[0], 0xffffffff);
-    std.atomicAdd(counts.$[0], 0xffffffff);
     std.atomicAdd(counts.$[0], 0xffffffff);
   });
-  root
-    .createComputePipeline({ compute: kernel })
-    .$name('worst')
-    .dispatchWorkgroups(Math.ceil(invocations / 64));
+  root.createComputePipeline({ compute: kernel }).$name(label).dispatchWorkgroups(workgroups);
   return counts.read();
 }
 
-it('sums the most records a dispatch may put on one cell exactly, every byte at its largest', async () => {
-  const actual = await crowded(gl, 16_384);
-  expect(onGpu('worst')).toBe(true);
-  // 65 536 additions of 2^32 - 1 take 65 536 off, modulo 2^32
-  expect(actual).toEqual([(7 - 65_536) >>> 0, 0]);
-  expect(actual).toEqual(await crowded(gpu, 16_384));
+/** Expects the most records a cell may take to sum exactly on `root`, and one group more to fall back. */
+async function bounded(root: TgpuRoot, label: string) {
+  const most = mostOf(root);
+  const { stats: counts } = root.device as unknown as GLDevice;
+  const actual = await crowded(root, most / 241, label);
+  expect(counts.fallbacks.get(label)).toBeUndefined();
+  expect([...counts.kernels.keys()]).toContain(`${label} (gpu)`);
+  // Each addition of 2^32 - 1 takes 1 off, modulo 2^32
+  expect(actual).toEqual([(7 - most) >>> 0, 0]);
+  const over = await crowded(root, most / 241 + 1, `${label} past`);
+  expect(counts.fallbacks.get(`${label} past`)).toBe(
+    `the dispatch may add ${most + 241} times to one cell, past ${most}`,
+  );
+  expect(over).toEqual([(7 - most - 241) >>> 0, 0]);
+  return actual;
+}
+
+it('sums the most records a dispatch may put on one cell exactly, every piece at its largest', async () => {
+  // 2^24 / 15 records where the device sums nibbles, 2^24 / 255 where it sums bytes
+  const actual = await bounded(gl, 'worst');
+  expect(actual).toEqual(await crowded(gpu, mostOf(gl) / 241, 'worst'));
+});
+
+it('sums bytes on a device of four draw buffers, to their own bound', async () => {
+  const undo = install({ minimum: true });
+  const small = glRoot();
+  try {
+    expect(mostOf(small)).toBe(mostAdded(4));
+    await bounded(small, 'bytes');
+    expect((small.device as unknown as GLDevice).gl.getError()).toBe(0);
+  } finally {
+    small.destroy();
+    undo();
+  }
 });
