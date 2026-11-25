@@ -24,6 +24,8 @@ const WINDOW = 6;
  * swing by more than this from window to window, so cheaper kernels stay where they save syncs.
  */
 const CHEAP_MS = 0.5;
+/** Times a pipeline may go back to the GPU before it stays there, so placement settles. */
+const MOST_RETURNS = 2;
 /** The most invocations a kernel may have to move to the CPU, so a trial never stalls a frame. */
 const MOST_INVOCATIONS = 1 << 16;
 
@@ -32,8 +34,10 @@ interface Record {
   onCpu: boolean;
   /** Just moved: the first window on the CPU reads back what GL held, so it is not judged. */
   settling: boolean;
-  /** Stays on the GPU: the CPU run cost more than the GPU form and its wait. */
+  /** Stays on the GPU: the CPU run cost more than it saved, or it came back too often. */
   pinned: boolean;
+  /** Times it went back to the GPU because its inputs moved there. */
+  returns: number;
   dispatches: number;
   /** GPU dispatches whose outputs were read back before the pipeline wrote them again. */
   readBack: number;
@@ -71,6 +75,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       onCpu: false,
       settling: false,
       pinned: false,
+      returns: 0,
       dispatches: 0,
       readBack: 0,
       waitMs: 0,
@@ -216,9 +221,11 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
     );
   } else if (cpuInputs * 2 < dispatches) {
     record.onCpu = false;
+    record.returns++;
+    record.pinned = record.returns >= MOST_RETURNS;
     ctx.stats.placement.set(
       record.label,
-      `gpu: its inputs moved to the GPU in ${dispatches - cpuInputs} of ${dispatches} dispatches`,
+      `gpu: its inputs moved to the GPU in ${dispatches - cpuInputs} of ${dispatches} dispatches${record.pinned ? ', and it stays there' : ''}`,
     );
   } else {
     ctx.stats.placement.set(
