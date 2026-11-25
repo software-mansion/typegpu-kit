@@ -96,5 +96,7 @@ it('draws only the live particles without listing them, as WebGPU does, and read
   // Counted on the GPU, listed nowhere, and nothing read back for it
   expect(kernels.filter((label) => label.includes('live'))).toEqual([]);
   expect(steadyReads).toBe(0);
-  expect(kernels).toEqual(expect.arrayContaining(['tally (gpu)', 'counting (gpu)']));
+  expect(kernels).toEqual(
+    expect.arrayContaining(['particles_tally (gpu)', 'particles_count (gpu)']),
+  );
 });
