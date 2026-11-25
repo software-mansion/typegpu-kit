@@ -15,7 +15,6 @@ afterAll(() => {
   gl.destroy();
 });
 
-const COUNT = 300;
 const size = { width: 200, height: 100 };
 
 /**
@@ -24,17 +23,19 @@ const size = { width: 200, height: 100 };
  */
 function picking(
   root: TgpuRoot,
+  count: number,
   places: Record<number, readonly [number, number, number]>,
+  dead: number,
   rank: picker.Options['rank'],
 ) {
   const view = cameras.orbit(root, { size, target: [0, 0, 0], distance: 10, pitch: 0 });
-  const positions = Array.from({ length: COUNT }, (_, i) => places[i] ?? [0, 0, 50 + i]);
+  const positions = Array.from({ length: count }, (_, i) => places[i] ?? [0, 0, 50 + (i % 997)]);
   const where = root.createReadonly(
-    d.arrayOf(d.vec3f, COUNT),
+    d.arrayOf(d.vec3f, count),
     positions.map((p) => d.vec3f(...p)),
   );
   const hits = picker.create(root, view, {
-    capacity: COUNT,
+    capacity: count,
     size,
     position: (i) => {
       'use gpu';
@@ -46,7 +47,7 @@ function picking(
     },
     alive: (i) => {
       'use gpu';
-      return i !== 7;
+      return i !== dead;
     },
     ...(rank ? { rank } : {}),
   });
@@ -102,25 +103,47 @@ function targets(pixelOf: (point: readonly [number, number, number]) => readonly
   return [...on, [100, 50], [5, 5], [195, 95], [60, 40], ...around] as const;
 }
 
-async function picks(root: TgpuRoot, rank: picker.Options['rank']) {
-  const { pickAt, pixelOf, destroy } = picking(root, PLACES, rank);
+/**
+ * The places at indices counted down from the top of the capacity when `high`, so the key packs
+ * the largest indices its bits hold; the dead index moves with them.
+ */
+function placed(count: number, high: boolean) {
+  const at = (k: number) => (high ? count - 1 - k : k);
+  const places = Object.fromEntries(
+    Object.entries(PLACES).map(([k, place]) => [at(Number(k)), place]),
+  ) as Record<number, readonly [number, number, number]>;
+  return { places, dead: at(7) };
+}
+
+async function picks(root: TgpuRoot, count: number, high: boolean, rank: picker.Options['rank']) {
+  const { places, dead } = placed(count, high);
+  const { pickAt, pixelOf, destroy } = picking(root, count, places, dead, rank);
   const found: number[] = [];
   for (const [x, y] of targets(pixelOf)) found.push(await pickAt(x, y));
   destroy();
   return found;
 }
 
+// 300 rows leave the depth rank 23 bits beside a 9-bit index; 70 000 leave 15 beside 17
 it.each([
-  ['by pointer', picker.byPointer],
-  ['by eye', picker.byEye],
-] as const)('picks %s as WebGPU does, a GPU form on the fallback', async (_, rank) => {
-  const actual = await picks(gl, rank);
+  ['by pointer', 300, false, picker.byPointer],
+  ['by eye', 300, false, picker.byEye],
+  ['by pointer, at the top of 300 rows', 300, true, picker.byPointer],
+  ['by eye, at the top of 300 rows', 300, true, picker.byEye],
+  ['by pointer, at the top of 70 000 rows', 70_000, true, picker.byPointer],
+  ['by eye, at the top of 70 000 rows', 70_000, true, picker.byEye],
+] as const)('picks %s as WebGPU does, a GPU form on the fallback', async (_, count, high, rank) => {
+  const actual = await picks(gl, count, high, rank);
   const { stats, gl: context } = gl.device as unknown as GLDevice;
   expect([...stats.kernels.keys()]).toContain('pickPipeline (gpu)');
   expect([...stats.kernels.keys()]).not.toContain('pickPipeline');
   expect(stats.fallbacks.get('pickPipeline')).toBeUndefined();
   expect(context.getError()).toBe(0);
-  expect(actual).toEqual(await picks(gpu, rank));
+  expect(actual).toEqual(await picks(gpu, count, high, rank));
+  if (high)
+    expect(actual.filter((each) => each !== picker.none).every((each) => each > count - 64)).toBe(
+      true,
+    );
   // Some picks hit, some miss, so the comparison is not of nothing
   expect(actual.some((each) => each === picker.none)).toBe(true);
   expect(new Set(actual.filter((each) => each !== picker.none)).size).toBeGreaterThan(3);
