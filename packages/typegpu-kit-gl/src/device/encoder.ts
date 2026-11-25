@@ -4,9 +4,9 @@
  */
 
 import { bind } from './binding.ts';
-import { type BufferImpl, bufferImpl, written } from './buffer.ts';
+import { type BufferImpl, bufferImpl, copyLater, written } from './buffer.ts';
 import { type ComputePass, dispatch, dispatchIndirect } from './compute.ts';
-import { type Ctx, IMPL } from './context.ts';
+import { BUFFER_USAGE, type Ctx, IMPL } from './context.ts';
 import { computePipelineImpl, renderPipelineImpl } from './pipeline.ts';
 import {
   beginRender,
@@ -22,7 +22,12 @@ import {
   setPipeline,
 } from './render.ts';
 import { textureImpl } from './texture.ts';
-import { copyBufferToTexture, copyTextureToBuffer, copyTextureToTexture } from './transfer.ts';
+import {
+  copyBufferToTexture,
+  copyTextureToBuffer,
+  copyTextureToBufferLater,
+  copyTextureToTexture,
+} from './transfer.ts';
 
 export interface Exec {
   render: RenderPass | undefined;
@@ -285,6 +290,17 @@ export function createCommandEncoder(
       const destination = bufferImpl(to);
       const size = given ?? source.size - sourceOffset;
       record(() => {
+        // Into a buffer only the CPU reads, a copy of what GL alone holds need not wait for it
+        const later =
+          destination.usage & BUFFER_USAGE.MAP_READ &&
+          source.gpuNewer &&
+          source.data &&
+          !source.destroyed &&
+          !destination.destroyed;
+        if (later) {
+          copyLater(ctx, source, sourceOffset, destination, destinationOffset, size);
+          return;
+        }
         source.sync();
         destination.sync();
         destination.bytes.set(
@@ -317,7 +333,12 @@ export function createCommandEncoder(
       const buffer: BufferImpl = bufferImpl(destination.buffer);
       const layout = layoutOf(destination);
       const from = { ...source };
-      record(() => copyTextureToBuffer(ctx, from, buffer, layout, size));
+      record(() => {
+        const later =
+          buffer.usage & BUFFER_USAGE.MAP_READ &&
+          copyTextureToBufferLater(ctx, from, buffer, layout, size);
+        if (!later) copyTextureToBuffer(ctx, from, buffer, layout, size);
+      });
     },
 
     copyTextureToTexture(

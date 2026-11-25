@@ -7,6 +7,7 @@ import { type BufferImpl, written } from './buffer.ts';
 import { type Ctx, IMPL } from './context.ts';
 import { link } from './program.ts';
 import { packTexels, swapRedBlue, type TexelArray, texelArray, viewAs } from './packing.ts';
+import { discard, packPixels, type Packed, signalled, unpack } from './pack.ts';
 import { readBack as readBackFrom } from './placement.ts';
 import {
   attachLevel,
@@ -313,6 +314,78 @@ function readsAs(ctx: Ctx, internal: number, format: number, type: number): bool
   return reads;
 }
 
+/**
+ * How the bound read framebuffer gives a texture's texels: `readPixels`' format and type, an array
+ * for what it reads, and the conversion into the format's own layout. Undefined for formats only a
+ * shader can read.
+ */
+type Raw = Uint8Array | Uint16Array | Uint32Array | Int32Array | Float32Array;
+
+interface Readout {
+  readonly format: number;
+  readonly type: number;
+  raw(count: number): Raw;
+  convert(raw: Raw, out: TexelArray, texels: number): void;
+}
+
+/** Whether `readPixels` reads the format; the others go through a shader. */
+const readsDirectly = (info: TextureImpl['info']) =>
+  info.renderable && !info.hasDepth && info.kind !== 'snorm';
+
+/** The readout of a format `readsDirectly` reads, with the texture attached for reading. */
+function readoutOf(ctx: Ctx, info: TextureImpl['info']): Readout {
+  const { gl } = ctx;
+  const packed = (format: number, type: number, raw: Readout['raw']): Readout => ({
+    format,
+    type,
+    raw,
+    convert: (from, out) => packTexels(info, from as Parameters<typeof packTexels>[1], out),
+  });
+  if (info.format === 'rgb10a2unorm') {
+    return {
+      format: gl.RGBA,
+      type: gl.UNSIGNED_INT_2_10_10_10_REV,
+      raw: (count) => new Uint32Array(count / 4),
+      convert: (from, out) => out.set(from),
+    };
+  }
+  if (info.kind === 'unorm') return packed(gl.RGBA, gl.UNSIGNED_BYTE, (n) => new Uint8Array(n));
+  if (info.array === 'f16' && readsAs(ctx, info.internal, gl.RGBA, gl.HALF_FLOAT)) {
+    return {
+      format: gl.RGBA,
+      type: gl.HALF_FLOAT,
+      raw: (count) => new Uint16Array(count),
+      convert: (from, out, texels) => {
+        const n = info.components;
+        if (n === 4) out.set(from);
+        else
+          for (let i = 0; i < texels; i++)
+            for (let c = 0; c < n; c++) out[i * n + c] = from[i * 4 + c]!;
+      },
+    };
+  }
+  if (info.kind === 'float') return packed(gl.RGBA, gl.FLOAT, (n) => new Float32Array(n));
+  if (info.kind === 'uint') {
+    return packed(gl.RGBA_INTEGER, gl.UNSIGNED_INT, (n) => new Uint32Array(n));
+  }
+  return packed(gl.RGBA_INTEGER, gl.INT, (n) => new Int32Array(n));
+}
+
+/** Binds one level and layer of a texture on GL for reading, and returns how to read it. */
+function readFrom(ctx: Ctx, texture: TextureImpl, level: number, layer: number) {
+  const { gl, state } = ctx;
+  onGl(ctx, texture);
+  if (texture.renderbuffer) {
+    throw new Error('@typegpu/kit-gl: multisampled textures cannot be read back on WebGL 2.');
+  }
+  if (!readsDirectly(texture.info)) return undefined;
+  state.readFramebuffer(ctx.scratch.read);
+  attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, level, layer);
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
+  // The f16 check asks the bound framebuffer, so the readout is chosen with it attached
+  return readoutOf(ctx, texture.info);
+}
+
 /** Reads a region of one level and layer from GL in the format's own layout. */
 function readFromGl(
   ctx: Ctx,
@@ -324,51 +397,52 @@ function readFromGl(
   width: number,
   height: number,
 ): TexelArray {
-  const { gl, state } = ctx;
+  const { gl } = ctx;
   const { info } = texture;
-  onGl(ctx, texture);
-  if (texture.renderbuffer) {
-    throw new Error('@typegpu/kit-gl: multisampled textures cannot be read back on WebGL 2.');
-  }
   const out = texelArray(info, width * height);
-  if (!info.renderable || info.hasDepth || info.kind === 'snorm') {
+  const readout = readFrom(ctx, texture, level, layer);
+  if (!readout) {
     const { values, stride } = readThroughShader(ctx, texture, level, layer, x, y, width, height);
     packTexels(info, values, out, stride);
     return out;
   }
-  state.readFramebuffer(ctx.scratch.read);
-  attachLevel(ctx, gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, level, layer);
-  state.readBuffer(gl.COLOR_ATTACHMENT0);
-  const count = width * height * 4;
-  if (info.format === 'rgb10a2unorm') {
-    gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_INT_2_10_10_10_REV, out);
-  } else if (info.kind === 'unorm') {
-    const rgba = new Uint8Array(count);
-    gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-    packTexels(info, rgba, out);
-  } else if (info.array === 'f16' && readsAs(ctx, info.internal, gl.RGBA, gl.HALF_FLOAT)) {
-    const rgba = new Uint16Array(count);
-    gl.readPixels(x, y, width, height, gl.RGBA, gl.HALF_FLOAT, rgba);
-    const n = info.components;
-    if (n === 4) out.set(rgba);
-    else
-      for (let i = 0; i < width * height; i++)
-        for (let c = 0; c < n; c++) out[i * n + c] = rgba[i * 4 + c]!;
-  } else if (info.kind === 'float') {
-    const rgba = new Float32Array(count);
-    gl.readPixels(x, y, width, height, gl.RGBA, gl.FLOAT, rgba);
-    packTexels(info, rgba, out);
-  } else if (info.kind === 'uint') {
-    const rgba = new Uint32Array(count);
-    gl.readPixels(x, y, width, height, gl.RGBA_INTEGER, gl.UNSIGNED_INT, rgba);
-    packTexels(info, rgba, out);
-  } else {
-    const rgba = new Int32Array(count);
-    gl.readPixels(x, y, width, height, gl.RGBA_INTEGER, gl.INT, rgba);
-    packTexels(info, rgba, out);
-  }
+  const raw = readout.raw(width * height * 4);
+  gl.readPixels(x, y, width, height, readout.format, readout.type, raw);
+  readout.convert(raw, out, width * height);
   gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
   return out;
+}
+
+/**
+ * Starts reading a region of one level and layer from GL without waiting for the GPU, or returns
+ * undefined where only a synchronous read can. `finish` gives the texels as they were when the
+ * read started, in the format's own layout, waiting if the GPU has not finished.
+ */
+export function readLaterFromGl(
+  ctx: Ctx,
+  texture: TextureImpl,
+  level: number,
+  layer: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): { readonly packed: Packed; finish(): TexelArray } | undefined {
+  const { gl } = ctx;
+  const readout = readFrom(ctx, texture, level, layer);
+  if (!readout) return undefined;
+  const raw = readout.raw(width * height * 4);
+  const packed = packPixels(ctx, x, y, width, height, readout.format, readout.type, raw.byteLength);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  return {
+    packed,
+    finish() {
+      unpack(ctx, packed, raw);
+      const out = texelArray(texture.info, width * height);
+      readout.convert(raw, out, width * height);
+      return out;
+    },
+  };
 }
 
 /** Reads a region of one level and layer in the format's own layout, from the current copy. */
@@ -509,6 +583,61 @@ export function copyTextureToBuffer(
     offset,
     offset + (layers - 1) * bytesPerRow * rowsPerImage + (height - 1) * bytesPerRow + tight,
   );
+}
+
+/**
+ * Starts `copyTextureToBuffer` into a mappable buffer without waiting for the GPU, where the texture
+ * is current only on GL and its format reads with `readPixels`. Returns whether it did; the caller
+ * copies synchronously otherwise.
+ */
+export function copyTextureToBufferLater(
+  ctx: Ctx,
+  source: GPUTexelCopyTextureInfo,
+  destination: BufferImpl,
+  layout: GPUTexelCopyBufferLayout,
+  size: GPUExtent3DStrict,
+): boolean {
+  const texture = textureImpl(source.texture);
+  if (texture.home === 'cpu' || texture.renderbuffer || destination.destroyed) return false;
+  const [width, height, layers] = extent(size);
+  const [x, y, z] = origin(source.origin);
+  const level = source.mipLevel ?? 0;
+  const reads: NonNullable<ReturnType<typeof readLaterFromGl>>[] = [];
+  for (let layer = 0; layer < layers; layer++) {
+    const read = readLaterFromGl(ctx, texture, level, z + layer, x, y, width, height);
+    if (!read) {
+      for (const each of reads) discard(ctx, each.packed);
+      return false;
+    }
+    reads.push(read);
+  }
+  const tight = width * texture.info.bytes;
+  const offset = layout.offset ?? 0;
+  const bytesPerRow = layout.bytesPerRow ?? tight;
+  const rowsPerImage = layout.rowsPerImage ?? height;
+  destination.reads.push({
+    ready: () => reads.every((read) => signalled(ctx, read.packed)),
+    finish() {
+      reads.forEach((read, layer) => {
+        const texels = read.finish();
+        let bytes = new Uint8Array(texels.buffer, texels.byteOffset, texels.byteLength);
+        if (texture.info.bgra) bytes = swapRedBlue(bytes);
+        for (let row = 0; row < height; row++) {
+          const at = offset + layer * bytesPerRow * rowsPerImage + row * bytesPerRow;
+          destination.bytes.set(bytes.subarray(row * tight, (row + 1) * tight), at);
+        }
+      });
+      written(
+        destination,
+        offset,
+        offset + (layers - 1) * bytesPerRow * rowsPerImage + (height - 1) * bytesPerRow + tight,
+      );
+    },
+    cancel: () => {
+      for (const read of reads) discard(ctx, read.packed);
+    },
+  });
+  return true;
 }
 
 export function copyTextureToTexture(

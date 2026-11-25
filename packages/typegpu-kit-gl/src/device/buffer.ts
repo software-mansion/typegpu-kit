@@ -6,6 +6,7 @@
  */
 
 import { type BufferStats, type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
+import { discard, packPixels, signalled, unpack } from './pack.ts';
 import { readBack as readBackFrom } from './placement.ts';
 
 /** Bytes per data-texture row is `ROW_TEXELS * 16` unless the buffer needs wider rows. */
@@ -64,7 +65,21 @@ export interface BufferImpl {
     string,
     Copy<WebGLBuffer> & { readonly offset: number; readonly size: number }
   >;
+  /**
+   * Copies from GL into the CPU bytes the GPU may not have finished, in command order; `sync`
+   * finishes them, waiting if it must, and `mapAsync` waits for them without blocking.
+   */
+  readonly reads: PendingRead[];
   free(): void;
+}
+
+/** A copy into a buffer's CPU bytes that started on the GPU, to finish once the GPU has. */
+export interface PendingRead {
+  ready(): boolean;
+  /** Writes the bytes, waiting for the GPU if it has not finished. */
+  finish(): void;
+  /** Frees the read without writing it. */
+  cancel(): void;
 }
 
 /** The GL copies of a buffer, apart from it so freeing them on collection never keeps it. */
@@ -74,6 +89,7 @@ interface Copies {
   data: Copy<DataTexture> | undefined;
   uniform: Copy<WebGLBuffer> | undefined;
   readonly slices: BufferImpl['slices'];
+  readonly reads: PendingRead[];
 }
 
 function freeCopies(gl: WebGL2RenderingContext, copies: Copies): void {
@@ -83,6 +99,7 @@ function freeCopies(gl: WebGL2RenderingContext, copies: Copies): void {
   if (copies.uniform) gl.deleteBuffer(copies.uniform.value);
   for (const slice of copies.slices.values()) gl.deleteBuffer(slice.value);
   copies.slices.clear();
+  for (const read of copies.reads.splice(0)) read.cancel();
   copies.vertex = copies.index = copies.data = copies.uniform = undefined;
 }
 
@@ -329,6 +346,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     data: undefined,
     uniform: undefined,
     slices: new Map(),
+    reads: [],
   };
   const impl: BufferImpl = {
     id: ctx.id(),
@@ -340,6 +358,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     destroyed: false,
     gpuNewer: false,
     sync() {
+      for (const read of copies.reads.splice(0)) read.finish();
       if (impl.gpuNewer && impl.data && !impl.destroyed) readBack(ctx, impl);
     },
     get vertex() {
@@ -367,6 +386,7 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
       copies.uniform = value;
     },
     slices: copies.slices,
+    reads: copies.reads,
     free: () => freeCopies(gl, copies),
   };
   const untrack = ctx.track(freeing(gl, copies), impl);
@@ -403,8 +423,13 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
       return new Promise<undefined>((resolve, reject) => {
         const map = { reject };
         pending = map;
-        queueMicrotask(() => {
+        // Copies the GPU has not finished resolve the map later, as WebGPU's do, not by waiting
+        const poll = () => {
           if (pending !== map) return;
+          if (impl.reads.some((read) => !read.ready())) {
+            setTimeout(poll, 1);
+            return;
+          }
           pending = undefined;
           impl.sync();
           mapState = 'mapped';
@@ -412,7 +437,8 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
           mapOffset = offset;
           mapSize = rangeSize ?? size - offset;
           resolve(undefined);
-        });
+        };
+        queueMicrotask(poll);
       });
     },
 
@@ -454,6 +480,61 @@ export function createBuffer(ctx: Ctx, descriptor: GPUBufferDescriptor): GPUBuff
     },
   };
   return buffer as unknown as GPUBuffer;
+}
+
+/**
+ * Starts copying `size` bytes of a buffer whose newest contents only GL holds into another
+ * buffer's CPU bytes, without waiting for the GPU; the bytes are those at this point of the
+ * command stream.
+ */
+export function copyLater(
+  ctx: Ctx,
+  source: BufferImpl,
+  sourceOffset: number,
+  destination: BufferImpl,
+  destinationOffset: number,
+  size: number,
+): void {
+  const { gl, state } = ctx;
+  const data = source.data!.value;
+  const rowBytes = data.width * 16;
+  const first = Math.floor(sourceOffset / rowBytes);
+  const rows = Math.floor((sourceOffset + size - 1) / rowBytes) - first + 1;
+  state.readFramebuffer(ctx.scratch.read);
+  gl.framebufferTexture2D(
+    gl.READ_FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    data.texture,
+    0,
+  );
+  state.readBuffer(gl.COLOR_ATTACHMENT0);
+  const packed = packPixels(
+    ctx,
+    0,
+    first,
+    data.width,
+    rows,
+    gl.RGBA_INTEGER,
+    gl.UNSIGNED_INT,
+    rows * rowBytes,
+  );
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  destination.reads.push({
+    ready: () => signalled(ctx, packed),
+    finish() {
+      const began = performance.now();
+      const words = new Uint32Array((rows * rowBytes) / 4);
+      unpack(ctx, packed, words);
+      const from = sourceOffset - first * rowBytes;
+      destination.bytes.set(new Uint8Array(words.buffer, from, size), destinationOffset);
+      written(destination, destinationOffset, destinationOffset + size);
+      const stats = statsOf(ctx, source);
+      stats.readMs += performance.now() - began;
+      stats.reads++;
+    },
+    cancel: () => discard(ctx, packed),
+  });
 }
 
 /** Copies `size` bytes from the start of `data` into the buffer at `offset`. */
