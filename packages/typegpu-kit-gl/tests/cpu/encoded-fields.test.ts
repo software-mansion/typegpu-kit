@@ -35,6 +35,8 @@ it('infers normalized, half-float and ordered float words from typed WGSL stores
 it('compares normalized channels independently without relaxing ordinary integers', () => {
   expect(packedEqual(0x30e48001, 0xcf1c8001, 'octahedral-2x16snorm')).toBe(true);
   expect(packedEqual(0x30e48001, 0xcf1c8001, '2x16snorm')).toBe(false);
+  expect(packedEqual(0x8001406e, 0x8001bf91, 'octahedral-2x16snorm')).toBe(true);
+  expect(packedEqual(0x8001406e, 0x8001bf90, 'octahedral-2x16snorm')).toBe(false);
   expect(packedEqual(0xc001c001, 0xc000c000, '2x16snorm')).toBe(true);
   expect(packedEqual(0xc002c001, 0xc000c000, '2x16snorm')).toBe(false);
   expect(packedEqual(0x01020304, 0x02030405, '4x8unorm')).toBe(true);

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { BOX } from '../../../typegpu-kit-examples/src/jelly-world/slider.ts';
 import { sdBezier } from '../../../typegpu-kit-examples/node_modules/@typegpu/sdf/index.js';
@@ -6,6 +6,7 @@ import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 import { recordResults } from './results.ts';
+import { readBuffer } from './example-comparison.ts';
 
 const texels = [11580, 11787, 19031, 19052, 22801, 23060, 23312, 32013];
 async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] }[]) {
@@ -37,12 +38,12 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
           if (sample % 5 === 2) point.x -= 0.03;
           if (sample % 5 === 3) point.y += 0.03;
           if (sample % 5 === 4) point.y -= 0.03;
-          const A = d.vec2f(points.$[segment]),
-            B = d.vec2f(controls.$[segment]),
-            C = d.vec2f(points.$[segment + 1]);
-          const a = B - A,
-            b = A - B * 2 + C,
-            delta = A - point;
+          const A = d.vec2f(points.$[segment]);
+          const B = d.vec2f(controls.$[segment]);
+          const C = d.vec2f(points.$[segment + 1]);
+          const a = B - A;
+          const b = A - B * 2 + C;
+          const delta = A - point;
           const kk = 1 / std.max(std.dot(b, b), 1e-4);
           const kx = kk * std.dot(a, b);
           const ky = (kk * (d.f32(2) * std.dot(a, a) + std.dot(delta, b))) / 3;
@@ -68,9 +69,12 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
       ),
     })
     .dispatchWorkgroups(texels.length * 5);
-  return (await output.read()).map((v) => [...v]);
+  const values = new Float32Array(await readBuffer(root.device, root.unwrap(output.buffer)));
+  return Array.from({ length: values.length / 4 }, (_, row) =>
+    Array.from(values.subarray(row * 4, row * 4 + 4)),
+  );
 }
-it.runIf(!!process.env.CPU_CURVE_INPUT)(
+it.runIf(!!process.env.CPU_CURVE_INPUT && existsSync(process.env.CPU_CURVE_INPUT))(
   'records cubic distance decisions from identical jelly-world inputs',
   async () => {
     const bindings = JSON.parse(readFileSync(process.env.CPU_CURVE_INPUT!, 'utf8')) as {

@@ -149,6 +149,8 @@ export async function captureScene(
       await root.device.queue.onSubmittedWorkDone();
       await settle();
     }
+    if (state.failure) throw state.failure;
+    if (!state.ready) throw new Error(`${key}: scene did not become ready before capture`);
     if (!read) return { resources: [], skipped: [], frames: 2 };
     const resources: CapturedResource[] = [],
       skipped: SceneCapture['skipped'] = [];

@@ -130,6 +130,15 @@ export function encodedFields(code: string, binding: string): EncodedField[] {
   return [...new Map(result.map((field) => [JSON.stringify(field), field])).values()];
 }
 
+function canonical(word: number) {
+  let x = Math.max(-32767, (word << 16) >> 16);
+  let y = Math.max(-32767, word >> 16);
+  // At the fold boundary, either sign encodes the same point on the seam.
+  if (Math.abs(y) === 32767) x = Math.abs(x);
+  if (Math.abs(x) === 32767) y = Math.abs(y);
+  return [x, y];
+}
+
 export function packedEqual(
   a: number,
   b: number,
@@ -137,6 +146,9 @@ export function packedEqual(
 ): boolean {
   if (encoding === 'octahedral-2x16snorm') {
     if (packedEqual(a, b, '2x16snorm')) return true;
+    const ca = canonical(a),
+      cb = canonical(b);
+    if (ca.every((value, i) => Math.abs(value - cb[i]!) <= 1)) return true;
     const left = unfold(a),
       right = unfold(b);
     const magnitude = Math.max(...left.map(Math.abs), ...right.map(Math.abs));

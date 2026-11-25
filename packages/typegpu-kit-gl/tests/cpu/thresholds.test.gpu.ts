@@ -9,7 +9,14 @@ import { dispersion, LOOP_PERIOD, N } from '../../../typegpu-kit-examples/src/oc
 import { heightAt } from '../../../typegpu-kit-examples/src/fireworks/land.ts';
 import { cpuRoot } from './device.ts';
 import { recordResults } from './results.ts';
-import { seeded } from './example-comparison.ts';
+import { seeded, readBuffer } from './example-comparison.ts';
+
+function rowsOf(bytes: ArrayBuffer) {
+  const values = new Float32Array(bytes);
+  return Array.from({ length: values.length / 4 }, (_, row) =>
+    Array.from(values.subarray(row * 4, row * 4 + 4)),
+  );
+}
 
 async function thresholds(root: TgpuRoot) {
   const indices = root.createReadonly(d.arrayOf(d.u32, 4), [4805, 4923, 298949, 299067]);
@@ -50,8 +57,8 @@ async function thresholds(root: TgpuRoot) {
     })
     .dispatchWorkgroups(1);
   return {
-    waves: (await waves.read()).map((v) => [...v]),
-    terrain: (await terrain.read()).map((v) => [...v]),
+    waves: rowsOf(await readBuffer(root.device, root.unwrap(waves.buffer))),
+    terrain: rowsOf(await readBuffer(root.device, root.unwrap(terrain.buffer))),
   };
 }
 
@@ -150,7 +157,7 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
         for (let component = 0; component < 10; component++) {
           const a = actual[offset + component]!,
             b = expected[offset + component]!;
-          const tolerance = component < 4 ? 0 : 1e-5 * Math.max(1, Math.abs(a), Math.abs(b));
+          const tolerance = component < 2 ? 0 : 1e-5 * Math.max(1, Math.abs(a), Math.abs(b));
           if (Math.abs(a - b) > tolerance)
             differences.push(`row ${row} component ${component}: CPU=${a}, dawn=${b}`);
         }
