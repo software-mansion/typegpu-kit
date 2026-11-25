@@ -1,5 +1,4 @@
-import { backends } from '@typegpu/kit';
-import { byStage, type Inject } from '@typegpu/kit/inject';
+import { byStage } from '@typegpu/kit/inject';
 import { randf } from '@typegpu/noise';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 
@@ -361,37 +360,9 @@ export function createCells(root: TgpuRoot) {
     return std.textureLoad(relief.reading.$, p, 0);
   };
 
-  // Kernels where each cell gathers its own from its neighbours read them from a copy taken
-  // before they run, as they would race with the cells they write otherwise. Only backends whose
-  // compute runs on the CPU use them, and only those keep a copy
-  const kept =
-    backends.of(root).compute === 'cpu' ? root.createBuffer(Grid).$usage('storage') : undefined;
-  const keeping = kept?.as('mutable');
-  const copying = keeping
-    ? root.createComputePipeline({
-        compute: gridKernel(function keep({ gid }) {
-          'use gpu';
-          if (gid.x >= WIDTH || gid.y >= HEIGHT) return;
-          const i = gid.y * WIDTH + gid.x;
-          keeping.$[i] = grid.$[i] as number;
-        }),
-      })
-    : undefined;
-  const fromKept: Inject = (cfg) => (kept ? cfg.with(grid, kept.as('readonly')) : cfg);
-
   return {
     cellAt,
     put,
-    /**
-     * Copies the cells for kernels that read the copy through `fromKept`, where compute runs on
-     * the CPU. Elsewhere it records nothing.
-     */
-    keep(pass: TgpuComputePass) {
-      if (!copying) return;
-      pass.setPipeline(copying);
-      pass.dispatchWorkgroups(GROUPS.x, GROUPS.y);
-    },
-    fromKept,
     traitsOf,
     matterAt,
     kindAt,
@@ -405,7 +376,6 @@ export function createCells(root: TgpuRoot) {
     },
     destroy() {
       buffer.destroy();
-      kept?.destroy();
       materials.buffer.destroy();
       relief.destroy();
     },

@@ -77,18 +77,14 @@ export async function createScene(root: TgpuRoot, surface: Surface) {
   const sim = clock.fixedStep({ step: STEP_SECONDS });
   const cadence = clock.cadence({ hz: FIELD_HZ });
   const seconds = root.createUniform(d.f32);
-  const {
-    sparks: embers,
-    spark,
-    sparked,
-  } = createEmbers(root, {
+  const { sparks: embers, spark } = createEmbers(root, {
     camera: view,
     step: STEP_SECONDS,
     cells,
     counts,
   });
 
-  const rules = createRules(root, { cells, counts, spark, sparked });
+  const rules = createRules(root, { cells, counts, spark });
 
   const glows = targets.create(root, FIELD, { emission: SAMPLED });
   const emission = passes
