@@ -25,6 +25,7 @@ import {
   createRenderPipeline,
   createRenderPipelineAsync,
 } from './pipeline.ts';
+import { discardProbes } from './placement.ts';
 import { createSampler } from './sampler.ts';
 import { createShaderModule, type Prebuilt, PREBUILT } from './shader.ts';
 
@@ -345,6 +346,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     destroy() {
       if (ctx.lost) return;
       presenter.destroy();
+      discardProbes(ctx);
       for (const free of frees) free();
       frees.clear();
       gl.deleteSampler(nearest);

@@ -64,17 +64,24 @@ function count(ctx: Ctx, label: string, ms: number, invocations: number): void {
   }
 }
 
-export function dispatch(ctx: Ctx, pass: ComputePass, ...counts: [number, number, number]): void {
-  // WebGPU takes counts as [EnforceRange] GPUSize32: a fraction truncates, and the GPU form and
-  // the CPU module must run the same dispatch
-  if (!counts.every((each) => Number.isFinite(each) && each >= 0 && each < 2 ** 32)) {
-    ctx.errors.report(
-      'validation',
-      `dispatchWorkgroups(${counts.join(', ')}) has an invalid count.`,
-    );
-    return;
+/**
+ * Converts a workgroup count as WebIDL converts an `[EnforceRange] GPUSize32`, throwing its
+ * `TypeError`, so the GPU form and the CPU module run the same dispatch.
+ */
+export function workgroupCount(value: unknown): number {
+  // Unary plus is ToNumber, which throws on a BigInt or a Symbol
+  const number = +(value as number);
+  if (!Number.isFinite(number)) {
+    throw new TypeError(`dispatchWorkgroups: the count ${String(value)} is not a finite number.`);
   }
-  const [x, y, z] = counts.map(Math.trunc) as [number, number, number];
+  const whole = Math.trunc(number) + 0;
+  if (whole < 0 || whole > 0xffffffff) {
+    throw new TypeError(`dispatchWorkgroups: the count ${String(value)} is outside a GPUSize32.`);
+  }
+  return whole;
+}
+
+export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: number): void {
   const pipeline = pass.pipeline;
   const module = pipeline?.module;
   if (!module) {
@@ -85,11 +92,17 @@ export function dispatch(ctx: Ctx, pass: ComputePass, ...counts: [number, number
   const size = pipeline.gpu?.module.workgroupSize ?? module.workgroupSize;
   const invocations = x * y * z * size[0] * size[1] * size[2];
   const gpu = pipeline.gpu;
-  if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups)) {
+  if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups, invocations)) {
     const start = performance.now();
     const probe = beginProbe(ctx, pipeline, pipeline.label, invocations);
-    const reason = runGpu(ctx, gpu, pass.groups, x, y, z);
-    endProbe(ctx, pipeline, probe, reason === undefined);
+    let reason: string | undefined;
+    let ran = false;
+    try {
+      reason = runGpu(ctx, gpu, pass.groups, x, y, z);
+      ran = reason === undefined;
+    } finally {
+      endProbe(ctx, pipeline, probe, ran);
+    }
     if (reason === undefined) {
       const ms = performance.now() - start;
       count(ctx, `${pipeline.label} (gpu)`, ms, invocations);
