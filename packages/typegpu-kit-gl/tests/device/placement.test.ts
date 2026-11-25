@@ -452,8 +452,9 @@ test("two forms that rewrite each other's input move to the CPU together, and th
   expect(ctx.stats.placement.get('stars')).toBe(
     "cpu: it rewrote an input of 'shells', whose outputs the CPU read back, so it moved with it",
   );
+  // Settling, then three windows of the leader judged together
   const waits: boolean[] = [];
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 30; i++) {
     const { where, waited } = frame();
     expect(where).toEqual(['cpu', 'cpu']);
     waits.push(waited);
@@ -486,9 +487,9 @@ test('a group whose CPU runs cost more than they save goes back once and stays',
     frame();
     await task();
   }
-  // Settling, then a window of runs dearer than the waits they saved
+  // Settling, then three windows of runs dearer than the waits they saved
   const where: string[][] = [];
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 30; i++) {
     where.push(frame(5).where);
     await task();
   }

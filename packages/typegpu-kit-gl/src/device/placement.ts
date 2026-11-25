@@ -45,6 +45,11 @@ const MOST_INVOCATIONS = 1 << 16;
  */
 const MOST_GROUPED = 4;
 /**
+ * Leader windows a group's CPU runs are judged over: moving several forms shifts the waits of the
+ * forms around them for a while, which one window would mistake for the group's own.
+ */
+const GROUP_WINDOWS = 3;
+/**
  * GPU milliseconds a dispatch of a GPU form may take, in two samples running, before its CPU
  * module is tried: half a 60 Hz frame, which other work on a busy GPU does not lift a small form
  * to. Below it a move saves little, and may bring a readback of the form's inputs every dispatch.
@@ -156,8 +161,12 @@ interface Record {
 interface Group {
   readonly leader: Record;
   readonly members: ReadonlySet<Record>;
-  /** CPU milliseconds of every member since the leader's window began. */
+  /** CPU milliseconds of every member since judging began, the leader's dispatches and windows. */
   cpuMs: number;
+  dispatches: number;
+  windows: number;
+  /** The device's readback wait when judging began. */
+  waitAt: number;
   /** At the move: the members' GPU issue, and the device's readback wait, per leader dispatch. */
   readonly gpuIssue: number;
   readonly waitBefore: number;
@@ -528,6 +537,9 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
     leader,
     members,
     cpuMs: 0,
+    dispatches: 0,
+    windows: 0,
+    waitAt: 0,
     gpuIssue: [...members].reduce((sum, member) => sum + perDispatch(member), 0),
     waitBefore: (waitedOf(ctx).ms - leader.waitAt) / leader.dispatches,
     settling: true,
@@ -580,19 +592,29 @@ function breakGroup(ctx: Ctx, group: Group, why: string, lost = false): void {
 function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
   group.cpuMs += ms;
   if (record !== group.leader || record.dispatches < WINDOW) return;
-  const { dispatches } = record;
   if (group.settling) {
     group.settling = false;
-    group.cpuMs = 0;
-    return restart(ctx, record);
+    return judgeFrom(ctx, record, group);
   }
+  group.dispatches += record.dispatches;
+  restart(ctx, record);
+  if (++group.windows < GROUP_WINDOWS) return;
+  const { dispatches } = group;
   const extra = group.cpuMs / dispatches - group.gpuIssue;
-  const saved = group.waitBefore - (waitedOf(ctx).ms - record.waitAt) / dispatches;
+  const saved = group.waitBefore - (waitedOf(ctx).ms - group.waitAt) / dispatches;
   const cost = `CPU runs of its group cost ${extra.toFixed(2)} ms more than their GPU forms, and saved ${saved.toFixed(2)} ms of readback waits`;
   if (extra > CHEAP_MS && extra > saved) return breakGroup(ctx, group, cost, true);
   ctx.stats.placement.set(record.label, `cpu: ${cost}`);
+  judgeFrom(ctx, record, group);
+}
+
+/** Starts the group's next judging span at the leader's next window. */
+function judgeFrom(ctx: Ctx, leader: Record, group: Group): void {
+  restart(ctx, leader);
   group.cpuMs = 0;
-  restart(ctx, record);
+  group.dispatches = 0;
+  group.windows = 0;
+  group.waitAt = waitedOf(ctx).ms;
 }
 
 /** Notes a CPU run of a pipeline that has a GPU form, and moves it back if the CPU costs more. */
