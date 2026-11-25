@@ -73,3 +73,26 @@ it('rounds dot, mix and fract intermediate operations', async () => {
     root.destroy();
   }
 });
+
+it('rounds abstract literals on either side of comparisons and converts named integers', async () => {
+  const root = cpuRoot();
+  const input = root.createReadonly(d.f32, 0.1);
+  const integer = root.createReadonly(d.u32, 16777217);
+  const output = root.createMutable(d.vec4f);
+  try {
+    const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      const e = integer.$;
+      output.$ = d.vec4f(
+        std.select(0, 1, 0.1 === input.$),
+        std.select(0, 1, input.$ === 0.1),
+        std.select(0, 1, 0.1 < input.$),
+        d.f32(e),
+      );
+    });
+    root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+    expect([...(await output.read())]).toEqual([1, 1, 0, 16777216]);
+  } finally {
+    root.destroy();
+  }
+});

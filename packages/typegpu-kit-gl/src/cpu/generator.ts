@@ -1,4 +1,4 @@
-import { f32, f32dot, f32op } from './floats.ts';
+import { f32, f32Literal, f32dot, f32op } from './floats.ts';
 import { expandBarrierHelpers, type BarrierHelper } from './phase-helpers.ts';
 import { splitPhases } from './phases.ts';
 import { isPureExpression, prunePureLocals } from './dead-locals.ts';
@@ -31,6 +31,21 @@ function scalar(schema: d.BaseData | symbol): string {
   if (schema.type === 'decorated') return scalar((schema as d.Decorated).inner);
   return schema.type;
 }
+
+const EXACT_FLOAT_BUILTINS = new Set([
+  'abs',
+  'ceil',
+  'floor',
+  'trunc',
+  'round',
+  'min',
+  'max',
+  'sign',
+  'clamp',
+  'saturate',
+  'step',
+  'select',
+]);
 
 export class CpuGenerator extends WgslGenerator {
   override languageKey = 'javascript';
@@ -664,7 +679,9 @@ export class CpuGenerator extends WgslGenerator {
     if (Object.values(std).includes(callee as never)) {
       const emitted = this.emitCall(name, [], args);
       return snip(
-        typeof result.dataType !== 'symbol' && result.dataType.type === 'f32'
+        typeof result.dataType !== 'symbol' &&
+          result.dataType.type === 'f32' &&
+          !EXACT_FLOAT_BUILTINS.has(name)
           ? f32(emitted)
           : emitted,
         result.dataType as d.BaseData,
@@ -819,6 +836,9 @@ export class CpuGenerator extends WgslGenerator {
       )
     ) {
       const parts = args.flatMap((arg) => this.#parts(arg) ?? [this.#value(arg)]);
+      const types = args.flatMap((arg) =>
+        Array.from({ length: this.#parts(arg)?.length ?? 1 }, () => scalar(arg.dataType)),
+      );
       const count = Number(schema.type[3]);
       const components = Array.from({ length: count }, (_, i) => {
         const value = parts.length === 1 ? parts[0]! : (parts[i] ?? '0');
@@ -826,7 +846,9 @@ export class CpuGenerator extends WgslGenerator {
           ? `((${value})>>>0)`
           : schema.type.endsWith('i')
             ? `((${value})|0)`
-            : f32(value);
+            : /^(f32|vec[234]f)$/.test(types[parts.length === 1 ? 0 : i] ?? '')
+              ? value
+              : f32(value);
       });
       const name = this.#vector(schema, components);
       if (args.every((arg) => arg.origin === 'constant'))
@@ -892,7 +914,9 @@ export class CpuGenerator extends WgslGenerator {
           ? `((${value}) | 0)`
           : type === 'bool'
             ? `Boolean(${value})`
-            : f32(value);
+            : args.length && scalar(args[0]!.dataType) === 'f32'
+              ? value
+              : f32(value);
     return snip(
       code,
       schema,
@@ -1403,8 +1427,8 @@ export class CpuGenerator extends WgslGenerator {
     if (!['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(type))
       unsupported(`${op} on ${type}`);
     const float = type === 'f32' || rhsType === 'f32';
-    const left = `(${this.#value(lhs)})`;
-    const right = float ? f32(this.#value(rhs)) : `(${this.#value(rhs)})`;
+    const left = `(${float ? f32Literal(this.#value(lhs)) : this.#value(lhs)})`;
+    const right = `(${float ? f32Literal(this.#value(rhs)) : this.#value(rhs)})`;
     if (op === '=') return `${left} = ${right}`;
     const assignment = op.endsWith('=') && !['==', '!=', '<=', '>='].includes(op);
     const operator = assignment ? op.slice(0, -1) : op;
@@ -1678,7 +1702,8 @@ export class CpuGenerator extends WgslGenerator {
       firstTrailingBit: 'a===0?4294967295:31-Math.clz32((a&-a)>>>0)',
     };
     const floatResult = scalar(args[0]!.dataType) === 'f32';
-    const rounded = (value: string) => (floatResult ? f32(value) : value);
+    const rounded = (value: string) =>
+      floatResult && !EXACT_FLOAT_BUILTINS.has(name) ? f32(value) : value;
     if (expressions[name]) return `((a,b,c)=>(${rounded(expressions[name])}))(${values.join(',')})`;
     for (const arg of args) {
       if (

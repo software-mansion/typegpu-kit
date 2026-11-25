@@ -25,7 +25,7 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
 - A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame.
-- Floating-point intermediates use JavaScript's 64-bit numbers. An `f32` buffer store rounds to 32 bits; texture stores convert to their format. Integer arithmetic preserves 32-bit wraparound. Float rounding can change threshold decisions or simulation trajectories compared with WebGPU.
+- `f32` literals, conversions and arithmetic round to 32 bits at each operation, including vector and matrix components. Texture stores convert to their format. Integer arithmetic preserves 32-bit wraparound. Transcendental builtins use JavaScript's math functions rounded to `f32`; their permitted accuracy differs between GPU implementations, so simulations that amplify small differences can still diverge.
 - Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
 
