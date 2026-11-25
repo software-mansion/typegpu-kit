@@ -27,7 +27,7 @@ A root's `destroy` also frees the WebGL device.
 
 ## Telling the backends apart
 
-`backends.of(root)` from `@typegpu/kit` reports `kind`, `'webgpu'` or `'webgl'`, and `compute`, `'gpu'` or `'cpu'`. The fallback reports `'webgl'` and `'cpu'`: kernels that share workgroup memory, barriers or most atomics on shared cells run on the CPU there. A module reads it where it creates its pipelines to choose a smaller capacity or kernels without workgroup memory, as the Kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` do, and the examples `ocean`, `slime-mould`, `censer`, `sph-sculpt`, `jump-flood` and `falling-sand`. Such a branch leaves the WebGPU path as it is, and its tests run both paths on dawn by branding a real device as CPU-compute.
+`backends.of(root)` from `@typegpu/kit` reports `kind`, `'webgpu'` or `'webgl'`, and `compute`, `'gpu'` or `'cpu'`. The fallback reports `'webgl'` and `'cpu'`: kernels that share workgroup memory, barriers or most atomics on shared cells run on the CPU there. A module reads it where it creates its pipelines to choose a smaller capacity or kernels without workgroup memory, as the Kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` do, and the examples `ocean`, `slime-mould`, `censer`, `sph-sculpt` and `jump-flood`. `LIMITATIONS.md` says what each of those would need to run without its branch. Such a branch leaves the WebGPU path as it is, and its tests run both paths on dawn by branding a real device as CPU-compute.
 
 ## Testing on the fallback
 

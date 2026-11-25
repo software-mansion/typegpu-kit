@@ -38,6 +38,16 @@ CPU `f32` literals, conversions and arithmetic round to 32 bits at each operatio
 
 `backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick kernels the fallback runs on the GPU or that suit a CPU, as the Kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` do, and an example's `meta.json` may give `fallback` scene options that size it. On the fallback, particles from one burst fill the ring in burst order, where WebGPU's atomics fill it in any order.
 
+## What still needs a branch
+
+Most examples run on the fallback as they are. Five choose other kernels with `backends.of(root)`, because the kernels they run on WebGPU would stay on the CPU here and be too slow there. Each waits on a form the fallback does not have:
+
+- `ocean`, `censer` and `sph-sculpt` share workgroup memory behind barriers: the FFT and its mip reductions, the smoke's coarse average, the water's tally and occupancy. A fragment that reran its whole workgroup would compute it, at the workgroup's size in cost, so for `censer` at eight times its heaviest kernel. Their branches read back or recompute what the first phase stored instead, which is cheaper.
+- `jump-flood` places seeds with `atomicMin` used as a minimum and links regions with `atomicOr` into rows of bits. No form covers either.
+- `slime-mould` claims cells with a counter each agent adds to and then loads, so it has to see its own addition among the others'. A pass of sums cannot give it that.
+
+In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` branch for the same reasons: workgroup memory, counters per cell whose results are used, and a ring slot taken inside a loop or passed on to a callback.
+
 ## Shaders
 
 - A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
