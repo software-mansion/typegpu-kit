@@ -35,14 +35,15 @@ it('evaluates scalar compound destinations once for buffers and local arrays', a
   root.destroy();
 });
 
+const f = () => {
+  'use gpu';
+  std.workgroupBarrier();
+  return d.u32(1);
+};
+
 it('suspends a compound RHS without losing its cached destination', async () => {
   const root = cpuRoot();
   const values = root.createMutable(d.arrayOf(d.u32, 2), [10, 20]);
-  const f = () => {
-    'use gpu';
-    std.workgroupBarrier();
-    return d.u32(1);
-  };
   root
     .createComputePipeline({
       compute: tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.localInvocationId } })(

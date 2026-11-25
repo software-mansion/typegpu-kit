@@ -621,7 +621,7 @@ export class CpuGenerator extends WgslGenerator {
       const argument = this._expression(expression[2]);
       const count = Number(scalar(result.dataType)[3]);
       return snip(
-        `((v)=>$vector([${Array.from({ length: count }, (_, i) => `-v[${i}]`).join(',')}]))(${this.#value(argument)})`,
+        `((v)=>$vector([${Array.from({ length: count }, (_, i) => (scalar(result.dataType).endsWith('i') ? `(-v[${i}]|0)` : `-v[${i}]`)).join(',')}]))(${this.#value(argument)})`,
         result.dataType as d.BaseData,
         'runtime',
         result.possibleSideEffects,

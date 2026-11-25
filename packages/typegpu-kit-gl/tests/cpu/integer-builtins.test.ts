@@ -147,3 +147,33 @@ it.each([
   expect(() => pipeline.dispatchWorkgroups(1)).toThrow(`unsupported builtin ${name}`);
   root.destroy();
 });
+
+it('wraps signed vector negation before converting to float', async () => {
+  const root = cpuRoot();
+  const input = root.createReadonly(d.vec2i, d.vec2i(-2147483648, 1));
+  const output = root.createMutable(d.vec2f);
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        output.$ = d.vec2f(-input.$);
+      }),
+    })
+    .dispatchWorkgroups(1);
+  expect([...(await output.read())]).toEqual([-2147483648, -1]);
+  root.destroy();
+});
+
+it('rejects unsigned vector negation through TypeGPU validation', () => {
+  const root = cpuRoot();
+  const input = root.createReadonly(d.vec2u, d.vec2u(1));
+  const output = root.createMutable(d.vec2f);
+  const compute = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    output.$ = d.vec2f(-input.$);
+  });
+  expect(() => root.createComputePipeline({ compute }).dispatchWorkgroups(1)).toThrow(
+    /Unary operator - cannot be applied.*vec2u/,
+  );
+  root.destroy();
+});
