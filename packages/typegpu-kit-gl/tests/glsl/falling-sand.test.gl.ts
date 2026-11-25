@@ -124,7 +124,7 @@ it("steps falling-sand's embers onto the grid on the GPU as WebGPU does, reading
   const actual = await stepped(gl, true);
   expect(Object.fromEntries(stats.fallbacks)).toEqual({});
   const ran = [...stats.kernels.keys()];
-  for (const label of ['stepping', 'stepPipeline']) expect(ran).toContain(`${label} (gpu)`);
+  for (const label of ['stepping', 'embers_step']) expect(ran).toContain(`${label} (gpu)`);
   // No kernel ran on the CPU, so none waited for the GPU to read the grid back
   expect(ran.filter((label) => !label.endsWith('(gpu)'))).toEqual([]);
   expect(stats.readback.textures).toBe(0);

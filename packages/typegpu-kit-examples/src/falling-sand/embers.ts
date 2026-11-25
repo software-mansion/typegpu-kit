@@ -66,6 +66,7 @@ export function createEmbers(
   };
 
   const sparks = particles.create(root, camera, {
+    label: 'embers',
     capacity: CAPACITY,
     step,
     dimensions: 2,

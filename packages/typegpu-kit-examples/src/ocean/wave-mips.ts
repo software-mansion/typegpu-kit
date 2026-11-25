@@ -123,7 +123,7 @@ const only = (baseMipLevel: number) => ({ baseMipLevel, mipLevelCount: 1 });
  */
 export function createWaveMips(root: TgpuRoot, maps: readonly WaveMap[]) {
   if (backends.of(root).compute === 'cpu') return levelByLevel(root, maps);
-  const pipeline = root.createComputePipeline({ compute: fillThree });
+  const pipeline = root.createComputePipeline({ compute: fillThree }).$name('waveMips');
   const dispatches = maps.flatMap((map) => {
     const { size, mipLevelCount = 1 } = map.props;
     return Array.from({ length: Math.floor((mipLevelCount - 1) / 3) }, (_, batch) => {
@@ -149,7 +149,7 @@ export function createWaveMips(root: TgpuRoot, maps: readonly WaveMap[]) {
 }
 
 function levelByLevel(root: TgpuRoot, maps: readonly WaveMap[]) {
-  const pipeline = root.createComputePipeline({ compute: fillOne });
+  const pipeline = root.createComputePipeline({ compute: fillOne }).$name('waveMips');
   const dispatches = maps.flatMap((map) => {
     const { size, mipLevelCount = 1 } = map.props;
     return Array.from({ length: mipLevelCount - 1 }, (_, i) => {
