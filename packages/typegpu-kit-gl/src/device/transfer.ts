@@ -699,12 +699,21 @@ function sourceSize(source: ImageSource): [number, number] {
   return [source.width, source.height];
 }
 
-/** Draws an `ImageBitmap` upside down onto a canvas, which WebGL then uploads unflipped. */
-function flipped(source: ImageSource, x: number, y: number, width: number, height: number) {
+/** Draws a region of an `ImageBitmap` onto a canvas, upside down if `flip`, for WebGL to upload. */
+function drawn(
+  source: ImageSource,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  flip: boolean,
+) {
   const canvas = new OffscreenCanvas(width, height);
   const context = canvas.getContext('2d')!;
-  context.translate(0, height);
-  context.scale(1, -1);
+  if (flip) {
+    context.translate(0, height);
+    context.scale(1, -1);
+  }
   context.drawImage(source as CanvasImageSource, x, y, width, height, 0, 0, width, height);
   return canvas;
 }
@@ -733,10 +742,14 @@ export function copyExternalImageToTexture(
   let image: TexImageSource = source.source as TexImageSource;
   let skipX = sx;
   let skipY = sy;
-  // WebGL ignores the flip and premultiply settings for an ImageBitmap. WebGPU flips within the
-  // region, whose origin counts from the top of the source either way
-  if (flipY && typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) {
-    image = flipped(image, sx, sy, width, height);
+  // WebGL ignores the flip and premultiply settings for an ImageBitmap, so it goes through a canvas,
+  // which WebGL premultiplies. WebGPU flips within the region, whose origin counts from the top
+  if (
+    (flipY || premultiply) &&
+    typeof ImageBitmap !== 'undefined' &&
+    image instanceof ImageBitmap
+  ) {
+    image = drawn(image, sx, sy, width, height, flipY);
     skipX = 0;
     skipY = 0;
   }

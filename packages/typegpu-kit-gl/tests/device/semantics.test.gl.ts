@@ -398,3 +398,31 @@ describe.skipIf(!hasWebGpu)('discarded attachments', () => {
     },
   );
 });
+
+/** Copies a half-transparent red `ImageBitmap`, decoded unpremultiplied, premultiplying it. */
+async function premultiplied(device: GPUDevice) {
+  const pixels = new ImageData(new Uint8ClampedArray([255, 0, 0, 128]), 1, 1);
+  const bitmap = await createImageBitmap(pixels, { premultiplyAlpha: 'none' });
+  const texture = device.createTexture({
+    size: [1, 1],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture(
+    { source: bitmap },
+    { texture, premultipliedAlpha: true },
+    [1, 1],
+  );
+  const read = await readTexture(device, texture);
+  texture.destroy();
+  return read;
+}
+
+describe.skipIf(!hasWebGpu)('premultiplied images', () => {
+  test('a copy of an unpremultiplied ImageBitmap premultiplies on request', async () => {
+    const expected = await premultiplied(gpu.device);
+    const actual = await premultiplied(gl.device);
+    expect(pixel(expected, 0, 0)[0]).toBeCloseTo(128, -1);
+    expect(compare(expected, actual).first).toBeUndefined();
+  });
+});
