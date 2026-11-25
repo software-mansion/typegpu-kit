@@ -6,6 +6,8 @@ Conventions of this fallback's device stay out of both: render modules and their
 
 The core diffs are against the published `dist` JavaScript, which is what the patch changes. Each names the TypeScript source file upstream would change.
 
+Every reproduction below was run on 2026-11-25 against `typegpu` 0.12.11 with `@typegpu/gl` as vendored at `d75490bc`, where it fails as quoted, and against the same versions with these patches, where it passes. To run them again, resolve each snippet with `glOptions()` from `@typegpu/gl` in a project built with `unplugin-typegpu`, using the pristine packages (`node_modules/.pnpm/typegpu@0.12.11/node_modules/typegpu`, and `git archive d75490bc packages/typegpu-gl/src`) and then the patched ones, and compile the GLSL in a WebGL 2 context. The messages quoted are ANGLE's, from headless Chromium.
+
 ## TypeGPU core
 
 ### 1. Laid-out samplers and texture views declare themselves through `declareGlobalVar`
@@ -29,8 +31,11 @@ const pipeline = root.createRenderPipeline({
   }),
   targets: { format: 'rgba8unorm' },
 });
-tgpu.resolve([pipeline], glOptions()); // contains `@group(0) @binding(0) var map: texture_2d<f32>;`
+tgpu.resolve([pipeline], glOptions());
+// Unpatched: throws "Samplers by themselves aren't represented in GLSL".
 ```
+
+Resolving the fragment alone, `tgpu.resolve([fragment], glOptions())`, needs no root and shows the same. Read through `std.textureLoad(layout.$.map, d.vec2i(0), 0)` without the sampler, the unpatched output declares the view in WGSL's syntax, `@group(0) @binding(0) var map: sampler2D;`. Patched, it is `uniform sampler2D map;`.
 
 **Diff** (`core/sampler/sampler.ts`, `core/texture/texture.ts`; the fixed sampler as well):
 
@@ -55,7 +60,7 @@ New.
 
 **Why.** `ember-mirror` draws the camera feed through `video`, a `texture_external`. Same cause as patch 1, in a file #3387 does not touch.
 
-**Reproduction.** As above with `{ texture: d.textureExternal() }` and `std.textureSampleBaseClampToEdge`: the GLSL output contains `var frame: texture_external;`.
+**Reproduction.** As above with a layout of `{ frame: { externalTexture: d.textureExternal() } }` read through `std.textureDimensions(layout.$.frame)`, no sampler, so patch 1 does not decide it: the unpatched output contains `@group(0) @binding(0) var frame: texture_external;`. Patched, the declaration reaches the generator's `declareGlobalVar`. Upstream `@typegpu/gl`'s generator then throws "Cannot define a 'texture_external' handle when generating GLSL", and the kit's generator (`src/glsl/generator.ts`) declares the texture.
 
 **Diff** (`core/texture/externalTexture.ts`):
 
@@ -84,7 +89,35 @@ New.
 
 **Why.** `textureSample`, `textureSampleLevel`, `textureLoad` and `textureDimensions` already called `ctx.gen.emitCall`. The rest wrote WGSL with `stitch`, so another language could not translate them. The kit's shadow filter samples with `textureSampleCompareLevel` (in every lit example), terrain and decals use `textureSampleGrad` (`ocean`, `quiver-trees`), reflections ask `textureNumLevels`, and `ember-mirror` calls `textureSampleBaseClampToEdge`.
 
-**Reproduction.** Resolve any fragment that calls `std.textureSampleCompareLevel(depthArray, comparisonSampler, uv, layer, depth)` with a GLSL generator: the output keeps the WGSL call.
+**Reproduction.** The text of a call is the same either way, `textureNumLevels(map)`; what changes is whether a generator gets to translate it. A generator that records its `emitCall`s shows it:
+
+```ts
+import { d, std, tgpu } from 'typegpu';
+// Before patch I, from `@typegpu/gl`'s `src/glslGenerator.ts`
+import { CrossShaderStageState, GlslGenerator } from '@typegpu/gl';
+
+const seen: string[] = [];
+class Probe extends GlslGenerator {
+  override emitCall(...args: Parameters<GlslGenerator['emitCall']>) {
+    seen.push(args[0]);
+    return super.emitCall(...args);
+  }
+}
+const layout = tgpu.bindGroupLayout({ map: { texture: d.texture2d() } });
+const levels = tgpu.fn(
+  [],
+  d.u32,
+)(() => {
+  'use gpu';
+  return std.textureNumLevels(layout.$.map);
+});
+tgpu.resolve([levels], {
+  unstable_shaderGenerator: new Probe('neutral', new CrossShaderStageState()),
+});
+seen.includes('textureNumLevels'); // false unpatched, true patched
+```
+
+The kit's shadow filter, `textureSampleCompareLevel` on a depth array with a comparison sampler, needs patch 1 for its sampler and the kit's generator for the depth-array handle, so it does not reproduce this alone; every lit example exercises it through `src/glsl/generator.ts`.
 
 **Diff** (`std/texture.ts`, the same change for `textureStore`, `textureNumLayers`, `textureNumLevels`, `textureNumSamples`, `textureGather`, `textureGatherCompare`, `textureSampleCompare`, `textureSampleCompareLevel`, `textureSampleGrad` and `textureSampleBaseClampToEdge`):
 
@@ -101,7 +134,7 @@ New.
 
 **Why.** WGSL and GLSL name several builtins differently, and the GLSL generator renames them in `emitCall` (fork patch E). The std functions wrote their names with `stitch`, so the renames never ran: `forest`, `stampede` and every glTF mesh decode normals with `unpack2x16snorm` and `unpack2x16float`, `blockfall`, `censer` and `jellies` call `atan2`, and `jelly-world` counts bits with `countTrailingZeros`.
 
-**Reproduction.** `const f = (v: number) => { 'use gpu'; return std.unpack2x16snorm(v); };` resolved with a GLSL generator gives `unpack2x16snorm(v)`, which GLSL does not have.
+**Reproduction.** `const f = tgpu.fn([d.u32], d.vec2f)((v) => { 'use gpu'; return std.unpack2x16snorm(v); });` resolved with `glOptions()` gives `return unpack2x16snorm(v);`, which GLSL does not have. Patched, `return unpackSnorm2x16(v);`.
 
 **Diff.** In `std/numeric.ts`, `std/packing.ts`, `std/derivative.ts`, `std/boolean.ts` and `std/subgroup.ts`, each `codegenImpl` whose template is exactly the builtin's name over its arguments in order, 95 of them:
 
@@ -118,7 +151,7 @@ New.
 
 **Why.** `_letStatement` and `_constStatement` go through the overridable `_emitVarDecl`, but a `for…of` header wrote `var i = …` and its element `let x = …` directly. GLSL needs typed declarations. `hex-isle` and `night-market` scan tiles with `for (const y of std.range(8))`.
 
-**Reproduction.** `for (const i of std.range(8)) { sum += d.f32(i); }` in a function resolved with the GLSL generator gives `for (var i = 0u; i < 8u; i += 1u)`.
+**Reproduction.** `for (const i of std.range(8)) { sum += d.f32(i); }` in a function resolved with the GLSL generator gives `for (var i = 0u; i < 8u; i += 1u)`. Patched, `for (uint i = 0u; i < 8u; i += 1u)`.
 
 **Diff** (`tgsl/wgslGenerator.ts`):
 
@@ -140,7 +173,7 @@ New.
 
 **Why.** `createGuardedComputePipeline` built `mainCompute` from a WGSL string, which never reaches `ShaderGenerator.functionDefinition`, so no other generator can translate it. `jelly-world` and every `@typegpu/noise` static cache dispatch a guarded pipeline, which blocks the fallback's CPU compute backend.
 
-**Reproduction.** `root.createGuardedComputePipeline((x) => { 'use gpu'; out.$[x] = x; })` on a root with `unstable_shaderGeneratorClass` set to any non-WGSL generator still yields the WGSL entry `@compute … fn …(…) { if (any(in.id >= sizeUniform)) …`.
+**Reproduction.** On any root, `const guarded = root.createGuardedComputePipeline((x: number) => { 'use gpu'; const y = x + 1; });` and `tgpu.resolve([guarded.pipeline], glOptions())`: the unpatched output ends in the WGSL entry `@compute @workgroup_size(256, 1, 1) fn item(@builtin(global_invocation_id) id: uvec3) { …`, after the GLSL `wrappedCallback`. Patched, it is GLSL throughout. (The callback writes no buffer because upstream `@typegpu/gl` cannot declare storage; the run used a stub `GPUDevice` with `tgpu.initFromDevice`.)
 
 **Diff** (`core/root/init.ts`). TypeGPU is not built with unplugin-typegpu, so the patch attaches by hand the metadata unplugin emits for the same `'use gpu'` source (checked against unplugin's output). Upstream could build this file with the plugin instead.
 
@@ -184,7 +217,7 @@ New.
 
 **Why.** GLSL forbids redeclaring a built-in function, and TypeGPU names user functions after their JS names. `solar-system` exports a quaternion `inverse`.
 
-**Reproduction.** `const inverse = (q: d.v4f) => { 'use gpu'; return d.vec4f(-q.xyz, q.w); };` called from a fragment gives `vec4 inverse(vec4 q)`: "Name of a built-in function cannot be redeclared".
+**Reproduction.** `const inverse = (q: d.v4f) => { 'use gpu'; return d.vec4f(-q.xyz, q.w); };` called from another function gives `vec4 inverse(vec4 q)`: "'inverse' : Name of a built-in function cannot be redeclared as function". Patched, `vec4 inverse_1(vec4 q)`.
 
 **Diff.**
 
@@ -206,7 +239,7 @@ New.
 
 **Why.** `emitTypeAnnotation` called itself for an array's element type, which bypasses the context's memoization, so a struct element was declared twice under two names. `fireworks` keeps a `const` table of `Traits` structs.
 
-**Reproduction.** `const table = tgpu.const(d.arrayOf(Traits, 6), …)` read from a fragment gives `const Traits traitsOf[6] = Traits_1[6](…)`: "cannot convert from 'Traits_1[6]' to 'Traits[6]'".
+**Reproduction.** `const table = tgpu.const(d.arrayOf(Traits, 6), …)` for `const Traits = d.struct({ a: d.f32, b: d.u32 })`, read from a function, gives `const Traits table[6] = Traits_1[6](…)`: "'=' : cannot convert from 'const array[6] of structure 'Traits_1'' to 'const array[6] of structure 'Traits''".
 
 **Diff.**
 
@@ -226,7 +259,7 @@ New.
 
 **Why.** An empty body generated `void f(Corner corner)` with no braces; `classroom` passes a `handOver` hook that does nothing. Array parameters and results lost their size: `kinetic` returns `array<f32, 9>` from `basisOf`.
 
-**Reproduction.** `const nothing = (x: number) => { 'use gpu'; };` called from a fragment gives `void nothing(float x)`, a syntax error. `const basis = () => { 'use gpu'; return [1, 2, 3] as number[]; }` gives `float basis()`: "cannot convert from 'float[3]' to 'float'".
+**Reproduction.** `const nothing = (x: number) => { 'use gpu'; };` called from another function gives `void nothing(int x)` with no body, and the next declaration fails: "'float' : syntax error". `const basis = () => { 'use gpu'; return [d.f32(1), 2, 3] as number[]; }`, called and indexed, gives `float basis()`: "'return' : function return is not matching type". Patched, `void nothing(int x) {}` and `float[3] basis()`.
 
 **Diff.**
 
@@ -360,7 +393,7 @@ New.
 
 **Why.** Patches E and F need GLSL helpers declared once per resolution. A subclass that lays declarations out differently, as the kit's generator does with its chunks, overrides the hook.
 
-**Reproduction.** `const f = (a: d.v3f, b: d.v3f, c: boolean) => { 'use gpu'; return std.select(a, b, c); };` resolved with the kit's generator needs the `select` helper of patch F in a chunk of its own; without the hook it is added to the declarations directly and no stage's chunks list it.
+**Reproduction.** A subclass of `GlslGenerator` that defines `_declareHelper(name, code)` and records `name`, resolving `tgpu.fn([d.vec3f, d.vec3f, d.bool], d.vec3f)((a, b, c) => { 'use gpu'; return std.select(a, b, c); })`: unpatched the method is never called, patched it is called with `'select'`. The kit's generator needs it to put the helper in a chunk of its own; without it the helper lands in the declarations, which no stage's chunks list.
 
 **Diff.**
 
@@ -380,7 +413,7 @@ New.
 
 **Why.** WGSL converts an abstract literal to the component type of the vector it meets; TypeGPU leaves `vec2u % 3` with an abstract `3`, which GLSL reads as `int`. `blockfall` takes `vec2u(position.xy) % 3`.
 
-**Reproduction.** `const cell = d.vec2u(p) % 3;` gives `(uvec2(p) % 3)`: "'%' : wrong operand types … 'uvec2' and 'const int'".
+**Reproduction.** `const cell = d.vec2u(p) % 3;` gives `(uvec2(p) % 3)`: "'%' : wrong operand types - no operation '%' exists that takes a left-hand operand of type 'highp 2-component vector of uint' and a right operand of type 'const int'". Patched, `(uvec2(p) % 3u)`.
 
 **Diff.**
 
