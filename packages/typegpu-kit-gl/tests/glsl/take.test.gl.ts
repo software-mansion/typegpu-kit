@@ -44,12 +44,17 @@ async function emitted(root: TgpuRoot) {
     const slot = std.atomicAdd(head.$, 1) % RING;
     pool.$[slot] = d.vec4u(value);
   };
+  // A second helper between the kernel and the take, which counts its takes through both
+  const spit = (x: number, round: number) => {
+    'use gpu';
+    emit(d.vec4u(x, round, 2, 7));
+  };
   const kernel = tgpu.computeFn({ workgroupSize: [8], in: gid })(({ gid: at }) => {
     'use gpu';
     if (at.x >= 30) return;
     const round = layout.$.round;
     if ((at.x + round) % 3 !== 0) emit(d.vec4u(at.x, round, 1, 0));
-    if (at.x % 4 === round) emit(d.vec4u(at.x, round, 2, 7));
+    if (at.x % 4 === round) spit(at.x, round);
   });
   const pipeline = root.createComputePipeline({ compute: kernel }).$name('emitting');
   const groups = [0, 1, 2].map((round) =>
