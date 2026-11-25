@@ -457,3 +457,18 @@ const f = tgpu.fn(
 **Upstream.** Fold bitwise and shift operators on known numbers as the other arithmetic operators are folded. In the code generator's binary-expression handling.
 
 **Workaround.** Hoist the schema to module scope, `const Gathered = d.arrayOf(d.vec2u, 2 ** STEPS)`, and call `Gathered()` in the body, as `grid.ts` does.
+
+### 30. WGSL language features come from the global GPU, not the root's device
+
+`root.enabledWgslLanguageFeatures` returns `navigator.gpu.wgslLanguageFeatures`, even for a root made with `initFromDevice` over another backend. A CPU or WebGL root can therefore advertise immediates merely because the machine also has a WebGPU adapter, despite its own `maxImmediateSize` being zero.
+
+```ts
+const root = tgpu.initFromDevice({ device: fallbackDevice });
+root.device.limits.maxImmediateSize; // 0
+root.enabledWgslLanguageFeatures.has('immediate_address_space'); // true on some WebGPU hosts
+// An example selects immediateVar and fails to compile on the fallback.
+```
+
+**Upstream.** Accept supported language features in `initFromDevice`, or derive them from the selected generator/device instead of the global adapter, in `packages/typegpu/src/core/root/init.ts`.
+
+**Workaround.** The CPU test root in `tests/cpu/device.ts` supplies an empty `enabledWgslLanguageFeatures` set. Device limits alone cannot affect the current getter.
