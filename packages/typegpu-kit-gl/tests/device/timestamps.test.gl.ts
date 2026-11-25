@@ -423,3 +423,148 @@ describe('compute passes', () => {
     );
   });
 });
+
+/** Times one empty render pass into slots 0 and 1 of a new query set. */
+function timedPass(on: GLDevice) {
+  const set = on.createQuerySet({ type: 'timestamp', count: 2 });
+  const encoder = on.createCommandEncoder();
+  renderPass(encoder, target(on, 16), {
+    querySet: set,
+    beginningOfPassWriteIndex: 0,
+    endOfPassWriteIndex: 1,
+  }).end();
+  return { set, encoder };
+}
+
+/** Maps a `MAP_READ` buffer and returns its bytes. */
+async function bytesOf(buffer: GPUBuffer) {
+  await buffer.mapAsync(GPUMapMode.READ);
+  const bytes = new Uint8Array(buffer.getMappedRange().slice(0));
+  buffer.unmap();
+  return bytes;
+}
+
+const stampsOf = (bytes: Uint8Array) => [...new BigUint64Array(bytes.buffer, 0, 2)];
+
+describe('pending resolves', () => {
+  test('a write elsewhere in the buffer keeps the timestamps waiting', async () => {
+    device = glDevice();
+    const made = device;
+    const { set, encoder } = timedPass(made);
+    const resolved = made.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    const mapped = made.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    encoder.resolveQuerySet(set, 0, 2, resolved, 0);
+    made.queue.submit([encoder.finish()]);
+    made.queue.writeBuffer(resolved, 16, new Uint32Array([7]));
+    const copy = made.createCommandEncoder();
+    copy.copyBufferToBuffer(resolved, 0, mapped, 0, 32);
+    made.queue.submit([copy.finish()]);
+    const bytes = await bytesOf(mapped);
+    const [begin, end] = stampsOf(bytes);
+    expect(begin).toBeGreaterThan(0n);
+    expect(end).toBeGreaterThanOrEqual(begin!);
+    expect(new Uint32Array(bytes.buffer)[4]).toBe(7);
+  });
+
+  test('copies of four bytes carry the halves of a waiting timestamp', async () => {
+    device = glDevice();
+    const made = device;
+    const { set, encoder } = timedPass(made);
+    const resolved = made.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+    });
+    const halves = made.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const whole = made.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    encoder.resolveQuerySet(set, 0, 2, resolved, 0);
+    for (let at = 0; at < 16; at += 4) encoder.copyBufferToBuffer(resolved, at, halves, at, 4);
+    encoder.copyBufferToBuffer(resolved, 0, whole, 0, 16);
+    made.queue.submit([encoder.finish()]);
+    const expected = stampsOf(await bytesOf(whole));
+    expect(expected[0]).toBeGreaterThan(0n);
+    expect(stampsOf(await bytesOf(halves))).toEqual(expected);
+  });
+
+  test('a kernel that reads a resolve before its results arrive reads zeros', async () => {
+    root = glRoot();
+    const made = root;
+    const raw = made.device as GLDevice;
+    const stamps = made
+      .createBuffer(d.arrayOf(d.u32, 4), [99, 99, 99, 99])
+      .$usage('storage')
+      .$addFlags(GPUBufferUsage.QUERY_RESOLVE);
+    const seen = made.createMutable(d.arrayOf(d.u32, 4));
+    const reading = stamps.as('readonly');
+    const look = made.createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [4], in: { id: d.builtin.globalInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          seen.$[id.x] = reading.$[id.x]!;
+        },
+      ),
+    });
+    const { set, encoder } = timedPass(raw);
+    encoder.resolveQuerySet(set, 0, 2, made.unwrap(stamps), 0);
+    raw.queue.submit([encoder.finish()]);
+    look.dispatchWorkgroups(1);
+    expect(await seen.read()).toEqual([0, 0, 0, 0]);
+  });
+
+  test('a span whose result never arrives resolves to zero within seconds', async () => {
+    device = glDevice();
+    const made = device;
+    const { gl } = made;
+    const getQueryParameter = gl.getQueryParameter.bind(gl);
+    gl.getQueryParameter = (query: WebGLQuery, name: number) =>
+      name === gl.QUERY_RESULT_AVAILABLE ? false : getQueryParameter(query, name);
+    const { set, encoder } = timedPass(made);
+    made.queue.submit([encoder.finish()]);
+    const started = performance.now();
+    const { stamps } = await read(made, set, 2);
+    gl.getQueryParameter = getQueryParameter;
+    expect(stamps).toEqual([0n, 0n]);
+    expect(performance.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe('query sets the device rejected', () => {
+  test("a timestamp query set without 'timestamp-query' is refused by passes and resolves", async () => {
+    const undo = install({ minimum: false, hide: [TIMER] });
+    try {
+      device = glDevice();
+      const made = device;
+      const errors = await errorsOf(made, () => {
+        const set = made.createQuerySet({ type: 'timestamp', count: 2 });
+        const resolved = made.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+        });
+        const encoder = made.createCommandEncoder();
+        renderPass(encoder, target(made, 16), {
+          querySet: set,
+          beginningOfPassWriteIndex: 0,
+          endOfPassWriteIndex: 1,
+        }).end();
+        encoder.resolveQuerySet(set, 0, 2, resolved, 0);
+        made.queue.submit([encoder.finish()]);
+      });
+      expect(errors).toHaveLength(3);
+      expect(errors[1]).toMatch(/invalid query set/);
+      expect(errors[2]).toMatch(/invalid query set/);
+    } finally {
+      undo();
+    }
+  });
+});

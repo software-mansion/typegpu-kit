@@ -13,7 +13,7 @@
  * it could not take.
  */
 
-import { type BufferImpl, type PendingRead, written } from './buffer.ts';
+import { type BufferImpl, type PendingRead, writing, written } from './buffer.ts';
 import { type Ctx, IMPL, implOf } from './context.ts';
 
 /** A point in the running total: the end of a span, or the start of a task's spans. */
@@ -22,6 +22,8 @@ interface Stamp {
   readonly span: boolean;
   query: WebGLQuery | undefined;
   ended: boolean;
+  /** When the span ended, for giving up on a result that never arrives. */
+  endedAt: number;
   /** The disjoint count when the span began. */
   readonly epoch: number;
   /** The point before; dropped once this one has a total. */
@@ -47,6 +49,12 @@ interface Timeline {
 
 const timelines = new WeakMap<Ctx, Timeline>();
 
+/**
+ * Milliseconds a span's result may take before its timestamps count as not taken, as placement's
+ * probes do, so a map never waits for a query GL never answers.
+ */
+const LIFETIME_MS = 2000;
+
 function timelineOf(ctx: Ctx): Timeline {
   let timeline = timelines.get(ctx);
   if (!timeline) {
@@ -55,6 +63,7 @@ function timelineOf(ctx: Ctx): Timeline {
       span: false,
       query: undefined,
       ended: true,
+      endedAt: 0,
       epoch: 0,
       previous: undefined,
       total: BigInt(Math.round(performance.now() * 1e6)),
@@ -141,6 +150,7 @@ function begin(ctx: Ctx, timeline: Timeline, previous: Stamp): Stamp | undefined
     span: true,
     query,
     ended: false,
+    endedAt: 0,
     epoch: disjoints(ctx),
     previous,
     total: undefined,
@@ -158,6 +168,7 @@ function close(ctx: Ctx, timeline: Timeline): void {
   if (!span) return;
   timeline.open = undefined;
   span.ended = true;
+  span.endedAt = performance.now();
   if (ctx.lost) return;
   ctx.gl.endQuery(ctx.ext.timerQuery!.TIME_ELAPSED_EXT);
   // A query's result arrives only once the commands before its end reach the GPU
@@ -176,6 +187,7 @@ export function startTiming(ctx: Ctx): void {
     span: false,
     query: undefined,
     ended: true,
+    endedAt: 0,
     epoch: 0,
     previous: timeline.last,
     total: undefined,
@@ -196,6 +208,7 @@ export function stamp(ctx: Ctx): Stamp | undefined {
   if (!span) return undefined;
   ctx.gl.endQuery(ctx.ext.timerQuery.TIME_ELAPSED_EXT);
   span.ended = true;
+  span.endedAt = performance.now();
   timeline.open = undefined;
   begin(ctx, timeline, span);
   return span;
@@ -221,7 +234,8 @@ function poll(ctx: Ctx): void {
       if (ctx.lost || count !== point.epoch) disjoint = true;
       else if (gl.getQueryParameter(point.query, gl.QUERY_RESULT_AVAILABLE)) {
         ns = gl.getQueryParameter(point.query, gl.QUERY_RESULT) as number;
-      } else break;
+      } else if (performance.now() - point.endedAt > LIFETIME_MS) disjoint = true;
+      else break;
       gl.deleteQuery(point.query);
       point.query = undefined;
     }
@@ -239,6 +253,8 @@ export interface QuerySetImpl {
   readonly type: GPUQueryType;
   readonly count: number;
   readonly slots: (Stamp | undefined)[];
+  /** Made against a missing feature, so every use of it is an error, as in WebGPU. */
+  readonly invalid: boolean;
   destroyed: boolean;
 }
 
@@ -252,7 +268,8 @@ export function createQuerySet(
   timed: boolean,
 ): GPUQuerySet {
   const { type, count } = descriptor;
-  if (type === 'timestamp' && !timed) {
+  const invalid = type === 'timestamp' && !timed;
+  if (invalid) {
     ctx.errors.report(
       'validation',
       "createQuerySet of type 'timestamp' on a device without 'timestamp-query'.",
@@ -262,6 +279,7 @@ export function createQuerySet(
     type,
     count,
     slots: Array.from({ length: count }, () => undefined),
+    invalid,
     destroyed: false,
   };
   return {
@@ -290,6 +308,10 @@ export function writesOf(
 ): Writes | undefined {
   if (!writes) return undefined;
   const set = querySetImpl(writes.querySet);
+  if (set.invalid) {
+    ctx.errors.report('validation', 'A pass writes timestamps to an invalid query set.');
+    return undefined;
+  }
   const { beginningOfPassWriteIndex: beginning, endOfPassWriteIndex: end } = writes;
   const inRange = (index: number | undefined) =>
     index === undefined || (index >= 0 && index < set.count);
@@ -309,11 +331,16 @@ export function write(ctx: Ctx, writes: Writes | undefined, at: 'beginning' | 'e
   writes.set.slots[index] = stamp(ctx);
 }
 
-/** A resolve's read, which a copy of its destination carries to the copy's destination. */
+/**
+ * A resolve's read: timestamps whose eight bytes each start at `offset` in its buffer, of which it
+ * writes bytes `start` to `end`. A copy of part of the buffer carries that part along, and a write
+ * over part of it leaves the rest waiting.
+ */
 interface TimestampRead extends PendingRead {
   readonly stamps: readonly (Stamp | undefined)[];
-  /** Where its first timestamp lands in its buffer. */
   readonly offset: number;
+  readonly start: number;
+  readonly end: number;
 }
 
 const timestampReads = new WeakSet<PendingRead>();
@@ -321,12 +348,16 @@ const timestampReads = new WeakSet<PendingRead>();
 function timestampRead(
   ctx: Ctx,
   buffer: BufferImpl,
-  offset: number,
   stamps: readonly (Stamp | undefined)[],
+  offset: number,
+  start: number,
+  end: number,
 ): TimestampRead {
   const read: TimestampRead = {
     stamps,
     offset,
+    start,
+    end,
     ready() {
       poll(ctx);
       return ctx.lost || stamps.every((each) => each === undefined || each.total !== undefined);
@@ -334,20 +365,32 @@ function timestampRead(
     finish() {
       poll(ctx);
       if (buffer.destroyed) return;
-      const view = new DataView(buffer.bytes.buffer);
+      const bytes = new Uint8Array(stamps.length * 8);
+      const view = new DataView(bytes.buffer);
       stamps.forEach((each, i) => {
         const value = each?.total !== undefined && !each.invalid ? each.total : 0n;
-        view.setBigUint64(offset + i * 8, value, true);
+        view.setBigUint64(i * 8, value, true);
       });
-      written(buffer, offset, offset + stamps.length * 8);
+      buffer.bytes.set(bytes.subarray(start - offset, end - offset), start);
+      written(buffer, start, end);
     },
     cancel() {},
+    without(from, to) {
+      if (to <= start || from >= end) return [read];
+      const parts: TimestampRead[] = [];
+      if (from > start) parts.push(timestampRead(ctx, buffer, stamps, offset, start, from));
+      if (to < end) parts.push(timestampRead(ctx, buffer, stamps, offset, to, end));
+      return parts;
+    },
   };
   timestampReads.add(read);
   return read;
 }
 
-/** Resolves `count` slots from `first` into `destination` at `offset`, as their results arrive. */
+/**
+ * Resolves `count` slots from `first` into `destination` at `offset`, as their results arrive.
+ * Until then the bytes hold zeros, which a draw or kernel that reads them early sees.
+ */
 export function resolve(
   ctx: Ctx,
   set: QuerySetImpl,
@@ -356,17 +399,26 @@ export function resolve(
   destination: BufferImpl,
   offset: number,
 ): void {
+  if (set.invalid) {
+    ctx.errors.report('validation', 'resolveQuerySet of an invalid query set.');
+    return;
+  }
   if (set.destroyed || first + count > set.count || offset + count * 8 > destination.size) {
     ctx.errors.report('validation', 'resolveQuerySet out of range, or of a destroyed query set.');
     return;
   }
+  const end = offset + count * 8;
+  const done = writing(destination, offset, end);
+  destination.bytes.fill(0, offset, end);
+  written(destination, offset, end);
+  done();
   const stamps = set.slots.slice(first, first + count);
-  destination.reads.push(timestampRead(ctx, destination, offset, stamps));
+  destination.reads.push(timestampRead(ctx, destination, stamps, offset, offset, end));
 }
 
 /**
  * Takes the source's unfinished resolves out of its reads, so a copy can sync the rest, and
- * returns a function that puts them back and gives the copy's destination the part it copied.
+ * returns a function that puts them back and gives the copy's destination the bytes it copied.
  */
 export function carry(
   ctx: Ctx,
@@ -382,13 +434,21 @@ export function carry(
   source.reads.splice(0, source.reads.length, ...rest);
   return () => {
     source.reads.push(...reads);
+    const shift = destinationOffset - sourceOffset;
     for (const read of reads) {
-      // Whole timestamps of the read that fall inside the copied range
-      const from = Math.max(0, Math.ceil((sourceOffset - read.offset) / 8));
-      const to = Math.min(read.stamps.length, Math.floor((sourceOffset + size - read.offset) / 8));
-      if (to <= from) continue;
-      const at = destinationOffset + read.offset + from * 8 - sourceOffset;
-      destination.reads.push(timestampRead(ctx, destination, at, read.stamps.slice(from, to)));
+      const start = Math.max(read.start, sourceOffset);
+      const end = Math.min(read.end, sourceOffset + size);
+      if (end <= start) continue;
+      destination.reads.push(
+        timestampRead(
+          ctx,
+          destination,
+          read.stamps,
+          read.offset + shift,
+          start + shift,
+          end + shift,
+        ),
+      );
     }
   };
 }
