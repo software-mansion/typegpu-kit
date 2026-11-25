@@ -497,6 +497,41 @@ describe('pending resolves', () => {
     expect(stampsOf(await bytesOf(halves))).toEqual(expected);
   });
 
+  test('a later copy of what GL holds wins over the waiting timestamps it covers', async () => {
+    root = glRoot();
+    const made = root;
+    const raw = made.device as GLDevice;
+    const fresh = made.createMutable(d.arrayOf(d.u32, 4));
+    const fill = made.createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [4], in: { id: d.builtin.globalInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          fresh.$[id.x] = 0xbbbbbbbb;
+        },
+      ),
+    });
+    const resolved = raw.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+    });
+    const mapped = raw.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const { set, encoder } = timedPass(raw);
+    encoder.resolveQuerySet(set, 0, 2, resolved, 0);
+    encoder.copyBufferToBuffer(resolved, 0, mapped, 0, 16);
+    raw.queue.submit([encoder.finish()]);
+    fill.dispatchWorkgroups(1);
+    const copy = raw.createCommandEncoder();
+    copy.copyBufferToBuffer(made.unwrap(fresh.buffer), 0, mapped, 0, 16);
+    // A write elsewhere finishes the copy and keeps what is left of the timestamps waiting
+    copy.clearBuffer(mapped, 16, 4);
+    raw.queue.submit([copy.finish()]);
+    const words = new Uint32Array((await bytesOf(mapped)).buffer);
+    expect([...words.subarray(0, 4)]).toEqual([0xbbbbbbbb, 0xbbbbbbbb, 0xbbbbbbbb, 0xbbbbbbbb]);
+  });
+
   test('a kernel that reads a resolve before its results arrive reads zeros', async () => {
     root = glRoot();
     const made = root;
