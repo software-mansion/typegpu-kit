@@ -78,6 +78,9 @@ const packSpit = (at: d.v2f, heat: number) => {
   return d.u32(0x80000000) | cell.x | (cell.y << 10) | (warmth << 20);
 };
 
+/** A block after a step: its corners, and the counts and spits its rules kept aside. */
+const Settled = d.struct({ corners: d.vec4u, note: d.vec4u });
+
 type Counted = Pick<Counters<'cooled' | 'burnt'>, 'add'>;
 /** Emits from a cell in y-down coordinates, with `heat` from 0 to 1. */
 type Spat = (at: d.v2f, heat: number) => void;
@@ -434,23 +437,6 @@ export function createRules(
   // count and spit, and a small one on the CPU adds the counts and spits the embers
   const alone = backends.of(root).compute === 'cpu';
 
-  const quiet = rulesWith(
-    {
-      add: {
-        cooled: (_amount: number) => {
-          'use gpu';
-        },
-        burnt: (_amount: number) => {
-          'use gpu';
-        },
-      },
-    },
-    (at: d.v2f, heat: number) => {
-      'use gpu';
-      sparked(at, heat);
-    },
-  );
-
   const cooledHere = tgpu.privateVar(d.u32);
   const burntHere = tgpu.privateVar(d.u32);
   const spatHere = tgpu.privateVar(d.vec2u);
@@ -476,7 +462,7 @@ export function createRules(
   );
 
   /** The block `gid` after this step under `rules`: top left, top right, bottom left and right. */
-  const settledBy = (rules: typeof quiet) => (gid: d.v2u) => {
+  const settledBy = (rules: typeof noted) => (gid: d.v2u) => {
     'use gpu';
     const phase = tick.$ & 3;
     const shift = d.vec2i(d.i32(((phase + 1) >>> 1) & 1), d.i32(phase & 1));
@@ -514,37 +500,41 @@ export function createRules(
     const bottom = drift(block.z, block.w, top.x, top.y);
     return d.vec4u(top, bottom);
   };
-  const settledQuietly = settledBy(quiet);
   const settledNoting = settledBy(noted);
 
-  const stepEach = gridKernel(function stepEach({ gid }) {
-    'use gpu';
-    if (gid.x >= WIDTH || gid.y >= HEIGHT) return;
-    const phase = tick.$ & 3;
-    const shift = d.vec2u(((phase + 1) >>> 1) & 1, phase & 1);
-    const shifted = gid.xy + shift;
-    const corner = settledQuietly(d.vec2u(shifted.x >>> 1, shifted.y >>> 1));
-    const lane = (shifted.y & 1) * 2 + (shifted.x & 1);
-    cells.put(d.vec2i(gid.xy), corner[lane] as number);
-  });
-
-  const Notes = d.arrayOf(d.vec4u, BLOCKS_X * BLOCKS_Y);
+  const Notes = d.arrayOf(Settled, BLOCKS_X * BLOCKS_Y);
   const events = alone ? root.createBuffer(Notes).$usage('storage') : undefined;
   const noting = tgpu.mutableAccessor(Notes, events?.as('mutable'));
   const notes = tgpu.accessor(Notes, events?.as('readonly'));
 
-  const noteEach = gridKernel(function noteEach({ gid }) {
+  // A thread a block runs its rules once and keeps the corners and what they counted and spat
+  const settleEach = gridKernel(function settleEach({ gid }) {
     'use gpu';
     if (gid.x >= BLOCKS_X || gid.y >= BLOCKS_Y) return;
     const phase = tick.$ & 3;
     const shift = d.vec2i(d.i32(((phase + 1) >>> 1) & 1), d.i32(phase & 1));
     const origin = d.vec2i(gid.xy) * 2 - shift;
-    let note = d.vec4u();
+    let settled = Settled();
     if (origin.x < WIDTH && origin.y < HEIGHT) {
-      settledNoting(gid.xy);
-      note = d.vec4u(cooledHere.$, burntHere.$, spatHere.$.x, spatHere.$.y);
+      const corners = settledNoting(gid.xy);
+      settled = Settled({
+        corners,
+        note: d.vec4u(cooledHere.$, burntHere.$, spatHere.$.x, spatHere.$.y),
+      });
     }
-    noting.$[gid.y * BLOCKS_X + gid.x] = d.vec4u(note);
+    noting.$[gid.y * BLOCKS_X + gid.x] = Settled(settled);
+  });
+
+  // A thread a cell keeps its corner of its block
+  const placeEach = gridKernel(function placeEach({ gid }) {
+    'use gpu';
+    if (gid.x >= WIDTH || gid.y >= HEIGHT) return;
+    const phase = tick.$ & 3;
+    const shift = d.vec2u(((phase + 1) >>> 1) & 1, phase & 1);
+    const shifted = gid.xy + shift;
+    const block = (shifted.y >>> 1) * BLOCKS_X + (shifted.x >>> 1);
+    const lane = (shifted.y & 1) * 2 + (shifted.x & 1);
+    cells.put(d.vec2i(gid.xy), notes.$[block].corners[lane] as number);
   });
 
   const spitOut = (spit: number, at: d.v2u, k: number) => {
@@ -558,7 +548,7 @@ export function createRules(
   const effects = gridKernel(function effects({ gid }) {
     'use gpu';
     if (gid.x >= BLOCKS_X || gid.y >= BLOCKS_Y) return;
-    const note = notes.$[gid.y * BLOCKS_X + gid.x] as d.v4u;
+    const note = d.vec4u(notes.$[gid.y * BLOCKS_X + gid.x].note);
     if (note.x !== 0) counts.add.cooled(note.x);
     if (note.y !== 0) counts.add.burnt(note.y);
     spitOut(note.z, gid.xy, 0);
@@ -582,11 +572,11 @@ export function createRules(
     });
 
   const kept = root.pipe(cells.fromKept);
-  const steppingEach = alone
-    ? kept.createComputePipeline({ compute: stepEach }).$name('steppingEach')
+  const settling = alone
+    ? root.createComputePipeline({ compute: settleEach }).$name('settling')
     : undefined;
-  const notingEach = alone
-    ? kept.createComputePipeline({ compute: noteEach }).$name('notingEach')
+  const placing = alone
+    ? root.createComputePipeline({ compute: placeEach }).$name('placing')
     : undefined;
   const affecting = alone
     ? root.createComputePipeline({ compute: effects }).$name('affecting')
@@ -615,19 +605,18 @@ export function createRules(
     controls,
     initAsync: () =>
       pipelines.compile(
-        steppingEach && notingEach && affecting && flowsEach
-          ? [ticking, steppingEach, notingEach, affecting, ...flowsEach.flat()]
+        settling && placing && affecting && flowsEach
+          ? [ticking, settling, placing, affecting, ...flowsEach.flat()]
           : [ticking, stepping, ...pairings.flat()],
       ),
     /** Steps all cells, then moves liquids along their rows. */
     step(pass: TgpuComputePass) {
       pass.setPipeline(ticking);
       pass.dispatchWorkgroups(1);
-      if (steppingEach && notingEach && affecting && flowsEach) {
-        cells.keep(pass);
-        pass.setPipeline(notingEach);
+      if (settling && placing && affecting && flowsEach) {
+        pass.setPipeline(settling);
         pass.dispatchWorkgroups(BLOCK_GROUPS.x, BLOCK_GROUPS.y);
-        pass.setPipeline(steppingEach);
+        pass.setPipeline(placing);
         pass.dispatchWorkgroups(GRID_GROUPS.x, GRID_GROUPS.y);
         for (let k = 0; k < FLOW_PASSES; k++) {
           for (const flow of flowsEach[k % 2]!) {
