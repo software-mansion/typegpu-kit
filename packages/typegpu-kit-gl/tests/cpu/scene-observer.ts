@@ -18,7 +18,7 @@ export interface Resource {
   format?: GPUTextureFormat;
   encoded?: EncodedField[];
 }
-interface Binding {
+export interface Binding {
   encoded?: EncodedField[];
   group: number;
   binding: number;
@@ -84,10 +84,20 @@ function wrap<T extends object>(target: T, overrides: Record<string, unknown>): 
   });
 }
 
+export interface ObservedDispatch {
+  pipeline: GPUComputePipeline;
+  label: string;
+  code: string;
+  bindings: (Binding & { resource: Resource })[];
+  samplers: { group: number; binding: number; descriptor: GPUSamplerDescriptor }[];
+}
+
 export function observeScene() {
   const resources: Resource[] = [];
+  const dispatches: ObservedDispatch[] = [];
   const handles = new WeakMap<object, Resource>();
   const groups = new WeakMap<object, GPUBindGroupDescriptor>();
+  const samplers = new WeakMap<object, GPUSamplerDescriptor>();
   const shaders = new WeakMap<object, Shader>();
   const pipelines = new WeakMap<object, Pipeline>();
   const counts = new Map<string, number>();
@@ -113,6 +123,13 @@ export function observeScene() {
       approximate: false,
       quotient: false,
     };
+    if (
+      kind === 'buffer' &&
+      descriptor.usage & (GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE)
+    )
+      item.reasons.add(
+        'host mapping buffer without COPY_SRC; shader output is compared at its source',
+      );
     resources.push(item);
     handles.set(handle, item);
     const destroy = handle.destroy.bind(handle);
@@ -166,6 +183,11 @@ export function observeScene() {
         const result = add(handle, descriptor, 'texture');
         handles.set(result, handles.get(handle)!);
         return result;
+      },
+      createSampler: (descriptor: GPUSamplerDescriptor = {}) => {
+        const made = original.createSampler(descriptor);
+        samplers.set(made, descriptor);
+        return made;
       },
       createBindGroup: (descriptor: GPUBindGroupDescriptor) => {
         const made = original.createBindGroup(descriptor);
@@ -236,6 +258,7 @@ export function observeScene() {
           beginComputePass: (description?: GPUComputePassDescriptor) => {
             const pass = encoder.beginComputePass(description);
             let selected: Pipeline | undefined;
+            let pipelineHandle: GPUComputePipeline;
             const bound = new Map<number, { group: GPUBindGroup; offsets: number[] }>();
             const dispatch = () => {
               const pipeline = selected!;
@@ -255,9 +278,34 @@ export function observeScene() {
                   resource.layout = binding.layout;
                   resource.layoutOffset = buffer.offset ?? 0;
                 }
-                return [{ resource, writes: binding.writes }];
+                return [{ ...binding, resource }];
               });
+              const observed = {
+                pipeline: pipelineHandle,
+                label: pipeline.label,
+                code: pipeline.code,
+                bindings: used,
+                samplers: pipeline.bindings.flatMap((binding) => {
+                  const group = bound.get(Number(binding.group));
+                  const entry =
+                    group &&
+                    Array.from(groups.get(group.group)!.entries).find(
+                      (item) => item.binding === binding.binding,
+                    );
+                  const samplerDescriptor = entry && samplers.get(entry.resource);
+                  return samplerDescriptor
+                    ? [
+                        {
+                          group: Number(binding.group),
+                          binding: binding.binding,
+                          descriptor: samplerDescriptor,
+                        },
+                      ]
+                    : [];
+                }),
+              };
               recorded.push(() => {
+                dispatches.push(observed);
                 const outputs = used.filter((item) => item.writes).map((item) => item.resource);
                 inherit(
                   outputs,
@@ -279,6 +327,7 @@ export function observeScene() {
             };
             return wrap(pass, {
               setPipeline: (value: GPUComputePipeline) => {
+                pipelineHandle = value;
                 selected = pipelines.get(value);
                 pass.setPipeline(value);
               },
@@ -370,5 +419,11 @@ export function observeScene() {
         });
       },
     });
-  return { device, resources, cpuTextures };
+  return {
+    device,
+    resources,
+    cpuTextures,
+    dispatches,
+    resourceOf: (handle: object) => handles.get(handle),
+  };
 }

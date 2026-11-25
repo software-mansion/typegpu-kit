@@ -14,7 +14,9 @@ for (const example of examples.filter(
   it.runIf(process.env.CPU_EXAMPLE_COMPARE === '1')(
     `compares seeded ${example.key} compute resources with dawn`,
     async () => {
-      const dawn = await gpuRoot();
+      const dawn = await gpuRoot({
+        optionalFeatures: ['indirect-first-instance', 'depth32float-stencil8'],
+      });
       const gpuObserver = observeScene(),
         cpuObserver = observeScene();
       const gpu = tgpu.initFromDevice({ device: gpuObserver.device(dawn.device) });

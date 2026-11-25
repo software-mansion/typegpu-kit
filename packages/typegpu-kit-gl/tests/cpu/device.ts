@@ -20,6 +20,7 @@ export interface DispatchSnapshot {
   module: CpuModule;
   resources: CpuResources;
   workgroups: [number, number, number];
+  groups: Map<number, GPUBindGroupDescriptor>;
 }
 interface Pipeline {
   label?: string;
@@ -34,6 +35,7 @@ export function cpuRoot(
       Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
     >;
     onModule?: (code: string) => void;
+    beforeDispatch?: (code: string, label: string, snapshot: DispatchSnapshot) => void;
     onDispatch?: (
       code: string,
       milliseconds: number,
@@ -169,13 +171,19 @@ export function cpuRoot(
                       return texture.samplers.get(resource)!;
                     },
                   };
+                  options.beforeDispatch?.(sources.get(module)!, label, {
+                    module,
+                    resources,
+                    workgroups: [x, y, z],
+                    groups: bindings,
+                  });
                   module.dispatch(x, y, z, resources);
                   options.onDispatch?.(
                     sources.get(module)!,
                     performance.now() - start,
                     x * y * z * module.workgroupSize.reduce((a, b) => a * b, 1),
                     label,
-                    { module, resources, workgroups: [x, y, z] },
+                    { module, resources, workgroups: [x, y, z], groups: bindings },
                   );
                 });
               };

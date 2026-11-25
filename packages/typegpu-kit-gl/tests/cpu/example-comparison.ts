@@ -40,7 +40,7 @@ export function seeded(seed: number): () => number {
   };
 }
 
-async function readBuffer(device: GPUDevice, source: GPUBuffer): Promise<ArrayBuffer> {
+export async function readBuffer(device: GPUDevice, source: GPUBuffer): Promise<ArrayBuffer> {
   const staging = device.createBuffer({
     size: source.size,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -57,7 +57,7 @@ async function readBuffer(device: GPUDevice, source: GPUBuffer): Promise<ArrayBu
   }
 }
 
-async function readTexture(
+export async function readTexture(
   device: GPUDevice,
   source: GPUTexture,
 ): Promise<CapturedResource['levels']> {
@@ -112,6 +112,7 @@ export async function captureScene(
   root: TgpuRoot,
   observer: ReturnType<typeof observeScene>,
   key: string,
+  read = true,
 ): Promise<SceneCapture> {
   const random = Math.random;
   Math.random = seeded(1);
@@ -148,6 +149,7 @@ export async function captureScene(
       await root.device.queue.onSubmittedWorkDone();
       await settle();
     }
+    if (!read) return { resources: [], skipped: [], frames: 2 };
     const resources: CapturedResource[] = [],
       skipped: SceneCapture['skipped'] = [];
     for (const resource of observer.resources.slice()) {
@@ -389,7 +391,20 @@ export function compareCaptures(expected: SceneCapture, actual: SceneCapture) {
       });
   const allocationOrder = differences.filter((difference) => difference.order.length > 0);
   const review = differences.filter((difference) => difference.order.length === 0);
+  const decoded = expected.resources.flatMap((resource) =>
+    resource.encoded?.length
+      ? [
+          {
+            key: resource.key,
+            fields: resource.encoded,
+            reason:
+              'typed integer storage encodes float values; octahedral seams have multiple equivalent packed representations',
+          },
+        ]
+      : [],
+  );
   return {
+    decoded,
     compared,
     differences,
     skipped,

@@ -196,6 +196,14 @@ it.runIf(process.env.CPU_SWEEP === '1')(
             throw error;
           }
         }
+        if (process.env.CPU_MISSING_DIRECTORY) {
+          for (const [index, code] of modules.entries())
+            if (!dispatched.has(code))
+              await writeFile(
+                `${process.env.CPU_MISSING_DIRECTORY}/${example.key}-${index}.js`,
+                code,
+              );
+        }
         results.push({
           example: example.key,
           status: 'pass',
@@ -221,7 +229,15 @@ it.runIf(process.env.CPU_SWEEP === '1')(
                     ? 'particle pool compiled burst facilities; no host-queued burst reached this particular pool'
                     : entry === 'move_1' && example.key === 'hex-isle'
                       ? 'custom depth-of-field radius bypasses the optional autofocus facility'
-                      : 'not reached by the generic controls; needs source-specific reachability review';
+                      : entry === 'item'
+                        ? 'meshPool precompiled a shape bake that no add/flush used during the scene and controls'
+                        : entry === 'walk'
+                          ? 'culling facility compiled for a drawing/layer that was not recorded while active'
+                          : example.key === 'kinetic' &&
+                              entry === 'compute' &&
+                              code.includes('function fromCube(')
+                            ? 'environment cube-source bake is precompiled; UI supplies daylight functions and panoramas, no cube texture'
+                            : 'not reached by the generic controls; needs source-specific reachability review';
                   return [{ module: index, entry, reason }];
                 }),
                 unexecutedEntries: modules

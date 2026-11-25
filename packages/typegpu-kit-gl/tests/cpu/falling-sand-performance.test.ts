@@ -55,8 +55,8 @@ it.runIf(process.env.CPU_FALLING_SAND_PERF === '1')(
       height: HEIGHT,
       center: [WIDTH / 2, HEIGHT / 2],
     });
-    const { sparks, spark } = createEmbers(root, { camera, step: 1 / 150, cells, counts });
-    const rules = createRules(root, { cells, counts, spark });
+    const { sparks, spark, sparked } = createEmbers(root, { camera, step: 1 / 150, cells, counts });
+    const rules = createRules(root, { cells, counts, spark, sparked });
     try {
       await Promise.all([cave.initAsync(), rules.initAsync(), sparks.initAsync()]);
       const initial = root.createCommandEncoder();

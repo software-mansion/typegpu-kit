@@ -1,5 +1,6 @@
 export type Encoding =
   | 'ordered-f32'
+  | 'octahedral-2x16snorm'
   | '2x16snorm'
   | '2x16unorm'
   | '2x16float'
@@ -65,6 +66,18 @@ export function encodedFields(code: string, binding: string): EncodedField[] {
       )
       .map((fn) => fn.name),
   );
+  const octahedral = new Set(
+    functions
+      .filter(
+        (fn) =>
+          /\.xy/.test(fn.body) &&
+          /\.yx/.test(fn.body) &&
+          /select\(/.test(fn.body) &&
+          /\.z\s*<\s*0/.test(fn.body) &&
+          /abs\(/.test(fn.body),
+      )
+      .map((fn) => fn.name),
+  );
   const result: EncodedField[] = [];
   for (const fn of functions) {
     const aliases = new Map<string, string>();
@@ -85,6 +98,9 @@ export function encodedFields(code: string, binding: string): EncodedField[] {
       const call = argsOf(expression);
       if (!call) return undefined;
       const pack = /^pack(2x16(?:snorm|unorm|float)|4x8(?:snorm|unorm))$/.exec(call.name);
+      const packedArgument = call.args[0] && argsOf(call.args[0]);
+      if (pack?.[1] === '2x16snorm' && packedArgument && octahedral.has(packedArgument.name))
+        return 'octahedral-2x16snorm';
       return pack ? (pack[1] as Encoding) : ordered.has(call.name) ? 'ordered-f32' : undefined;
     };
     for (const store of fn.body.matchAll(
@@ -119,6 +135,15 @@ export function packedEqual(
   b: number,
   encoding: Exclude<Encoding, 'ordered-f32'>,
 ): boolean {
+  if (encoding === 'octahedral-2x16snorm') {
+    if (packedEqual(a, b, '2x16snorm')) return true;
+    const left = unfold(a),
+      right = unfold(b);
+    const magnitude = Math.max(...left.map(Math.abs), ...right.map(Math.abs));
+    return left.every(
+      (value, i) => Math.abs(value - right[i]!) <= Math.max(1e-6, magnitude * 1e-5),
+    );
+  }
   const width = encoding.startsWith('2x16') ? 16 : 8;
   const mask = (1 << width) - 1;
   for (let at = 0; at < 32; at += width) {
@@ -132,4 +157,15 @@ export function packedEqual(
     if (Math.abs(left - right) > 1) return false;
   }
   return true;
+}
+
+function unfold(bits: number): number[] {
+  let x = Math.max(-1, ((bits << 16) >> 16) / 32767),
+    y = Math.max(-1, (bits >> 16) / 32767);
+  const z = 1 - Math.abs(x) - Math.abs(y),
+    fold = Math.min(1, Math.max(0, -z));
+  x -= (x >= 0 ? 1 : -1) * fold;
+  y -= (y >= 0 ? 1 : -1) * fold;
+  const magnitude = Math.hypot(x, y, z);
+  return [x / magnitude, y / magnitude, z / magnitude];
 }
