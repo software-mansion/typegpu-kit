@@ -58,6 +58,7 @@ web.host(createScene, { canvas });
 
 - `install()` adds `timestamp-query` to every device requested after it when the adapter has the feature, so the host's device times each pass. A root or device created before `install()` times nothing.
 - The dynamic import loads the panel only on `?profile`, so pages opened without it don't download it.
+- The [WebGL 2 fallback](/platforms/)'s objects are not WebGPU's, so the patches miss them. To profile a scene on it, install with its interfaces, `gpuDebug.install({ interfaces: webgl.interfaces })`, with `webgl` from `@typegpu/kit-gl`. Its device has `timestamp-query` where the context has `EXT_disjoint_timer_query_webgl2`.
 
 ## Reading a frame
 

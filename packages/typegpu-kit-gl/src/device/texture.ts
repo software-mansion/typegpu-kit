@@ -7,6 +7,7 @@
 import { type Ctx, IMPL, implOf, TEXTURE_USAGE } from './context.ts';
 import { type FormatInfo, formatInfo } from './formats.ts';
 import type { TexelArray } from './packing.ts';
+import { shaped } from './interfaces.ts';
 
 export interface CpuLevelCopy {
   readonly width: number;
@@ -705,5 +706,5 @@ export function createTexture(ctx: Ctx, descriptor: GPUTextureDescriptor): GPUTe
       untrack();
     },
   };
-  return texture as unknown as GPUTexture;
+  return shaped('GPUTexture', texture) as unknown as GPUTexture;
 }

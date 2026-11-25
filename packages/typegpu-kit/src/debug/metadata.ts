@@ -1,4 +1,5 @@
 import type { Patch } from './patch.ts';
+import type { Interfaces } from './instrument.ts';
 
 export type Access = 'read' | 'write' | 'readwrite' | 'unknown';
 
@@ -35,12 +36,18 @@ export function meaningfulLabel(label: string | undefined): string | undefined {
   return label && label !== '<unnamed>' ? label : undefined;
 }
 
+// A device's objects need not be WebGPU's, as the WebGL fallback's are not, so methods tell them
+const isBuffer = (value: object): value is GPUBuffer =>
+  typeof (value as Partial<GPUBuffer>).mapAsync === 'function';
+const isTexture = (value: object): value is GPUTexture =>
+  typeof (value as Partial<GPUTexture>).createView === 'function';
+const isView = (value: object): value is GPUTextureView => !isBuffer(value) && !isTexture(value);
+
 function resourceOf(target: GPUBuffer | GPUTexture): GpuResource {
   let resource = resources.get(target);
   if (resource) return resource;
 
-  const kind =
-    target instanceof GPUBuffer ? 'buffer' : canvasTextures.has(target) ? 'canvas' : 'texture';
+  const kind = isBuffer(target) ? 'buffer' : canvasTextures.has(target) ? 'canvas' : 'texture';
   const id = nextId++;
   resource = { id, kind, label: target.label || (kind === 'canvas' ? kind : `${kind} ${id}`) };
   resources.set(target, resource);
@@ -52,7 +59,7 @@ export function usesOf(
   target: GPUBuffer | GPUTexture | GPUTextureView | null | undefined,
   access: Access,
 ): GpuResourceUse[] {
-  const resolved = target instanceof GPUTextureView ? viewTextures.get(target) : target;
+  const resolved = target && isView(target) ? viewTextures.get(target) : target;
   return resolved ? [{ resource: resourceOf(resolved), access }] : [];
 }
 
@@ -92,14 +99,9 @@ function accessOf(entry: GPUBindGroupLayoutEntry): Access {
 }
 
 function bindingUses(resource: GPUBindingResource, access: Access): GpuResourceUse[] {
-  if (
-    resource instanceof GPUBuffer ||
-    resource instanceof GPUTexture ||
-    resource instanceof GPUTextureView
-  ) {
-    return usesOf(resource, access);
-  }
-
+  if (isBuffer(resource) || isTexture(resource)) return usesOf(resource, access);
+  if (viewTextures.has(resource as GPUTextureView))
+    return usesOf(resource as GPUTextureView, access);
   return 'buffer' in resource ? usesOf(resource.buffer, access) : [];
 }
 
@@ -133,8 +135,11 @@ function namePipeline<P extends Pipeline>(
   return pipeline;
 }
 
-/** Tracks textures behind views, pipeline names and bind group contents for the panel. */
-export function trackMetadata(patch: Patch) {
+/**
+ * Tracks textures behind views, pipeline names and bind group contents for the panel, on one set
+ * of interface objects, whose names shadow WebGPU's own in here.
+ */
+export function trackMetadata(patch: Patch, { GPUTexture, GPUDevice }: Interfaces) {
   // React Native worker runtimes may lack the class
   if (typeof GPUCanvasContext !== 'undefined') {
     patch(GPUCanvasContext.prototype, 'getCurrentTexture', (_self, args, next) => {

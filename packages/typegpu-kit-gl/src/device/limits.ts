@@ -61,8 +61,14 @@ export function limitsOf(gl: WebGL2RenderingContext): GPUSupportedLimits {
   return Object.freeze(limits) as unknown as GPUSupportedLimits;
 }
 
-export function featuresOf(ext: Extensions, formats: FormatTable): GPUSupportedFeatures {
+/** `timed` says whether the context can time spans of commands, which `timestamps.ts` needs. */
+export function featuresOf(
+  ext: Extensions,
+  formats: FormatTable,
+  timed: boolean,
+): GPUSupportedFeatures {
   const features = new Set<string>(['indirect-first-instance', 'depth32float-stencil8']);
+  if (timed) features.add('timestamp-query');
   if (ext.textureFloatLinear) features.add('float32-filterable');
   if (ext.floatBlend && formats.get('rgba32float')?.renderable) features.add('float32-blendable');
   if (formats.get('rg11b10ufloat')?.renderable) features.add('rg11b10ufloat-renderable');

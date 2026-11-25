@@ -171,23 +171,16 @@ A CPU kernel rounds `f32` values at each operation and wraps integers at 32 bits
 
 ## Seeing where kernels ran
 
-The fallback's device keeps `stats` on itself. Reach it through `root.device`. The package exports no type for it, so type the fields you read:
+`webgl.statsOf(root)` returns what a fallback root's device recorded, and `undefined` for a WebGPU root:
 
 ```ts twoslash
 import type { TgpuRoot } from 'typegpu';
 declare const root: TgpuRoot;
 // ---cut---
-import { backends } from '@typegpu/kit';
+import { webgl } from '@typegpu/kit-gl';
 
-interface KernelStats {
-  readonly kernels: Map<string, { ms: number; dispatches: number }>;
-  readonly fallbacks: Map<string, string>;
-  readonly placement: Map<string, string>;
-  reset(): void;
-}
-
-if (backends.of(root).kind === 'webgl') {
-  const { stats } = root.device as GPUDevice & { readonly stats: KernelStats };
+const stats = webgl.statsOf(root);
+if (stats) {
   for (const [label, { ms, dispatches }] of stats.kernels) console.log(label, ms / dispatches);
   for (const [label, why] of stats.fallbacks) console.log(label, why);
   for (const [label, where] of stats.placement) console.log(label, where);
@@ -206,7 +199,7 @@ Each map is keyed by the pipeline's label, so name your pipelines with `$name`. 
 
 </Rules>
 
-The device's `stats` also count what CPU kernels read back from the GPU, uploads and draw calls. To compare, create the root with `webgl.init({ canvas, gpuCompute: false })`, which runs every kernel on the CPU, or `placement: false`, which keeps every kernel that can run on the GPU there. `webgl.fallback()` takes both options too.
+The stats also count what CPU kernels read back from the GPU, uploads and draw calls. To compare, create the root with `webgl.init({ canvas, gpuCompute: false })`, which runs every kernel on the CPU, or `placement: false`, which keeps every kernel that can run on the GPU there. `webgl.fallback()` takes both options too.
 
 ## Choosing other kernels
 
@@ -265,7 +258,7 @@ The kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` a
 
 <Rules>
 
-- **No timestamps** The device has no timestamp or occlusion queries, so [`profiler`](/kit/profiler/) is inert. Read `stats` instead.
+- **Timestamps** The device has `timestamp-query` where the browser gives WebGL timer queries, so [`profiler`](/kit/profiler/) works there. A timestamp is a running total of GPU time, so only the difference of two from one frame means something. Without timer queries the feature is missing and `profiler` is inert; read the stats instead. The device has no occlusion queries.
 - **Waiting for the GPU** A CPU kernel that reads what a draw or a GPU kernel wrote waits for the GPU and reads it back, every dispatch. The wait includes every other page's GPU work in the same browser, so two such pages slow each other far more than they share the GPU.
 - **Indirect draws** WebGL 2 has no indirect draws, so the device reads their arguments on the CPU. A draw record a GPU kernel wrote waits for the GPU each frame.
 - **Extensions** An HDR target needs `EXT_color_buffer_half_float` or `EXT_color_buffer_float`. A 32-bit float target needs `EXT_color_buffer_float`, and blending into one `EXT_float_blend`, or fails with an error that names it. Sums, minimums and maximums need both, and run on the CPU without them.

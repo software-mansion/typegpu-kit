@@ -11,8 +11,15 @@
  */
 
 import { tgpu, type TgpuRoot } from 'typegpu';
-import { createDevice, isSupported, type DeviceOptions } from './device/index.ts';
+import {
+  createDevice,
+  isSupported,
+  type DeviceOptions,
+  type DeviceStats,
+  type GLDevice,
+} from './device/index.ts';
 import { KitGenerator } from './generator.ts';
+import { interfaces as deviceInterfaces } from './device/interfaces.ts';
 import { defineConstants } from './globals.ts';
 import { assertPatched } from './patched.ts';
 
@@ -29,9 +36,25 @@ export interface FallbackOptions extends Omit<InitOptions, 'canvas'> {
   readonly force?: boolean;
 }
 
+/**
+ * WebGPU's interface objects, such as `GPUCommandEncoder`, for the devices `init` creates, which
+ * are not WebGPU's own objects. Give them to `gpuDebug.install({ interfaces })` from
+ * `@typegpu/kit/debug` to profile a scene on WebGL 2.
+ */
+export const interfaces = deviceInterfaces;
+
 /** Reports whether this browser can create a WebGL 2 context. */
 export function supported(): boolean {
   return isSupported();
+}
+
+/**
+ * Returns what a fallback root's device recorded: per pipeline, the time its dispatches took and
+ * whether they ran on the GPU or the CPU, why a pipeline ran on the CPU, where the device placed
+ * each one and why, and what it read back and uploaded. Returns `undefined` for a WebGPU root.
+ */
+export function statsOf(root: TgpuRoot): DeviceStats | undefined {
+  return (root.device as Partial<GLDevice>).stats;
 }
 
 /**

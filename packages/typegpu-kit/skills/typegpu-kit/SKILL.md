@@ -94,6 +94,7 @@ Look up each feature here before writing it. Each line names its modules and a f
   - Optional collection of many resources: [`owner`](../../docs/concepts/modules.md#collecting-with-an-owner).
   - GPU time per pass, read in the program: `profiler`.
   - Every pass and dispatch timed on the page, the program unchanged: `gpuDebug`, on React Native `GpuDebugPanel`; [GPU debug panel](../../docs/kit/gpu-debug.md).
+  - The same on the WebGL 2 fallback: `gpuDebug.install({ interfaces: webgl.interfaces })`; [GPU debug panel](../../docs/kit/gpu-debug.md).
   - Frames timed from code: `instrument`, `createRecorder`, `watchFrames`; [without the panel](../../docs/kit/gpu-debug.md#without-the-panel).
   - Pipelines, their bindings per stage and late compiles, counted: `census`; [census](../../docs/kit/pipelines.md#census).
 

@@ -24,6 +24,7 @@ import type { BufferImpl } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import type { GpuCompute } from './gpuCompute.ts';
 import type { TextureImpl } from './texture.ts';
+import { disjointFor, mayTime } from './timestamps.ts';
 
 /** Dispatches watched before a decision. */
 const WINDOW = 6;
@@ -62,6 +63,11 @@ const CPU_NS = 40;
 const MOST_TRIED = 1 << 20;
 /** A CPU run stays only below this share of the GPU form's time, and returns above its inverse. */
 const KEEP_SHARE = 0.75;
+/**
+ * Milliseconds a sample may stay in flight before it is dropped unread: a fence a driver never
+ * signals, or a query result a context never makes available, would otherwise be polled forever.
+ */
+const PROBE_MS = 2000;
 
 interface Record {
   readonly label: string;
@@ -75,6 +81,10 @@ interface Record {
   dispatches: number;
   /** GPU dispatches whose outputs were read back before the pipeline wrote them again. */
   readBack: number;
+  /** GPU dispatches it has made, which number what it wrote. */
+  written: number;
+  /** The last of those that `readBack` counted. */
+  counted: number;
   /** Milliseconds of those readbacks, and of the GPU dispatches. */
   waitMs: number;
   gpuMs: number;
@@ -90,6 +100,8 @@ interface Record {
   held: string;
   /** Whether GL alone held an input at the last dispatch, which a CPU run would read back. */
   heldNow: boolean;
+  /** The invocations of the last dispatch. */
+  upcoming: number;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
   why: 'readback' | 'costly';
   /** The GPU time of the form's last sampled dispatches, in milliseconds. */
@@ -118,6 +130,8 @@ interface Probe {
   readonly after: WebGLSync | undefined;
   /** When a poll first saw the fence before the draws signalled. */
   seenBefore: number | undefined;
+  /** When the draws it times were issued. */
+  ended: number;
 }
 
 /** Each device's records with a probe in flight, and whether a poll is due or done this task. */
@@ -133,9 +147,9 @@ function pollsOf(ctx: Ctx) {
 }
 
 /**
- * Polls fences between tasks while any is in flight, as WebGL updates their status only then: the
- * time they give is no finer than the time between polls, which dispatches alone space a frame
- * apart. It stops when no fence is left, so it runs only while a sample is in flight.
+ * Polls samples between tasks while any is in flight, as WebGL updates their status only then:
+ * the time fences give is no finer than the time between polls, which dispatches alone space a
+ * frame apart. It stops when no sample is left, so a device that stops dispatching keeps none.
  */
 function tick(ctx: Ctx): void {
   const state = pollsOf(ctx);
@@ -144,8 +158,18 @@ function tick(ctx: Ctx): void {
   setTimeout(() => {
     state.ticking = false;
     pollProbes(ctx);
-    if ([...state.probing].some((record) => record.probe?.after)) tick(ctx);
+    if (state.probing.size > 0) tick(ctx);
   }, 0);
+}
+
+/** Deletes every sample in flight on the device, as it is destroyed. */
+export function discardProbes(ctx: Ctx): void {
+  const state = pollsOf(ctx);
+  for (const record of state.probing) {
+    if (record.probe) discardProbe(ctx, record.probe);
+    record.probe = undefined;
+  }
+  state.probing.clear();
 }
 
 const records = new WeakMap<object, Record>();
@@ -157,7 +181,8 @@ function waitedOf(ctx: Ctx): { ms: number } {
   if (!waited) waits.set(ctx, (waited = { ms: 0 }));
   return waited;
 }
-const writers = new WeakMap<BufferImpl | TextureImpl, Record>();
+/** The pipeline whose GPU form last wrote each resource, and which of its dispatches did. */
+const writers = new WeakMap<BufferImpl | TextureImpl, { record: Record; dispatch: number }>();
 
 function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
   let record = records.get(pipeline);
@@ -170,6 +195,8 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       returns: 0,
       dispatches: 0,
       readBack: 0,
+      written: 0,
+      counted: 0,
       waitMs: 0,
       gpuMs: 0,
       cpuInputs: 0,
@@ -179,6 +206,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       waitBefore: 0,
       held: '',
       heldNow: false,
+      upcoming: 0,
       why: 'readback',
       samples: [],
       probe: undefined,
@@ -220,7 +248,7 @@ function heldOnGl(
     if (use.kind === 'sampler') continue;
     if (use.kind === 'buffer') {
       const buffer = bufferEntry(groups[use.group], use.binding)?.buffer;
-      if (buffer?.gpuNewer && writers.get(buffer) !== record) {
+      if (buffer?.gpuNewer && writers.get(buffer)?.record !== record) {
         return buffer.label || `@group(${use.group}) @binding(${use.binding})`;
       }
       continue;
@@ -228,7 +256,7 @@ function heldOnGl(
     const entry = groups[use.group]?.group.entries.get(use.binding);
     if (entry?.kind === 'texture') {
       const { texture } = entry.view;
-      if (texture.written && texture.home === 'gl' && writers.get(texture) !== record) {
+      if (texture.written && texture.home === 'gl' && writers.get(texture)?.record !== record) {
         return texture.label || 'a texture';
       }
     }
@@ -236,23 +264,63 @@ function heldOnGl(
   return undefined;
 }
 
-/** Whether the dispatch should run its GPU form. */
+/**
+ * Whether the dispatch should run its GPU form. A move for cost takes this dispatch's size and
+ * inputs: samples that arrive now judge it, and a form on the CPU for cost returns to the GPU
+ * before a run past `MOST_TRIED` invocations or one that would read back what GL alone holds.
+ */
 export function runsOnGpu(
   ctx: Ctx,
   pipeline: object,
   label: string,
   module: CpuModule,
   groups: readonly (Bound | undefined)[],
+  invocations: number,
 ): boolean {
   if (!ctx.placement) return true;
-  pollProbes(ctx);
   const record = recordOf(ctx, pipeline, label);
   record.dispatches++;
   const held = heldOnGl(module, groups, record);
   record.heldNow = held !== undefined;
   if (held === undefined) record.cpuInputs++;
   else record.held = held;
+  record.upcoming = invocations;
+  pollProbes(ctx);
+  if (record.onCpu && record.why === 'costly') {
+    const why = costlyRefusal(record);
+    if (why !== undefined) {
+      backFromCost(ctx, record);
+      ctx.stats.placement.set(record.label, `gpu: ${why}`);
+    }
+  }
   return !record.onCpu;
+}
+
+/** Why a CPU run of the next dispatch cannot try or keep a costly form, if it cannot. */
+function costlyRefusal(record: Record): string | undefined {
+  if (record.upcoming > MOST_TRIED) {
+    return `${record.upcoming} invocations are too many to try on the CPU`;
+  }
+  if (record.heldNow) {
+    return `GL alone holds its input '${record.held}', which a CPU run would read back`;
+  }
+  return undefined;
+}
+
+/**
+ * Sends a form moved for cost back to the GPU before a dispatch the CPU cannot take. One that ran
+ * on the CPU counts as a return, so a form whose dispatches alternate settles on the GPU.
+ */
+function backFromCost(ctx: Ctx, record: Record): void {
+  if (!record.settling) {
+    record.costReturns++;
+    record.triedCost = record.costReturns >= MOST_RETURNS;
+  }
+  record.onCpu = false;
+  record.settling = false;
+  record.trial = false;
+  record.samples = [];
+  restart(ctx, record);
 }
 
 /** Notes a GPU form's dispatch: its targets now hold this pipeline's output. */
@@ -267,13 +335,14 @@ export function ranOnGpu(
 ): void {
   const record = recordOf(ctx, pipeline, label);
   record.gpuMs += ms;
+  const writer = { record, dispatch: ++record.written };
   for (const { target } of gpu.passes) {
     if (target.kind === 'buffer') {
       const buffer = bufferEntry(groups[target.group], target.binding)?.buffer;
-      if (buffer) writers.set(buffer, record);
+      if (buffer) writers.set(buffer, writer);
     } else {
       const entry = groups[target.group]?.group.entries.get(target.binding);
-      if (entry?.kind === 'texture') writers.set(entry.view.texture, record);
+      if (entry?.kind === 'texture') writers.set(entry.view.texture, writer);
     }
   }
   if (record.dispatches < WINDOW) return;
@@ -310,6 +379,8 @@ export function ranOnGpu(
 export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   const record = records.get(pipeline);
   if (!record?.onCpu) return;
+  // The form's first dispatches back upload what CPU runs wrote, which a sample would count
+  record.sinceSample = 0;
   if (record.why === 'costly') return ranCostly(ctx, record, ms);
   record.cpuMs += ms;
   if (record.dispatches < WINDOW) return;
@@ -345,13 +416,18 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   restart(ctx, record);
 }
 
-/** Notes that the CPU read `resource` back from GL, which charges the GPU form that wrote it. */
+/**
+ * Notes that the CPU read `resource` back from GL, which charges the GPU form that wrote it: the
+ * wait for each resource, and the dispatch once, however many of its outputs were read.
+ */
 export function readBack(ctx: Ctx, resource: BufferImpl | TextureImpl, ms: number): void {
   waitedOf(ctx).ms += ms;
-  const record = writers.get(resource);
-  if (!record) return;
+  const writer = writers.get(resource);
+  if (!writer) return;
   writers.delete(resource);
-  record.readBack++;
+  const { record } = writer;
+  if (record.counted !== writer.dispatch) record.readBack++;
+  record.counted = writer.dispatch;
   record.waitMs += ms;
 }
 
@@ -374,14 +450,14 @@ export function beginProbe(
   record.invocations = invocations;
   const { gl } = ctx;
   const timer = ctx.ext.timerQuery;
-  if (timer) {
+  if (timer && mayTime(ctx)) {
     const query = gl.createQuery();
     if (!query) return undefined;
     gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
-    return { query, before: undefined, after: undefined, seenBefore: undefined };
+    return { query, before: undefined, after: undefined, seenBefore: undefined, ended: 0 };
   }
   const before = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
-  return { query: undefined, before, after: undefined, seenBefore: undefined };
+  return { query: undefined, before, after: undefined, seenBefore: undefined, ended: 0 };
 }
 
 /** Ends a sample `beginProbe` started; `ran` false when the form drew nothing and ran elsewhere. */
@@ -400,9 +476,9 @@ export function endProbe(ctx: Ctx, pipeline: object, probe: Probe | undefined, r
     : (gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined);
   // A fence signals only once the commands before it reach the GPU
   if (after) gl.flush();
-  record.probe = { ...probe, after };
+  record.probe = { ...probe, after, ended: performance.now() };
   pollsOf(ctx).probing.add(record);
-  if (after) tick(ctx);
+  tick(ctx);
 }
 
 function discardProbe(ctx: Ctx, probe: Probe): void {
@@ -430,7 +506,7 @@ function pollProbes(ctx: Ctx): void {
   if (state.probing.size === 0) return;
   const { gl } = ctx;
   const timer = ctx.ext.timerQuery;
-  const disjoint = timer ? (gl.getParameter(timer.GPU_DISJOINT_EXT) as boolean) : false;
+  const disjoint = timer ? disjointFor(ctx, state) : false;
   for (const record of state.probing) {
     const probe = record.probe as Probe;
     let ms: number | undefined;
@@ -450,6 +526,7 @@ function pollProbes(ctx: Ctx): void {
         done = true;
       }
     } else done = true;
+    if (!done && now - probe.ended > PROBE_MS) done = true;
     if (!done) continue;
     discardProbe(ctx, probe);
     record.probe = undefined;
@@ -468,10 +545,11 @@ function sampled(ctx: Ctx, record: Record, ms: number): void {
   // does not count
   const cpuMs = record.invocations * CPU_NS * 1e-6;
   if (least < COSTLY_MS || cpuMs >= least * KEEP_SHARE || record.heldNow) return;
-  if (record.invocations > MOST_TRIED) {
+  const most = Math.max(record.invocations, record.upcoming);
+  if (most > MOST_TRIED) {
     ctx.stats.placement.set(
       record.label,
-      `gpu: its GPU form took ${least.toFixed(1)} ms a dispatch on the GPU, but ${record.invocations} invocations are too many to try on the CPU`,
+      `gpu: its GPU form took ${least.toFixed(1)} ms a dispatch on the GPU, but ${most} invocations are too many to try on the CPU`,
     );
     return;
   }
