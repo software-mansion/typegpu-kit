@@ -75,6 +75,10 @@ interface Record {
   dispatches: number;
   /** GPU dispatches whose outputs were read back before the pipeline wrote them again. */
   readBack: number;
+  /** GPU dispatches it has made, which number what it wrote. */
+  written: number;
+  /** The last of those that `readBack` counted. */
+  counted: number;
   /** Milliseconds of those readbacks, and of the GPU dispatches. */
   waitMs: number;
   gpuMs: number;
@@ -157,7 +161,8 @@ function waitedOf(ctx: Ctx): { ms: number } {
   if (!waited) waits.set(ctx, (waited = { ms: 0 }));
   return waited;
 }
-const writers = new WeakMap<BufferImpl | TextureImpl, Record>();
+/** The pipeline whose GPU form last wrote each resource, and which of its dispatches did. */
+const writers = new WeakMap<BufferImpl | TextureImpl, { record: Record; dispatch: number }>();
 
 function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
   let record = records.get(pipeline);
@@ -170,6 +175,8 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       returns: 0,
       dispatches: 0,
       readBack: 0,
+      written: 0,
+      counted: 0,
       waitMs: 0,
       gpuMs: 0,
       cpuInputs: 0,
@@ -220,7 +227,7 @@ function heldOnGl(
     if (use.kind === 'sampler') continue;
     if (use.kind === 'buffer') {
       const buffer = bufferEntry(groups[use.group], use.binding)?.buffer;
-      if (buffer?.gpuNewer && writers.get(buffer) !== record) {
+      if (buffer?.gpuNewer && writers.get(buffer)?.record !== record) {
         return buffer.label || `@group(${use.group}) @binding(${use.binding})`;
       }
       continue;
@@ -228,7 +235,7 @@ function heldOnGl(
     const entry = groups[use.group]?.group.entries.get(use.binding);
     if (entry?.kind === 'texture') {
       const { texture } = entry.view;
-      if (texture.written && texture.home === 'gl' && writers.get(texture) !== record) {
+      if (texture.written && texture.home === 'gl' && writers.get(texture)?.record !== record) {
         return texture.label || 'a texture';
       }
     }
@@ -267,13 +274,14 @@ export function ranOnGpu(
 ): void {
   const record = recordOf(ctx, pipeline, label);
   record.gpuMs += ms;
+  const writer = { record, dispatch: ++record.written };
   for (const { target } of gpu.passes) {
     if (target.kind === 'buffer') {
       const buffer = bufferEntry(groups[target.group], target.binding)?.buffer;
-      if (buffer) writers.set(buffer, record);
+      if (buffer) writers.set(buffer, writer);
     } else {
       const entry = groups[target.group]?.group.entries.get(target.binding);
-      if (entry?.kind === 'texture') writers.set(entry.view.texture, record);
+      if (entry?.kind === 'texture') writers.set(entry.view.texture, writer);
     }
   }
   if (record.dispatches < WINDOW) return;
@@ -345,13 +353,18 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   restart(ctx, record);
 }
 
-/** Notes that the CPU read `resource` back from GL, which charges the GPU form that wrote it. */
+/**
+ * Notes that the CPU read `resource` back from GL, which charges the GPU form that wrote it: the
+ * wait for each resource, and the dispatch once, however many of its outputs were read.
+ */
 export function readBack(ctx: Ctx, resource: BufferImpl | TextureImpl, ms: number): void {
   waitedOf(ctx).ms += ms;
-  const record = writers.get(resource);
-  if (!record) return;
+  const writer = writers.get(resource);
+  if (!writer) return;
   writers.delete(resource);
-  record.readBack++;
+  const { record } = writer;
+  if (record.counted !== writer.dispatch) record.readBack++;
+  record.counted = writer.dispatch;
   record.waitMs += ms;
 }
 
