@@ -359,3 +359,42 @@ describe.skipIf(!hasWebGpu)('vertex strides', () => {
     expect(messages.join('\n')).toMatch(/arrayStride of 272/);
   });
 });
+
+/** A pass draws red and discards it, and a pass that loads it draws blue over a corner. */
+function discardedThenRead(read: 'copy' | 'load') {
+  return (root: TgpuRoot) => {
+    const target = root
+      .createTexture({ size: [SIZE, SIZE], format: 'rgba8unorm' })
+      .$usage('render', 'sampled');
+    root
+      .createRenderPipeline({
+        vertex: fullScreen,
+        fragment: solid(d.vec4f(1, 0, 0, 1)),
+        targets: { format: 'rgba8unorm' },
+      })
+      .withColorAttachment({ view: target, storeOp: 'discard' })
+      .draw(3);
+    if (read === 'load') {
+      root
+        .createRenderPipeline({
+          vertex: corner,
+          fragment: solid(d.vec4f(0, 0, 1, 1)),
+          targets: { format: 'rgba8unorm' },
+        })
+        .withColorAttachment({ view: target, loadOp: 'load' })
+        .draw(3);
+    }
+    return target;
+  };
+}
+
+describe.skipIf(!hasWebGpu)('discarded attachments', () => {
+  test.each(['copy', 'load'] as const)(
+    'an attachment a pass discarded reads as zeros, by a %s',
+    async (read) => {
+      const result = await compareRoots(gpu, gl, discardedThenRead(read));
+      expect(pixel(result.expected, 2, 2)).toEqual([0, 0, 0, 0]);
+      expect(result.first).toBeUndefined();
+    },
+  );
+});
