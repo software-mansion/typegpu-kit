@@ -6,14 +6,21 @@
 
 ## Compute
 
-A compute pipeline runs one of two ways. The fallback picks per pipeline, and falls back from the first to the second per dispatch.
+A compute pipeline runs one of three ways. The generator picks per pipeline, and the device falls back to the CPU per dispatch when a GPU form's conditions do not hold.
 
-**As fragment passes on the GPU**, when every write is provably to the invocation's own cell: its own array element or texel, a linear index with a constant width, an index plus an offset every invocation shares, a constant stride, a column of a 3d or array texture, a binding only one chosen invocation writes, or atomics on its own cell. Such a kernel runs at GPU speed. Two things differ from WebGPU:
+**As fragment passes on the GPU**, when every write is provably to the invocation's own cell: its own array element or texel, a linear index with a constant width, an index plus an offset every invocation shares, a constant stride, a column of a 3d or array texture, a binding only one chosen invocation writes, or atomics on its own cell.
+
+**As points on the GPU**, when a kernel writes cells it computes: each write site is in the entry function, outside runtime loops (`tgpu.unroll` loops are fine), and writes a whole element or texel with `=` or `textureStore`, and the kernel never reads what it writes this way.
+
+Both run at GPU speed, and differ from WebGPU in these ways:
 
 - A read of a cell another invocation writes in the same dispatch returns the value from before the dispatch. WebGPU leaves such a read a data race, so a kernel that is correct there does not depend on it.
-- The whole kernel runs once per written resource, and once more for each texel a buffer element spans beyond the first, so a kernel that writes several large structs costs a multiple of its WebGPU cost.
+- Where two invocations write one cell, either value may win, as in WebGPU.
+- A point outside its target, or outside a buffer's bound range, is dropped. WebGPU may drop such a write or move it inside the binding.
+- A fragment pass runs the whole kernel once per written resource, and once more for each texel a buffer element spans beyond the first; it writes four layers of a 3d or array target a draw. A pass of points runs it once per write site, and for a buffer once per word of the element and per channel of a data texel. A kernel that writes many resources or large structs costs a multiple of its WebGPU cost.
+- A linear index with a constant width needs a dispatch no wider than that width, or an early return past it at the top of the kernel, such as `if (gid.x >= width) return;` with a constant `width`. A wider dispatch runs on the CPU.
 
-**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed indices, writes inside helper functions that are not handed the invocation's own index.
+**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed cells inside loops or helper functions, and writes to computed cells the kernel also reads.
 
 - Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
@@ -29,7 +36,7 @@ A compute pipeline runs one of two ways. The fallback picks per pipeline, and fa
 - A function written as a WGSL string cannot be translated. `common.fullScreenTriangle` and TypeGPU's own mipmap and resampling shaders are recognised and replaced; any other throws.
 - No `textureGather` or `textureGatherCompare`, no `textureNumSamples`, no multisampled or cube-array texture bindings.
 - No `sample_index`, `primitive_index`, `clip_distances` or sample-mask input. A `sample_mask` output discards the fragment when bit 0 is clear, which is exact only without multisampling.
-- No `extractBits` or `insertBits` in generated GLSL (CPU kernels support both), no `f16`, no `bool` inside a buffer, no array of arrays in a buffer on the GPU path.
+- No `extractBits` or `insertBits` in generated GLSL (CPU kernels support both), no `f16`, no `bool` inside a buffer, and no array of arrays other than a buffer's runtime-sized array of them.
 - A render stage cannot write a buffer or a storage texture, and cannot use atomics other than `atomicLoad`.
 - A uniform buffer over 16 KiB is read through a texture instead of a uniform block. Reading a whole runtime-sized array as one value throws.
 - A stage may use 16 texture units, and a program 32. Each storage buffer, each large uniform buffer and each texture and sampler pair takes one. A program that needs more fails when it links, with a message that counts them.

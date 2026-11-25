@@ -1,7 +1,8 @@
 /**
  * Runs a TypeGPU Kit program on WebGL 2 where WebGPU is missing. The root it creates is TypeGPU's
  * own, on a device implemented over a WebGL 2 context, so scenes and modules run unchanged.
- * Compute pipelines run on the CPU; `LIMITATIONS.md` lists what differs.
+ * Kernels run on the GPU as fragment passes or points where their writes allow it, and on the
+ * CPU otherwise; `LIMITATIONS.md` lists what differs.
  *
  * @module
  * @kind platform
