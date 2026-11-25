@@ -2170,7 +2170,7 @@ ${stored.join('\n')}
     }
     this.#relyOnOwn();
     this.#textures.set(texture.id, texture);
-    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    const value = this.argumentOf(args[dimension === '2d-array' ? 3 : 2]);
     const shadow = this.#textureShadow(texture);
     if (owns && this.#maps.has(texture.id)) {
       throw new Ineligible(`stores to '${texture.id}' at texels of two shapes`);
@@ -2191,7 +2191,7 @@ ${stored.join('\n')}
           : dimension === '2d'
             ? `ivec3(${this.ivecOf(args[1], 2)}, 0)`
             : `ivec3(${this.intOf(args[1])}, 0, 0)`;
-    const value = this.valueOf(args[dimension === '2d-array' ? 3 : 2]);
+    const value = this.argumentOf(args[dimension === '2d-array' ? 3 : 2]);
     this.#scatters.set(texture.id, { kind: 'texture', texture });
     return `${this.#putter(texture.id, 'ivec3', this.#texelType(texture))}(${point}, ${value})`;
   }

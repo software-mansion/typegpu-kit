@@ -995,25 +995,26 @@ export class KitGlslGenerator extends GlslGenerator {
     return this.samplerUniform(texture);
   }
 
-  protected valueOf(snippet: Snippet | undefined): string {
+  /** The GLSL of a texture call's argument. */
+  protected argumentOf(snippet: Snippet | undefined): string {
     if (!snippet) throw new Error('@typegpu/kit-gl: a texture call is missing an argument');
     return this.ctx.resolveSnippet(snippet).value;
   }
 
   protected floatOf(snippet: Snippet | undefined): string {
-    const value = this.valueOf(snippet);
+    const value = this.argumentOf(snippet);
     const type = (snippet as Snippet).dataType;
     return type !== UnknownData && type.type === 'f32' ? value : `float(${value})`;
   }
 
   protected intOf(snippet: Snippet | undefined): string {
-    const value = this.valueOf(snippet);
+    const value = this.argumentOf(snippet);
     const type = (snippet as Snippet).dataType;
     return type !== UnknownData && type.type === 'i32' ? value : `int(${value})`;
   }
 
   protected ivecOf(snippet: Snippet | undefined, size: number): string {
-    const value = this.valueOf(snippet);
+    const value = this.argumentOf(snippet);
     const type = (snippet as Snippet).dataType;
     if (size === 1) return this.intOf(snippet);
     return type !== UnknownData && type.type === `vec${size}i` ? value : `ivec${size}(${value})`;
@@ -1067,7 +1068,7 @@ export class KitGlslGenerator extends GlslGenerator {
     const sampler = args[1];
     const shadow = name.startsWith('textureSampleCompare');
     const uniform = this.samplerUniform(texture, sampler);
-    const coordsValue = this.valueOf(args[2]);
+    const coordsValue = this.argumentOf(args[2]);
     let rest = args.slice(3);
     let layer: string | undefined;
     if (arrayed) {
@@ -1094,7 +1095,7 @@ export class KitGlslGenerator extends GlslGenerator {
 
     if (shadow) {
       const reference = this.floatOf(rest[0]);
-      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
+      const offset = rest[1] ? this.argumentOf(rest[1]) : undefined;
       const point =
         kind.dimension === '2d'
           ? `vec3(${coordsValue}, ${reference})`
@@ -1120,29 +1121,29 @@ export class KitGlslGenerator extends GlslGenerator {
 
     const channel = depth ? '.r' : '';
     if (name === 'textureSample') {
-      const offset = rest[0] ? this.valueOf(rest[0]) : undefined;
+      const offset = rest[0] ? this.argumentOf(rest[0]) : undefined;
       return offset
         ? `textureOffset(${uniform}, ${coords}, ${offset})${channel}`
         : `texture(${uniform}, ${coords})${channel}`;
     }
     if (name === 'textureSampleBias') {
       const bias = this.floatOf(rest[0]);
-      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
+      const offset = rest[1] ? this.argumentOf(rest[1]) : undefined;
       return offset
         ? `textureOffset(${uniform}, ${coords}, ${offset}, ${bias})${channel}`
         : `texture(${uniform}, ${coords}, ${bias})${channel}`;
     }
     if (name === 'textureSampleLevel') {
       const level = this.floatOf(rest[0]);
-      const offset = rest[1] ? this.valueOf(rest[1]) : undefined;
+      const offset = rest[1] ? this.argumentOf(rest[1]) : undefined;
       return offset
         ? `textureLodOffset(${uniform}, ${coords}, ${level}, ${offset})${channel}`
         : `textureLod(${uniform}, ${coords}, ${level})${channel}`;
     }
     if (name === 'textureSampleGrad') {
-      const dx = this.valueOf(rest[0]);
-      const dy = this.valueOf(rest[1]);
-      const offset = rest[2] ? this.valueOf(rest[2]) : undefined;
+      const dx = this.argumentOf(rest[0]);
+      const dy = this.argumentOf(rest[1]);
+      const offset = rest[2] ? this.argumentOf(rest[2]) : undefined;
       return offset
         ? `textureGradOffset(${uniform}, ${coords}, ${dx}, ${dy}, ${offset})${channel}`
         : `textureGrad(${uniform}, ${coords}, ${dx}, ${dy})${channel}`;
