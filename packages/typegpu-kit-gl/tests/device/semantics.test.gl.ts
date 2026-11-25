@@ -1,7 +1,7 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
-import { compareRoots, hasWebGpu, pixel, roots } from './compare.ts';
+import { compare, compareRoots, hasWebGpu, pixel, readTexture, roots } from './compare.ts';
 
 let gpu: TgpuRoot;
 let gl: TgpuRoot;
@@ -129,6 +129,34 @@ function oneAspectStored(keep: 'depth' | 'stencil') {
   };
 }
 
+/** Rows of red, green, blue and white, top to bottom, as an `ImageBitmap` and a canvas. */
+async function rows() {
+  const canvas = new OffscreenCanvas(4, 4);
+  const context = canvas.getContext('2d')!;
+  ['#ff0000', '#00ff00', '#0000ff', '#ffffff'].forEach((style, row) => {
+    context.fillStyle = style;
+    context.fillRect(0, row, 4, 1);
+  });
+  return { canvas, bitmap: await createImageBitmap(canvas) };
+}
+
+/** Copies the top two rows of `source`, flipped, into a 4x2 texture and reads it back. */
+async function flippedRegion(device: GPUDevice, source: ImageBitmap | OffscreenCanvas) {
+  const texture = device.createTexture({
+    size: [4, 2],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture(
+    { source, origin: [0, 0], flipY: true },
+    { texture },
+    [4, 2],
+  );
+  const read = await readTexture(device, texture);
+  texture.destroy();
+  return read;
+}
+
 /**
  * A pass fills the target red, a kernel the barrier keeps on the CPU stores green into its top
  * half, and a pass with the same attachments loads it and draws blue over a corner.
@@ -187,6 +215,20 @@ describe.skipIf(!hasWebGpu)('render passes keep WebGPU semantics', () => {
         keep === 'depth' ? [0, 255, 0, 255] : [0, 0, 0, 255],
       );
       expect(result.first).toBeUndefined();
+    },
+  );
+
+  test.each(['bitmap', 'canvas'] as const)(
+    'a flipped copy of part of an image flips within that part, from a %s',
+    async (kind) => {
+      const images = await rows();
+      const source = images[kind];
+      const expected = await flippedRegion(gpu.device, source);
+      const actual = await flippedRegion(gl.device, source);
+      // Rows 0 and 1, red and green, the bottom one first
+      expect(pixel(expected, 0, 0)).toEqual([0, 255, 0, 255]);
+      expect(pixel(expected, 0, 1)).toEqual([255, 0, 0, 255]);
+      expect(compare(expected, actual).first).toBeUndefined();
     },
   );
 });

@@ -733,13 +733,16 @@ export function copyExternalImageToTexture(
   let image: TexImageSource = source.source as TexImageSource;
   let skipX = sx;
   let skipY = sy;
-  // WebGL ignores the flip and premultiply settings for an ImageBitmap
+  // WebGL ignores the flip and premultiply settings for an ImageBitmap. WebGPU flips within the
+  // region, whose origin counts from the top of the source either way
   if (flipY && typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) {
-    image = flipped(image, sx, sourceSize(image)[1] - sy - height, width, height);
+    image = flipped(image, sx, sy, width, height);
     skipX = 0;
     skipY = 0;
   }
   const domFlip = flipY && image === source.source;
+  // WebGL flips the whole source before it skips rows
+  if (domFlip) skipY = sourceSize(image as ImageSource)[1] - sy - height;
 
   state.scratchTexture(texture.target, texture.texture);
   state.unpack(domFlip, premultiply, 0, 0);
