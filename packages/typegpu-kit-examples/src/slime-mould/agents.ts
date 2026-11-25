@@ -4,9 +4,6 @@ import {
   d,
   std,
   tgpu,
-  type StorageFlag,
-  type TgpuBuffer,
-  type TgpuUniform,
   type TgpuCommandEncoder,
   type TgpuComputePass,
   type TgpuRoot,
@@ -232,27 +229,11 @@ export function createAgents(
 
   const scattering = root.createComputePipeline({ compute: scatter });
   const moving = root.createComputePipeline({ compute: move });
-  const stamping = claims ? undefined : createStamping(root, agentData, physarum, size);
   let count = 0;
   const grown = { alive: SEED };
 
   return {
-    initAsync: () => pipelines.compile([scattering, moving, ...(stamping ? [stamping] : [])]),
-
-    /** Whether `stamp` adds the deposits, as it does where kernels run on the CPU. */
-    stamps: stamping !== undefined,
-
-    /**
-     * Draws this step's deposits into the trail's fresh deposits, additively, where kernels run on
-     * the CPU and `move` cannot add them with atomics. Does nothing elsewhere.
-     */
-    stamp(encoder: TgpuCommandEncoder) {
-      if (!stamping || !trail.fresh) return;
-      stamping
-        .with(encoder)
-        .withColorAttachment({ view: trail.fresh, loadOp: 'clear', clearValue: [0, 0, 0, 0] })
-        .draw(6, count);
-    },
+    initAsync: () => pipelines.compile([scattering, moving]),
 
     /** Sets the growth limit, sensing, steering and hunger rate. Clamps the count to capacity. */
     set(values: Omit<d.InferInput<typeof Physarum>, 'alive'>) {
@@ -292,54 +273,4 @@ export function createAgents(
       taken.buffer.destroy();
     },
   };
-}
-
-/** A cell's corners as two triangles, in cells. */
-const CORNERS = [
-  d.vec2f(0, 0),
-  d.vec2f(1, 0),
-  d.vec2f(0, 1),
-  d.vec2f(0, 1),
-  d.vec2f(1, 0),
-  d.vec2f(1, 1),
-];
-
-/** Draws each awake agent's deposit as its cell, for an additive render target over the trail. */
-function createStamping(
-  root: TgpuRoot,
-  agentData: TgpuBuffer<d.WgslArray<typeof Agent>> & StorageFlag,
-  physarum: TgpuUniform<typeof Physarum>,
-  size: number,
-) {
-  const agents = agentData.as('readonly');
-  const corners = tgpu.const(d.arrayOf(d.vec2f, 6), CORNERS);
-  const vertex = tgpu.vertexFn({
-    in: { corner: d.builtin.vertexIndex, agent: d.builtin.instanceIndex },
-    out: { position: d.builtin.position, amount: d.f32 },
-  })(({ corner, agent }) => {
-    'use gpu';
-    const one = agents.$[agent];
-    // Asleep agents and those beyond the count deposit nothing
-    if (one.awake === 0 || agent >= physarum.$.count) {
-      return { position: d.vec4f(2, 2, 0, 1), amount: 0 };
-    }
-    const at = (std.floor(one.position) + corners.$[corner]!) / size;
-    const amount = physarum.$.deposit * (0.3 + 1.7 * one.fed * one.fed);
-    return { position: d.vec4f(at.x * 2 - 1, 1 - at.y * 2, 0, 1), amount };
-  });
-  const fragment = tgpu.fragmentFn({ in: { amount: d.f32 }, out: d.vec4f })(({ amount }) => {
-    'use gpu';
-    return d.vec4f(amount, 0, 0, 1);
-  });
-  return root.createRenderPipeline({
-    vertex,
-    fragment,
-    targets: {
-      format: 'rgba16float',
-      blend: {
-        color: { srcFactor: 'one', dstFactor: 'one' },
-        alpha: { srcFactor: 'one', dstFactor: 'one' },
-      },
-    },
-  });
 }

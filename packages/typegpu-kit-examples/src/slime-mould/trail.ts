@@ -1,4 +1,4 @@
-import { backends, pipelines } from '@typegpu/kit';
+import { pipelines } from '@typegpu/kit';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 
 /** Integer units per deposit. Atomics require integer additions. */
@@ -25,22 +25,13 @@ export function createTrail(root: TgpuRoot, options: { size: number }) {
   const spareReading = spare.createView(d.texture2d(d.f32));
   const spareWriting = spare.createView(d.textureStorage2d('rgba16float', 'write-only'));
   const smooth = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-  // Where kernels run on the CPU, agents draw their deposits into `fresh` instead, so that no
-  // kernel adds to another cell and every step stays on the GPU
-  const stamped = backends.of(root).compute === 'cpu';
-  const dropped = root.createMutable(d.arrayOf(d.atomic(d.u32), stamped ? 1 : size * size));
-  const freshTexture = stamped
-    ? root.createTexture({ size: [size, size], format: 'rgba16float' }).$usage('render', 'sampled')
-    : undefined;
-  const fresh = freshTexture?.createView(d.texture2d(d.f32));
+  const dropped = root.createMutable(d.arrayOf(d.atomic(d.u32), size * size));
   const spread = root.createUniform(Spread, { keep: 1 - TRAIL.decay, blur: TRAIL.blur });
 
   /** Atomically adds `amount` to a cell, allowing concurrent deposits. */
   const deposit = (cell: d.v2i, amount: number) => {
     'use gpu';
-    if (!stamped) {
-      std.atomicAdd(dropped.$[cell.y * size + cell.x], d.u32(amount * PARTS));
-    }
+    std.atomicAdd(dropped.$[cell.y * size + cell.x], d.u32(amount * PARTS));
   };
 
   /** Samples the trail at grid coordinates `uv` from 0 to 1, with interpolation between cells. */
@@ -82,15 +73,10 @@ export function createTrail(root: TgpuRoot, options: { size: number }) {
     const below = std.textureLoad(spareReading.$, inside(cell + d.vec2i(0, 1)), 0).x;
     const blurred = std.mix(here, (up + here * 2 + below) / 4, spread.$.blur);
 
-    let added = d.f32(0);
-    if (stamped) {
-      added = std.textureLoad(fresh!.$, cell, 0).x;
-    } else {
-      const index = gid.y * size + gid.x;
-      added = d.f32(std.atomicLoad(dropped.$[index])) / PARTS;
-      std.atomicStore(dropped.$[index], 0);
-    }
-    std.textureStore(writing.$, gid.xy, d.vec4f(blurred * spread.$.keep + added, 0, 0, 1));
+    const index = gid.y * size + gid.x;
+    const fresh = d.f32(std.atomicLoad(dropped.$[index])) / PARTS;
+    std.atomicStore(dropped.$[index], 0);
+    std.textureStore(writing.$, gid.xy, d.vec4f(blurred * spread.$.keep + fresh, 0, 0, 1));
   });
 
   const blurringAcross = root.createComputePipeline({ compute: across });
@@ -102,8 +88,6 @@ export function createTrail(root: TgpuRoot, options: { size: number }) {
     size,
     deposit,
     at,
-    /** Where agents draw this step's deposits on CPU-compute backends, and `undefined` elsewhere. */
-    fresh: freshTexture?.createView('render'),
     settings: spread,
     initAsync: () => pipelines.compile([blurringAcross, blurringDown]),
 
@@ -122,7 +106,6 @@ export function createTrail(root: TgpuRoot, options: { size: number }) {
     destroy() {
       trail.destroy();
       spare.destroy();
-      freshTexture?.destroy();
       dropped.buffer.destroy();
     },
   };

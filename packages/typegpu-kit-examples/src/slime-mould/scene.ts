@@ -144,13 +144,8 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       scattering = false;
       oats.paint(frame.encoder);
       for (let i = 0; i < steps; i++) {
-        let pass = frame.encoder.beginComputePass();
+        const pass = frame.encoder.beginComputePass();
         agents.move(pass);
-        if (agents.stamps) {
-          pass.end();
-          agents.stamp(frame.encoder);
-          pass = frame.encoder.beginComputePass();
-        }
         trail.spread(pass);
         pass.end();
       }
