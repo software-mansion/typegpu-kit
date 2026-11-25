@@ -1,11 +1,14 @@
 import { backends, pipelines } from '@typegpu/kit';
 import { randf } from '@typegpu/noise';
 import {
+  common,
   d,
+  type RenderFlag,
   std,
   tgpu,
   type TgpuCommandEncoder,
   type TgpuComputePass,
+  type TgpuRenderPassDescriptor,
   type TgpuRoot,
 } from 'typegpu';
 import { createWaveMips } from './wave-mips.ts';
@@ -246,6 +249,9 @@ const columnStages = tgpu.computeFn({
 
 const columnButterflies = butterfliesOf(columns, SIGNALS);
 
+/** The cascade whose maps a packing pass draws, where compute runs on the CPU. */
+const packLayout = tgpu.bindGroupLayout({ cascade: { uniform: d.u32 } });
+
 export type Waves = ReturnType<typeof createWaves>;
 
 /** Four FFT cascades of an ocean spectrum, mipmapped as displacement, slope and moment maps. */
@@ -260,8 +266,8 @@ export function createWaves(root: TgpuRoot) {
 
   // Where compute runs on the CPU, the WebGL fallback can run kernels that each write their own
   // element on its GPU, but not workgroups that share memory: there the transforms step through
-  // Stockham stages over two lattices of signal pairs instead, with the evolve and the packing per
-  // element, and the mips are drawn
+  // Stockham stages over two lattices of signal pairs instead, with the evolve and the foam per
+  // element, and the maps are drawn
   const cpu = backends.of(root).compute === 'cpu';
 
   // The fallback keeps its signals in `pairs` and binds this one only where layouts need it
@@ -484,16 +490,65 @@ export function createWaves(root: TgpuRoot) {
     pairsMutable.$[at] = d.vec4f(value);
   });
 
-  /** Packs one texel of one cascade, `gid` being (x, y, cascade), from the transformed pairs. */
-  const packDense = tgpu.computeFn({
+  /** Pair `pair` of the transformed signals of `texel` of cascade `c`, signed back. */
+  const pairAt = (texel: d.v2u, c: number, pair: number) => {
+    'use gpu';
+    const sign = std.select(d.f32(1), d.f32(-1), ((texel.x + texel.y) & 1) === 1);
+    return pairsReadonly.$[((c * PAIRS + pair) * N + texel.y) * N + texel.x] * sign;
+  };
+
+  /** The gain on cascade `c`'s horizontal displacements, as `packSignals` takes it. */
+  const lambdaOf = (c: number) => {
+    'use gpu';
+    return -CHOPPINESS * cascades.$[c].chop;
+  };
+
+  /**
+   * Carries the foam of one texel of one cascade, `gid` being (x, y, cascade), as `packSignals`
+   * does, for the maps that `drawTexel` draws.
+   */
+  const foamDense = tgpu.computeFn({
     workgroupSize: [8, 8],
     in: { gid: d.builtin.globalInvocationId },
   })(({ gid }) => {
     'use gpu';
-    const at = (gid.z * PAIRS * N + gid.y) * N + gid.x;
-    const low = d.vec4f(pairsReadonly.$[at]);
-    const high = d.vec4f(pairsReadonly.$[at + N * N]);
-    packSignals(gid.xy, gid.z, (gid.z * N + gid.y) * N + gid.x, low.xy, low.zw, high.xy, high.zw);
+    const c = gid.z;
+    const high = pairAt(gid.xy, c, d.u32(1));
+    const lambda = lambdaOf(c);
+    const jacobian = surfaceJacobian(d.vec3f(lambda * high.y, lambda * high.z, lambda * high.w));
+    const rule = Foaming(foaming.$[c]);
+    const cell = (c * N + gid.y) * N + gid.x;
+    foam.$[cell] = std.saturate(
+      foam.$[cell] * std.exp(-rule.decay * step.$.dt) +
+        std.max(rule.whitecap - jacobian, 0) * rule.grow * step.$.dt,
+    );
+  });
+
+  const foamReadonly = foam.buffer.as('readonly');
+
+  /** Draws one texel of one cascade's maps, as `packSignals` stores them, with its new foam. */
+  const drawTexel = tgpu.fragmentFn({
+    in: { position: d.builtin.position },
+    out: { displacement: d.vec4f, derivatives: d.vec4f, moments: d.vec4f },
+  })(({ position }) => {
+    'use gpu';
+    const texel = d.vec2u(position.xy);
+    const c = packLayout.$.cascade;
+    const low = pairAt(texel, c, d.u32(0));
+    const high = pairAt(texel, c, d.u32(1));
+    const lambda = lambdaOf(c);
+    const gradient = d.vec2f(low.w, high.x);
+    const xz = lambda * high.w;
+    return {
+      displacement: d.vec4f(lambda * low.x, low.y, lambda * low.z, xz),
+      derivatives: d.vec4f(gradient, lambda * high.y, lambda * high.z),
+      moments: d.vec4f(
+        gradient.x * gradient.x,
+        gradient.y * gradient.y,
+        gradient.x * gradient.y,
+        foamReadonly.$[(c * N + texel.y) * N + texel.x],
+      ),
+    };
   });
 
   const spare = cpu
@@ -520,7 +575,36 @@ export function createWaves(root: TgpuRoot) {
   const columnStagesPipeline = cpu
     ? root.createComputePipeline({ compute: columnStages })
     : undefined;
-  const packPipeline = cpu ? root.createComputePipeline({ compute: packDense }) : undefined;
+  const foamPipeline = cpu ? root.createComputePipeline({ compute: foamDense }) : undefined;
+  const packPipeline = cpu
+    ? root.createRenderPipeline({
+        vertex: common.fullScreenTriangle,
+        fragment: drawTexel,
+        targets: {
+          displacement: { format: 'rgba16float' },
+          derivatives: { format: 'rgba16float' },
+          moments: { format: 'rgba16float' },
+        },
+      })
+    : undefined;
+  // A pass a cascade, drawing the top level of its layer of each map
+  const packPasses = cpu
+    ? Array.from({ length: CASCADES }, (_cascade, c) => {
+        const group = root.createBindGroup(packLayout, { cascade: root.createUniform(d.u32, c) });
+        const colorAttachments = maps.map((map) => {
+          const view = (map as typeof map & RenderFlag).createView('render', {
+            ...top,
+            baseArrayLayer: c,
+            arrayLayerCount: 1,
+          });
+          // Create the views and groups now, so the first record allocates nothing
+          root.unwrap(view);
+          return { view, loadOp: 'clear' as const, storeOp: 'store' as const };
+        });
+        root.unwrap(group);
+        return { group, descriptor: { colorAttachments } satisfies TgpuRenderPassDescriptor };
+      })
+    : [];
 
   const initialPipeline = root.createComputePipeline({ compute: initialSpectrum });
   const evolvePipeline = cpu ? undefined : root.createComputePipeline({ compute: evolve });
@@ -592,6 +676,7 @@ export function createWaves(root: TgpuRoot) {
               evolvePairPipeline!,
               rowStagesPipeline!,
               columnStagesPipeline!,
+              foamPipeline!,
               packPipeline!,
               mips.pipeline,
             ]
@@ -653,10 +738,7 @@ export function createWaves(root: TgpuRoot) {
             .with(group)
             .dispatchWorkgroups(...lines);
         }
-        packPipeline!
-          .with(pass)
-          .with(columnsGroup)
-          .dispatchWorkgroups(N / 8, N / 8, CASCADES);
+        foamPipeline!.with(pass).dispatchWorkgroups(N / 8, N / 8, CASCADES);
       } else {
         evolvePipeline!.with(pass).dispatchWorkgroups(Math.ceil(CELLS / EVOLVE_GROUP));
         rowsPipeline!.with(pass).with(rowsGroup).dispatchWorkgroups(ROWS, SIGNALS);
@@ -665,10 +747,17 @@ export function createWaves(root: TgpuRoot) {
       mips.record(pass);
     },
     /**
-     * Records the mips in render passes of their own where compute runs on the CPU, after the
-     * pass `record` took ends; elsewhere `record` computed them.
+     * Records the maps' top levels and mips in render passes of their own where compute runs on
+     * the CPU, after the pass `record` took ends; elsewhere `record` computed them.
      */
-    recordMips(encoder: TgpuCommandEncoder) {
+    recordMaps(encoder: TgpuCommandEncoder) {
+      for (const { group, descriptor } of packPasses) {
+        const drawing = encoder.beginRenderPass(descriptor);
+        drawing.setPipeline(packPipeline!);
+        drawing.setBindGroup(group);
+        drawing.draw(3);
+        drawing.end();
+      }
       mips.recordPasses(encoder);
     },
     destroy() {

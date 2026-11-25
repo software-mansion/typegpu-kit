@@ -174,7 +174,7 @@ export async function createScene(root: TgpuRoot, surface: Surface) {
     const history = encoder.beginComputePass();
     waves.record(history);
     history.end();
-    waves.recordMips(encoder);
+    waves.recordMaps(encoder);
     encoder.submit();
   }
   rebuild = false;
@@ -223,7 +223,7 @@ export async function createScene(root: TgpuRoot, surface: Surface) {
       if (rebuild) waves.rebuild(compute);
       waves.record(compute);
       compute.end();
-      waves.recordMips(frame.encoder);
+      waves.recordMaps(frame.encoder);
       rebuild = false;
       if (bakeSky) {
         light.bake(frame, skySource);

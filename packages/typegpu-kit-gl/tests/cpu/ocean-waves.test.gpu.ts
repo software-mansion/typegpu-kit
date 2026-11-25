@@ -96,7 +96,7 @@ async function wavesCapture(
           pass = encoder.beginComputePass();
         waves.record(pass);
         pass.end();
-        waves.recordMips(encoder);
+        waves.recordMaps(encoder);
         encoder.submit();
         await root.device.queue.onSubmittedWorkDone();
         await traceHistory(195.4 - (24 - history) * 0.125, 0.125);
@@ -107,7 +107,7 @@ async function wavesCapture(
       const pass = encoder.beginComputePass();
       waves.record(pass);
       pass.end();
-      waves.recordMips(encoder);
+      waves.recordMaps(encoder);
       encoder.submit();
       await root.device.queue.onSubmittedWorkDone();
       await traceHistory(195.4 + frame * 0.04, frame === 0 ? 0 : 0.04);
