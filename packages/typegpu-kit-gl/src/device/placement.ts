@@ -2,9 +2,12 @@
  * Where each compute pipeline with a GPU form runs, learned from its last dispatches. A GPU form
  * whose outputs the CPU reads back costs a wait for the GPU each time; a kernel whose inputs are
  * already on the CPU can run there instead and leave GL an upload, which costs no wait. The device
- * cannot see ahead within a frame, so it watches a window of dispatches, moves a small kernel to
- * the CPU when most of its outputs were read back, and moves it back for good when the CPU run
- * costs more than the GPU form and its wait did, or its inputs stop being on the CPU.
+ * cannot see ahead within a frame, so it watches a window of dispatches and moves a small kernel to
+ * the CPU when most of its outputs were read back. A readback's wait is mostly the GPU finishing
+ * earlier work, which moves to the next readback when one goes, so the move is judged by all the
+ * device's readbacks: the kernel goes back for good when its CPU run costs more than the waiting
+ * it saved, unless that cost is too small to tell apart from how waits vary, and goes back when
+ * its inputs stop being on the CPU.
  */
 
 import type { CpuModule } from '../cpu/types.ts';
@@ -16,12 +19,19 @@ import type { TextureImpl } from './texture.ts';
 
 /** Dispatches watched before a decision. */
 const WINDOW = 6;
+/**
+ * Milliseconds a CPU run may cost over the GPU form without paying for itself: readback waits
+ * swing by more than this from window to window, so cheaper kernels stay where they save syncs.
+ */
+const CHEAP_MS = 0.5;
 /** The most invocations a kernel may have to move to the CPU, so a trial never stalls a frame. */
 const MOST_INVOCATIONS = 1 << 16;
 
 interface Record {
   readonly label: string;
   onCpu: boolean;
+  /** Just moved: the first window on the CPU reads back what GL held, so it is not judged. */
+  settling: boolean;
   /** Stays on the GPU: the CPU run cost more than the GPU form and its wait. */
   pinned: boolean;
   dispatches: number;
@@ -32,14 +42,25 @@ interface Record {
   gpuMs: number;
   /** Dispatches whose every input was current on the CPU. */
   cpuInputs: number;
-  /** Milliseconds of CPU runs, and what a GPU dispatch with its wait cost when it moved. */
   cpuMs: number;
-  gpuCost: number;
+  /** The device's readback wait when the window began. */
+  waitAt: number;
+  /** When it moved: a GPU dispatch's own cost, and the device's readback wait per dispatch. */
+  gpuIssue: number;
+  waitBefore: number;
   /** The last input that GL alone held, for the stats. */
   held: string;
 }
 
 const records = new WeakMap<object, Record>();
+/** Milliseconds every readback of a device has waited. */
+const waits = new WeakMap<Ctx, { ms: number }>();
+
+function waitedOf(ctx: Ctx): { ms: number } {
+  let waited = waits.get(ctx);
+  if (!waited) waits.set(ctx, (waited = { ms: 0 }));
+  return waited;
+}
 const writers = new WeakMap<BufferImpl | TextureImpl, Record>();
 
 function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
@@ -48,6 +69,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
     record = {
       label,
       onCpu: false,
+      settling: false,
       pinned: false,
       dispatches: 0,
       readBack: 0,
@@ -55,7 +77,9 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       gpuMs: 0,
       cpuInputs: 0,
       cpuMs: 0,
-      gpuCost: 0,
+      waitAt: waitedOf(ctx).ms,
+      gpuIssue: 0,
+      waitBefore: 0,
       held: '',
     };
     records.set(pipeline, record);
@@ -64,7 +88,8 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
   return record;
 }
 
-function restart(record: Record): void {
+function restart(ctx: Ctx, record: Record): void {
+  record.waitAt = waitedOf(ctx).ms;
   record.dispatches = 0;
   record.readBack = 0;
   record.waitMs = 0;
@@ -149,7 +174,9 @@ export function ranOnGpu(
     invocations <= MOST_INVOCATIONS;
   if (moves) {
     record.onCpu = true;
-    record.gpuCost = (record.gpuMs + record.waitMs) / dispatches;
+    record.settling = true;
+    record.gpuIssue = record.gpuMs / dispatches;
+    record.waitBefore = (waitedOf(ctx).ms - record.waitAt) / dispatches;
     ctx.stats.placement.set(
       label,
       `cpu: the CPU read back its outputs after ${reads} of ${dispatches} dispatches, waiting ${(record.waitMs / dispatches).toFixed(2)} ms each, and its inputs were on the CPU`,
@@ -163,7 +190,7 @@ export function ranOnGpu(
           : `${invocations} invocations are too many to try on the CPU`;
     ctx.stats.placement.set(label, `gpu: ${why}`);
   }
-  restart(record);
+  restart(ctx, record);
 }
 
 /** Notes a CPU run of a pipeline that has a GPU form, and moves it back if the CPU costs more. */
@@ -172,14 +199,20 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   if (!record?.onCpu) return;
   record.cpuMs += ms;
   if (record.dispatches < WINDOW) return;
+  if (record.settling) {
+    record.settling = false;
+    restart(ctx, record);
+    return;
+  }
   const { dispatches, cpuInputs } = record;
-  const perDispatch = record.cpuMs / dispatches;
-  if (perDispatch > record.gpuCost) {
+  const extra = record.cpuMs / dispatches - record.gpuIssue;
+  const saved = record.waitBefore - (waitedOf(ctx).ms - record.waitAt) / dispatches;
+  if (extra > CHEAP_MS && extra > saved) {
     record.onCpu = false;
     record.pinned = true;
     ctx.stats.placement.set(
       record.label,
-      `gpu: a CPU run cost ${perDispatch.toFixed(2)} ms, more than the GPU form with its wait, ${record.gpuCost.toFixed(2)} ms`,
+      `gpu: a CPU run cost ${extra.toFixed(2)} ms more than the GPU form, and saved ${saved.toFixed(2)} ms of readback waits`,
     );
   } else if (cpuInputs * 2 < dispatches) {
     record.onCpu = false;
@@ -190,14 +223,15 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   } else {
     ctx.stats.placement.set(
       record.label,
-      `cpu: ${perDispatch.toFixed(2)} ms a run, less than the GPU form with its wait, ${record.gpuCost.toFixed(2)} ms`,
+      `cpu: a CPU run cost ${extra.toFixed(2)} ms more than the GPU form, and saved ${saved.toFixed(2)} ms of readback waits`,
     );
   }
-  restart(record);
+  restart(ctx, record);
 }
 
 /** Notes that the CPU read `resource` back from GL, which charges the GPU form that wrote it. */
-export function readBack(resource: BufferImpl | TextureImpl, ms: number): void {
+export function readBack(ctx: Ctx, resource: BufferImpl | TextureImpl, ms: number): void {
+  waitedOf(ctx).ms += ms;
   const record = writers.get(resource);
   if (!record) return;
   writers.delete(resource);

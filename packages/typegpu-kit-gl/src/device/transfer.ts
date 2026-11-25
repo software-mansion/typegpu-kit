@@ -421,7 +421,7 @@ function lazyLevel(ctx: Ctx, texture: TextureImpl, level: number): CpuLevelCopy 
       }
       data = made;
       const ms = performance.now() - start;
-      if (stored) readBackFrom(texture, ms);
+      if (stored) readBackFrom(ctx, texture, ms);
       ctx.stats.readback.ms += ms;
       ctx.stats.readback.textures++;
       const key = `${texture.label} ${texture.format} ${width}x${height}x${layers}`;

@@ -300,7 +300,7 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
   const stats = statsOf(ctx, buffer);
   stats.readMs += ms;
   stats.reads++;
-  readBackFrom(buffer, ms);
+  readBackFrom(ctx, buffer, ms);
 }
 
 /**
