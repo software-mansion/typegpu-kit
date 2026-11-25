@@ -419,3 +419,88 @@ test('a form that reads what another GPU form wrote once moves to the CPU when i
     root.destroy();
   }
 });
+
+/**
+ * Two GPU forms that each rewrite `x`, which the other reads, every frame, one of which writes
+ * `y`, which a CPU kernel binds every frame: its sums, frame by frame, and the device's stats.
+ */
+async function rewriting(placement: boolean) {
+  const root = glRoot({ placement });
+  const N = 64;
+  const x = root.createMutable(
+    d.arrayOf(d.u32, N),
+    Array.from({ length: N }, (_, i) => i),
+  );
+  x.$name('x');
+  const y = root.createMutable(d.arrayOf(d.u32, N)).$name('y');
+  const z = root.createMutable(d.arrayOf(d.u32, N)).$name('z');
+  const sums = root.createMutable(d.arrayOf(d.u32, 1)).$name('sums');
+  const id = { id: d.builtin.globalInvocationId };
+  const stepping = root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [64], in: id })(({ id: at }) => {
+        'use gpu';
+        const v = x.$[at.x];
+        z.$[at.x] = v + 7;
+        x.$[at.x] = (v * 3 + 1) % 1000;
+      }),
+    })
+    .$name('stepping');
+  const following = root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [64], in: id })(({ id: at }) => {
+        'use gpu';
+        const v = x.$[at.x];
+        y.$[at.x] = v * 2;
+        x.$[at.x] = (v + 11) % 1000;
+      }),
+    })
+    .$name('following');
+  // A barrier keeps the reader on the CPU, where it binds `y` every frame
+  const summing = root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+        'use gpu';
+        std.workgroupBarrier();
+        let total = d.u32(0);
+        for (let i = d.u32(0); i < N; i++) total += y.$[i];
+        sums.$[0] = total;
+      }),
+    })
+    .$name('summing');
+  const { stats } = root.device as GLDevice;
+  const totals: number[] = [];
+  let lateReads = 0;
+  for (let f = 1; f <= 30; f++) {
+    stepping.dispatchWorkgroups(1);
+    following.dispatchWorkgroups(1);
+    summing.dispatchWorkgroups(1);
+    if (f === 22) stats.reset();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    if (f % 3 === 0) totals.push((await sums.read())[0] as number);
+  }
+  lateReads = [...stats.buffers].find(([label]) => label.startsWith('y '))?.[1].reads ?? 0;
+  const result = {
+    totals,
+    lateReads,
+    placement: Object.fromEntries(stats.placement),
+    kernels: [...stats.kernels.keys()],
+    words: [await x.read(), await y.read(), await z.read()],
+  };
+  root.destroy();
+  return result;
+}
+
+test("two GPU forms that rewrite each other's input move to the CPU together, as placement off computes", async () => {
+  const moved = await rewriting(true);
+  const kept = await rewriting(false);
+  expect(moved.placement.following).toMatch(
+    /^cpu: .*'stepping' rewrote its inputs, so they moved with it$|^cpu: CPU runs of its group/,
+  );
+  expect(moved.placement.stepping).toMatch(/^cpu: /);
+  expect(moved.kernels).toEqual(expect.arrayContaining(['stepping', 'following']));
+  expect(moved.lateReads).toBe(0);
+  expect(kept.lateReads).toBeGreaterThan(0);
+  expect(moved.totals).toEqual(kept.totals);
+  expect(moved.words).toEqual(kept.words);
+});

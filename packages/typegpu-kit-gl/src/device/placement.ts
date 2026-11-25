@@ -15,7 +15,9 @@
  * earlier work, which moves to the next readback when one goes, so the move is judged by all the
  * device's readbacks: the kernel goes back for good when its CPU run costs more than the waiting
  * it saved, unless that cost is too small to tell apart from how waits vary, and goes back when
- * its inputs stop being on the CPU.
+ * its inputs stop being on the CPU. A kernel whose inputs other GPU forms rewrite before each of
+ * its dispatches would read them back instead, so it moves with those forms, and theirs, as one
+ * group of a few small forms, judged and sent back as one.
  */
 
 import type { CpuModule } from '../cpu/types.ts';
@@ -37,6 +39,11 @@ const CHEAP_MS = 0.5;
 const MOST_RETURNS = 2;
 /** The most invocations a kernel may have to move to the CPU, so a trial never stalls a frame. */
 const MOST_INVOCATIONS = 1 << 16;
+/**
+ * The most pipelines that move to the CPU together: a form whose outputs the CPU reads back, and
+ * the forms that rewrite its inputs on the GPU, which it could not leave behind.
+ */
+const MOST_GROUPED = 4;
 /**
  * GPU milliseconds a dispatch of a GPU form may take, in two samples running, before its CPU
  * module is tried: half a 60 Hz frame, which other work on a busy GPU does not lift a small form
@@ -111,6 +118,14 @@ interface Record {
   readonly seen: WeakMap<BufferImpl, Writer>;
   /** The invocations of the last dispatch. */
   upcoming: number;
+  /** The GPU forms that rewrote its inputs before its dispatches, in this window and the last. */
+  blockers: Set<Record>;
+  lastBlockers: Set<Record>;
+  /** Whether GL rewrote an input of it that no known GPU form wrote, this window or the last. */
+  loose: boolean;
+  lastLoose: boolean;
+  /** The pipelines it moved to the CPU with, if it did. */
+  group: Group | undefined;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
   why: 'readback' | 'costly';
   /** The GPU time of the form's last sampled dispatches, in milliseconds. */
@@ -130,6 +145,24 @@ interface Record {
   /** Why the cost rule last kept the form on the GPU, which the readback rule's notes keep. */
   costNote: string;
   costReturns: number;
+}
+
+/**
+ * Pipelines on the CPU together: one whose outputs the CPU read back, the leader, and the GPU forms
+ * that rewrote its inputs, transitively, which a CPU run of it alone would read back every time.
+ * They are judged as one, at the leader's windows: their CPU runs against their GPU forms' issue
+ * and the device's readback waits before and after.
+ */
+interface Group {
+  readonly leader: Record;
+  readonly members: ReadonlySet<Record>;
+  /** CPU milliseconds of every member since the leader's window began. */
+  cpuMs: number;
+  /** At the move: the members' GPU issue, and the device's readback wait, per leader dispatch. */
+  readonly gpuIssue: number;
+  readonly waitBefore: number;
+  /** Just moved: the first window reads back what GL held, so it is not judged. */
+  settling: boolean;
 }
 
 /** A dispatch's GPU time in flight: a timer query, or fences before and after its draws. */
@@ -255,6 +288,11 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       heldNow: false,
       seen: new WeakMap(),
       upcoming: 0,
+      blockers: new Set(),
+      lastBlockers: new Set(),
+      loose: false,
+      lastLoose: false,
+      group: undefined,
       why: 'readback',
       samples: [],
       probe: undefined,
@@ -280,6 +318,10 @@ function restart(ctx: Ctx, record: Record): void {
   record.gpuMs = 0;
   record.cpuInputs = 0;
   record.cpuMs = 0;
+  record.lastBlockers = record.blockers;
+  record.blockers = new Set();
+  record.lastLoose = record.loose;
+  record.loose = false;
 }
 
 /**
@@ -300,8 +342,12 @@ function heldOnGl(
   const rewritten = (buffer: BufferImpl) => {
     const writer = writers.get(buffer);
     if (writer?.record === record) return false;
-    const again = writer === undefined || record.seen.get(buffer) !== writer;
+    // What a pipeline of its group wrote on the GPU before the move is read back once, settling
+    const grouped = writer !== undefined && record.group?.members.has(writer.record) === true;
+    const again = !grouped && (writer === undefined || record.seen.get(buffer) !== writer);
     if (writer) record.seen.set(buffer, writer);
+    if (again && writer) record.blockers.add(writer.record);
+    else if (again) record.loose = true;
     return again;
   };
   for (const use of module.bindings) {
@@ -319,6 +365,7 @@ function heldOnGl(
       // Draws and copies write textures too and leave no writer, so one GL holds always counts
       if (texture.written && texture.home === 'gl' && writers.get(texture)?.record !== record) {
         held ??= texture.label || 'a texture';
+        record.loose = true;
       }
     }
   }
@@ -346,6 +393,10 @@ export function runsOnGpu(
   if (held === undefined) record.cpuInputs++;
   else record.held = held;
   record.upcoming = invocations;
+  // A GPU form outside the group rewrote what a member reads: the group goes back as one
+  if (record.group && held !== undefined) {
+    breakGroup(ctx, record.group, `a GPU form outside its group rewrote '${held}'`);
+  }
   pollProbes(ctx);
   if (record.onCpu && record.why === 'costly') {
     const why = costlyRefusal(record);
@@ -426,6 +477,13 @@ export function ranOnGpu(
       label,
       `cpu: the CPU read back its outputs after ${reads} of ${dispatches} dispatches, waiting ${(record.waitMs / dispatches).toFixed(2)} ms each, and its inputs were on the CPU`,
     );
+  } else if (
+    !record.pinned &&
+    reads * 2 >= dispatches &&
+    cpuInputs * 2 < dispatches &&
+    moveGroup(ctx, record, reads)
+  ) {
+    // The forms that rewrote its inputs moved with it
   } else if (!record.pinned) {
     const why =
       reads * 2 < dispatches
@@ -438,6 +496,105 @@ export function ranOnGpu(
   restart(ctx, record);
 }
 
+/**
+ * The pipelines that must move with `leader` for its CPU runs to stop reading back what GL wrote:
+ * the GPU forms that rewrote its inputs, theirs, and so on, or undefined when that cannot be. Each
+ * must be on the GPU, free to move, small enough to try, and blocked only by known GPU forms.
+ */
+function groupOf(leader: Record): Set<Record> | undefined {
+  const members = new Set<Record>([leader]);
+  const queue = [leader];
+  for (let member = queue.pop(); member; member = queue.pop()) {
+    if (member.loose || member.lastLoose) return undefined;
+    if (member.pinned || member.onCpu || member.group || member.upcoming > MOST_INVOCATIONS) {
+      return undefined;
+    }
+    for (const blocker of [...member.blockers, ...member.lastBlockers]) {
+      if (members.has(blocker)) continue;
+      if (members.size === MOST_GROUPED) return undefined;
+      members.add(blocker);
+      queue.push(blocker);
+    }
+  }
+  return members.size > 1 ? members : undefined;
+}
+
+/** Moves `leader` and the forms that rewrite its inputs to the CPU together, if they can be. */
+function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
+  const members = groupOf(leader);
+  if (!members) return false;
+  const perDispatch = (member: Record) => member.gpuMs / Math.max(1, member.dispatches);
+  const group: Group = {
+    leader,
+    members,
+    cpuMs: 0,
+    gpuIssue: [...members].reduce((sum, member) => sum + perDispatch(member), 0),
+    waitBefore: (waitedOf(ctx).ms - leader.waitAt) / leader.dispatches,
+    settling: true,
+  };
+  const others = [...members].filter((member) => member !== leader);
+  const names = others.map((member) => `'${member.label}'`).join(', ');
+  ctx.stats.placement.set(
+    leader.label,
+    `cpu: the CPU read back its outputs after ${reads} of ${leader.dispatches} dispatches, waiting ${(leader.waitMs / leader.dispatches).toFixed(2)} ms each, and ${names} rewrote its inputs, so they moved with it`,
+  );
+  for (const member of members) {
+    member.onCpu = true;
+    member.why = 'readback';
+    member.settling = false;
+    member.group = group;
+    if (member !== leader) {
+      restart(ctx, member);
+      ctx.stats.placement.set(
+        member.label,
+        `cpu: it rewrote an input of '${leader.label}', whose outputs the CPU read back, so it moved with it`,
+      );
+    }
+  }
+  return true;
+}
+
+/**
+ * Sends every pipeline of a group back to the GPU: for good when its CPU runs cost more than they
+ * saved, or, when a GPU form outside it rewrote a member's input, counting a return for each.
+ */
+function breakGroup(ctx: Ctx, group: Group, why: string, lost = false): void {
+  for (const member of group.members) {
+    member.onCpu = false;
+    member.group = undefined;
+    if (lost) member.pinned = true;
+    else {
+      member.returns++;
+      member.pinned = member.returns >= MOST_RETURNS;
+    }
+    restart(ctx, member);
+    const stays = member.pinned && !lost ? ', and it stays there' : '';
+    ctx.stats.placement.set(member.label, `gpu: ${why}${stays}`);
+  }
+}
+
+/**
+ * Notes a CPU run of a member of a group, judged at the leader's windows as the single rule judges
+ * one pipeline: every member's CPU time against their GPU issue and the readback waits saved.
+ */
+function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
+  group.cpuMs += ms;
+  if (record !== group.leader || record.dispatches < WINDOW) return;
+  const { dispatches } = record;
+  if (group.settling) {
+    group.settling = false;
+    group.cpuMs = 0;
+    return restart(ctx, record);
+  }
+  const extra = group.cpuMs / dispatches - group.gpuIssue;
+  const saved = group.waitBefore - (waitedOf(ctx).ms - record.waitAt) / dispatches;
+  const cost = `CPU runs of its group cost ${extra.toFixed(2)} ms more than their GPU forms, and saved ${saved.toFixed(2)} ms of readback waits`;
+  if (extra > CHEAP_MS && extra > saved) return breakGroup(ctx, group, cost, true);
+  ctx.stats.placement.set(record.label, `cpu: ${cost}`);
+  group.cpuMs = 0;
+  restart(ctx, record);
+}
+
 /** Notes a CPU run of a pipeline that has a GPU form, and moves it back if the CPU costs more. */
 export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   const record = records.get(pipeline);
@@ -445,6 +602,7 @@ export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   // The form's first dispatches back upload what CPU runs wrote, which a sample would count
   record.sinceSample = 0;
   if (record.why === 'costly') return ranCostly(ctx, record, ms);
+  if (record.group) return ranGrouped(ctx, record, record.group, ms);
   record.cpuMs += ms;
   if (record.dispatches < WINDOW) return;
   if (record.settling) {

@@ -281,8 +281,11 @@ test.each([
 });
 
 /** A second pipeline whose GPU form writes `target`, as a dispatch of it does. */
-function producer(ctx: Ctx, target: BufferImpl) {
+function producer(ctx: Ctx, target: BufferImpl, invocations = 64) {
   const pipeline = {};
+  const module = {
+    bindings: [{ group: 0, binding: 0, kind: 'buffer', reads: false, writes: true }],
+  } as unknown as CpuModule;
   const entries = new Map([[0, { kind: 'buffer' as const, buffer: target, offset: 0, size: 16 }]]);
   const groups: Bound[] = [
     { group: { layout: { entries: [], dynamic: [] }, entries }, offsets: undefined },
@@ -291,7 +294,8 @@ function producer(ctx: Ctx, target: BufferImpl) {
     passes: [{ target: { kind: 'buffer', group: 0, binding: 0 } }],
   } as unknown as GpuCompute;
   return () => {
-    ranOnGpu(ctx, pipeline, 'producer', gpu, groups, 0.1, 64);
+    runsOnGpu(ctx, pipeline, 'producer', module, groups, invocations);
+    ranOnGpu(ctx, pipeline, 'producer', gpu, groups, 0.1, invocations);
     target.gpuNewer = true;
   };
 }
@@ -300,9 +304,9 @@ function producer(ctx: Ctx, target: BufferImpl) {
  * Six dispatches of a kernel whose outputs the CPU reads back after each, with its input written
  * on the GPU before the dispatches `before` lists: where the window leaves it.
  */
-async function rewritten(before: (i: number) => boolean, writer = true) {
+async function rewritten(before: (i: number) => boolean, writer = true, invocations = 64) {
   const { ctx, run, input, outputs } = kernel(fakeCtx({ timer: true, gpuMs: 0.1 }).ctx);
-  const write = producer(ctx, input);
+  const write = producer(ctx, input, invocations);
   for (let i = 0; i < 6; i++) {
     if (before(i)) {
       if (writer) write();
@@ -316,15 +320,16 @@ async function rewritten(before: (i: number) => boolean, writer = true) {
 }
 
 test('an input GL rewrites before a dispatch counts as held, and one seen first counts too', async () => {
-  // Written before the first, second, third and fifth: held there, current on the CPU otherwise
-  const { ctx } = await rewritten((i) => [0, 1, 2, 4].includes(i));
+  // Written before the first, second, third and fifth: held there, current on the CPU otherwise.
+  // A writer too large to move with it keeps the form on the GPU
+  const { ctx } = await rewritten((i) => [0, 1, 2, 4].includes(i), true, 1 << 20);
   expect(ctx.stats.placement.get('kernel')).toBe(
     "gpu: GL rewrote its input 'input' before 4 of 6 dispatches",
   );
 });
 
 test('an input the GPU rewrites before every dispatch keeps the form on the GPU', async () => {
-  const { ctx, run } = await rewritten(() => true);
+  const { ctx, run } = await rewritten(() => true, true, 1 << 20);
   expect(ctx.stats.placement.get('kernel')).toBe(
     "gpu: GL rewrote its input 'input' before 6 of 6 dispatches",
   );
@@ -354,5 +359,172 @@ test('a costly form on the CPU returns to the GPU on the dispatch after GL rewro
   expect(run(SAMPLED)).toBe('gpu');
   expect(ctx.stats.placement.get('kernel')).toBe(
     "gpu: GL rewrote its input 'input', which a CPU run would read back",
+  );
+});
+
+/**
+ * A pipeline over `reads` and `writes`, dispatched as `compute.ts` does: a GPU dispatch leaves
+ * its writes with GL, and a CPU run reads back what GL held of its bindings and writes on the CPU.
+ */
+function form(
+  ctx: Ctx,
+  label: string,
+  reads: BufferImpl[],
+  writes: BufferImpl[],
+  invocations = 64,
+) {
+  const pipeline = {};
+  const all = [...new Set([...reads, ...writes])];
+  const entries = new Map(
+    all.map((each, binding) => [
+      binding,
+      { kind: 'buffer' as const, buffer: each, offset: 0, size: 16 },
+    ]),
+  );
+  const groups: Bound[] = [
+    { group: { layout: { entries: [], dynamic: [] }, entries }, offsets: undefined },
+  ];
+  const module = {
+    bindings: all.map((each, binding) => ({
+      group: 0,
+      binding,
+      kind: 'buffer',
+      reads: reads.includes(each),
+      writes: writes.includes(each),
+    })),
+  } as unknown as CpuModule;
+  const gpu = {
+    passes: writes.map((each) => ({
+      target: { kind: 'buffer', group: 0, binding: all.indexOf(each) },
+    })),
+  } as unknown as GpuCompute;
+  return (cpuMs = 0.1): 'gpu' | 'cpu' => {
+    if (runsOnGpu(ctx, pipeline, label, module, groups, invocations)) {
+      ranOnGpu(ctx, pipeline, label, gpu, groups, 0.1, invocations);
+      for (const each of writes) each.gpuNewer = true;
+      return 'gpu';
+    }
+    for (const each of all) {
+      if (each.gpuNewer) readBack(ctx, each, 0);
+      each.gpuNewer = false;
+    }
+    ranOnCpu(ctx, pipeline, cpuMs);
+    return 'cpu';
+  };
+}
+
+/** A CPU kernel binding `bound` each frame: whether it waited for GL, which counts the wait. */
+const binding = (ctx: Ctx, bound: BufferImpl) => () => {
+  if (!bound.gpuNewer) return false;
+  readBack(ctx, bound, 1);
+  bound.gpuNewer = false;
+  return true;
+};
+
+/**
+ * Fireworks' shape: two forms that each take from one counter, `x`, every frame, so each rewrites
+ * the other's input, one of whose outputs, `y`, a CPU kernel binds every frame.
+ */
+function cycle(options: { invocations?: number } = {}) {
+  const { ctx } = fakeCtx({ timer: true, gpuMs: 0.1 });
+  const [x, y, z] = [buffer('x'), buffer('y'), buffer('z')];
+  const stars = form(ctx, 'stars', [x], [x, z]);
+  const shells = form(ctx, 'shells', [x], [x, y], options.invocations);
+  const bind = binding(ctx, y);
+  const frame = (cpuMs?: number) => {
+    const where = [stars(cpuMs), shells(cpuMs)];
+    return { where, waited: bind() };
+  };
+  return { ctx, x, frame };
+}
+
+test("two forms that rewrite each other's input move to the CPU together, and the waits stop", async () => {
+  const { ctx, frame } = cycle();
+  let last = frame();
+  for (let i = 0; i < 7; i++) {
+    last = frame();
+    await task();
+  }
+  expect(last.where).toEqual(['cpu', 'cpu']);
+  expect(ctx.stats.placement.get('shells')).toMatch(
+    /^cpu: the CPU read back its outputs after \d of 6 dispatches, .*'stars' rewrote its inputs, so they moved with it$/,
+  );
+  expect(ctx.stats.placement.get('stars')).toBe(
+    "cpu: it rewrote an input of 'shells', whose outputs the CPU read back, so it moved with it",
+  );
+  const waits: boolean[] = [];
+  for (let i = 0; i < 18; i++) {
+    const { where, waited } = frame();
+    expect(where).toEqual(['cpu', 'cpu']);
+    waits.push(waited);
+    await task();
+  }
+  expect(waits.every((each) => !each)).toBe(true);
+  expect(ctx.stats.placement.get('shells')).toMatch(/^cpu: CPU runs of its group cost/);
+});
+
+test('a chain of three forms moves to the CPU together', async () => {
+  const { ctx } = fakeCtx({ timer: true, gpuMs: 0.1 });
+  const [x, w, y] = [buffer('x'), buffer('w'), buffer('y')];
+  const first = form(ctx, 'first', [], [x]);
+  const second = form(ctx, 'second', [x], [w]);
+  const third = form(ctx, 'third', [w], [y]);
+  const bind = binding(ctx, y);
+  let where: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    where = [first(), second(), third()];
+    bind();
+    await task();
+  }
+  expect(where).toEqual(['cpu', 'cpu', 'cpu']);
+  expect(ctx.stats.placement.get('first')).toMatch(/moved with it$/);
+});
+
+test('a group whose CPU runs cost more than they save goes back once and stays', async () => {
+  const { ctx, frame } = cycle();
+  for (let i = 0; i < 8; i++) {
+    frame();
+    await task();
+  }
+  // Settling, then a window of runs dearer than the waits they saved
+  const where: string[][] = [];
+  for (let i = 0; i < 14; i++) {
+    where.push(frame(5).where);
+    await task();
+  }
+  expect(where.at(-1)).toEqual(['gpu', 'gpu']);
+  expect(ctx.stats.placement.get('shells')).toMatch(/^gpu: CPU runs of its group cost/);
+  for (let i = 0; i < 24; i++) {
+    expect(frame().where).toEqual(['gpu', 'gpu']);
+    await task();
+  }
+});
+
+test('a GPU form outside a group that rewrites a member input sends the group back as one', async () => {
+  const { ctx, x, frame } = cycle();
+  for (let i = 0; i < 8; i++) {
+    frame();
+    await task();
+  }
+  expect(frame().where).toEqual(['cpu', 'cpu']);
+  const outside = form(ctx, 'outside', [], [x], 1 << 20);
+  outside();
+  expect(frame().where).toEqual(['gpu', 'gpu']);
+  expect(ctx.stats.placement.get('stars')).toBe("gpu: a GPU form outside its group rewrote 'x'");
+});
+
+test('a form whose blocker is too large to try stays on the GPU', async () => {
+  const { ctx } = fakeCtx({ timer: true, gpuMs: 0.1 });
+  const [x, y, z] = [buffer('x'), buffer('y'), buffer('z')];
+  const stars = form(ctx, 'stars', [x], [x, z], 1 << 20);
+  const shells = form(ctx, 'shells', [x], [x, y]);
+  const bind = binding(ctx, y);
+  for (let i = 0; i < 13; i++) {
+    expect([stars(), shells()]).toEqual(['gpu', 'gpu']);
+    bind();
+    await task();
+  }
+  expect(ctx.stats.placement.get('shells')).toBe(
+    "gpu: GL rewrote its input 'x' before 6 of 6 dispatches",
   );
 });
