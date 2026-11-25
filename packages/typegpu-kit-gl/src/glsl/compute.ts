@@ -458,19 +458,30 @@ function add(left: Own, right: Own): Own | undefined {
 }
 
 /** Whether a `for…of` iterates `tgpu.unroll(…)`, which TypeGPU unrolls as it generates. */
-function unrolled(iterable: Expression): boolean {
-  if (!Array.isArray(iterable) || iterable[0] !== NODE.call) return false;
-  const callee = iterable[1] as Expression;
-  // unplugin-typegpu names an external by its source text, `tgpu.unroll`; nothing looser, since
-  // a runtime loop taken for an unrolled one would hide what its body repeats
-  if (callee === 'tgpu.unroll') return true;
-  return (
-    Array.isArray(callee) &&
-    callee[0] === NODE.memberAccess &&
-    callee[1] === 'tgpu' &&
-    callee[2] === 'unroll'
-  );
-}
+/**
+ * The class of what `tgpu.unroll` gives a shader, which TypeGPU expands a `for…of` over: taken
+ * from the real `tgpu.unroll` by calling its code generation once, since TypeGPU does not export
+ * it. Undefined if that changes, and then no loop counts as unrolled.
+ */
+const UNROLLED: (abstract new (...args: never[]) => unknown) | undefined = (() => {
+  const callable = tgpu.unroll as unknown as Record<symbol, unknown>;
+  for (const key of Object.getOwnPropertySymbols(callable)) {
+    const generate = callable[key];
+    if (typeof generate !== 'function') continue;
+    try {
+      const made = (generate as (ctx: unknown, args: unknown[]) => { value?: unknown })(undefined, [
+        snip(0, d.u32, 'constant'),
+      ]);
+      const kind = (made?.value as object | undefined)?.constructor;
+      if (typeof kind === 'function' && kind.name === 'UnrollableIterable') {
+        return kind as abstract new (...args: never[]) => unknown;
+      }
+    } catch {
+      // Not the code generation
+    }
+  }
+  return undefined;
+})();
 
 /** GLSL text with the settled variables of `frame` it names replaced by their values. */
 function inlined(text: string, frame: Frame): string {
@@ -816,6 +827,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #slots = new Map<string, number>();
   /** Runtime loops around the statement being generated. */
   #loops = 0;
+  /** The `for…of` being generated, and whether TypeGPU took its iterable as one to unroll. */
+  #iterable: { readonly node: unknown; unrolled: boolean } | undefined;
   /** `if` statements around the statement being generated. */
   #branches = 0;
   /** The condition of an early `return` the entry starts with, before it writes anything. */
@@ -1388,16 +1401,21 @@ uint ${name}() {
         }
       }
       if (statement[0] === NODE.postUpdate) this.#checkWrite(statement[2] as Expression);
-      if (
-        statement[0] === NODE.for ||
-        statement[0] === NODE.while ||
-        (statement[0] === NODE.forOf && !unrolled(statement[2] as Expression))
-      ) {
+      if (statement[0] === NODE.for || statement[0] === NODE.while || statement[0] === NODE.forOf) {
+        // A loop until TypeGPU resolves a `for…of`'s iterable to what `tgpu.unroll` gives, which
+        // it then expands; decided by that value, never by how the call is spelled
+        const outer = this.#iterable;
+        const iterable = {
+          node: statement[0] === NODE.forOf ? statement[2] : undefined,
+          unrolled: false,
+        };
+        this.#iterable = iterable;
         this.#loops++;
         try {
           return super._statement(statement);
         } finally {
-          this.#loops--;
+          if (!iterable.unrolled) this.#loops--;
+          this.#iterable = outer;
         }
       }
       // Without an `else`, the condition holds for everything the `if` generates
@@ -1440,7 +1458,19 @@ uint ${name}() {
     const outer = this.#dropping;
     this.#dropping = expression === this.#dropped;
     try {
-      return super._expression(expression);
+      const result = super._expression(expression);
+      const iterable = this.#iterable;
+      if (
+        iterable &&
+        !iterable.unrolled &&
+        expression === iterable.node &&
+        UNROLLED !== undefined &&
+        result.value instanceof UNROLLED
+      ) {
+        iterable.unrolled = true;
+        this.#loops--;
+      }
+      return result;
     } finally {
       this.#dropping = outer;
     }
