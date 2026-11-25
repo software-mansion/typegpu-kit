@@ -46,6 +46,11 @@ export interface DeviceOptions {
    * every kernel on the CPU, to compare the two. Default true.
    */
   readonly gpuCompute?: boolean;
+  /**
+   * Moves GPU forms to the CPU where that saves waiting for readbacks. False keeps every GPU form
+   * on the GPU, to test the forms themselves. Default true.
+   */
+  readonly placement?: boolean;
 }
 
 /** How `@typegpu/kit` recognises the fallback: `device[BACKEND]`, read by `backends.of(root)`. */
@@ -171,6 +176,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     presented: (record) => presentRecord?.(record),
     stats: createStats(),
     gpuCompute: options.gpuCompute ?? true,
+    placement: options.placement ?? true,
     lost: false,
   };
 

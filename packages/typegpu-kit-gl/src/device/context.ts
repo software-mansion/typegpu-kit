@@ -95,6 +95,8 @@ export interface Ctx {
   readonly stats: DeviceStats;
   /** Whether compute pipelines may run their GPU forms. */
   readonly gpuCompute: boolean;
+  /** Whether GPU forms may move to the CPU, as `placement.ts` decides. */
+  readonly placement: boolean;
   lost: boolean;
 }
 

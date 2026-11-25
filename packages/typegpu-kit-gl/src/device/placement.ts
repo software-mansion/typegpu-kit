@@ -141,6 +141,7 @@ export function runsOnGpu(
   module: CpuModule,
   groups: readonly (Bound | undefined)[],
 ): boolean {
+  if (!ctx.placement) return true;
   const record = recordOf(ctx, pipeline, label);
   record.dispatches++;
   const held = heldOnGl(module, groups, record);
