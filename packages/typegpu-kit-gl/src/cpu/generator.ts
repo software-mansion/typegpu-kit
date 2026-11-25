@@ -1316,6 +1316,25 @@ export class CpuGenerator extends WgslGenerator {
       this.#effects = true;
     const type = scalar(lhs.dataType);
     const rhsType = scalar(rhs.dataType);
+    if (op === '=' || (op.endsWith('=') && !['==', '!=', '<=', '>='].includes(op))) {
+      const indexed = /^(\w+)\[([\s\S]+)\]$/.exec(this.ctx.resolveSnippet(lhs).value);
+      const components = indexed && this.#components(indexed[1]!);
+      if (components) {
+        const index = this.ctx.makeUniqueIdentifier('cpuIndex', 'global');
+        const value = this.ctx.makeUniqueIdentifier('cpuAssigned', 'global');
+        const cases = components.map((component, i) => {
+          const assigned = this.emitBinaryOp(
+            snip(component, lhs.dataType as d.BaseData, lhs.origin, false),
+            op,
+            snip(value, rhs.dataType as d.BaseData, 'runtime', false),
+          );
+          return `case ${i}:return (${assigned});`;
+        });
+        // Scalarized vectors have no array to mutate. Evaluate the index and RHS once, then
+        // assign the selected component rather than a reconstructed vector temporary.
+        return `((${index},${value})=>{switch(${index}){${cases.join('')}}})(${indexed![2]},${this.#value(rhs)})`;
+      }
+    }
     const leftParts = this.#parts(lhs),
       rightParts = this.#parts(rhs);
     const vector = type.startsWith('vec') ? lhs : rhsType.startsWith('vec') ? rhs : undefined;

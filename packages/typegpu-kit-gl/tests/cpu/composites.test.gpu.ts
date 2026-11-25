@@ -3,6 +3,7 @@ import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
+import { indexedValues } from './indexed.ts';
 
 async function composite(root: TgpuRoot): Promise<number[]> {
   const Row = d.struct({ position: d.vec3f, velocity: d.vec3f });
@@ -91,6 +92,7 @@ for (const [name, run] of [
   ['composite vectors, barrier exchange, counters', composite],
   ['Kit radix sorter and workgroup reduction', sorted],
   ['private vector state across barriers', privateBarriers],
+  ['indexed vector, matrix, struct and array writes', indexedValues],
 ] as const) {
   it(`matches dawn: ${name}`, async () => {
     const gpu = await gpuRoot();

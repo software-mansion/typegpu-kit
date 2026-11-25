@@ -3,6 +3,23 @@ import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { CpuGenerator } from '../../src/cpu/generator.ts';
 import { compile } from '../../src/cpu/index.ts';
+import { cpuRoot } from './device.ts';
+import { expectedIndexedValues, indexedCases, indexedValues } from './indexed.ts';
+
+it('stores into indexed vector and matrix locals without losing writes', async () => {
+  const root = cpuRoot();
+  try {
+    const actual = await indexedValues(root);
+    const expected = expectedIndexedValues();
+    expect(actual.length).toBe(expected.length);
+    for (let word = 0; word < expected.length; word++) {
+      const name = indexedCases[Math.floor(word / 4) % indexedCases.length];
+      expect(actual[word], `${name}: word ${word}`).toBe(expected[word]);
+    }
+  } finally {
+    root.destroy();
+  }
+});
 
 it('updates struct fields through aliases with independent vector values', () => {
   const { root } = recordingRoot();
