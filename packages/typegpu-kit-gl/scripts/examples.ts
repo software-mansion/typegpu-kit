@@ -150,6 +150,14 @@ interface FrameStats {
   readonly gpuKernelMs: number;
   /** Draw calls a frame. */
   readonly draws: number;
+  /**
+   * Every kernel, read and buffer upload in the window, per frame, in the order the device first
+   * saw them. A read waits for all the GPU work before it, so the first read after GPU work pays
+   * for that work whatever its size.
+   */
+  readonly kernels: readonly Top[];
+  readonly reads: readonly Top[];
+  readonly bufferUploads: readonly Top[];
 }
 
 /** The device's statistics at one moment, as plain objects. */
@@ -209,11 +217,16 @@ const snapshotOf = (page: Page) =>
 const round = (value: number, places = 2) => Math.round(value * 10 ** places) / 10 ** places;
 
 /** The three largest of `amounts`, per frame. */
-function top(amounts: Iterable<[string, number, number]>, frames: number): Top[] {
+const top = (amounts: Iterable<[string, number, number]>, frames: number): Top[] =>
+  every(
+    [...amounts].toSorted((a, b) => b[1] - a[1]).filter(([, amount]) => amount > 0),
+    frames,
+  ).slice(0, 3);
+
+/** Each of `amounts` that happened in the window, per frame. */
+function every(amounts: Iterable<[string, number, number]>, frames: number): Top[] {
   return [...amounts]
-    .filter(([, amount]) => amount > 0)
-    .toSorted((a, b) => b[1] - a[1])
-    .slice(0, 3)
+    .filter(([, , count]) => count > 0)
     .map(([label, amount, count]) => ({
       label,
       perFrame: round(amount / frames, 3),
@@ -283,6 +296,15 @@ function frameStats(before: Snapshot, after: Snapshot): FrameStats {
     gpuDispatches: round(total(gpu, (k) => k.dispatches) / frames),
     gpuKernelMs: round(total(gpu, (k) => k.ms) / frames, 3),
     draws: round((after.draws.count - before.draws.count) / frames),
+    kernels: every(
+      kernels.map((k): [string, number, number] => [k.label, k.ms, k.dispatches]),
+      frames,
+    ),
+    reads: every(reads, frames),
+    bufferUploads: every(
+      buffers.map((b): [string, number, number] => [b.label, b.uploadBytes, b.uploads]),
+      frames,
+    ),
   };
 }
 
