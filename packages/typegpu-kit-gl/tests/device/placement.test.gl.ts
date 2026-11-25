@@ -166,7 +166,9 @@ test('a crowded form whose input only GL holds stays on the GPU, as a CPU run wo
       .$name('fed crowded');
     const words: number[] = [];
     for (let frame = 1; frame <= 24; frame++) {
-      feeding.dispatchWorkgroups(Math.ceil(CROWD / 64));
+      // Past the most invocations a costly form may try on the CPU, so `fed` stays with GL however
+      // long its GPU time samples run on a loaded machine
+      feeding.dispatchWorkgroups((1 << 21) / 64);
       adding.dispatchWorkgroups(Math.ceil(CROWD / 64));
       await new Promise((resolve) => setTimeout(resolve, 20));
       if (frame % 3 === 0) words.push((await cells.read())[0] as number);
