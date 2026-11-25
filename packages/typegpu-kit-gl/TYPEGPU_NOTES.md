@@ -495,3 +495,48 @@ const kernel = tgpu.fn(
 **Upstream.** Lower the declarators to separate tinyest declaration statements in source order, preserving initializer dependencies, in `tinyest-for-wgsl`'s `transpilers.ts` variable-declaration handler.
 
 **Workaround.** Split declarations in shader bodies, as in `tests/cpu/curve-thresholds.test.gpu.ts`. This is needed before either the WGSL or CPU generator can run.
+
+## Value types
+
+### 32. Matrix column references are writable in WGSL but readonly in TypeScript
+
+The matrix `columns` tuple has a readonly index signature. Replacing a column of a local matrix therefore fails TypeScript checking even though TypeGPU resolves the assignment and Dawn executes it correctly. Component assignments through the same view are accepted by the types.
+
+```ts
+const kernel = tgpu.fn(
+  [],
+  d.mat2x2f,
+)(() => {
+  'use gpu';
+  let matrix = d.mat2x2f();
+  matrix.columns[0] = d.vec2f(7, 8);
+  return d.mat2x2f(matrix);
+});
+// TS2542: Index signature in type 'readonly [v2f, v2f]' only permits reading.
+```
+
+**Upstream.** Expose a writable column view, with matching CPU assignment semantics, in `packages/typegpu/src/data/wgslTypes.ts` and `data/matrix.ts`, or provide a typed column setter that lowers to a WGSL column assignment.
+
+**Workaround.** The matrix-column regression in `tests/cpu/indexed.ts` casts the columns to a mutable tuple. The CPU generator already writes the underlying column components.
+
+## Name resolution
+
+### 33. Captured names can resolve to inherited Object prototype methods
+
+Function argument lookup indexes `layer.argAccess[id]` without checking whether the property belongs to that argument table. A captured function named `valueOf` instead finds `Object.prototype.valueOf` and invokes it with no receiver, failing before either shader generator can resolve the captured function.
+
+```ts
+const valueOf = () => {
+  'use gpu';
+  return d.u32(23);
+};
+const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+  'use gpu';
+  output.$ = valueOf();
+});
+// Cannot convert undefined or null to object, in ItemStateStackImpl.getSnippetById.
+```
+
+**Upstream.** Use a null-prototype argument table or an own-property check in `packages/typegpu/src/resolutionCtx.ts`, in `ItemStateStackImpl.getSnippetById`.
+
+**Workaround.** The effectful RHS helper in `tests/cpu/indexed.ts` is named `nextValue` instead of `valueOf`.
