@@ -331,3 +331,31 @@ describe.skipIf(!hasWebGpu)('base vertices', () => {
     expect(messages.join('\n')).toMatch(/baseVertex -1/);
   });
 });
+
+describe.skipIf(!hasWebGpu)('vertex strides', () => {
+  test('a vertex buffer stride above 255 bytes is an error that names it', async () => {
+    const Wide = d.struct({
+      position: d.vec2f,
+      ...Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`pad${i}`, d.vec4f])),
+    });
+    const wide = tgpu.vertexLayout(d.arrayOf(Wide));
+    const vertex = tgpu.vertexFn({
+      in: { position: d.vec2f },
+      out: { position: d.builtin.position },
+    })(({ position }) => {
+      'use gpu';
+      return { position: d.vec4f(position, 0, 1) };
+    });
+    const messages = await errorsOf(gl.device, () =>
+      gl
+        .createRenderPipeline({
+          attribs: { position: wide.attrib.position },
+          vertex,
+          fragment: solid(d.vec4f(1, 0, 0, 1)),
+          targets: { format: 'rgba8unorm' },
+        })
+        .initSync(),
+    );
+    expect(messages.join('\n')).toMatch(/arrayStride of 272/);
+  });
+});
