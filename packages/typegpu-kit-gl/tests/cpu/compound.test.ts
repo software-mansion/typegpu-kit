@@ -75,3 +75,48 @@ it('uses a workgroup scan result in an indexed compound store', async () => {
   expect(await values.read()).toEqual([10, 20, 31, 43, 56]);
   root.destroy();
 });
+
+it('keeps phase-split cached indices lane-local without adding globals', async () => {
+  const root = cpuRoot();
+  const values = root.createMutable(d.arrayOf(d.u32, 5), [10, 20, 30, 40, 50]);
+  const prefix = workgroup.scan(workgroup.sum(d.u32), 4);
+  const before = new Set(Reflect.ownKeys(globalThis));
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [4], in: { lid: d.builtin.localInvocationIndex } })(
+        ({ lid }) => {
+          'use gpu';
+          std.workgroupBarrier();
+          values.$[lid + 1] += 1;
+          values.$[lid + 1] += prefix(lid + 1, lid);
+        },
+      ),
+    })
+    .dispatchWorkgroups(1);
+  expect(await values.read()).toEqual([10, 21, 32, 44, 57]);
+  expect(Reflect.ownKeys(globalThis).filter((key) => !before.has(key))).toEqual([]);
+  root.destroy();
+});
+
+it('loads a compound destination after the suspending RHS finishes', async () => {
+  const root = cpuRoot();
+  const values = root.createMutable(d.arrayOf(d.u32, 2), [10, 20]);
+  const update = () => {
+    'use gpu';
+    values.$[1] = 100;
+    std.workgroupBarrier();
+    return d.u32(1);
+  };
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.localInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          values.$[id.x + 1] += update();
+        },
+      ),
+    })
+    .dispatchWorkgroups(1);
+  expect(await values.read()).toEqual([10, 101]);
+  root.destroy();
+});

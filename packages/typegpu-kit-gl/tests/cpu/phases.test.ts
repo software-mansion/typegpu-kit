@@ -1,3 +1,4 @@
+import { splitPhases } from '../../src/cpu/phases.ts';
 import { workgroup } from '@typegpu/kit';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -158,4 +159,49 @@ it('zeros reused workgroup integer arrays between groups and dispatches', async 
   } finally {
     root.destroy();
   }
+});
+
+it('hoists uninitialized temporaries into each lane closure', () => {
+  const phases = splitPhases(
+    '{let cpuIndex,cpuBase;(yield);cpuIndex=id;cpuBase=values;(yield);cpuBase[cpuIndex]+=1;}',
+    ['id', 'values'],
+  )!;
+  const factory = new Function(`'use strict';return (${phases.source})();`);
+  const values = [10, 20, 30, 40];
+  const before = new Set(Reflect.ownKeys(globalThis));
+  const lanes = values.map((_, id) => {
+    const lane = factory();
+    lane[0](id, values);
+    return lane;
+  });
+  for (const lane of lanes) lane[1]();
+  for (const lane of lanes) lane[2]();
+  expect(values).toEqual([11, 21, 31, 41]);
+  expect(Reflect.ownKeys(globalThis).filter((key) => !before.has(key))).toEqual([]);
+});
+
+it('keeps compiled compound-store temporaries private across plain phases', async () => {
+  let code = '';
+  const root = cpuRoot({
+    onModule: (source) => {
+      code = source;
+    },
+  });
+  const values = root.createMutable(d.arrayOf(d.u32, 5), [10, 20, 30, 40, 50]);
+  const before = new Set(Reflect.ownKeys(globalThis));
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [4], in: { lid: d.builtin.localInvocationIndex } })(
+        ({ lid }) => {
+          'use gpu';
+          std.workgroupBarrier();
+          values.$[lid + 1] += 1;
+        },
+      ),
+    })
+    .dispatchWorkgroups(1);
+  expect(code).toContain('"phases":2');
+  expect(await values.read()).toEqual([10, 21, 31, 41, 51]);
+  expect(Reflect.ownKeys(globalThis).filter((key) => !before.has(key))).toEqual([]);
+  root.destroy();
 });

@@ -49,6 +49,14 @@ export function splitPhases(
     }
     if (/^yield\b/.test(body.slice(i))) return undefined;
     if (braces === 1 && parentheses === 0 && brackets === 0) {
+      const uninitialized = /^let\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\s*;/.exec(
+        body.slice(i),
+      );
+      if (uninitialized) {
+        for (const name of uninitialized[1]!.split(',')) locals.add(name.trim());
+        i += uninitialized[0].length - 1;
+        continue;
+      }
       const declaration = /^(let|const)\s+([A-Za-z_$][\w$]*)\s*=/.exec(body.slice(i));
       if (declaration) {
         locals.add(declaration[2]!);
