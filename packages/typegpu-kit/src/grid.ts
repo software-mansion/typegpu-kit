@@ -17,6 +17,7 @@ import {
   type TgpuComputePipeline,
   type TgpuRoot,
 } from 'typegpu';
+import * as backends from './backends.ts';
 import * as pipelines from './pipelines.ts';
 import { checkDispatch } from './dispatchLimit.ts';
 import type { Inject } from './inject.ts';
@@ -351,6 +352,160 @@ export function radix(root: TgpuRoot, options: BinningOptions): Binning {
   };
 }
 
+/** Steps of the bitonic network one pass of `bitonic` takes, comparing 2^STEPS elements. */
+const STEPS = 4;
+
+const Stage = d.struct({ k: d.u32, j: d.u32, steps: d.u32 });
+const Gathered = d.arrayOf(d.vec2u, 2 ** STEPS);
+
+/** Whether pair `a`, a key and a slot, sorts before pair `b`: by key, then by slot. */
+const precedes = (a: d.v2u, b: d.v2u) => {
+  'use gpu';
+  return a.x < b.x || (a.x === b.x && a.y < b.y);
+};
+
+/**
+ * Creates a bitonic sort for a grid, for backends where compute runs on the CPU: every pass writes
+ * its own elements and reads others, with no atomics or workgroup memory, so a WebGL 2 device runs
+ * each pass on the GPU. It sorts the slots below the span, rounded up to a power of two, by key
+ * and then slot, so a sort repeats exactly.
+ */
+function bitonic(root: TgpuRoot, options: BinningOptions): Binning {
+  const { capacity, keys: nowhere, key } = options;
+  const n = 2 ** Math.ceil(Math.log2(Math.max(capacity, 2)));
+
+  const pairs = [0, 1].map(() => root.createBuffer(d.arrayOf(d.vec2u, n)).$usage('storage'));
+  const keys = root
+    .createBuffer(
+      d.arrayOf(d.u32, capacity),
+      Array.from({ length: capacity }, () => nowhere),
+    )
+    .$usage('storage');
+  const slots = root.createBuffer(d.arrayOf(d.u32, capacity)).$usage('storage');
+
+  const layout = tgpu.bindGroupLayout({
+    from: { storage: d.arrayOf(d.vec2u, n), access: 'readonly' },
+    into: { storage: d.arrayOf(d.vec2u, n), access: 'mutable' },
+    stage: { uniform: Stage },
+  });
+  const seeding = pairs[0]!.as('mutable');
+  const keysRW = keys.as('mutable');
+  const slotsRW = slots.as('mutable');
+
+  const seed = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const i = gid.x;
+    if (i >= n) return;
+    let k = d.u32(nowhere);
+    if (i < capacity) k = d.u32(key(i));
+    seeding.$[i] = d.vec2u(k, i);
+  });
+
+  // Each thread gathers the 2^steps elements its steps mix, runs those steps and keeps its own
+  const merge = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const i = gid.x;
+    if (i >= n) return;
+    const k = layout.$.stage.k;
+    const j = layout.$.stage.j;
+    const steps = layout.$.stage.steps;
+    const low = j >>> (steps - 1);
+    const base = i - (i & ((j << 1) - low));
+    const count = d.u32(1) << steps;
+    const group = Gathered();
+    for (let e = d.u32(0); e < count; e++) group[e] = d.vec2u(layout.$.from[base + e * low]);
+    const up = (base & k) === 0;
+    for (let s = d.u32(1); s <= steps; s++) {
+      const apart = count >>> s;
+      for (let e = d.u32(0); e < count; e++) {
+        if ((e & apart) !== 0) continue;
+        const a = d.vec2u(group[e]);
+        const b = d.vec2u(group[e | apart]);
+        if (precedes(b, a) === up) {
+          group[e] = d.vec2u(b);
+          group[e | apart] = d.vec2u(a);
+        }
+      }
+    }
+    layout.$.into[i] = d.vec2u(group[(i - base) / low]);
+  });
+
+  const unpack = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const i = gid.x;
+    if (i >= capacity) return;
+    // `stage.k` holds the size this sort covered; slots past it hold no item
+    let pair = d.vec2u(nowhere, i);
+    if (i < layout.$.stage.k) pair = d.vec2u(layout.$.from[i]);
+    keysRW.$[i] = pair.x;
+    slotsRW.$[i] = pair.y;
+  });
+
+  const seeder = root.createComputePipeline({ compute: seed });
+  const merger = root.createComputePipeline({ compute: merge });
+  const unpacker = root.createComputePipeline({ compute: unpack });
+
+  // After `s` stages, the sorted pairs are in `pairs[s % 2]`
+  const bind = (s: number, stage: d.Infer<typeof Stage>) =>
+    root.createBindGroup(layout, {
+      from: pairs[s % 2]!,
+      into: pairs[(s + 1) % 2]!,
+      stage: root.createUniform(Stage, stage).buffer,
+    });
+  // The stages of a sort of `size` are the first stages of every larger one, so one list serves
+  // every span
+  const stages: ReturnType<typeof bind>[] = [];
+  const ends = new Map<number, number>();
+  for (let k = 2; k <= n; k <<= 1) {
+    for (let j = k >> 1; j > 0;) {
+      const steps = Math.min(STEPS, Math.log2(j) + 1);
+      stages.push(bind(stages.length, { k, j, steps }));
+      j >>= steps;
+    }
+    ends.set(k, stages.length);
+  }
+  const unpacking = new Map(
+    [...ends].map(([size, count]) => [size, bind(count, { k: size, j: 0, steps: 0 })]),
+  );
+
+  const destroy = () => {
+    for (const buffer of [...pairs, keys, slots]) buffer.destroy();
+  };
+
+  return {
+    keys,
+    slots,
+
+    sort(pass, span) {
+      const size = Math.max(2, 2 ** Math.ceil(Math.log2(Math.max(span, 1))));
+      pass.setPipeline(seeder);
+      pass.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
+      pass.setPipeline(merger);
+      const count = ends.get(size) ?? 0;
+      for (let s = 0; s < count; s++) {
+        pass.setBindGroup(layout, stages[s]!);
+        pass.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
+      }
+      pass.setPipeline(unpacker);
+      pass.setBindGroup(layout, unpacking.get(size)!);
+      pass.dispatchWorkgroups(Math.ceil(capacity / WORKGROUP));
+    },
+
+    initAsync: () => pipelines.compile([seeder, merger, unpacker]),
+    destroy,
+    [Symbol.dispose]: destroy,
+  };
+}
+
 const Box = d.struct({ low: d.vec3f });
 
 const noItems = (): never => {
@@ -410,7 +565,10 @@ interface GridOptions {
   readonly sight: number;
   /** Returns the position of item `i`. @gpu */
   readonly position: (i: number) => d.v3f;
-  /** Orders the items by cell each step: `counting` or `radix`. Default `counting`. @cpu */
+  /**
+   * Orders the items by cell each step: `counting` or `radix`. Default `counting`, or where
+   * compute runs on the CPU, a bitonic sort whose passes a WebGL 2 device runs on the GPU. @cpu
+   */
   readonly binning?: (root: TgpuRoot, options: BinningOptions) => Binning;
   /**
    * Widens `dispatchBlocks` to every block within this many blocks of one holding items, for work
@@ -524,7 +682,10 @@ export function create<T extends d.AnyWgslData = never>(
   options: Options<T>,
 ): Grid<T> {
   const { capacity, low, size, sight, item, alive, span, position, itemOf } = options;
-  const { binning = counting, margin = 0 } = options;
+  // Where compute runs on the CPU, the grid sorts and lists with passes that write their own
+  // elements or scatter whole ones, which a WebGL 2 device runs on the GPU
+  const alone = backends.of(root).compute === 'cpu';
+  const { binning = alone ? bitonic : counting, margin = 0 } = options;
   if (!(sight > 0)) throw new RangeError(`grid.create: \`sight\` must be above 0, got ${sight}.`);
   if (!(Number.isInteger(margin) && margin >= 0)) {
     throw new RangeError(
@@ -625,6 +786,7 @@ export function create<T extends d.AnyWgslData = never>(
 
   const destroy = () => {
     bins.destroy();
+    lone?.destroy();
     for (const buffer of [ranges, claims, held, list, blockArgs, header]) buffer.destroy();
     seen?.destroy();
     nearClaims?.destroy();
@@ -775,6 +937,193 @@ export function create<T extends d.AnyWgslData = never>(
   const boundPipeline = root.createComputePipeline({ compute: boundKernel });
   const copyPipeline = root.createComputePipeline({ compute: copyKernel });
 
+  const lone = alone ? alongside() : undefined;
+  // The rows the last sort covered, whose ranges the next one empties
+  let lastRows = 0;
+  function alongside() {
+    const GROUP = 128;
+    const groups = Math.ceil(blocks / GROUP);
+    const flags = root.createBuffer(d.arrayOf(d.u32, blocks)).$usage('storage');
+    const totals = root.createBuffer(d.arrayOf(d.u32, groups)).$usage('storage');
+    const listArgs = root
+      .createBuffer(d.arrayOf(d.u32, 3), [0, 1, 1])
+      .$usage('storage', 'indirect');
+    const flagging = flags.as('mutable');
+    const flagsIn = flags.as('readonly');
+    const totalling = totals.as('mutable');
+    const totalsIn = totals.as('readonly');
+    const listArging = listArgs.as('mutable');
+    const listInto = (nearList ?? list).as('mutable');
+    const heldIn = held.as('readonly');
+
+    // Empties the ranges the last sort wrote, as `clearKernel` does, without the counters
+    const clear = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const k = gid.x;
+      if (k >= headerIn.$[3]) return;
+      const cell = sortedKeys.$[k];
+      let before = d.u32(NONE);
+      if (k > 0) before = sortedKeys.$[k - 1];
+      if (before !== cell) ranging.$[cell] = d.vec2u();
+    });
+
+    // Counts the sorted items and numbers the sort, from one thread
+    const tally = tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      let first = d.u32(0);
+      let past = d.u32(capacity);
+      while (first < past) {
+        const middle = (first + past) >>> 1;
+        if (sortedKeys.$[middle] < nowhere) first = middle + 1;
+        else past = middle;
+      }
+      // The header starts at NONE, and no sort is numbered 0, which blocks start at
+      let stamp = heading.$[4] + 1;
+      if (stamp === 0) stamp = 1;
+      heading.$[0] = std.max((first + WORKGROUP - 1) >>> 6, 1);
+      heading.$[1] = 1;
+      heading.$[2] = 1;
+      heading.$[3] = first;
+      heading.$[4] = stamp;
+    });
+
+    // The first item of each cell writes its whole range and stamps its block
+    const bound = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const k = gid.x;
+      const count = headerIn.$[3];
+      if (k >= count) return;
+      const cell = sortedKeys.$[k];
+      if (k > 0 && sortedKeys.$[k - 1] === cell) return;
+      let end = k + 1;
+      while (end < count && sortedKeys.$[end] === cell) end += 1;
+      ranging.$[cell] = d.vec2u(k, end);
+      holding.$[blockOf(cell)] = headerIn.$[4];
+    });
+
+    const copy = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const k = gid.x;
+      if (k >= headerIn.$[3]) return;
+      if (copying !== undefined && itemOf !== undefined) copying.$[k] = itemOf(sortedSlots.$[k]);
+    });
+
+    // Flags the blocks to list: those holding items, or within the margin of one
+    const flag = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const b = gid.x;
+      if (b >= blocks) return;
+      const home = blockAt(b);
+      const stamp = headerIn.$[4];
+      let found = d.u32(0);
+      for (let n = d.u32(0); n < nearby; n++) {
+        const step = d.vec3u(
+          n % reach,
+          std.intdiv(n, d.u32(reach)) % reach,
+          std.intdiv(n, d.u32(reach * reach)),
+        );
+        const o = home + d.vec3i(step) - margin;
+        if (std.any(std.lt(o, d.vec3i())) || std.any(std.ge(o, d.vec3i(blocked)))) continue;
+        const index = d.u32(o.x) + blocked.x * (d.u32(o.y) + blocked.y * d.u32(o.z));
+        if (heldIn.$[index] === stamp) {
+          found = 1;
+          break;
+        }
+      }
+      flagging.$[b] = found;
+    });
+
+    const total = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const g = gid.x;
+      if (g >= groups) return;
+      let sum = d.u32(0);
+      for (let b = g * GROUP; b < std.min((g + 1) * GROUP, blocks); b++) sum += flagsIn.$[b];
+      totalling.$[g] = sum;
+    });
+
+    const listCount = tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      let sum = d.u32(0);
+      for (let g = d.u32(0); g < groups; g++) sum += totalsIn.$[g];
+      listArging.$[0] = sum;
+      listArging.$[1] = 1;
+      listArging.$[2] = 1;
+    });
+
+    // Each flagged block counts the flagged blocks before it and lists itself there
+    const place = tgpu.computeFn({
+      workgroupSize: [WORKGROUP],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      const b = gid.x;
+      if (b >= blocks || flagsIn.$[b] === 0) return;
+      const g = std.intdiv(b, d.u32(GROUP));
+      let at = d.u32(0);
+      for (let before = d.u32(0); before < g; before++) at += totalsIn.$[before];
+      for (let before = g * GROUP; before < b; before++) at += flagsIn.$[before];
+      listInto.$[at] = b;
+    });
+
+    const clearing = root.createComputePipeline({ compute: clear });
+    const tallying = root.createComputePipeline({ compute: tally });
+    const bounding = root.createComputePipeline({ compute: bound });
+    const copyingPipeline = root.createComputePipeline({ compute: copy });
+    const flaggingPipeline = root.createComputePipeline({ compute: flag });
+    const totalPipeline = root.createComputePipeline({ compute: total });
+    const countPipeline = root.createComputePipeline({ compute: listCount });
+    const placing = root.createComputePipeline({ compute: place });
+    const run = [clearing, tallying, bounding, flaggingPipeline, totalPipeline, countPipeline];
+    return {
+      pipelines: [...run, placing, ...(copying ? [copyingPipeline] : [])],
+      listArgs,
+      destroy: () => {
+        for (const buffer of [flags, totals, listArgs]) buffer.destroy();
+      },
+      /** Empties the last sort's ranges, before the binning sorts again. */
+      clear(pass: TgpuComputePass, rows: number) {
+        pass.setPipeline(clearing);
+        pass.dispatchWorkgroups(Math.ceil(rows / WORKGROUP));
+      },
+      /** Counts, bounds, copies and lists the sorted items. */
+      after(pass: TgpuComputePass, rows: number) {
+        const over = Math.max(1, Math.ceil(rows / WORKGROUP));
+        pass.setPipeline(tallying);
+        pass.dispatchWorkgroups(1);
+        pass.setPipeline(bounding);
+        pass.dispatchWorkgroups(over);
+        if (copying) {
+          pass.setPipeline(copyingPipeline);
+          pass.dispatchWorkgroups(over);
+        }
+        pass.setPipeline(flaggingPipeline);
+        pass.dispatchWorkgroups(Math.ceil(blocks / WORKGROUP));
+        pass.setPipeline(totalPipeline);
+        pass.dispatchWorkgroups(Math.ceil(groups / WORKGROUP));
+        pass.setPipeline(countPipeline);
+        pass.dispatchWorkgroups(1);
+        pass.setPipeline(placing);
+        pass.dispatchWorkgroups(Math.ceil(blocks / WORKGROUP));
+      },
+    };
+  }
+
   const walk = (point: d.v3f) => {
     'use gpu';
     let turn = d.vec3i(1);
@@ -899,7 +1248,9 @@ export function create<T extends d.AnyWgslData = never>(
       await Promise.all([
         bins.initAsync(),
         pipelines.compile(
-          [clearPipeline, boundPipeline, copyPipeline, nearPipeline].filter((each) => !!each),
+          lone
+            ? lone.pipelines
+            : [clearPipeline, boundPipeline, copyPipeline, nearPipeline].filter((each) => !!each),
         ),
       ]);
     },
@@ -908,6 +1259,13 @@ export function create<T extends d.AnyWgslData = never>(
       sorted = true;
 
       const rows = span ? Math.min(span(), capacity) : capacity;
+      if (lone) {
+        lone.clear(pass, lastRows);
+        bins.sort(pass, rows);
+        lone.after(pass, rows);
+        lastRows = rows;
+        return;
+      }
       pass.setPipeline(clearPipeline);
       pass.dispatchWorkgroupsIndirect(header);
       bins.sort(pass, rows);
@@ -929,7 +1287,7 @@ export function create<T extends d.AnyWgslData = never>(
 
     dispatchBlocks(pass) {
       binned();
-      pass.dispatchWorkgroupsIndirect(nearArgs ?? blockArgs, 0);
+      pass.dispatchWorkgroupsIndirect(lone?.listArgs ?? nearArgs ?? blockArgs, 0);
     },
 
     move(to) {

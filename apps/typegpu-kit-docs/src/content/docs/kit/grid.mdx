@@ -162,6 +162,8 @@ A sort also lists the blocks of 4 × 4 × 4 cells that hold items. `cells.dispat
 
 </Rules>
 
+Where compute runs on the CPU, as on the [WebGL 2 fallback](/kit/hosting/#where-webgpu-is-missing), the default is a bitonic sort instead, and the grid bounds and lists with passes that write only their own elements or whole ones, so the fallback runs every pass of a sort on the GPU. A sort then repeats exactly.
+
 A grid holds eight bytes per cell and `counting` adds eight more.
 
 ## Following the camera

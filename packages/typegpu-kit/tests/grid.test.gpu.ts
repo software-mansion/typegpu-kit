@@ -1,3 +1,4 @@
+import { backends } from '@typegpu/kit';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { randf } from '@typegpu/noise';
 import { d, std, tgpu } from 'typegpu';
@@ -7,10 +8,26 @@ import * as grid from '../src/grid.ts';
 const Item = d.struct({ position: d.vec3f, id: d.u32 });
 
 type Binning = NonNullable<grid.Options<d.U32>['binning']>;
-const BINNINGS = [
+/** A device that says its compute runs on the CPU, where a grid sorts with passes of its own. */
+const ALONE = 'alone';
+type Sorting = Binning | typeof ALONE;
+const BINNINGS: readonly (readonly [string, Sorting])[] = [
   ['counting', grid.counting],
   ['radix', grid.radix],
-] as const;
+  ['bitonic, where compute runs on the CPU', ALONE],
+];
+
+async function rootFor(sorting: Sorting) {
+  const root = await gpuRoot();
+  if (sorting === ALONE) {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute: 'cpu' } satisfies backends.Backend,
+    });
+  }
+  return root;
+}
+
+const binningOf = (sorting: Sorting) => (sorting === ALONE ? {} : { binning: sorting });
 
 const LOW = d.vec3f(-4, 0, -3);
 const SIZE = d.vec3f(8, 4, 6);
@@ -41,8 +58,8 @@ function scatter(count: number, size = SIZE) {
  * `cap` neighbours within sight. Reads back how many each found, the mean offset to them, whether
  * the walk met the item itself in its first row, and how many neighbours `slot` misnamed.
  */
-async function walk(count: number, cap: number, binning: Binning = grid.counting) {
-  const root = await gpuRoot();
+async function walk(count: number, cap: number, binning: Sorting = grid.counting) {
+  const root = await rootFor(binning);
   const points = scatter(count);
   const positions = root.createBuffer(d.arrayOf(d.vec3f, count), points).$usage('storage');
   const read = positions.as('readonly');
@@ -53,7 +70,7 @@ async function walk(count: number, cap: number, binning: Binning = grid.counting
     size: SIZE,
     sight: SIGHT,
     item: Item,
-    binning,
+    ...binningOf(binning),
     alive: (i) => {
       'use gpu';
       return i % 7 !== 0;
@@ -211,7 +228,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
   });
 
   it('finds from any point, inside the box or out, every alive item within sight, by the slots its rows name', async () => {
-    const root = await gpuRoot();
+    const root = await rootFor(binning);
     const count = 800;
     const points = scatter(count);
     const positions = root.createBuffer(d.arrayOf(d.vec3f, count), points).$usage('storage');
@@ -221,7 +238,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
       low: LOW,
       size: SIZE,
       sight: SIGHT,
-      binning,
+      ...binningOf(binning),
       item: d.u32,
       alive: (i) => {
         'use gpu';
@@ -295,7 +312,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
   });
 
   it('covers the box it moves to, sorted again', async () => {
-    const root = await gpuRoot();
+    const root = await rootFor(binning);
     const count = 400;
     const points = scatter(count).map(away);
     const positions = root.createBuffer(d.arrayOf(d.vec3f, count), points).$usage('storage');
@@ -305,7 +322,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
       low: LOW,
       size: SIZE,
       sight: SIGHT,
-      binning,
+      ...binningOf(binning),
       item: d.u32,
       position: (i) => {
         'use gpu';
@@ -379,7 +396,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
   });
 
   it('sorts again after items move and die and the span changes, emptying what the last sort placed', async () => {
-    const root = await gpuRoot();
+    const root = await rootFor(binning);
     const count = 1200;
     // Lines of 100 cells take a counting reserve more than one workgroup's width
     const long = d.vec3f(100, SIZE.y, SIZE.z);
@@ -397,7 +414,7 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
       low: LOW,
       size: long,
       sight: SIGHT,
-      binning,
+      ...binningOf(binning),
       item: d.u32,
       alive: (i) => {
         'use gpu';
@@ -524,55 +541,59 @@ describe.each(BINNINGS)('neighbour grid, %s', (_name, binning) => {
   });
 });
 
-it('dispatches over every block within its margin of one holding items, once each', async () => {
-  const root = await gpuRoot();
-  // 16 × 4 × 12 cells are 4 × 1 × 3 blocks; two items hold blocks (0, 0, 0) and (3, 0, 2)
-  const points = [d.vec3f(-3.5, 0.5, -2.5), d.vec3f(11.5, 0.5, 8.5)];
-  const placed = root.createBuffer(d.arrayOf(d.vec3f, 2), points).$usage('storage');
-  const read = placed.as('readonly');
-  const cells = grid.create(root, {
-    capacity: 2,
-    low: LOW,
-    size: d.vec3f(16, 4, 12),
-    sight: SIGHT,
-    margin: 1,
-    item: d.u32,
-    position: (i) => {
+it.each(BINNINGS)(
+  'dispatches over every block within its margin of one holding items, once each, %s',
+  async (_name, sorting) => {
+    const root = await rootFor(sorting);
+    // 16 × 4 × 12 cells are 4 × 1 × 3 blocks; two items hold blocks (0, 0, 0) and (3, 0, 2)
+    const points = [d.vec3f(-3.5, 0.5, -2.5), d.vec3f(11.5, 0.5, 8.5)];
+    const placed = root.createBuffer(d.arrayOf(d.vec3f, 2), points).$usage('storage');
+    const read = placed.as('readonly');
+    const cells = grid.create(root, {
+      capacity: 2,
+      low: LOW,
+      size: d.vec3f(16, 4, 12),
+      sight: SIGHT,
+      margin: 1,
+      ...binningOf(sorting),
+      item: d.u32,
+      position: (i) => {
+        'use gpu';
+        return d.vec3f(read.$[i]);
+      },
+      itemOf: (i) => {
+        'use gpu';
+        return d.u32(i);
+      },
+    });
+
+    const seen = root.createBuffer(d.arrayOf(d.atomic(d.u32), 12)).$usage('storage');
+    const seeing = seen.as('mutable');
+    const visit = tgpu.computeFn({ workgroupSize: [1], in: { wid: d.builtin.workgroupId } })(({
+      wid,
+    }) => {
       'use gpu';
-      return d.vec3f(read.$[i]);
-    },
-    itemOf: (i) => {
-      'use gpu';
-      return d.u32(i);
-    },
-  });
+      const block = cells.block(wid.x);
+      const index = d.u32(block.x + 4 * block.z);
+      std.atomicAdd(seeing.$[index], std.select(d.u32(1), d.u32(100), cells.holds(block)));
+    });
+    const visiting = root.pipe(cells.inject()).createComputePipeline({ compute: visit });
 
-  const seen = root.createBuffer(d.arrayOf(d.atomic(d.u32), 12)).$usage('storage');
-  const seeing = seen.as('mutable');
-  const visit = tgpu.computeFn({ workgroupSize: [1], in: { wid: d.builtin.workgroupId } })(({
-    wid,
-  }) => {
-    'use gpu';
-    const block = cells.block(wid.x);
-    const index = d.u32(block.x + 4 * block.z);
-    std.atomicAdd(seeing.$[index], std.select(d.u32(1), d.u32(100), cells.holds(block)));
-  });
-  const visiting = root.pipe(cells.inject()).createComputePipeline({ compute: visit });
+    for (let sort = 0; sort < 2; sort++) {
+      const encoder = root.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      cells.sort(pass);
+      pass.setPipeline(visiting);
+      cells.dispatchBlocks(pass);
+      pass.end();
+      encoder.submit();
+    }
 
-  for (let sort = 0; sort < 2; sort++) {
-    const encoder = root.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    cells.sort(pass);
-    pass.setPipeline(visiting);
-    cells.dispatchBlocks(pass);
-    pass.end();
-    encoder.submit();
-  }
-
-  // Rows of z: each block once a sort, a held one counting 100
-  expect(await seen.read()).toEqual([200, 2, 0, 0, 2, 2, 2, 2, 0, 0, 2, 200]);
-  root.destroy();
-});
+    // Rows of z: each block once a sort, a held one counting 100
+    expect(await seen.read()).toEqual([200, 2, 0, 0, 2, 2, 2, 2, 0, 0, 2, 200]);
+    root.destroy();
+  },
+);
 
 describe('neighbour grid walks', () => {
   // A school packs tighter than this around food. Stopping after 16, a walk from the corner sees the
