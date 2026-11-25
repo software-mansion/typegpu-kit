@@ -67,7 +67,7 @@ A form can also cost more on the GPU than its CPU module would, when its records
 
 Other atomics on shared cells, barriers and workgroup variables keep a kernel on the CPU, as do writes these rules exclude. A module can still choose other kernels on the fallback with `backends.of(root)`, usually ones these forms express:
 
-- In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses`. The grid sorts with a bitonic network of passes that each write their own elements and bounds its cells with scattered writes. Particles spawn bursts by having each ring slot gather the particle the ring places in it. Poses find each joint's chain in a thread of its own instead of sharing a workgroup's. The culling and the live lists mark each row in a thread of its own, which the GPU runs, and list the marked rows in order on the CPU.
+- In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses`. The grid sorts with a bitonic network of passes that each write their own elements and bounds its cells with scattered writes. Particles spawn bursts by having each ring slot gather the particle the ring places in it, and draw every slot of the pool instead of listing the live ones, collapsing a dead slot's quad in the vertex stage and counting the live ones for `args` with a sum. Poses find each joint's chain in a thread of its own instead of sharing a workgroup's. The culling and the live lists mark each row in a thread of its own, which the GPU runs, and list the marked rows in order on the CPU.
 - In the examples, `ocean`, `censer`, `sph-sculpt` and `jump-flood`.
 
 Each such branch leaves the WebGPU path as it is, and a test runs both on dawn by branding a real device as CPU-compute.
