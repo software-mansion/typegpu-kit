@@ -1,7 +1,8 @@
 // Opens every example page of a running docs server on the WebGL fallback and on WebGPU, and
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
 // [--out dir] [--backend webgl|webgpu|both|nogpu] [--browser chromium|firefox|webkit]
-// [--timeout seconds] [--reference dir] [--review] [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
+// [--timeout seconds] [--reference dir] [--review] [--minimum] [--texture-size n] [--hide ext,…|all]
+// [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
 // the page first, as a browser without it, so the page must fall back by itself.
 // With `--reference`, it also scores each screenshot against the one of the same name there.
 // Screenshots outside Chromium carry the browser in their name, `forest.nogpu.webkit.png`.
@@ -13,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium, firefox, webkit, type Browser, type Page } from 'playwright';
+import { EXTENSIONS, installScript } from '../tests/device/minimum.ts';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -24,8 +26,23 @@ const { values, positionals } = parseArgs({
     timeout: { type: 'string', default: '90' },
     reference: { type: 'string' },
     review: { type: 'boolean', default: false },
+    minimum: { type: 'boolean', default: false },
+    'texture-size': { type: 'string' },
+    hide: { type: 'string' },
   },
 });
+
+// `--minimum` reports WebGL 2's minimum limits, `--hide` refuses extensions (`all` hides every one
+// the device asks for), as a weaker GPU than this one would
+const hidden = values.hide === 'all' ? [...EXTENSIONS] : (values.hide?.split(',') ?? []);
+const restriction =
+  values.minimum || hidden.length > 0
+    ? {
+        minimum: values.minimum,
+        hide: hidden,
+        ...(values['texture-size'] ? { textureSize: Number(values['texture-size']) } : {}),
+      }
+    : undefined;
 
 const examplesDir = join(import.meta.dirname, '../../typegpu-kit-examples/src');
 const all = readdirSync(examplesDir).filter((name) =>
@@ -242,6 +259,7 @@ async function visit(browser: Browser, example: string, backend: string): Promis
     deviceScaleFactor: 1,
   });
   if (values.review) await context.addInitScript(countObjects);
+  if (restriction) await context.addInitScript({ content: installScript(restriction) });
   if (backend === 'nogpu') {
     await context.addInitScript(() => {
       delete (Navigator.prototype as { gpu?: unknown }).gpu;
