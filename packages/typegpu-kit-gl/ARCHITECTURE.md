@@ -36,7 +36,7 @@ TypeGPU replaces bind group placeholders in the whole string after generation, s
 
 ## Compute
 
-WebGL 2 has no compute stage. A compute pipeline's module is JavaScript: `CpuGenerator` emits one function per shader function over typed-array views of the bound buffers, and the device can run it on dispatch, invocation by invocation. Its `f32` arithmetic rounds to 32 bits at each operation, as a GPU's does, so a seeded kernel gives the CPU and the GPU the same result. Buffers and textures then have two homes. The device tracks which copy is current, reads back from GL when a kernel needs data a draw produced, and uploads before a draw reads what a kernel wrote.
+WebGL 2 has no compute stage. A compute pipeline's module is JavaScript: `CpuGenerator` emits one function per shader function over typed-array views of the bound buffers, and the device can run it on dispatch, invocation by invocation. Its `f32` arithmetic rounds to 32 bits at each operation, as a GPU's does, so a seeded kernel gives the CPU and the GPU the same result. Buffers and textures then have two homes. The device tracks which copy is current, reads back from GL when a kernel needs data a draw produced, and uploads before a draw reads what a kernel wrote. A kernel writes a binding only if its code stores to it: `compile` clears the write flag of a `mutable` buffer whose typed arrays the module only ever indexes to read, so reading one leaves GL's copy current and costs no upload.
 
 ### GPU forms
 
