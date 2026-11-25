@@ -477,7 +477,9 @@ const rateOf = (rate: number) => {
  * @binds 1 storage: `alive` or `particle`, the pool
  * @binds 1 storage, 1 uniform: `drawnAt`, the pool and the last `compact`'s `ahead`
  * @owns 6 buffers, 2 pipelines, `liveLists`: the pool, its ring counter, the burst queue and three
- * uniforms; the live lists list the live particles. Each description `drawing` is added to builds
+ * uniforms; the live lists list the live particles. Where compute runs on the CPU, two buffers and
+ * two pipelines that count the live particles take the live lists' place, and the draw covers
+ * every slot. Each description `drawing` is added to builds
  * its pipeline.
  * @records `spawn` once a submission before `compact`, `step` once per fixed step, `compact` once
  * after the steps, then the draw a description added `drawing` as; `clear` whenever you like.
@@ -579,7 +581,21 @@ export function create<S extends Schema>(
   };
 
   const filledLive = { capacity: size, alive };
-  const live = liveLists.create(root, { ...filledLive, draws: [{ vertexCount: 4 }] });
+  // Where compute runs on the CPU, listing live slots would read the pool back every frame. The
+  // draw covers every slot instead and drops the dead ones, and a sum counts the live ones
+  const alone = backends.of(root).compute === 'cpu';
+  const live = alone
+    ? undefined
+    : liveLists.create(root, { ...filledLive, draws: [{ vertexCount: 4 }] });
+  const tallyBuffer = alone
+    ? root.createBuffer(d.arrayOf(d.atomic(d.u32), 1)).$usage('storage')
+    : undefined;
+  // Laid out as live lists' records: four vertices, the live count, then no offsets
+  const countBuffer = alone
+    ? root.createBuffer(d.arrayOf(d.u32, 5), [4, 0, 0, 0, 0]).$usage('storage', 'indirect')
+    : undefined;
+  const tallied = tallyBuffer?.as('mutable');
+  const counted = countBuffer?.as('mutable');
 
   const birth = (burst: BurstGpu, index: number) => {
     'use gpu';
@@ -647,7 +663,6 @@ export function create<S extends Schema>(
   // Where compute runs on the CPU, taking ring slots with an atomic keeps spawning there. Instead
   // each slot finds the burst particle the ring places in it, counting from the head, and one
   // thread then moves the head past them. Bursts fill the ring in order; an atomic fills it in any
-  const alone = backends.of(root).compute === 'cpu';
 
   const spawnEach = tgpu.computeFn({
     workgroupSize: [WORKGROUP],
@@ -704,8 +719,29 @@ export function create<S extends Schema>(
 
   const at = (vertexIndex: number, instanceIndex: number) => {
     'use gpu';
-    const slot = live.slot(0, instanceIndex);
+    const slot = live!.slot(0, instanceIndex);
     // A strip of two clockwise triangles split from corner (-1, 1) to (1, -1)
+    const corner = d.vec2f(d.f32(vertexIndex >>> 1), d.f32(vertexIndex & 1)) * 2 - 1;
+    const drawn = Row(pool.$[slot]);
+    drawn.position = drawnAt(slot);
+    const world = place(drawn, corner);
+
+    return Corner({
+      position: cameras.toClip(world),
+      world,
+      local: corner,
+      slot,
+    });
+  };
+
+  // Drawn over every slot where compute runs on the CPU: a dead one's corners all fall outside
+  // the clip volume
+  const covered = (vertexIndex: number, instanceIndex: number) => {
+    'use gpu';
+    const slot = d.u32(instanceIndex);
+    if (!alive(slot)) {
+      return Corner({ position: d.vec4f(2, 2, 2, 1), world: d.vec3f(), local: d.vec2f(), slot });
+    }
     const corner = d.vec2f(d.f32(vertexIndex >>> 1), d.f32(vertexIndex & 1)) * 2 - 1;
     const drawn = Row(pool.$[slot]);
     drawn.position = drawnAt(slot);
@@ -735,7 +771,25 @@ export function create<S extends Schema>(
     ? injected.createComputePipeline({ compute: advanceKernel }).$name('advancing')
     : undefined;
   const stepPipeline = injected.createComputePipeline({ compute: stepKernel });
-  const drawn: Inject = (cfg) => cfg.pipe(filled).pipe(live.inject());
+  const drawn: Inject = (cfg) => (live ? cfg.pipe(filled).pipe(live.inject()) : cfg.pipe(filled));
+
+  const tally = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x < size && alive(gid.x)) std.atomicAdd(tallied!.$[0], 1);
+  });
+  const recount = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    counted!.$[1] = std.atomicExchange(tallied!.$[0], 0);
+  });
+  const tallyPipeline = alone
+    ? injected.createComputePipeline({ compute: tally }).$name('tally')
+    : undefined;
+  const countPipeline = alone
+    ? root.createComputePipeline({ compute: recount }).$name('counting')
+    : undefined;
 
   // Reuse burst records until spawn consumes them. Initialize custom fields from a zero particle
   const zero = Row() as unknown as Record<string, unknown>;
@@ -789,13 +843,21 @@ export function create<S extends Schema>(
   let spawnedIn: TgpuComputePass | undefined;
 
   const initAsync = () =>
-    pipelines.compile([live, spawnPipeline, stepPipeline, ...(advancing ? [advancing] : [])]);
+    pipelines.compile([
+      ...(live ? [live] : []),
+      ...(tallyPipeline && countPipeline ? [tallyPipeline, countPipeline] : []),
+      spawnPipeline,
+      stepPipeline,
+      ...(advancing ? [advancing] : []),
+    ]);
 
   const destroy = () => {
     poolBuffer.destroy();
     headBuffer.destroy();
     burstBuffer.destroy();
-    live.destroy();
+    live?.destroy();
+    tallyBuffer?.destroy();
+    countBuffer?.destroy();
   };
 
   const system: Particles<typeof Particle> = {
@@ -811,7 +873,7 @@ export function create<S extends Schema>(
     emit,
     settings,
     pool: poolBuffer,
-    args: live.args,
+    args: live ? live.args : (countBuffer as NonNullable<typeof countBuffer>),
 
     initAsync,
 
@@ -875,7 +937,13 @@ export function create<S extends Schema>(
     },
 
     compact(pass, by) {
-      live.compact(pass);
+      if (live) live.compact(pass);
+      else if (tallyPipeline && countPipeline) {
+        pass.setPipeline(tallyPipeline);
+        pass.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
+        pass.setPipeline(countPipeline);
+        pass.dispatchWorkgroups(1);
+      }
 
       // Update once per frame so all pass descriptions draw the same particle state
       const was = lastDrawn[0] - stepped * step;
@@ -890,7 +958,7 @@ export function create<S extends Schema>(
     drawing: {
       label: options.label ?? 'particles',
       Vertex: Corner,
-      at,
+      at: live ? at : covered,
       pixelOf,
       color: passes.shaded,
       ...(blend === 'translucent'
@@ -899,7 +967,7 @@ export function create<S extends Schema>(
       depthStencil: { depthWriteEnabled: false },
       primitive: { topology: 'triangle-strip' },
       inject: () => drawn,
-      draw: (pass) => live.draw(pass, 0),
+      draw: (pass) => (live ? live.draw(pass, 0) : pass.draw(4, size)),
       initAsync,
     },
 

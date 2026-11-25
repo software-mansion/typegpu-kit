@@ -744,3 +744,83 @@ it('spawns the same particles into the ring where compute runs on the CPU, slot 
   }
   expect(shared.some(({ rows }) => rows.length === 50)).toBe(true);
 });
+
+/** Draws a pool where half the particles have died, and reads the pixels and the live count. */
+async function drawnPool(compute: 'gpu' | 'cpu') {
+  const root = await gpuRoot();
+  // A device that says its compute runs on the CPU draws every slot and drops the dead ones
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
+  // Bursts take their seeds from Math.random, the same in both runs
+  const unseeded = Math.random;
+  let state = 5;
+  Math.random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+  const size = { width: 64, height: 64 };
+  const screen = targets.create(root, size, { color: { format: 'rgba8unorm' } });
+  const view = cameras.flat(root, { size, height: 10 });
+  // A flat colour, which a dead particle drawn by mistake would add too
+  const dust = particles.create(root, view, {
+    capacity: 42,
+    step: 0.1,
+    dimensions: 2,
+    shade: () => {
+      'use gpu';
+      return d.vec4f(0.1, 0.05, 0.02, 0.1);
+    },
+  });
+  const drawn = passes.create(root, screen, { color: passes.color }).add(dust.drawing);
+  for (let k = 0; k < 6; k++) {
+    // Even bursts die within two steps, odd ones outlive the test
+    dust.burst({
+      count: 7,
+      position: [k - 3, k % 2 === 0 ? -2 : 2, 0],
+      area: [0.5, 0.5, 0],
+      velocity: [0.5, 0.3, 0],
+      size: 0.6,
+      life: k % 2 === 0 ? 0.15 : 10,
+      variance: 0,
+    });
+  }
+  const frame = async (steps: number) => {
+    const encoder = root.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    dust.spawn(pass);
+    for (let i = 0; i < steps; i++) dust.step(pass);
+    dust.compact(pass, 0);
+    pass.end();
+    const render = encoder.beginRenderPass({
+      colorAttachments: { view: screen.views.color, loadOp: 'clear', clearValue: [0, 0, 0, 0] },
+    });
+    drawn.draw(render);
+    render.end();
+    encoder.submit();
+    const pixels = await readPixels(root, root.unwrap(screen.textures.color), 64, 64);
+    const args = (await dust.args.read()) as unknown as number[];
+    return { pixels: [...pixels], live: args[1] ?? -1, vertices: args[0] ?? -1 };
+  };
+  const frames = [await frame(0), await frame(3)];
+  Math.random = unseeded;
+  dust.destroy();
+  root.destroy();
+  return frames;
+}
+
+it('draws only the live particles where compute runs on the CPU, as live lists do, and counts them in args', async () => {
+  const [listed, covered] = [await drawnPool('gpu'), await drawnPool('cpu')];
+  for (const [k, frame] of listed.entries()) {
+    const other = covered[k]!;
+    expect(other.live, `frame ${k}`).toBe(frame.live);
+    expect(other.vertices, `frame ${k}`).toBe(4);
+    expect(other.pixels, `frame ${k}`).toEqual(frame.pixels);
+  }
+  // All 42 drawn at first, then the 21 of the odd bursts
+  expect(listed.map(({ live }) => live)).toEqual([42, 21]);
+  expect(listed[0]!.pixels.some((value) => value > 0)).toBe(true);
+  expect(listed[1]!.pixels).not.toEqual(listed[0]!.pixels);
+});
