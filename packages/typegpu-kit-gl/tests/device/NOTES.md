@@ -166,3 +166,23 @@ texture `scattering` wrote, a 64-slice readback of 60 ms each frame.
 - Buffer and texture bindings share texture units: buffers first, then textures, at most
   `MAX_COMBINED_TEXTURE_IMAGE_UNITS - 1` (one unit is kept for uploads). Exceeding it is a
   validation error naming the counts.
+
+## Grouped placement (`kit-gl/placement-chain`, not merged)
+
+What it does: a GPU form whose outputs the CPU reads back, but whose inputs other GPU forms rewrite before each of its dispatches, cannot move to the CPU alone. `placement.ts` moves it with those forms, transitively, as one group of at most 4 small forms, judges the group over three windows of every member's dispatches, and sends it back as one: for good when it costs more than it saves, or counting a return on a dispatch too large for the CPU, an outside GPU writer of a member's input, a leader that stopped dispatching against its own cadence, or a member whose pipeline was collected. A single form with CPU-current inputs decides exactly as on main.
+
+Measured with `node packages/typegpu-kit-gl/scripts/examples.ts --base <server> --backend webgl --stats fireworks platformer skeletons`, main (4b3f492d) against the branch, two runs each, per frame:
+
+- fireworks: readback 0.28–0.33 → 0–0.002 ms, readbacks 0.55 → 0.03. Groups: `shellsFollowed` with `starsFollowed` and `embers_step`; `shells_spawn` with `shells_advance`. Offscreen 7.8 → 2.6 ms a frame.
+- platformer: readback 1.29–1.65 → 0 ms, readbacks 2 → 0, CPU kernel 1.3–1.7 → 0.05 ms (`live_gather` with `live_mark`).
+- skeletons: readback 1.65–1.71 → 0.60 ms, readbacks 3 → 1, CPU kernel 1.7 → 0.9 ms (`cullFlagging` with `marching`). Frame time equal: both hold 120 Hz.
+
+Review findings fixed, each with a test in `placement.test.ts` that fails on the code before it: an oversized dispatch of a member (sends the group back before it runs); a leader that stops dispatching, and one that dispatches regularly but rarely (13:1 keeps its group); the GPU baseline of a member whose window just closed; credit only for waits charged to the members' own outputs, and no more than the device as a whole stopped waiting (a wait that moves to another readback is not credited); blocker history cleared at the move so the group's weak references hold.
+
+Open or unproven:
+
+- Finding 1 is only partly addressed. The credit is capped by the device-wide drop in waits per leader dispatch, taken from the window before the move against each judged span. Load that changes between the two still moves the device-wide figure; the reviewer's suggestion to re-take the "before" side by returning to the GPU for a window is not built.
+- A collected member breaks the group for the survivors, but no test forces a collection (no `gc` in the unit project).
+- `stats.placement` is keyed by label, and several pipelines share labels such as `cullFlagging`, so a group's messages can be overwritten by a namesake.
+- On the page, the second fireworks group can take about 5 s to form, until enough of the shells' spawns are read back.
+- My dev servers on 4471 and 4472 stopped twice during test runs in this session; I restarted them and did not find why.
