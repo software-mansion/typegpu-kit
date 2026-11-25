@@ -144,7 +144,8 @@ export async function createScene(root: TgpuRoot, surface: Surface) {
   const light = lighting.create(root, {
     settings: { ...LIGHT, sunDirection: sunAt(values.sun) },
     shading: { ambient: occludedSky },
-    shadow: SHADOW,
+    // A device whose textures stop below the map's size gets the largest it has
+    shadow: { ...SHADOW, size: Math.min(SHADOW.size, root.device.limits.maxTextureDimension2D) },
   });
   const scene = passes
     .create(

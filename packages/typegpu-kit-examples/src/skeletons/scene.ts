@@ -74,7 +74,12 @@ export async function createScene(root: TgpuRoot, surface: Surface, options: Sce
       fogFalloff: 0.1,
     },
     points: yard.points,
-    shadow: { extent: yard.reach * 2, size: 4096, filter: 9 },
+    // A device whose textures stop below the map's size gets the largest it has
+    shadow: {
+      extent: yard.reach * 2,
+      size: Math.min(4096, root.device.limits.maxTextureDimension2D),
+      filter: 9,
+    },
   });
 
   const scene = passes
