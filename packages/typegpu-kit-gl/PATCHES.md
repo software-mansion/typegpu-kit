@@ -535,4 +535,37 @@ New.
 +    }
 ```
 
+### M. Builtin arguments with side effects are evaluated once
+
+New.
+
+**Why.** WGSL evaluates every argument of a call once. The generator wrote a scalar `select` as a ternary, which skips one branch, and expanded integer `dot`, the bit builtins on vectors, `quantizeToF16` on vectors and `firstLeadingBit` by repeating their arguments. An argument that calls a function, such as `slime-mould`'s `randFloat01()` or `star-map`'s `byEye(candidate)`, ran a different number of times than on WebGPU.
+
+**Reproduction.** With `const bump = () => { 'use gpu'; counter.$ += 1; return counter.$; };` over a private `u32`, `std.select(bump(), bump() + 10, flag)` gives `(flag ? (bump() + 10u) : bump())`, and `std.countOneBits(d.vec4u(bump()))` calls `bump` four times. Patched, both arguments of the `select` and the vector are evaluated once, through a function whose parameters the expansion repeats. `tests/glsl/semantics.test.gl.ts` counts the calls on WebGPU and WebGL.
+
+**Diff.** Arguments without possible side effects, by TypeGPU's own flag, keep the inline form, so only calls whose arguments call a function change:
+
+```diff
++const EVALUATED_ONCE: Record<string, (...args: never[]) => unknown> = {
++  select: (f: number, t: number, cond: boolean): number => {
++    'use gpu';
++    return std.select(f, t, cond);
++  },
++  dot: …, countOneBits: …, countLeadingZeros: …, countTrailingZeros: …, firstTrailingBit: …,
++  firstLeadingBit: …, reverseBits: …, quantizeToF16: …,
++};
+ …
++  #repeatsArguments(name: string, args: readonly Snippet[]): boolean {
++    if (name === 'select') return !isVector(args[2]);  // a scalar condition becomes a ternary
++    if (name === 'dot') return isIntegerVector(args[0].dataType);
++    if (name === 'firstLeadingBit') return true;
++    return isVector(args[0]);  // the rest repeat a vector argument once per component
++  }
+ …
++    const once = EVALUATED_ONCE[name];
++    if (once && args.some((arg) => arg.possibleSideEffects) && this.#repeatsArguments(name, args)) {
++      return this._callShellless(once, args).value;
++    }
+```
+
 The full fork diff, including the unchanged upstream code around each hunk, is `git diff d75490bc -- packages/typegpu-gl/src`.

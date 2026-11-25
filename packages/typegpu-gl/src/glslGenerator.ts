@@ -514,6 +514,49 @@ const quantizeToF16 = (value: number): number => {
 };
 
 /**
+ * Builtins the generator writes with an argument repeated or skipped, called through these when an
+ * argument may have side effects. Inside, every argument is a parameter, evaluated once at the call.
+ */
+const EVALUATED_ONCE: Record<string, (...args: never[]) => unknown> = {
+  select: (f: number, t: number, cond: boolean): number => {
+    'use gpu';
+    return std.select(f, t, cond);
+  },
+  dot: (a: d.v4i, b: d.v4i): number => {
+    'use gpu';
+    return std.dot(a, b);
+  },
+  countOneBits: (value: number): number => {
+    'use gpu';
+    return std.countOneBits(value);
+  },
+  countLeadingZeros: (value: number): number => {
+    'use gpu';
+    return std.countLeadingZeros(value);
+  },
+  countTrailingZeros: (value: number): number => {
+    'use gpu';
+    return std.countTrailingZeros(value);
+  },
+  firstTrailingBit: (value: number): number => {
+    'use gpu';
+    return std.firstTrailingBit(value);
+  },
+  firstLeadingBit: (value: number): number => {
+    'use gpu';
+    return std.firstLeadingBit(value);
+  },
+  reverseBits: (value: number): number => {
+    'use gpu';
+    return std.reverseBits(value);
+  },
+  quantizeToF16: (value: number): number => {
+    'use gpu';
+    return std.quantizeToF16(value);
+  },
+};
+
+/**
  * `select` for every type a WGSL `select` takes, as the WGSL generator writes it for ternaries.
  * Like WGSL's, it evaluates both branches.
  */
@@ -850,6 +893,24 @@ export class GlslGenerator extends WgslGenerator {
     this.ctx.addDeclaration(code);
   }
 
+  /** Whether the code `emitCall` writes for `name` evaluates an argument other than once. */
+  #repeatsArguments(name: string, args: readonly Snippet[]): boolean {
+    const isVector = (arg: Snippet | undefined) =>
+      !!arg && arg.dataType !== UnknownData && arg.dataType.type.startsWith('vec');
+    if (name === 'select') {
+      // A scalar condition becomes a ternary, which skips a branch
+      return !isVector(args[2]);
+    }
+    if (name === 'dot') {
+      return !!args[0] && isIntegerVector(args[0].dataType);
+    }
+    if (name === 'firstLeadingBit') {
+      return true;
+    }
+    // The rest repeat a vector argument once per component
+    return isVector(args[0]);
+  }
+
   /** Applies `scalar` to each component of a vector, or to the value itself. */
   #componentwise(arg: Snippet | undefined, scalar: (component: Snippet) => string): string {
     if (!arg || arg.dataType === UnknownData) {
@@ -888,6 +949,14 @@ export class GlslGenerator extends WgslGenerator {
     const renamed = RENAMED_BUILTINS[name];
     if (renamed) {
       return super.emitCall(renamed, templateParams, args);
+    }
+    const once = EVALUATED_ONCE[name];
+    if (once && args.some((arg) => arg.possibleSideEffects) && this.#repeatsArguments(name, args)) {
+      const result = this._callShellless(once, args);
+      if (!result) {
+        throw new Error(`Invalid argument passed to ${name}()`);
+      }
+      return result.value;
     }
     if (name === 'fma') {
       const [a, b, c] = args.map((arg) => this.ctx.resolveSnippet(arg).value);

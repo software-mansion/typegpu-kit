@@ -182,3 +182,40 @@ it('shifts by a runtime count modulo the bit width, as WGSL does', async () => {
   expect(code).toContain('(x >> 3u)');
   expect(code).toContain('(v >> (m & 31u))');
 });
+
+const FLAGS = [0, 1];
+
+/** Builtins whose argument bumps a private counter: WGSL evaluates each argument once. */
+function bumped(root: TgpuRoot) {
+  const flags = root.createReadonly(d.arrayOf(d.u32, FLAGS.length), FLAGS);
+  const counter = tgpu.privateVar(d.u32);
+  const bump = () => {
+    'use gpu';
+    counter.$ += 1;
+    return counter.$;
+  };
+  return paint(root, FLAGS.length, (i) => {
+    'use gpu';
+    const chosen = std.select(bump(), bump() + 10, flags.$[i] !== 0);
+    const selected = counter.$;
+    const dotted = std.dot(d.vec3i(d.i32(bump())), d.vec3i(1, 2, 3));
+    const bits = std.countOneBits(d.vec4u(bump()));
+    const leading = std.firstLeadingBit(d.i32(bump()));
+    const quantized = std.quantizeToF16(d.vec2f(d.f32(bump())));
+    return d.vec4f(
+      d.f32(chosen),
+      d.f32(selected),
+      d.f32(dotted) + d.f32(bits.w) * 100 + d.f32(leading) * 1000,
+      d.f32(counter.$) + quantized.y,
+    );
+  });
+}
+
+it('evaluates each argument of a builtin once, as WGSL does', async () => {
+  const actual = await bumped(gl);
+  expect(actual).toEqual(await bumped(gpu));
+  expect(actual).toEqual([
+    [1, 2, 18 + 100 + 2000, 6 + 6],
+    [12, 2, 18 + 100 + 2000, 6 + 6],
+  ]);
+});
