@@ -578,6 +578,176 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     'by a value it takes',
   ],
   [
+    'keeps the least key in one atomic, as the picker does',
+    (root) => {
+      const key = root.createMutable(d.atomic(d.u32));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 3 === 0) return;
+        std.atomicMin(key.$, (id.x << 8) | 7);
+      });
+    },
+    'scatter',
+  ],
+  [
+    "keeps the greatest of each invocation's bits, as a sphere fit does",
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicMax(a.$[6], std.bitcast(d.f32, d.u32)(d.f32(id.x) * 0.5));
+      });
+    },
+    'scatter',
+  ],
+  [
+    'keeps the least bound of three cells from three lanes, as a mesh bake does',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const lane = id.x % 4;
+        if (lane < 3) std.atomicMin(a.$[lane], id.x * 3);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'sets message bits through a helper, as machines send them',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      const send = (i: number, mask: number) => {
+        'use gpu';
+        std.atomicOr(a.$[i % 8], d.u32(mask));
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        send(id.x, 1 << (id.x % 5));
+        if (id.x % 2 === 0) send(id.x + 1, 32);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'keeps the least value of a struct field beside a count it reads',
+    (root) => {
+      const Bounds = d.struct({ low: d.atomic(d.u32), count: d.u32 });
+      const holder = root.createMutable(Bounds);
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicMin(holder.$.low, id.x + holder.$.count);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'clears bits of signed cells, unrolled over three cells',
+    (root) => {
+      const b = root.createMutable(d.arrayOf(d.atomic(d.i32), 4));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (const k of tgpu.unroll([0, 1, 2])) std.atomicAnd(b.$[k], d.i32(id.x) - 1);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'uses the old value a minimum returns',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x] = std.atomicMin(a.$[0], id.x);
+      });
+    },
+    "that is not the invocation's own",
+  ],
+  [
+    'combines one buffer by both a minimum and a maximum',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicMin(a.$[0], id.x);
+        std.atomicMax(a.$[1], id.x);
+      });
+    },
+    'which it also combines by',
+  ],
+  [
+    'combines one buffer by both a sum and a bitwise or',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicAdd(a.$[0], id.x);
+        std.atomicOr(a.$[1], id.x);
+      });
+    },
+    'which it also combines by',
+  ],
+  [
+    'keeps the least of signed cells',
+    (root) => {
+      const b = root.createMutable(d.arrayOf(d.atomic(d.i32), 4));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicMin(b.$[0], d.i32(id.x) - 32);
+      });
+    },
+    "whose cells are not 'u32'",
+  ],
+  [
+    'loads a buffer after combining into it',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicMax(a.$[0], id.x);
+        out.$[id.x] = std.atomicLoad(a.$[0]);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    'keeps a maximum inside a runtime loop',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 8));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < id.x % 4; k++) std.atomicMax(a.$[k], id.x);
+      });
+    },
+    'inside a loop',
+  ],
+  [
+    'takes from a counter it also keeps the maximum of',
+    (root) => {
+      const head = root.createMutable(d.atomic(d.u32));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x] = std.atomicAdd(head.$, 1);
+        std.atomicMax(head.$, id.x);
+      });
+    },
+    'takes values of',
+  ],
+  [
+    'stores to its own cell of a buffer it keeps the least of',
+    (root) => {
+      const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicStore(a.$[id.x], 0);
+        std.atomicMin(a.$[0], id.x);
+      });
+    },
+    "'atomicMin' on an element of 'a' that is not the invocation's own",
+  ],
+  [
     'loads after adding in a switch case beside one that adds and returns',
     (root) => {
       const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));

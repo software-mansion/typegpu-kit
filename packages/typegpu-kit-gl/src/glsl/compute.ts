@@ -461,7 +461,15 @@ function add(left: Own, right: Own): Own | undefined {
 function unrolled(iterable: Expression): boolean {
   if (!Array.isArray(iterable) || iterable[0] !== NODE.call) return false;
   const callee = iterable[1] as Expression;
-  return Array.isArray(callee) && callee[0] === NODE.memberAccess && callee[2] === 'unroll';
+  // unplugin-typegpu names an external by its source text, `tgpu.unroll`; nothing looser, since
+  // a runtime loop taken for an unrolled one would hide what its body repeats
+  if (callee === 'tgpu.unroll') return true;
+  return (
+    Array.isArray(callee) &&
+    callee[0] === NODE.memberAccess &&
+    callee[1] === 'tgpu' &&
+    callee[2] === 'unroll'
+  );
 }
 
 /** GLSL text with the settled variables of `frame` it names replaced by their values. */
@@ -1104,7 +1112,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
           !this.#plan?.buffers.has(id) &&
           !this.#chosen.some((each) => each.frame === this.#frame)))
     ) {
-      return this.#add(name, place, args[1], inner, value);
+      return this.#add(name, place, args[1], inner);
     }
     if (name === 'atomicLoad') {
       this.#loads.add(id);
@@ -1165,16 +1173,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   }
 
   /**
-   * An atomic addition whose result the kernel drops, on a cell other invocations may add to: the
-   * invocation records the word and the amount, and a pass sums every record into the cells.
+   * An atomic addition, or `min`, `max`, `or` or `and`, whose result the kernel drops, on a cell
+   * other invocations may combine into too: the invocation records the word and the operand, and a
+   * pass combines every record with the cells by the buffer's one operation. `min` and `max` take
+   * `u32` cells only, since the device compares their unsigned halves.
    */
-  #add(
-    name: string,
-    place: Place,
-    amount: Snippet | undefined,
-    inner: d.BaseData,
-    cell?: string,
-  ): Snippet {
+  #add(name: string, place: Place, amount: Snippet | undefined, inner: d.BaseData): Snippet {
     const { buffer } = place;
     if (this.#buffers.has(buffer.id) || this.#scatters.has(buffer.id)) {
       throw new Ineligible(`adds to '${buffer.id}', which it also writes`);
@@ -1194,11 +1198,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const operand = this.#valueAs(amount, inner);
     const bits = inner === d.u32 ? operand : `uint(${operand})`;
     const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
-    if (!this.#plan) {
-      // An 'or' names its cell and bits, which the narrow rule for guarded ors compares
-      const marked = operation === 'or' && cell !== undefined ? `${cell}, ${bits}` : '';
-      return snip(`${ADD_MARK}${buffer.id}(${marked})`, d.Void, 'runtime', true);
-    }
+    if (!this.#plan) return snip(`${ADD_MARK}${buffer.id}()`, d.Void, 'runtime', true);
     // The records are kept per pass, one buffer's additions each, in arrays the most of them fit
     const slots = Math.max(0, ...(this.#plan.slots?.values() ?? []));
     this.helper(

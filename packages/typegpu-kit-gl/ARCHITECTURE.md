@@ -53,6 +53,8 @@ A form has one pass per written resource, of one of four kinds:
 
   A counter the kernel takes values of, with `atomicAdd` of 1 whose result it uses, is such a buffer too, and the device ranks its takes before any pass: it runs the counter's capture once, counts each invocation's records, and renders each invocation's base, the takes of the invocations before it, into a texture every program of the form samples. A take then returns the counter before the dispatch plus the base plus the invocation's earlier takes, in every pass alike, as long as no taken value changes how many the invocation takes, which the generator checks over the whole kernel.
 
+  A buffer the kernel only changes with dropped `atomicMin`, `atomicMax`, `atomicOr` or `atomicAnd`, one of them per buffer, records the same way, merges records of one word by its operation, and combines instead of summing. A minimum or maximum of `u32` cells takes two rounds of `MIN` or `MAX` blending into `RGBA32F`, the high 16-bit halves and then the low halves of the records that kept their word's high half, so floats hold every value exactly. `or` and `and` blend planes of bits into `RGBA8` with `MAX`, one bit of every word a texture. Neither bounds how many records reach a cell, and neither depends on their order.
+
 The device runs a dispatch on the CPU module where the form's contract does not hold for it: a dispatch wider than a pass's target, one that takes from more than 65 536 invocations or more than 15 times an invocation, and records past what transform feedback captures or past 255 bytes an invocation, the stride WebGL reads attributes at.
 
 ### Placement
