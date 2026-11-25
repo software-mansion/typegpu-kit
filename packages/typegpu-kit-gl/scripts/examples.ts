@@ -2,6 +2,7 @@
 // reports which ones draw: `node packages/typegpu-kit-gl/scripts/examples.ts [--base url]
 // [--out dir] [--backend webgl|webgpu|both|nogpu] [--browser chromium|firefox|webkit]
 // [--timeout seconds] [--reference dir] [--review] [--minimum] [--texture-size n] [--hide ext,…|all]
+// [--flag chromium-switch …]
 // [example ...]`. `webgl` forces the fallback with `?backend=webgl`; `nogpu` removes WebGPU from
 // the page first, as a browser without it, so the page must fall back by itself.
 // With `--reference`, it also scores each screenshot against the one of the same name there.
@@ -29,6 +30,7 @@ const { values, positionals } = parseArgs({
     minimum: { type: 'boolean', default: false },
     'texture-size': { type: 'string' },
     hide: { type: 'string' },
+    flag: { type: 'string', multiple: true, default: [] },
   },
 });
 
@@ -227,7 +229,8 @@ function summary(error: string): string {
 
 mkdirSync(values.out, { recursive: true });
 const results: Result[] = [];
-const args = ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist'];
+// `--flag` adds Chromium switches, such as `--use-angle=gl` for another GL backend
+const args = ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist', ...values.flag];
 // Headless Firefox disables WebGL unless forced
 const launchOptions =
   engineName === 'chromium'
