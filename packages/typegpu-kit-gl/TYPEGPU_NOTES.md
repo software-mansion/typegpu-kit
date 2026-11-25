@@ -620,7 +620,7 @@ tgpu.initFromDevice({ device: webglDevice }).createUniform(d.f32);
 
 ### 25. Running a kernel on the CPU needs a second code generator
 
-Calling a `'use gpu'` function in JavaScript runs one invocation without its kernel. `tgpu['~unstable'].simulate` fixes the dispatch at one workgroup of one invocation. `workgroupBarrier`, `storageBarrier` and the atomics throw `MissingCpuImplError`, and so do the sampling, load and store texture functions. A slot or accessor read outside resolution throws in 0.12.11; [TypeGPU #3220](https://github.com/software-mansion/TypeGPU/pull/3220), unmerged, adds them to CPU execution.
+Calling a `'use gpu'` function in JavaScript runs one invocation without its kernel. `tgpu['~unstable'].simulate` fixes the dispatch at one workgroup of one invocation. `workgroupBarrier`, `storageBarrier` and the atomics throw `MissingCpuImplError`, and so do the sampling, load and store texture functions. A slot or accessor read outside resolution throws. [TypeGPU #3220](https://github.com/software-mansion/TypeGPU/pull/3220) adds them to CPU execution; it is not in 0.12.11.
 
 ```ts
 const counter = tgpu.workgroupVar(d.atomic(d.u32));
@@ -871,7 +871,7 @@ const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.global
 
 ### 36. Calling `'use gpu'` code in JavaScript is slow on vectors
 
-Calling `'use gpu'` code in JavaScript is slow on vectors. Each `std.add` or `std.mul` runs `cpuAdd` or `cpuMul` in `std/operators.ts`, which checks operand kinds, up-casts and allocates a new vector. The particle body below runs 316 times slower called directly than as the fallback's scalarized code (`tests/cpu/NOTES.md`).
+Each `std.add` or `std.mul` runs `cpuAdd` or `cpuMul` in `std/operators.ts`, which checks operand kinds, up-casts and allocates a new vector. The particle body below runs 316 times slower called directly than as the fallback's scalarized code (`tests/cpu/NOTES.md`).
 
 ```ts
 const step = (position: d.v3f, velocity: d.v3f) => {
