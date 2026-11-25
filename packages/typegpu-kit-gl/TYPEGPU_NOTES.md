@@ -588,3 +588,28 @@ const kernel = tgpu.computeFn({ workgroupSize: [64], in: { gid: d.builtin.global
 **Upstream.** Offer generators a pass over the resolved call graph before any text is emitted, such as each reachable function's AST with its externals and call sites, or let a generator replace a function's emitted text once the resolution ends. In `resolutionCtx.ts` and `tgsl/shaderGenerator.ts`.
 
 **Workaround.** `computeForm` in `src/glsl/compute.ts` resolves the pipeline twice: a first `KitGlslComputeGenerator` without a plan walks the kernel and throws `Ineligible` or returns the plan, and a second emits from it, throwing if it reaches a write the plan did not list. Beside the resolution of the CPU module (entry 5), every compute pipeline is resolved twice more.
+
+## CPU execution
+
+### 36. Direct CPU execution pays for generic vector operations and cannot dispatch
+
+Tests and tools calling `'use gpu'` code in JavaScript pay for generic operand classification, intermediate argument arrays and vector objects. In the shared-body benchmark on an Apple M5 Pro, the thirty-vector-operation particle body runs at 0.030 million invocations/s through `tgpu.fn` and 0.027 million through `tgpu['~unstable'].simulate`, versus 10.05 million with scalarized generated code. The direct-source vector cases are 79.7× faster generated for transforms and 316× for particles; the scalar integer hash gains only 2.01×. These compare TypeGPU's current JS implementations, not hand-optimized JavaScript. As entry 25 notes, `simulate` models one thread and offers no compute dispatch, so even this comparison supplies its own invocation loop.
+
+The particle body has this shape inside a `'use gpu'` function:
+
+```ts
+let position = d.vec3f(row.position);
+for (let i = 0; i < 10; i++)
+  position = std.add(std.mul(position, 0.999), std.mul(row.velocity, 0.01));
+return d.vec4f(position, row.life - 0.01);
+```
+
+Reproduce all three kernels, validation and fifteen warmed samples per path with:
+
+```sh
+CPU_SOURCE_BENCHMARK=1 npx vitest run --project 'typegpu-kit-gl (unit)' tests/cpu/source-performance.test.ts
+```
+
+**Upstream.** Add a compiled CPU executor behind `core/simulate/tgpuSimulate.ts`, accepting an entry, bound resources and dispatch dimensions, and cache compiled kernels across dispatches. Reuse normal typed resolution and the existing `ShaderGenerator` hooks for function definitions, resource declarations, calls, binary operations, constructors and literals. Scalarize vector/matrix temporaries and address buffers through typed-array views. To avoid the fallback's text parsing, extend `tgsl/shaderGenerator.ts`, `tgsl/wgslGenerator.ts` and `resolutionCtx.ts` with structured lvalues and user-function calls, stable variable identities, and barrier/callee effects (entries 7–11, 13 and 22); pass binding and workgroup metadata beside code (entry 4). Dispatch execution also needs workgroup state, barrier scheduling and CPU resource/builtin implementations, rather than repeated calls to the present single-thread simulator. An explicitly selected relaxed JS-number mode could accompany an f32-rounded mode: intermediate f32 rounding costs 29–52% execution time in these two vector fixtures, but preserves rounding-sensitive seeds and threshold decisions. The fallback keeps f32 rounding enabled.
+
+**Workaround.** `src/cpu/generator.ts` and the runtime in `src/cpu/index.ts`; `tests/cpu/source-performance.ts` measures generated, direct-source, `tgpu.fn` and simulation paths in one native Node process. `tests/cpu/NOTES.md` records representation differences and the discarded Vitest-loader artifact; `tests/cpu/results.json` holds every final sample. This can become one shared upstream executor instead of a fallback-specific implementation.
