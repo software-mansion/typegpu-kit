@@ -246,6 +246,7 @@ export class CpuGenerator extends WgslGenerator {
   #vectors = new Map<string, string[]>();
   #constantVectors = new Map<string, string[]>();
   #ownedLocals = new Set<string>();
+  #expressionLocals: string[] = [];
   #lowerPlaces(body: string): string {
     for (const [name, address] of this.#addresses) {
       if (address.layout.type === 'array') {
@@ -1212,6 +1213,8 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   override functionDefinition(options: FunctionDefinitionOptions): string {
+    const previousExpressionLocals = this.#expressionLocals;
+    this.#expressionLocals = [];
     const previousEffects = this.#effects;
     this.#effects = false;
     const previousVectors = this.#vectors;
@@ -1249,6 +1252,8 @@ export class CpuGenerator extends WgslGenerator {
       // eslint-disable-next-line no-underscore-dangle
       let body = this._block(options.body, false).code;
       body = this.#lowerPlaces(body);
+      if (this.#expressionLocals.length)
+        body = body.replace('{', `{let ${this.#expressionLocals.join(',')};`);
       body = lowerReferences(body);
       body = body.replace(/\b(?:workgroupBarrier|storageBarrier|textureBarrier)\(\)/g, '(yield)');
       for (const name of this.#generators) {
@@ -1376,6 +1381,7 @@ export class CpuGenerator extends WgslGenerator {
         : undefined;
       return `//#kit-gl compute\n//#kit-gl reusable\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
     } finally {
+      this.#expressionLocals = previousExpressionLocals;
       this.#effects = previousEffects;
       this.#vectors = previousVectors;
       this.#addresses = previousAddresses;
@@ -1620,9 +1626,10 @@ export class CpuGenerator extends WgslGenerator {
           op,
           rhs,
         );
-        return base === place.object
-          ? `((${index})=>(${assignment}))(${place.key})`
-          : `((${base},${index})=>(${assignment}))(${place.object},${place.key})`;
+        // Keep potentially suspending RHS calls in the enclosing generator frame.
+        this.#expressionLocals.push(index);
+        if (base !== place.object) this.#expressionLocals.push(base);
+        return `(${base === place.object ? '' : `${base}=${place.object},`}${index}=${place.key},${assignment})`;
       }
     }
     const float = type === 'f32' || rhsType === 'f32';
