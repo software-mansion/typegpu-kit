@@ -218,6 +218,7 @@ export const textureOps = {
   },
   textureDimensions(texture: CpuTexture, lod = 0) {
     const level = texture.levels[lod]!;
+    if (texture.dimension === '1d') return level.width;
     return vector(
       texture.dimension === '3d'
         ? [level.width, level.height, level.depthOrArrayLayers]
@@ -230,7 +231,8 @@ export const textureOps = {
   textureNumLayers(texture: CpuTexture) {
     return texture.levels[0]!.depthOrArrayLayers;
   },
-  textureLoad(texture: CpuTexture, coords: number[], index = 0, lod = 0) {
+  textureLoad(texture: CpuTexture, coords: number[] | number, index = 0, lod = 0) {
+    if (typeof coords === 'number') coords = [coords, 0];
     const array = texture.dimension === '2d-array';
     const level = texture.levels[array ? lod : index];
     if (!level) return vector([0, 0, 0, 0]);
@@ -239,10 +241,11 @@ export const textureOps = {
   },
   textureStore(
     texture: CpuTexture,
-    coords: number[],
+    coords: number[] | number,
     valueOrLayer: number[] | number,
     arrayValue?: number[],
   ) {
+    if (typeof coords === 'number') coords = [coords, 0];
     const layer = typeof valueOrLayer === 'number' ? valueOrLayer : (coords[2] ?? 0);
     const value = typeof valueOrLayer === 'number' ? arrayValue! : valueOrLayer;
     const level = texture.levels[0]!;
@@ -276,12 +279,13 @@ export const textureOps = {
   textureSampleLevel(
     texture: CpuTexture,
     sampler: GPUSamplerDescriptor,
-    coords: number[],
+    coords: number[] | number,
     layerOrLod: number,
     arrayLod?: number,
     compare?: number,
   ): number[] | number {
-    if (!['2d', '2d-array', '3d', 'cube', 'cube-array'].includes(texture.dimension))
+    if (typeof coords === 'number') coords = [coords, 0.5];
+    if (!['1d', '2d', '2d-array', '3d', 'cube', 'cube-array'].includes(texture.dimension))
       throw new Error(`@typegpu/kit-gl CPU: unsupported sampled dimension ${texture.dimension}`);
     if (
       texture.format.startsWith('depth') &&

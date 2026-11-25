@@ -1051,7 +1051,7 @@ export class CpuGenerator extends WgslGenerator {
           : 'texture';
       if (
         kind !== 'sampler' &&
-        !['2d', '2d-array', '3d', 'cube', 'cube-array'].includes(
+        !['1d', '2d', '2d-array', '3d', 'cube', 'cube-array'].includes(
           (dataType as d.WgslTexture).dimension,
         )
       )
