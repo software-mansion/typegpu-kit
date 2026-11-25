@@ -378,6 +378,8 @@ export function ranOnGpu(
 export function ranOnCpu(ctx: Ctx, pipeline: object, ms: number): void {
   const record = records.get(pipeline);
   if (!record?.onCpu) return;
+  // The form's first dispatches back upload what CPU runs wrote, which a sample would count
+  record.sinceSample = 0;
   if (record.why === 'costly') return ranCostly(ctx, record, ms);
   record.cpuMs += ms;
   if (record.dispatches < WINDOW) return;

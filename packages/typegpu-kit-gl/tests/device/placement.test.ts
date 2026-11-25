@@ -200,3 +200,25 @@ test('fences that never signal are deleted once, after a bounded wait, and polli
   expect(polls.fences).toBe(polled);
   expect(ctx.lost).toBe(false);
 });
+
+test('a form back from the CPU warms up for four dispatches before it samples again', async () => {
+  const { ctx, made, run } = await costly(true);
+  expect(run(SAMPLED)).toBe('cpu');
+  await task();
+  expect(run(SAMPLED, 1)).toBe('cpu');
+  await task();
+  // CPU runs past the GPU time over the share's inverse send it back after a window
+  for (let i = 0; i < 6; i++) {
+    expect(run(SAMPLED, 20)).toBe('cpu');
+    await task();
+  }
+  const sampled = made.queries.length;
+  expect(ctx.stats.placement.get('kernel')).toMatch(/^gpu: CPU runs took 20.0 ms/);
+  for (let i = 0; i < 4; i++) {
+    expect(run(SAMPLED)).toBe('gpu');
+    await task();
+  }
+  expect(made.queries).toHaveLength(sampled);
+  expect(run(SAMPLED)).toBe('gpu');
+  expect(made.queries).toHaveLength(sampled + 1);
+});
