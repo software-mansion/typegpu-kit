@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
@@ -49,7 +49,16 @@ it.runIf(process.env.CPU_CAPTURE === '1')(
       beforeDispatch: (code, pipeline, dispatch) => {
         if (!label.test(pipeline)) return;
         const snapshot = snapshotDispatch(code, pipeline, dispatch, observer);
+        if (
+          process.env.CPU_REPLAY_RESOURCE &&
+          !snapshot.bindings.some(
+            (binding) =>
+              binding.use.writes && new RegExp(process.env.CPU_REPLAY_RESOURCE!).test(binding.key),
+          )
+        )
+          return;
         const directory = process.env.CPU_CAPTURE_DIRECTORY!;
+        mkdirSync(directory, { recursive: true });
         writeFileSync(`${directory}/${example}.js`, code);
         writeFileSync(
           `${directory}/${example}.json`,

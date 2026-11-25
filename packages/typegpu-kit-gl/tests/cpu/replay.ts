@@ -95,6 +95,7 @@ export async function replay(
   device: GPUDevice,
   events: ObservedDispatch[],
   snapshot: ReplaySnapshot,
+  filterDiagnostic = false,
 ) {
   const keys = snapshot.bindings
     .filter((binding) => binding.resource)
@@ -198,6 +199,17 @@ export async function replay(
     pass.dispatchWorkgroups(...snapshot.workgroups);
     pass.end();
     device.queue.submit([encoder.finish()]);
+    const savedInputs = filterDiagnostic
+      ? snapshot.bindings.flatMap((binding) => {
+          const arrays = binding.buffer
+            ? [new Uint8Array(binding.buffer.bytes)]
+            : (binding.texture?.levels.map(
+                (level) =>
+                  new Uint8Array(level.data.buffer, level.data.byteOffset, level.data.byteLength),
+              ) ?? []);
+          return arrays.map((target) => ({ target, bytes: target.slice() }));
+        })
+      : [];
     compile(snapshot.code).dispatch(...snapshot.workgroups, resources);
     await device.queue.onSubmittedWorkDone();
     const cpu: CapturedResource[] = [],
@@ -232,7 +244,53 @@ export async function replay(
       const encoded = event.bindings.find((item) => item.resource.key === binding.key)?.encoded;
       if (encoded) gpu.at(-1)!.encoded = encoded;
     }
+    const filterModels = [];
+    if (filterDiagnostic) {
+      // This test-only model measures hardware filtering precision without changing the runtime.
+      for (const halfResult of [false, true]) {
+        for (const { target, bytes } of savedInputs) target.set(bytes);
+        const code = `
+const cpuDiagnosticSample = $textures.textureSampleLevel;
+$textures = {...$textures, textureSampleLevel: (texture, sampler, coords, lod) => {
+  if (texture.dimension !== '3d' || lod !== 0) throw new Error('Filter probe requires a 3d level-zero sample');
+  const level = texture.levels[0];
+  const size = [level.width, level.height, level.depthOrArrayLayers];
+  const snapped = coords.map((value, axis) => (Math.round((value * size[axis] - 0.5) * 256) / 256 + 0.5) / size[axis]);
+  const sampled = cpuDiagnosticSample(texture, sampler, snapped, lod);
+  return ${halfResult ? "sampled.map(value => $unpack($pack([value, 0], 16, 'float'), 16, 'float')[0])" : 'sampled'};
+}};
+${snapshot.code}`;
+        compile(code).dispatch(...snapshot.workgroups, resources);
+        const modeled = snapshot.bindings
+          .filter((binding) => binding.use.writes && binding.resource)
+          .map((binding) =>
+            captured(
+              binding,
+              binding.buffer
+                ? [{ width: 0, height: 0, depth: 0, bytes: binding.buffer.bytes.slice(0) }]
+                : binding.texture!.levels.map((level) => ({
+                    width: level.width,
+                    height: level.height,
+                    depth: level.depthOrArrayLayers,
+                    bytes: new Uint8Array(
+                      level.data.buffer,
+                      level.data.byteOffset,
+                      level.data.byteLength,
+                    ).slice().buffer,
+                  })),
+            ),
+          );
+        filterModels.push({
+          halfResult,
+          ...compareCaptures(
+            { resources: gpu, skipped: [], frames: 0 },
+            { resources: modeled, skipped: [], frames: 0 },
+          ),
+        });
+      }
+    }
     return {
+      filterModels,
       pipeline: snapshot.label,
       workgroups: snapshot.workgroups,
       ...compareCaptures(

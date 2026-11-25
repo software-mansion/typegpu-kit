@@ -19,6 +19,13 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
   };
   const points = root.createReadonly(d.arrayOf(d.vec2f, 17), load('points'));
   const controls = root.createReadonly(d.arrayOf(d.vec2f, 16), load('controls'));
+  const offsets = root.createReadonly(d.arrayOf(d.vec2f, 5), [
+    d.vec2f(),
+    d.vec2f(0.03, 0),
+    d.vec2f(-0.03, 0),
+    d.vec2f(0, 0.03),
+    d.vec2f(0, -0.03),
+  ]);
   const indices = root.createReadonly(d.arrayOf(d.u32, texels.length), texels);
   const output = root.createMutable(d.arrayOf(d.vec4f, texels.length * 5 * 16 * 3));
   root
@@ -30,14 +37,11 @@ async function curves(root: TgpuRoot, bindings: { key: string; words?: number[] 
           const sample = id.x / 16;
           const index = indices.$[sample / 5];
           const uv = (d.vec2f(d.vec2u(index % 256, index / 256)) + 0.5) / d.vec2f(256, 128);
-          let point = d.vec2f(
-            BOX.left + uv.x * (BOX.right - BOX.left),
-            BOX.top - uv.y * (BOX.top - BOX.bottom),
-          );
-          if (sample % 5 === 1) point.x += 0.03;
-          if (sample % 5 === 2) point.x -= 0.03;
-          if (sample % 5 === 3) point.y += 0.03;
-          if (sample % 5 === 4) point.y -= 0.03;
+          const point =
+            d.vec2f(
+              BOX.left + uv.x * (BOX.right - BOX.left),
+              BOX.top - uv.y * (BOX.top - BOX.bottom),
+            ) + offsets.$[sample % 5];
           const A = d.vec2f(points.$[segment]);
           const B = d.vec2f(controls.$[segment]);
           const C = d.vec2f(points.$[segment + 1]);

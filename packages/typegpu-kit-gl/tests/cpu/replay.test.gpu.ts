@@ -16,7 +16,7 @@ const batch: { example: string; label: string; resource: string; skip: number; e
     { example: 'survey-model', label: '^tracing$', resource: 'buffer:contours_points:', skip: 0 },
     {
       example: 'stampede',
-      label: '^<unnamed>$',
+      label: '.*',
       entry: '^item$',
       resource: 'buffer:positionData:.*#0$',
       skip: 0,
@@ -102,7 +102,12 @@ for (const probe of probes)
           snapshot,
           `No ${label} / ${resource} dispatch; saw ${[...seen].join(', ')}`,
         ).toBeDefined();
-        const result = await replay(dawn.device, gpuObserver.dispatches, snapshot!);
+        const result = await replay(
+          dawn.device,
+          gpuObserver.dispatches,
+          snapshot!,
+          example === 'censer',
+        );
         recordResults(`replay:${example}:${snapshot!.label}:${skip}`, result);
         expect(result.differences).toEqual([]);
       } finally {

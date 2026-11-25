@@ -40,6 +40,8 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
         actual = await sampledRamp(cpu);
       let differences = 0,
         weight8 = 0,
+        weight8Half = 0,
+        maximumBoundRatio = 0,
         halfAdjacent = 0,
         smallerMagnitude = 0;
       const first = [];
@@ -55,12 +57,19 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
         if (Math.abs(actual[i]!) < Math.abs(expected[i]!)) smallerMagnitude++;
         const q = Math.round(t * 256) / 256;
         if (expected[i] === Math.fround(from[c]! * (1 - q) + to[c]! * q)) weight8++;
+        const quantized = Math.fround(from[c]! * (1 - q) + to[c]! * q);
+        if (expected[i] === decodeHalf(encodeHalf(quantized))) weight8Half++;
+        const halfUlp = Math.abs(
+          decodeHalf(encodeHalf(quantized) + 1) - decodeHalf(encodeHalf(quantized)),
+        );
+        const bound = Math.abs(to[c]! - from[c]!) / 512 + halfUlp;
+        maximumBoundRatio = Math.max(maximumBoundRatio, Math.abs(expected[i]! - exact) / bound);
         const half = encodeHalf(exact),
           other = encodeHalf(expected[i]!);
         if (Math.abs(half - other) <= 1) halfAdjacent++;
         if (first.length < 20)
           first.push({
-            sample: i / 4,
+            sample: Math.floor(i / 4),
             channel: c,
             cpu: actual[i],
             dawn: expected[i],
@@ -71,12 +80,15 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
       recordResults('filterPrecision', {
         differences,
         weight8,
+        weight8Half,
+        maximumBoundRatio,
         halfAdjacent,
         smallerMagnitude,
         first,
       });
       // Interpolation weights and intermediate filter precision are implementation-dependent.
       expect(expected.every(Number.isFinite)).toBe(true);
+      expect(maximumBoundRatio).toBeLessThanOrEqual(1);
     } finally {
       gpu.destroy();
       cpu.destroy();
