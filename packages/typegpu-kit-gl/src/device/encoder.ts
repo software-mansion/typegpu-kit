@@ -5,7 +5,7 @@
 
 import { bind } from './binding.ts';
 import { type BufferImpl, bufferImpl, copyLater, written } from './buffer.ts';
-import { type ComputePass, dispatch, dispatchIndirect } from './compute.ts';
+import { type ComputePass, dispatch, dispatchIndirect, workgroupCount } from './compute.ts';
 import { BUFFER_USAGE, type Ctx, IMPL } from './context.ts';
 import { computePipelineImpl, renderPipelineImpl } from './pipeline.ts';
 import {
@@ -262,7 +262,8 @@ export function createCommandEncoder(
           });
         },
         dispatchWorkgroups(x: number, y = 1, z = 1) {
-          inPass((pass) => dispatch(ctx, pass, x, y, z));
+          const [cx, cy, cz] = [x, y, z].map(workgroupCount) as [number, number, number];
+          inPass((pass) => dispatch(ctx, pass, cx, cy, cz));
         },
         dispatchWorkgroupsIndirect(buffer: GPUBuffer, offset: number) {
           const impl = bufferImpl(buffer);
