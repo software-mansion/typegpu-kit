@@ -78,6 +78,8 @@ export interface RenderModule {
   readonly textures: readonly TextureBinding[];
   /** Views whose level count a shader reads with `textureNumLevels`. */
   readonly levels: readonly LevelCountBinding[];
+  /** The entry function of each stage, which names a pipeline without a label. */
+  readonly entries?: { readonly vertex: string | undefined; readonly fragment: string | undefined };
 }
 
 /** Uniforms with fixed names that the device sets when a program declares them. */
@@ -312,5 +314,18 @@ export function parse(code: string, options: ParseOptions = {}): RenderModule {
     vertex: source(vertexChunks, defines),
     fragment: hasFragment ? source(fragmentChunks, defines) : undefined,
     ...bindingsOf(new Set([...vertexChunks, ...fragmentChunks])),
+    entries: { vertex: entryOf(chunks, 'vertex'), fragment: entryOf(chunks, 'fragment') },
   };
+}
+
+/**
+ * The entry function of a stage: the generator's `main` calls it first, and a chunk of the stage
+ * declares it. Undefined for a `main` written whole, such as the full-screen triangle's.
+ */
+function entryOf(chunks: readonly Chunk[], stage: 'vertex' | 'fragment'): string | undefined {
+  const main = chunks.find((chunk) => chunk.stage === stage && chunk.names.includes('main'));
+  const name = main && /^void main\(\) \{\s*(\w+)\(\);/.exec(main.code.trim())?.[1];
+  if (!name) return undefined;
+  const declared = chunks.some((chunk) => chunk.stage === stage && chunk.names.includes(name));
+  return declared ? name : undefined;
 }

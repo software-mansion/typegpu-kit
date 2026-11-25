@@ -4,7 +4,7 @@
  */
 
 import { bind } from './binding.ts';
-import { type BufferImpl, bufferImpl, copyLater, written } from './buffer.ts';
+import { type BufferImpl, bufferImpl, copyLater, writing, written } from './buffer.ts';
 import { type ComputePass, dispatch, dispatchIndirect, workgroupCount } from './compute.ts';
 import { BUFFER_USAGE, type Ctx, IMPL } from './context.ts';
 import { computePipelineImpl, renderPipelineImpl } from './pipeline.ts';
@@ -163,12 +163,13 @@ function copyBuffer(
     return;
   }
   source.sync();
-  destination.sync();
+  const done = writing(destination, destinationOffset, destinationOffset + size);
   destination.bytes.set(
     source.bytes.subarray(sourceOffset, sourceOffset + size),
     destinationOffset,
   );
   written(destination, destinationOffset, destinationOffset + size);
+  done();
 }
 
 export function createCommandEncoder(
@@ -386,9 +387,10 @@ export function createCommandEncoder(
       const impl = bufferImpl(buffer);
       const length = size ?? impl.size - offset;
       record(() => {
-        impl.sync();
+        const done = writing(impl, offset, offset + length);
         impl.bytes.fill(0, offset, offset + length);
         written(impl, offset, offset + length);
+        done();
       });
     },
 

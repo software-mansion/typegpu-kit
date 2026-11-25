@@ -80,6 +80,11 @@ export interface PendingRead {
   finish(): void;
   /** Frees the read without writing it. */
   cancel(): void;
+  /**
+   * The read left once bytes `start` to `end` are written over, as reads that can wait for the
+   * GPU and cover a byte range give; others are finished before a write.
+   */
+  without?(start: number, end: number): PendingRead[];
 }
 
 /** The GL copies of a buffer, apart from it so freeing them on collection never keeps it. */
@@ -555,7 +560,27 @@ export function copyLater(
 
 /** Copies `size` bytes from the start of `data` into the buffer at `offset`. */
 export function writeBytes(buffer: BufferImpl, offset: number, data: Uint8Array): void {
-  buffer.sync();
+  const done = writing(buffer, offset, offset + data.byteLength);
   buffer.bytes.set(data, offset);
   written(buffer, offset, offset + data.byteLength);
+  done();
+}
+
+/**
+ * Makes the CPU copy current for a write of bytes `start` to `end`, keeping waiting the reads that
+ * can wait, less the bytes the write covers. Call the function it returns after the write.
+ */
+export function writing(buffer: BufferImpl, start: number, end: number): () => void {
+  const kept: PendingRead[] = [];
+  const now: PendingRead[] = [];
+  for (const read of buffer.reads.splice(0)) {
+    const rest = read.without?.(start, end);
+    if (rest) kept.push(...rest);
+    else now.push(read);
+  }
+  buffer.reads.push(...now);
+  buffer.sync();
+  return () => {
+    buffer.reads.push(...kept);
+  };
 }

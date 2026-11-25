@@ -384,20 +384,109 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     "adds other than 1 to 'head",
   ],
   [
-    'reads cells it writes at computed cells through a helper resolved first',
+    'reads cells through a helper resolved first, then writes at computed cells',
     (root) => {
       const out = root.createMutable(d.arrayOf(d.u32, 64));
       const peek = (i: number) => {
         'use gpu';
-        return out.$[i] as number;
+        return out.$[i % 64] as number;
+      };
+      const poke = (i: number, value: number) => {
+        'use gpu';
+        out.$[(i * 5) % 64] = value;
       };
       return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
         'use gpu';
-        const seen = peek((id.x + 1) % 64);
+        const seen = peek(id.x + 1);
+        poke(id.x, seen + 1);
+      });
+    },
+    'scatter',
+  ],
+  [
+    'reads a cell, then writes at a computed cell',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const seen = out.$[id.x] as number;
         out.$[(id.x * 5) % 64] = seen + 1;
       });
     },
-    "reads 'out",
+    'scatter',
+  ],
+  [
+    'reads cells in a constant loop, then writes at a computed cell',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        let sum = d.u32(0);
+        for (let k = d.u32(0); k < 4; k++) sum += out.$[(id.x + k) % 64] as number;
+        out.$[(id.x * 5) % 64] = sum;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'writes at a computed cell in an arm that returns, then reads',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x % 2 === 0) {
+          out.$[(id.x * 5) % 64] = 1;
+          return;
+        }
+        out.$[(id.x * 3) % 64] = (out.$[id.x] as number) + 2;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'writes at a computed cell, then reads it',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[(id.x * 5) % 64] = 1;
+        out.$[(id.x * 3) % 64] = (out.$[id.x] as number) + 1;
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    'reads and writes at computed cells in one loop',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < 2; k++) {
+          out.$[(id.x * 5 + k) % 64] = (out.$[(id.x + k) % 64] as number) + 1;
+        }
+      });
+    },
+    'inside a loop',
+  ],
+  [
+    'writes through a helper before reading through another',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const peek = (i: number) => {
+        'use gpu';
+        return out.$[i % 64] as number;
+      };
+      const poke = (i: number, value: number) => {
+        'use gpu';
+        out.$[(i * 5) % 64] = value;
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        poke(id.x, d.u32(1));
+        out.$[(id.x * 3) % 64] = peek(id.x + 1) + 1;
+      });
+    },
+    'which it writes at computed cells, after writing it',
   ],
   [
     'takes from a counter through a pointer',
@@ -746,6 +835,274 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
       });
     },
     "'atomicMin' on an element of 'a' that is not the invocation's own",
+  ],
+  [
+    "loads a summed cell inside a later addition's operand",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.atomicAdd(other.$[i], std.atomicLoad(sums.$[i]));
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside a later addition's address",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.atomicAdd(other.$[std.atomicLoad(sums.$[i]) % 64], 1);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside a later scattered store's value",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const store = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = store.createView(d.textureStorage2d('r32uint', 'write-only'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.textureStore(view.$, d.vec2u(i, 0), d.vec4u(std.atomicLoad(sums.$[i]), 0, 0, 1));
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside an addition's operand before adding to it",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(other.$[i], std.atomicLoad(sums.$[i]));
+        std.atomicAdd(sums.$[i], 1);
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(a) reads a stored texture inside a later store's value, after a write",
+    (root) => {
+      const texture = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = texture.createView(d.textureStorage2d('r32uint', 'read-write'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.textureStore(view.$, d.vec2u((id.x * 5) % 64, 0), d.vec4u(1, 0, 0, 1));
+        std.textureStore(
+          view.$,
+          d.vec2u((id.x * 3) % 64, 0),
+          d.vec4u(std.textureLoad(view.$, d.vec2u(k, 0)).x, 0, 0, 1),
+        );
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(a) reads a stored texture inside a later store's value, before any write",
+    (root) => {
+      const texture = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = texture.createView(d.textureStorage2d('r32uint', 'read-write'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.textureStore(
+          view.$,
+          d.vec2u((id.x * 3) % 64, 0),
+          d.vec4u(std.textureLoad(view.$, d.vec2u(k, 0)).x, 0, 0, 1),
+        );
+        std.textureStore(view.$, d.vec2u((id.x * 5) % 64, 0), d.vec4u(1, 0, 0, 1));
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(b) reads a stored texture inside a later store's coordinate, after a write",
+    (root) => {
+      const texture = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = texture.createView(d.textureStorage2d('r32uint', 'read-write'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.textureStore(view.$, d.vec2u((id.x * 5) % 64, 0), d.vec4u(1, 0, 0, 1));
+        std.textureStore(
+          view.$,
+          d.vec2u(std.textureLoad(view.$, d.vec2u(k, 0)).x % 64, 0),
+          d.vec4u(2, 0, 0, 1),
+        );
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(b) reads a stored texture inside a later store's coordinate, before any write",
+    (root) => {
+      const texture = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = texture.createView(d.textureStorage2d('r32uint', 'read-write'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.textureStore(
+          view.$,
+          d.vec2u(std.textureLoad(view.$, d.vec2u(k, 0)).x % 64, 0),
+          d.vec4u(2, 0, 0, 1),
+        );
+        std.textureStore(view.$, d.vec2u((id.x * 5) % 64, 0), d.vec4u(1, 0, 0, 1));
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(c) reads a written buffer inside an addition's operand, after a write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[(id.x * 5) % 64] = 1;
+        std.atomicAdd(sums.$[k], out.$[k] as number);
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(c) reads a written buffer inside an addition's operand, before any write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.atomicAdd(sums.$[k], out.$[k] as number);
+        out.$[(id.x * 5) % 64] = 1;
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(d) reads a written buffer inside an addition's address, after a write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[(id.x * 5) % 64] = 1;
+        std.atomicAdd(sums.$[(out.$[k] as number) % 64], 1);
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(d) reads a written buffer inside an addition's address, before any write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        std.atomicAdd(sums.$[(out.$[k] as number) % 64], 1);
+        out.$[(id.x * 5) % 64] = 1;
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(e) reads a written buffer inside a helper call's argument, after a write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const other = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[(id.x * 5) % 64] = 1;
+        other.$[id.x] = twice(out.$[k] as number);
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(e) reads a written buffer inside a helper call's argument, before any write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const other = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        other.$[id.x] = twice(out.$[k] as number);
+        out.$[(id.x * 5) % 64] = 1;
+      });
+    },
+    'scatter',
+  ],
+  [
+    "(f) reads a written buffer inside a later write's index, after a write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[(id.x * 5) % 64] = 1;
+        out.$[((out.$[k] as number) * 3) % 64] = 2;
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    "(f) reads a written buffer inside a later write's index, as the first write",
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[((out.$[k] as number) * 3) % 64] = 2;
+      });
+    },
+    'scatter',
+  ],
+  [
+    '(g) reads a written buffer into a local used later, after a write',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const other = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        out.$[(id.x * 5) % 64] = 1;
+        const kept = out.$[k] as number;
+        other.$[id.x] = kept + 1;
+      });
+    },
+    'which it writes at computed cells, after writing it',
+  ],
+  [
+    '(g) reads a written buffer into a local used later, before any write',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const other = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const k = id.x ^ 1;
+        const kept = out.$[k] as number;
+        other.$[id.x] = kept + 1;
+        out.$[(id.x * 5) % 64] = 1;
+      });
+    },
+    'scatter',
   ],
   [
     'loads after adding in a switch case beside one that adds and returns',
@@ -1150,6 +1507,12 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
 ];
 
 /** Kernels that write a 10-wide grid through a helper, `put`, at cells of a block. */
+/** Doubles a value, as the helper a read is passed to in the audit's kernels. */
+const twice = (v: number) => {
+  'use gpu';
+  return v * 2;
+};
+
 function blockKernels(): [string, Make, number | string][] {
   const W = 10;
   const parts = (root: TgpuRoot, guarded: boolean) => {
@@ -1268,6 +1631,21 @@ function blockKernels(): [string, Make, number | string][] {
         });
       },
       'blocks of two shapes',
+    ],
+    [
+      'writes through a block-shaped helper from another helper, as points',
+      (root) => {
+        const { cells, put } = parts(root, true);
+        const land = (p: d.v2i) => {
+          'use gpu';
+          if ((cells.$[d.u32(p.y) * W + d.u32(p.x)] as number) === 0) put(p, d.u32(9));
+        };
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          land(d.vec2i(d.i32((g.x * 3) % 10), d.i32(g.y)));
+        });
+      },
+      'scatter',
     ],
     [
       'guards its block write only inside a switch case',

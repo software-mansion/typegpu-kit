@@ -34,7 +34,7 @@ afterEach(() => {
 const STEPS = 120;
 
 /** Paints the cave and steps its rules, reading the cells every 20 steps, the counts and embers. */
-async function stepped(root: TgpuRoot) {
+async function stepped(root: TgpuRoot, flying = false) {
   const counts = counters.create(root, ['cooled', 'burnt']);
   const cells = createCells(root);
   const cave = createCave(root, cells);
@@ -71,6 +71,8 @@ async function stepped(root: TgpuRoot) {
     const encoder = root.createCommandEncoder();
     const pass = encoder.beginComputePass();
     rules.step(pass);
+    // The embers' own step, which lands them on the grid: it reads a cell, then writes it
+    if (flying) sparks.step(pass);
     pass.end();
     encoder.submit();
     if (s % 20 === 19) {
@@ -97,7 +99,9 @@ it("steps falling-sand's own kernels on the GPU as WebGPU does, cell for cell", 
   expect(Object.fromEntries(stats.fallbacks)).toEqual({});
   const ran = [...stats.kernels.keys()];
   for (const label of ['stepping', 'ticking', 'kindling']) expect(ran).toContain(`${label} (gpu)`);
-  expect(ran.filter((label) => label.startsWith('<unnamed> (gpu)')).length).toBe(1);
+  // Unlabelled pipelines take their entry functions' names, numbered past the first
+  for (const label of ['flow', 'flow 2', 'copy']) expect(ran).toContain(`${label} (gpu)`);
+  expect(ran.some((label) => label.startsWith('<unnamed>'))).toBe(false);
   const expected = await stepped(gpu);
   for (const [k, grid] of expected.grids.entries()) {
     const other = actual.grids[k] as number[];
@@ -112,4 +116,26 @@ it("steps falling-sand's own kernels on the GPU as WebGPU does, cell for cell", 
   // Lava cooled, wood caught and embers flew
   expect(expected.totals.every((total) => total > 0)).toBe(true);
   expect(expected.embers.length).toBeGreaterThan(0);
+});
+
+it("steps falling-sand's embers onto the grid on the GPU as WebGPU does, reading nothing back", async () => {
+  const stats = (gl.device as unknown as GLDevice).stats;
+  stats.reset();
+  const actual = await stepped(gl, true);
+  expect(Object.fromEntries(stats.fallbacks)).toEqual({});
+  const ran = [...stats.kernels.keys()];
+  for (const label of ['stepping', 'stepPipeline']) expect(ran).toContain(`${label} (gpu)`);
+  // No kernel ran on the CPU, so none waited for the GPU to read the grid back
+  expect(ran.filter((label) => !label.endsWith('(gpu)'))).toEqual([]);
+  expect(stats.readback.textures).toBe(0);
+  const expected = await stepped(gpu, true);
+  for (const [k, grid] of expected.grids.entries()) {
+    const other = actual.grids[k] as number[];
+    expect(grid.filter((cell, i) => cell !== other[i]).length, `after ${(k + 1) * 20} steps`).toBe(
+      0,
+    );
+  }
+  expect(actual.totals).toEqual(expected.totals);
+  expect(actual.embers).toEqual(expected.embers);
+  expect(expected.totals.every((total) => total > 0)).toBe(true);
 });

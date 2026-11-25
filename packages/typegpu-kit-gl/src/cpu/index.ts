@@ -212,6 +212,7 @@ export function compile(code: string): CpuModule {
     kind: 'compute',
     workgroupSize: entry.size,
     bindings,
+    entry: entry.name,
     writtenWords(group, binding) {
       const slot = tracked.get(`${group}:${binding}`);
       if (slot === undefined) return undefined;
