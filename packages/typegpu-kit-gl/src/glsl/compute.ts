@@ -1334,12 +1334,13 @@ uint ${name}() {
         throw new Ineligible('decides a branch on a value it takes from a counter');
       }
     }
-    for (const match of body.matchAll(/\?|\breturn\b[^;]*;/g)) {
-      const text =
-        match[0] === '?'
-          ? body.slice(Math.max(0, (match.index ?? 0) - 200), match.index)
-          : match[0];
-      if (match[0] !== '?' ? reads(text) : reads(text.split(/[;{}]/).at(-1) ?? '')) {
+    // A ternary's condition and a short-circuit's left operand decide what runs after them
+    for (const match of body.matchAll(/\?|&&|\|\||\breturn\b[^;]*;/g)) {
+      const chooses = match[0] === '?' || match[0] === '&&' || match[0] === '||';
+      const text = chooses
+        ? body.slice(Math.max(0, (match.index ?? 0) - 200), match.index)
+        : match[0];
+      if (!chooses ? reads(text) : reads(text.split(/[;{}]/).at(-1) ?? '')) {
         throw new Ineligible('returns or chooses by a value it takes from a counter');
       }
     }
@@ -1421,7 +1422,8 @@ uint ${name}() {
           this.#chosen.length = depth;
         }
       }
-      if (statement[0] === NODE.if) {
+      // A switch case is a branch too: a return in it does not dominate what follows the switch
+      if (statement[0] === NODE.if || statement[0] === NODE.switch) {
         this.#branches++;
         try {
           return super._statement(statement);

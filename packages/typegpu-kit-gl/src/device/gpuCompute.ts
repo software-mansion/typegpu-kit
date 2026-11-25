@@ -39,7 +39,7 @@ import {
   replaceStorage,
   type TextureImpl,
   type ViewImpl,
-  writeEverything,
+  drawPlainly,
 } from './texture.ts';
 import { bindUses, connectUses, setInt, type Uses } from './uses.ts';
 
@@ -296,18 +296,7 @@ function accumulate(
     state.drawFramebuffer(ctx.scratch.draw);
     state.drawBuffers(Array.from({ length: targets }, (_, i) => gl.COLOR_ATTACHMENT0 + i));
     state.viewport(0, 0, width, height);
-    writeEverything(ctx);
-    for (const cap of [
-      gl.SCISSOR_TEST,
-      gl.DEPTH_TEST,
-      gl.STENCIL_TEST,
-      gl.CULL_FACE,
-      gl.RASTERIZER_DISCARD,
-      gl.SAMPLE_ALPHA_TO_COVERAGE,
-      gl.POLYGON_OFFSET_FILL,
-    ]) {
-      state.enable(cap, false);
-    }
+    drawPlainly(ctx);
     const group = pass.program.uniforms.get('kit_group') ?? null;
     for (let round = 0; round < 8 / targets; round++) {
       for (let i = 0; i < targets; i++) {
@@ -759,9 +748,8 @@ void main() {
       state.blend(0, NO_BLEND);
       state.viewport(0, 0, width, rows);
     };
-    for (const cap of [gl.SCISSOR_TEST, gl.DEPTH_TEST, gl.STENCIL_TEST, gl.RASTERIZER_DISCARD]) {
-      state.enable(cap, false);
-    }
+    // The ranking triangles are counterclockwise: culling left on by a render pass drops them
+    drawPlainly(ctx);
     into(counts, TAKE_WIDTH);
     gl.clearBufferuiv(gl.COLOR, 0, [0, 0, 0, 0]);
     state.program(counting.program);
@@ -1262,18 +1250,7 @@ export function runGpu(
         state.program(pass.program.program);
         setInt(gl, pass.layer, layer);
         state.viewport(0, 0, width, height);
-        writeEverything(ctx);
-        for (const cap of [
-          gl.SCISSOR_TEST,
-          gl.DEPTH_TEST,
-          gl.STENCIL_TEST,
-          gl.CULL_FACE,
-          gl.RASTERIZER_DISCARD,
-          gl.SAMPLE_ALPHA_TO_COVERAGE,
-          gl.POLYGON_OFFSET_FILL,
-        ]) {
-          state.enable(cap, false);
-        }
+        drawPlainly(ctx);
         state.blend(0, NO_BLEND);
         const drawn = count > 0 ? sites : 0;
         for (let site = 0; site < drawn; site++) {
@@ -1364,18 +1341,7 @@ export function runGpu(
       setInt(gl, pass.layer, first);
       state.vertexArray(null);
       state.viewport(0, 0, width, height);
-      writeEverything(ctx);
-      for (const cap of [
-        gl.SCISSOR_TEST,
-        gl.DEPTH_TEST,
-        gl.STENCIL_TEST,
-        gl.CULL_FACE,
-        gl.RASTERIZER_DISCARD,
-        gl.SAMPLE_ALPHA_TO_COVERAGE,
-        gl.POLYGON_OFFSET_FILL,
-      ]) {
-        state.enable(cap, false);
-      }
+      drawPlainly(ctx);
       // Through `blend`: disabling BLEND as a cap turns off every draw buffer's blending behind
       // the per-buffer cache that render passes rely on
       for (let slot = 0; slot < perDraw; slot++) state.blend(slot, NO_BLEND);

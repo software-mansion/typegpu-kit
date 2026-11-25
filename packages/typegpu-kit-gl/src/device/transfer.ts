@@ -13,6 +13,7 @@ import {
   attachLevel,
   blitLevel,
   type CpuLevelCopy,
+  drawPlainly,
   glWritten,
   installCpuUpload,
   mipSize,
@@ -274,16 +275,7 @@ function readThroughShader(
   if (layered) gl.uniform1i(layered, source === texture ? layer : 0);
   state.vertexArray(null);
   state.viewport(0, 0, width, height);
-  for (const cap of [
-    gl.SCISSOR_TEST,
-    gl.DEPTH_TEST,
-    gl.STENCIL_TEST,
-    gl.CULL_FACE,
-    gl.RASTERIZER_DISCARD,
-    gl.SAMPLE_ALPHA_TO_COVERAGE,
-    gl.POLYGON_OFFSET_FILL,
-  ])
-    state.enable(cap, false);
+  drawPlainly(ctx);
   state.blend(0, {
     enabled: false,
     colorOp: 0,

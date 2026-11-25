@@ -397,6 +397,28 @@ export function writeEverything(ctx: Ctx): void {
   state.stencilWriteMask(0xff);
 }
 
+/**
+ * Readies the fixed-function state for one of the device's own draws: no test, culling, offset,
+ * coverage or dithering, and every channel written. Such a draw sets it itself rather than rely on
+ * what the last render pass left.
+ */
+export function drawPlainly(ctx: Ctx): void {
+  const { gl, state } = ctx;
+  writeEverything(ctx);
+  for (const cap of [
+    gl.SCISSOR_TEST,
+    gl.DEPTH_TEST,
+    gl.STENCIL_TEST,
+    gl.CULL_FACE,
+    gl.RASTERIZER_DISCARD,
+    gl.SAMPLE_ALPHA_TO_COVERAGE,
+    gl.POLYGON_OFFSET_FILL,
+    gl.DITHER,
+  ]) {
+    state.enable(cap, false);
+  }
+}
+
 /** Copies one level and layer between textures with `blitFramebuffer`, both on GL. */
 export function blitLevel(
   ctx: Ctx,
