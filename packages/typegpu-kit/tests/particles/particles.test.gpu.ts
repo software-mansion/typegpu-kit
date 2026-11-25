@@ -1,4 +1,4 @@
-import { cameras, clock, passes, targets } from '@typegpu/kit';
+import { backends, cameras, clock, passes, targets } from '@typegpu/kit';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -604,4 +604,137 @@ it('leaves a particle where the gradient is zero, at a sphere’s centre', async
   const [drop] = await drops.pool.read();
   expect([...drop!.position, ...drop!.velocity]).toEqual([0, 0, 0, 0, 0, 0]);
   root.destroy();
+});
+
+/** A pool's live particles as rows of numbers, in one order whatever slots they took. */
+function liveRows(pool: readonly d.Infer<typeof Particle>[]) {
+  return pool
+    .filter((p) => p.age < p.life)
+    .map((p) => [
+      p.seed,
+      p.age,
+      p.life,
+      p.size,
+      ...[p.position, p.velocity].flatMap(({ x, y, z }) => [x, y, z]),
+      p.color.x,
+      p.color.w,
+    ])
+    .toSorted((a, b) => {
+      for (const [k, value] of a.entries()) {
+        if (value !== b[k]) return value - (b[k] as number);
+      }
+      return 0;
+    });
+}
+
+/**
+ * Runs frames of bursts, empty and oversize ones, and particles a kernel emits through a small
+ * ring, and reads back each frame's live particles and live count.
+ */
+async function ringed(compute: 'gpu' | 'cpu') {
+  const root = await gpuRoot();
+  // A device that says its compute runs on the CPU spawns bursts by gathering, without atomics
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
+  const unseeded = Math.random;
+  let state = 11;
+  Math.random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+  const view = cameras.flat(root, { size: { width: 8, height: 8 }, height: 10 });
+  view.update(0);
+  const sparks = particles.create(root, view, {
+    capacity: 50,
+    step: STEP,
+    settings: { gravity: [0, -1, 0], drag: 0.1 },
+    born: (particle: Particle) => {
+      'use gpu';
+      const grown = Particle(particle);
+      grown.size = particle.size * 2;
+      return grown;
+    },
+  });
+  const emitter = root.pipe(sparks.inject()).createComputePipeline({
+    compute: tgpu.computeFn({
+      workgroupSize: [8],
+      in: { gid: d.builtin.globalInvocationId },
+    })(({ gid }) => {
+      'use gpu';
+      if (gid.x >= 7) return;
+      sparks.emit(
+        Particle({
+          position: d.vec3f(d.f32(gid.x), 1, 0),
+          age: 0,
+          velocity: d.vec3f(0, 1, 0),
+          life: 4,
+          color: d.vec4f(1),
+          size: 0.3,
+          seed: d.f32(gid.x) * 0.01 + 0.5,
+        }),
+      );
+    }),
+  });
+
+  const plan: { bursts: number[]; emit?: boolean; steps: number }[] = [
+    { bursts: [20, 0], steps: 1 },
+    { bursts: [15], emit: true, steps: 2 },
+    { bursts: [80], steps: 1 },
+    { bursts: [10, 12, 3], steps: 3 },
+    { bursts: [], emit: true, steps: 1 },
+    { bursts: [30, 9], emit: true, steps: 2 },
+    { bursts: [1], steps: 40 },
+    { bursts: [49], emit: true, steps: 1 },
+  ];
+  const seen: { rows: number[][]; live: number }[] = [];
+  for (const [k, { bursts, emit, steps }] of plan.entries()) {
+    for (const count of bursts) {
+      sparks.burst({
+        count,
+        position: [k, 0, 1],
+        area: [0.5, 0.5, 0.5],
+        velocity: [1, 2, 0],
+        scatter: 0.4,
+        life: 0.4 + k * 0.1,
+        aged: k % 3 === 0,
+      });
+    }
+    const encoder = root.createCommandEncoder();
+    if (emit) {
+      const emitting = encoder.beginComputePass();
+      emitting.setPipeline(emitter);
+      emitting.dispatchWorkgroups(1);
+      emitting.end();
+    }
+    const pass = encoder.beginComputePass();
+    sparks.spawn(pass);
+    for (let i = 0; i < steps; i++) sparks.step(pass);
+    sparks.compact(pass, 0);
+    pass.end();
+    encoder.submit();
+    const [pool, args] = await Promise.all([sparks.pool.read(), sparks.args.read()]);
+    seen.push({ rows: liveRows(pool), live: (args as unknown as number[])[1] ?? -1 });
+  }
+  Math.random = unseeded;
+  sparks.destroy();
+  root.destroy();
+  return seen;
+}
+
+it('spawns the same particles into the ring where compute runs on the CPU, slot by slot from the head', async () => {
+  const [shared, gathered] = [await ringed('gpu'), await ringed('cpu')];
+  for (const [frame, { rows, live }] of shared.entries()) {
+    const other = gathered[frame]!;
+    expect(other.live, `frame ${frame}`).toBe(live);
+    expect(other.rows.length, `frame ${frame}`).toBe(rows.length);
+    for (const [r, row] of rows.entries()) {
+      for (const [c, value] of row.entries()) {
+        expect(Math.abs(value - other.rows[r]![c]!), `frame ${frame}`).toBeLessThan(1e-5);
+      }
+    }
+  }
+  expect(shared.some(({ rows }) => rows.length === 50)).toBe(true);
 });

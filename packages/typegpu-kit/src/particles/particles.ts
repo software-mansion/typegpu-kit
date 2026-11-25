@@ -1,3 +1,4 @@
+import * as backends from '../backends.ts';
 import * as cameras from '../cameras.ts';
 import { encoderOf, type Frame } from '../frames.ts';
 import * as liveLists from '../liveLists.ts';
@@ -619,6 +620,69 @@ export function create<S extends Schema>(
     }
   });
 
+  /** The particle `birth` emits, for spawning where compute runs on the CPU. */
+  const made = (burst: BurstGpu, index: number) => {
+    'use gpu';
+    randf.seed2(d.vec2f(d.f32(index), burst.seed));
+
+    const life = burst.life * (1 + (randf.sample() * 2 - 1) * burst.variance);
+    const scale = 1 + (randf.sample() * 2 - 1) * burst.variance;
+    const push = flat ? d.vec3f(randf.inUnitCircle(), 0) : randf.inUnitSphere();
+
+    let age = d.f32(0);
+    if (burst.aged === 1) age = randf.sample() * life;
+
+    let particle = Row();
+    if (owned) particle = Row(burst.own);
+    particle.position = burst.position + (randf.inUnitCube() * 2 - 1) * burst.area;
+    particle.age = age;
+    particle.velocity = burst.velocity + push * burst.scatter;
+    particle.life = life;
+    particle.color = d.vec4f(burst.color);
+    particle.size = burst.size * scale;
+    particle.seed = randf.sample();
+    return particle;
+  };
+
+  // Where compute runs on the CPU, taking ring slots with an atomic keeps spawning there. Instead
+  // each slot finds the burst particle the ring places in it, counting from the head, and one
+  // thread then moves the head past them. Bursts fill the ring in order; an atomic fills it in any
+  const alone = backends.of(root).compute === 'cpu';
+
+  const spawnEach = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const slot = gid.x;
+    if (slot >= size) return;
+    const index = (slot + size - (std.atomicLoad(head.$) % size)) % size;
+    let first = d.u32(0);
+    let found = d.u32(queueSize);
+    for (let i = d.u32(0); i < queued.$; i++) {
+      const count = (burstData.$ as BurstGpu[])[i].count;
+      if (index < first + count) {
+        found = i;
+        break;
+      }
+      first += count;
+    }
+    if (found === queueSize) return;
+    const particle = made((burstData.$ as BurstGpu[])[found], index);
+    if (born !== undefined) {
+      pool.$[slot] = born(Row(particle), slot);
+    } else {
+      pool.$[slot] = Row(particle);
+    }
+  });
+
+  const advanceKernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    let total = d.u32(0);
+    for (let i = d.u32(0); i < queued.$; i++) total += (burstData.$ as BurstGpu[])[i].count;
+    std.atomicStore(head.$, std.atomicLoad(head.$) + total);
+  });
+
   const stepKernel = tgpu.computeFn({
     workgroupSize: [WORKGROUP],
     in: { gid: d.builtin.globalInvocationId },
@@ -662,7 +726,14 @@ export function create<S extends Schema>(
 
   const filled: Inject = (cfg) => cfg.pipe(inject).pipe(camera.inject());
   const injected = root.pipe(filled);
-  const spawnPipeline = injected.createComputePipeline({ compute: spawnKernel });
+  const spawnPipeline = (
+    alone
+      ? injected.createComputePipeline({ compute: spawnEach })
+      : injected.createComputePipeline({ compute: spawnKernel })
+  ).$name('spawnPipeline');
+  const advancing = alone
+    ? injected.createComputePipeline({ compute: advanceKernel }).$name('advancing')
+    : undefined;
   const stepPipeline = injected.createComputePipeline({ compute: stepKernel });
   const drawn: Inject = (cfg) => cfg.pipe(filled).pipe(live.inject());
 
@@ -717,7 +788,8 @@ export function create<S extends Schema>(
   let stepped = 0;
   let spawnedIn: TgpuComputePass | undefined;
 
-  const initAsync = () => pipelines.compile([live, spawnPipeline, stepPipeline]);
+  const initAsync = () =>
+    pipelines.compile([live, spawnPipeline, stepPipeline, ...(advancing ? [advancing] : [])]);
 
   const destroy = () => {
     poolBuffer.destroy();
@@ -780,7 +852,13 @@ export function create<S extends Schema>(
       burstBuffer.write(pending as d.InferInput<typeof BurstData>[]);
       queued.write(pending.length);
       pass.setPipeline(spawnPipeline);
-      pass.dispatchWorkgroups(Math.ceil(total / WORKGROUP));
+      if (advancing) {
+        pass.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
+        pass.setPipeline(advancing);
+        pass.dispatchWorkgroups(1);
+      } else {
+        pass.dispatchWorkgroups(Math.ceil(total / WORKGROUP));
+      }
 
       pending.length = 0;
       total = 0;
