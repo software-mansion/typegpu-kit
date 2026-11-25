@@ -10,6 +10,8 @@ A compute pipeline runs one of three ways. The generator picks per pipeline, and
 
 **As fragment passes on the GPU**, when every write is provably to the invocation's own cell: its own array element or texel, a linear index with a constant width, an index plus an offset every invocation shares, a constant stride, a column of a 3d or array texture, a binding only one chosen invocation writes, or atomics on its own cell.
 
+**As blocks on the GPU**, when each invocation owns a constant block of up to 8 cells of a grid, as a 2 × 2 Margolus step or a pair of cells does: it writes them through a helper at `row * width + col` of a vector parameter, which returns early unless a function of the parameter proves `0 <= col < width`, and each call names its cell as a step per axis times the invocation plus a constant offset and a phase every invocation shares, the offsets of an axis within one step. A read of a cell of another invocation's block returns the contents from before the dispatch, the same rule as for single cells.
+
 **As points on the GPU**, when a kernel writes cells it computes: each write writes a whole element or texel with `=` or `textureStore`, in the entry or in a function it calls, but never inside a runtime loop or in a function called inside one (`tgpu.unroll` loops are fine), and the kernel never reads what it writes this way.
 
 **As sums on the GPU**, for a buffer the kernel only adds to with `atomicAdd` or `atomicSub` whose results it drops, as a counter's `add` does: the kernel reads and writes that buffer no other way, `atomicLoad` included and in any function it calls, and makes no addition inside a runtime loop, its own or in a function it calls. Additions to the same cell sum exactly, wrapping at 2^32 as atomics do, up to 65 536 records a cell in a dispatch: a dispatch whose invocations times additions could pass that runs on the CPU. The device needs `EXT_color_buffer_float` and `EXT_float_blend` for it, and runs such kernels on the CPU without them.
@@ -74,5 +76,6 @@ The device asks for the extensions below and keeps to the limits the context rep
 
 ## Browsers
 
-- Checked in Chromium with WebGPU removed from the page and in WebKit, which has no WebGPU. WebKit draws at the display's 60 Hz.
-- Not checked in Firefox: the test browser did not start under automation here.
+- Checked in Chromium with WebGPU removed from the page and in Playwright's WebKit, which has no WebGPU. WebKit draws at the display's 60 Hz.
+- Not checked in Safari itself: `safaridriver` needs Safari's "Allow remote automation" setting, and without it a session times out connecting to Safari.
+- Not checked in Firefox, whose WebGL on macOS does not go through the shader translator Chromium and WebKit share, so it is the likeliest browser to reject a shader the others accept. On macOS 27, Playwright's Firefox build 1532 never finishes starting, headless or headed, under Playwright or launched alone, with Firefox's sandboxes off, without its GPU process and without content processes: after `RenderCompositorSWGL failed mapping default framebuffer` its main thread spins in the event loop. Build 1555 exits at once with `Could not find profile folder`. A release Firefox was not available to run.
