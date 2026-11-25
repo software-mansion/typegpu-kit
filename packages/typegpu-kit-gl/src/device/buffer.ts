@@ -291,12 +291,21 @@ export function dataTexture(ctx: Ctx, buffer: BufferImpl): DataTexture {
   return copy.value;
 }
 
-/** Reads the data texture back into the CPU copy, which every other GL copy then uploads. */
+/** Each device's row for the part of a data texture's last row a buffer holds, reused. */
+const lastRows = new WeakMap<Ctx, Uint32Array>();
+
+/**
+ * Reads the data texture back into the CPU copy, which every other GL copy then uploads: whole
+ * rows straight into the copy, and the part of a last row the buffer holds through a reused row.
+ */
 function readBack(ctx: Ctx, buffer: BufferImpl): void {
   const { gl, state } = ctx;
   const began = performance.now();
   const data = buffer.data!.value;
-  const all = new Uint32Array(data.width * data.height * 4);
+  const { words } = buffer;
+  const rowWords = data.width * 4;
+  const rows = Math.min(data.height, Math.floor(words.length / rowWords));
+  const rest = words.length - rows * rowWords;
   state.readFramebuffer(ctx.scratch.read);
   gl.framebufferTexture2D(
     gl.READ_FRAMEBUFFER,
@@ -306,9 +315,16 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
     0,
   );
   state.readBuffer(gl.COLOR_ATTACHMENT0);
-  gl.readPixels(0, 0, data.width, data.height, gl.RGBA_INTEGER, gl.UNSIGNED_INT, all);
+  if (rows > 0) {
+    gl.readPixels(0, 0, data.width, rows, gl.RGBA_INTEGER, gl.UNSIGNED_INT, words, 0);
+  }
+  if (rest > 0) {
+    let row = lastRows.get(ctx);
+    if (!row || row.length < rowWords) lastRows.set(ctx, (row = new Uint32Array(rowWords)));
+    gl.readPixels(0, rows, data.width, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, row, 0);
+    words.set(row.subarray(0, rest), rows * rowWords);
+  }
   gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-  buffer.words.set(all.subarray(0, buffer.words.length));
   buffer.gpuNewer = false;
   written(buffer, 0, buffer.bytes.length);
   buffer.data!.start = Infinity;
