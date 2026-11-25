@@ -302,6 +302,7 @@ export class CpuGenerator extends WgslGenerator {
   #generators = new Set<string>();
   #barrierHelpers = new Map<string, BarrierHelper>();
   #types = new Map<d.BaseData, string>();
+  #normalizers = new Map<number, string>();
 
   protected override _expression(expression: Expression): Snippet {
     // Preserve integer overflow for unary negation before subsequent conversions.
@@ -1396,7 +1397,19 @@ export class CpuGenerator extends WgslGenerator {
         const shape = lm ?? rm!;
         output = `[${Array.from({ length: Number(shape[1]) }, (_c, c) => `$vector([${Array.from({ length: Number(shape[2]) }, (_r, r) => f32op(lm ? `a[${c}][${r}]` : 'a', op, rm ? `b[${c}][${r}]` : 'b')).join(',')}])`).join(',')}]`;
       } else return unsupported(`matrix operator ${op}`);
-      return `((a,b)=>${output})(${left},${right})`;
+      const inputs = new Map<string, string>();
+      output = output.replace(/\b[ab]\[\d\](?:\[\d\])?/g, (access) => {
+        let local = inputs.get(access);
+        if (!local) {
+          local = `v${inputs.size}`;
+          inputs.set(access, local);
+        }
+        return local;
+      });
+      const locals = [...inputs]
+        .map(([access, local]) => `const ${local}=${f32(access)};`)
+        .join('');
+      return `((a,b)=>{${locals}return ${output};})(${left},${right})`;
     }
     if (type.startsWith('vec') || rhsType.startsWith('vec')) {
       const schema = (type.startsWith('vec') ? lhs.dataType : rhs.dataType) as d.BaseData;
@@ -1604,6 +1617,27 @@ export class CpuGenerator extends WgslGenerator {
         (arg, i) =>
           !arg.possibleSideEffects && (!scalar(arg.dataType).startsWith('vec') || direct[i]),
       );
+      if (name === 'normalize') {
+        let helper = this.#normalizers.get(count);
+        if (!helper) {
+          helper = this.ctx.makeUniqueIdentifier('cpuNormalize', 'global');
+          this.#normalizers.set(count, helper);
+          this.#functions.add(helper);
+          this.#functionEffects.set(helper, false);
+          const parameters = Array.from({ length: count }, (_, i) => `v${i}`);
+          const local = parameters.map((_, i) => `x${i}`);
+          const declarations = local
+            .map((value, i) => `const ${value}=${f32(parameters[i]!)};`)
+            .join('');
+          this.ctx.addDeclaration(
+            `function ${helper}(${parameters.join(',')}){${declarations}const length=${f32(`Math.sqrt(${f32dot(local, local)})`)};return $vector([${local.map((value) => f32op(value, '/', 'length')).join(',')}]);}`,
+            helper,
+          );
+        }
+        return canInline
+          ? `${helper}(${direct[0]!.join(',')})`
+          : `((v)=>${helper}(${Array.from({ length: count }, (_, i) => `v[${i}]`).join(',')}))(${values[0]})`;
+      }
       const letters = args.map((_, i) => `a${i}`);
       const at = (index: number, i: number) =>
         canInline
@@ -1633,9 +1667,7 @@ export class CpuGenerator extends WgslGenerator {
       else if (name === 'distance') {
         const difference = components(0).map((value, i) => f32op(value, '-', at(1, i)));
         result = f32(`Math.sqrt(${f32dot(difference, difference)})`);
-      } else if (name === 'normalize')
-        parts = components(0).map((value) => f32op(value, '/', f32(`Math.sqrt(${product})`)));
-      else if (name === 'reflect')
+      } else if (name === 'reflect')
         parts = components(0).map((value, i) =>
           f32op(value, '-', f32op(f32op('2', '*', product), '*', at(1, i))),
         );
