@@ -159,7 +159,14 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
     return use === undefined || use.writes;
   };
   for (const [key, buffer] of buffers) {
-    if (writes(key)) written(buffer.buffer, buffer.offset, buffer.offset + buffer.size);
+    if (!writes(key)) continue;
+    // Only the words the module stored to, where it can tell, so GL uploads no more than changed
+    const [group, binding] = key.split(':').map(Number) as [number, number];
+    const words = module.writtenWords?.(group, binding);
+    const [from, to] = words ?? [0, Infinity];
+    const start = buffer.offset + Math.max(0, from) * 4;
+    const end = buffer.offset + Math.min(buffer.size, to * 4);
+    written(buffer.buffer, start, end);
   }
   for (const [key, texture] of textures) {
     const use = module.bindings.find((b) => `${b.group}:${b.binding}` === key);

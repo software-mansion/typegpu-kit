@@ -56,4 +56,10 @@ export interface CpuModule {
   readonly entry?: string;
   /** Runs every invocation of `x * y * z` workgroups, in order, over `resources`. */
   dispatch(x: number, y: number, z: number, resources: CpuResources): void;
+  /**
+   * The words of a written buffer binding the last dispatch stored to, from the lowest to one past
+   * the highest, empty when it stored none; undefined when the module cannot tell which. A module
+   * without it wrote every written binding whole.
+   */
+  writtenWords?(group: number, binding: number): readonly [number, number] | undefined;
 }
