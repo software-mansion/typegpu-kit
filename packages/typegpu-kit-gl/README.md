@@ -27,13 +27,13 @@ A root's `destroy` also frees the WebGL device.
 
 ## Telling the backends apart
 
-`backends.of(root)` from `@typegpu/kit` reports `kind`, `'webgpu'` or `'webgl'`, and `compute`, `'gpu'` or `'cpu'`. The fallback reports `'webgl'` and `'cpu'`: kernels that share workgroup memory, barriers or atomics on shared cells run on the CPU there. A module reads it where it creates its pipelines to choose a smaller capacity or kernels without workgroup memory, as the Kit's `exposure`, `environment`, `grid` and culling do. Such a branch leaves the WebGPU path as it is, and its tests run both paths on dawn by branding a real device as CPU-compute.
+`backends.of(root)` from `@typegpu/kit` reports `kind`, `'webgpu'` or `'webgl'`, and `compute`, `'gpu'` or `'cpu'`. The fallback reports `'webgl'` and `'cpu'`: kernels that share workgroup memory, barriers or atomics on shared cells run on the CPU there. A module reads it where it creates its pipelines to choose a smaller capacity or kernels without workgroup memory, as the Kit's culling, `exposure`, `environment`, `grid`, `particles` and `poses` do, and the examples `ocean`, `slime-mould`, `censer`, `sph-sculpt` and `jump-flood`. Such a branch leaves the WebGPU path as it is, and its tests run both paths on dawn by branding a real device as CPU-compute.
 
 ## Testing on the fallback
 
 - `webgl.fallback({ force: true })` hosts on WebGL 2 in a browser that has WebGPU too. The docs' example pages do the same with `?backend=webgl`.
 - `webgl.init({ gpuCompute: false })` runs every kernel on the CPU, to compare a GPU form with the CPU module.
-- The device's `stats` report the time spent per kernel, readback and uploads, and why each pipeline ran on the CPU. `stats.reset()` starts over.
+- The device's `stats` report the time spent per kernel, readback and uploads, why each pipeline ran on the CPU, and in `placement` why a pipeline with a GPU form moved to the CPU. `stats.reset()` starts over.
 - `pnpm test:gl` runs `*.test.gl.ts` in headless Chromium, on WebGL 2 beside WebGPU; install that Chromium once with `npx playwright install chromium`. `tests/device/diff.ts` runs a scene on both and compares every texture and buffer.
 - `node packages/typegpu-kit-gl/scripts/examples.ts --base <docs server> --backend both --reference <dir>` opens every example page on both backends, reports which ones draw and their frame rates, and scores screenshots against references.
 

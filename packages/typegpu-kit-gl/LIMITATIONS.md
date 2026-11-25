@@ -17,10 +17,10 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - A read of a cell another invocation writes in the same dispatch returns the value from before the dispatch. WebGPU leaves such a read a data race, so a kernel that is correct there does not depend on it.
 - Where two invocations write one cell, either value may win, as in WebGPU.
 - A point outside its target, or outside a buffer's bound range, is dropped. WebGPU may drop such a write or move it inside the binding.
-- A fragment pass runs the whole kernel once per written resource, and once more for each texel a buffer element spans beyond the first; it writes four layers of a 3d or array target a draw. A pass of points runs it once per write site, and for a buffer once per word of the element and per channel of a data texel. A kernel that writes many resources or large structs costs a multiple of its WebGPU cost.
+- A fragment pass runs the whole kernel once per written resource, and once more for each texel a buffer element spans beyond the first; it writes four layers of a 3d or array target a draw. A pass of points runs it once per invocation, captured with transform feedback, then draws the captured writes once per write site, and for a buffer once per word of the element and per channel of a data texel unless the element fits a texel. A kernel that writes many resources or large structs costs a multiple of its WebGPU cost.
 - A linear index with a constant width needs a dispatch no wider than that width, or an early return past it at the top of the kernel, such as `if (gid.x >= width) return;` with a constant `width`. A wider dispatch runs on the CPU.
 
-**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed cells inside loops or helper functions, and writes to computed cells the kernel also reads.
+**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed cells inside loops or helper functions, and writes to computed cells the kernel also reads. A kernel that calls a particle system's `emit` or a counter's `add` stays here, since each takes an atomic on a shared cell. A small GPU form whose outputs the CPU reads back may also move here, when its inputs are on the CPU and the move saves waiting for the GPU.
 
 - Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
@@ -29,7 +29,7 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
 
-`backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick kernels the fallback runs on the GPU or that suit a CPU, as the kit's grid and culling do, and an example's `meta.json` may give `fallback` scene options that size it.
+`backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick kernels the fallback runs on the GPU or that suit a CPU, as the Kit's culling, `exposure`, `environment`, `grid`, `particles` and `poses` do, and an example's `meta.json` may give `fallback` scene options that size it. On the fallback, particles from one burst fill the ring in burst order, where WebGPU's atomics fill it in any order.
 
 ## Shaders
 
