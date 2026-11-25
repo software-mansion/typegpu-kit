@@ -1,8 +1,10 @@
+import { writeFileSync } from 'node:fs';
 import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 import { SweepGenerator } from './scene-generator.ts';
 import { observeScene } from './scene-observer.ts';
+import { captureScene } from './example-comparison.ts';
 import { snapshotDispatch, type ReplaySnapshot } from './replay.ts';
 
 it('snapshots bound bytes before a dispatch and tracks its corresponding pipeline', async () => {
@@ -34,3 +36,47 @@ it('snapshots bound bytes before a dispatch and tracks its corresponding pipelin
     root.destroy();
   }
 });
+
+it.runIf(process.env.CPU_CAPTURE === '1')(
+  'captures inputs for a scene numeric diagnostic',
+  async () => {
+    const observer = observeScene();
+    const example = process.env.CPU_EXAMPLES ?? 'jelly-world';
+    const label = new RegExp(process.env.CPU_REPLAY_PIPELINE ?? 'fill');
+    const root = cpuRoot({
+      generator: SweepGenerator,
+      observeDevice: observer.device,
+      beforeDispatch: (code, pipeline, dispatch) => {
+        if (!label.test(pipeline)) return;
+        const snapshot = snapshotDispatch(code, pipeline, dispatch, observer);
+        const directory = process.env.CPU_CAPTURE_DIRECTORY!;
+        writeFileSync(`${directory}/${example}.js`, code);
+        writeFileSync(
+          `${directory}/${example}.json`,
+          JSON.stringify(
+            snapshot.bindings.map((binding) => ({
+              key: binding.key,
+              use: binding.use,
+              ...(binding.buffer
+                ? {
+                    offset: binding.buffer.offset,
+                    size: binding.buffer.size,
+                    words: Array.from(new Uint32Array(binding.buffer.bytes)),
+                  }
+                : {}),
+            })),
+          ),
+        );
+        throw new Error('CPU inputs saved');
+      },
+    });
+    try {
+      await expect(captureScene(root, observer, example, false)).rejects.toThrow(
+        'CPU inputs saved',
+      );
+    } finally {
+      root.destroy();
+    }
+  },
+  600000,
+);

@@ -183,3 +183,61 @@ it.runIf(process.env.CPU_THRESHOLDS === '1')(
   },
   30000,
 );
+
+async function atmosphericHeights(root: TgpuRoot) {
+  const pixels = root.createReadonly(d.arrayOf(d.vec2u, 3), [
+    d.vec2u(10, 129),
+    d.vec2u(38, 129),
+    d.vec2u(62, 129),
+  ]);
+  const output = root.createMutable(d.arrayOf(d.vec4f, 3 * 16));
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.globalInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          const uv = (d.vec2f(pixels.$[id.x]) + 0.5) / 256;
+          const direction = std.normalize(d.vec3f(1, -(uv.y * 2 - 1), -(uv.x * 2 - 1)));
+          const view = std.normalize(direction);
+          const r = d.f32(6360.1);
+          const disc = r * r * (view.y * view.y - 1) + 6360 * 6360;
+          const ground = -r * view.y - std.sqrt(disc);
+          const below = (r - 6460) * (r + 6460);
+          const top = -r * view.y + std.sqrt(std.max(r * r * view.y * view.y - below, 0));
+          const length = std.select(top, ground, view.y < 0 && disc >= 0);
+          for (let i = d.u32(0); i < 16; i++) {
+            const near = d.f32(i) / 16;
+            const far = d.f32(i + 1) / 16;
+            const t = length * (near + far) * (near + far) * 0.25;
+            const position = d.vec3f(0, r, 0) + view * t;
+            const radius = std.length(position);
+            output.$[id.x * 16 + i] = d.vec4f(length, t, radius, radius - 6360);
+          }
+        },
+      ),
+    })
+    .dispatchWorkgroups(3);
+  return (await output.read()).map((v) => [...v]);
+}
+it.runIf(process.env.CPU_THRESHOLDS === '1')(
+  'measures atmosphere radius cancellation before half storage',
+  async () => {
+    const gpu = await gpuRoot(),
+      cpu = cpuRoot();
+    try {
+      const expected = await atmosphericHeights(gpu),
+        actual = await atmosphericHeights(cpu);
+      recordResults('atmosphericHeights', { cpu: actual, dawn: expected });
+      for (let row = 0; row < actual.length; row++) {
+        const a = actual[row]![2]!,
+          b = expected[row]![2]!;
+        const bits = new Uint32Array(Float32Array.of(a, b).buffer);
+        expect(Math.abs(bits[0]! - bits[1]!), `radius ${row}: ${a} / ${b}`).toBeLessThanOrEqual(4);
+      }
+    } finally {
+      gpu.destroy();
+      cpu.destroy();
+    }
+  },
+  30000,
+);
