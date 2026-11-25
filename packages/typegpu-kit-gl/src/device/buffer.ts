@@ -6,6 +6,7 @@
  */
 
 import { type BufferStats, type Ctx, IMPL, implOf, MAP_MODE } from './context.ts';
+import { readBack as readBackFrom } from './placement.ts';
 
 /** Bytes per data-texture row is `ROW_TEXELS * 16` unless the buffer needs wider rows. */
 const ROW_TEXELS = 1024;
@@ -295,9 +296,11 @@ function readBack(ctx: Ctx, buffer: BufferImpl): void {
   written(buffer, 0, buffer.bytes.length);
   buffer.data!.start = Infinity;
   buffer.data!.end = 0;
+  const ms = performance.now() - began;
   const stats = statsOf(ctx, buffer);
-  stats.readMs += performance.now() - began;
+  stats.readMs += ms;
   stats.reads++;
+  readBackFrom(buffer, ms);
 }
 
 /**

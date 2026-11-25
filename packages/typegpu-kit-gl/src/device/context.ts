@@ -27,6 +27,11 @@ export interface DeviceStats {
    * failed to link, or the last dispatch did not fit it. `reset` keeps these.
    */
   readonly fallbacks: Map<string, string>;
+  /**
+   * Where each compute pipeline with a GPU form runs and why, by label, as its readbacks and
+   * costs decided. `reset` keeps these.
+   */
+  readonly placement: Map<string, string>;
   reset(): void;
 }
 
@@ -47,6 +52,7 @@ export function createStats(): DeviceStats {
     draws: { count: 0, instances: 0 },
     upload: { ms: 0, textures: 0 },
     fallbacks: new Map(),
+    placement: new Map(),
     reset() {
       stats.kernels.clear();
       Object.assign(stats.readback, { ms: 0, textures: 0 });

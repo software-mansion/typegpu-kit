@@ -5,6 +5,7 @@ import { type Bound, bufferEntry } from './binding.ts';
 import { type BufferImpl, written } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import { runGpu } from './gpuCompute.ts';
+import { ranOnCpu, ranOnGpu, runsOnGpu } from './placement.ts';
 import type { ComputePipelineImpl } from './pipeline.ts';
 import { cpuWritten, type TextureImpl, type ViewImpl } from './texture.ts';
 import { cpuLevels } from './transfer.ts';
@@ -73,11 +74,14 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   if (x === 0 || y === 0 || z === 0) return;
   const size = pipeline.gpu?.module.workgroupSize ?? module.workgroupSize;
   const invocations = x * y * z * size[0] * size[1] * size[2];
-  if (pipeline.gpu) {
+  const gpu = pipeline.gpu;
+  if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups)) {
     const start = performance.now();
-    const reason = runGpu(ctx, pipeline.gpu, pass.groups, x, y, z);
+    const reason = runGpu(ctx, gpu, pass.groups, x, y, z);
     if (reason === undefined) {
-      count(ctx, `${pipeline.label} (gpu)`, performance.now() - start, invocations);
+      const ms = performance.now() - start;
+      count(ctx, `${pipeline.label} (gpu)`, ms, invocations);
+      ranOnGpu(ctx, pipeline, pipeline.label, gpu, pass.groups, ms, invocations);
       return;
     }
     ctx.stats.fallbacks.set(pipeline.label, reason);
@@ -115,7 +119,9 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   try {
     const start = performance.now();
     module.dispatch(x, y, z, resources);
-    count(ctx, pipeline.label, performance.now() - start, invocations);
+    const ms = performance.now() - start;
+    count(ctx, pipeline.label, ms, invocations);
+    if (gpu) ranOnCpu(ctx, pipeline, ms);
   } catch (error) {
     ctx.errors.report(
       'internal',

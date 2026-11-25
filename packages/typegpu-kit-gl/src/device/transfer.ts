@@ -7,6 +7,7 @@ import { type BufferImpl, written } from './buffer.ts';
 import { type Ctx, IMPL } from './context.ts';
 import { link } from './program.ts';
 import { packTexels, swapRedBlue, type TexelArray, texelArray, viewAs } from './packing.ts';
+import { readBack as readBackFrom } from './placement.ts';
 import {
   attachLevel,
   blitLevel,
@@ -420,6 +421,7 @@ function lazyLevel(ctx: Ctx, texture: TextureImpl, level: number): CpuLevelCopy 
       }
       data = made;
       const ms = performance.now() - start;
+      if (stored) readBackFrom(texture, ms);
       ctx.stats.readback.ms += ms;
       ctx.stats.readback.textures++;
       const key = `${texture.label} ${texture.format} ${width}x${height}x${layers}`;
