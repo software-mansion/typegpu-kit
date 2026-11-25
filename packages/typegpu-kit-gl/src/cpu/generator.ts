@@ -193,7 +193,7 @@ export class CpuGenerator extends WgslGenerator {
       this.ctx.makeUniqueIdentifier('cpuUniformKey', 'global'),
     );
     this.ctx.addDeclaration(
-      `let ${[cached, ...keys].join(',')};\nfunction ${getter}(){if(${cached}===undefined${[...dependencies].map((dependency, i) => `||${keys[i]}!==${dependency}`).join('')}){${keys.map((key, i) => `${key}=${[...dependencies][i]};`).join('')}${cached}=${value};}return ${cached};}`,
+      `//#dispatch-cache ${JSON.stringify([cached, ...keys])}\nlet ${[cached, ...keys].join(',')};\nfunction ${getter}(){if(${cached}===undefined${[...dependencies].map((dependency, i) => `||${keys[i]}!==${dependency}`).join('')}){${keys.map((key, i) => `${key}=${[...dependencies][i]};`).join('')}${cached}=${value};}return ${cached};}`,
       getter,
     );
     this.#uniformCaches.set(value, getter);
@@ -1274,7 +1274,7 @@ export class CpuGenerator extends WgslGenerator {
             args.map((arg) => arg.name),
           )
         : undefined;
-      return `//#kit-gl compute\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
+      return `//#kit-gl compute\n//#kit-gl reusable\n//#entry ${JSON.stringify({ name: options.name, size, inputs, generator, ...(phases ? { phases: phases.count } : {}) })}\nfunction${generator ? '*' : ''} ${options.name}(${args.map((arg) => arg.name).join(',')}) ${body || '{}'}${phases ? `\nconst ${options.name}_phases=${phases.source};` : ''}`;
     } finally {
       this.#effects = previousEffects;
       this.#vectors = previousVectors;

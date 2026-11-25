@@ -29,16 +29,19 @@ it.runIf(process.env.CPU_FALLING_SAND_PERF === '1')(
       }
     >();
     let steady = false;
+    let prewarming = false;
+    const firstSteps: number[] = [];
     const root = cpuRoot({
       onDispatch(code, milliseconds, invocations, _label, snapshot) {
-        if (!steady) return;
         const entry = JSON.parse(
           code
             .split('\n')
             .find((line) => line.startsWith('//#entry '))!
             .slice(9),
         ).name as string;
-        if (!/^step(?:_\d+)?$/.test(entry) && entry !== 'flow') return;
+        if (prewarming && /^step(?:_\d+)?$/.test(entry) && firstSteps.length < 50)
+          firstSteps.push(milliseconds);
+        if (!steady || (!/^step(?:_\d+)?$/.test(entry) && entry !== 'flow')) return;
         const held = captures.get(code) ?? { snapshot, code, entry, samples: [], invocations };
         held.samples.push(milliseconds);
         captures.set(code, held);
@@ -70,7 +73,9 @@ it.runIf(process.env.CPU_FALLING_SAND_PERF === '1')(
         encoder.submit();
       };
       const prewarmStart = performance.now();
+      prewarming = true;
       for (let chunk = 0; chunk < 15; chunk++) advance(30);
+      prewarming = false;
       const prewarmMilliseconds = performance.now() - prewarmStart;
       advance(5);
       steady = true;
@@ -101,6 +106,11 @@ it.runIf(process.env.CPU_FALLING_SAND_PERF === '1')(
       );
       recordResults('fallingSandSimulation', {
         prewarmSteps: 450,
+        first50StepMilliseconds: firstSteps,
+        firstStepMilliseconds: firstSteps[0],
+        first50StepMedian: median(firstSteps),
+        first5StepMedian: median(firstSteps.slice(0, 5)),
+        last5OfFirst50StepMedian: median(firstSteps.slice(-5)),
         prewarmMilliseconds,
         steadySteps: 45,
         dispatches,

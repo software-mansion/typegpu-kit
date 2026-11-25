@@ -8,6 +8,81 @@
   ],
   "compilation": [
     {
+      "example": "jelly-world",
+      "status": "pass",
+      "modules": 4
+    },
+    {
+      "example": "classroom",
+      "status": "pass",
+      "modules": 6
+    },
+    {
+      "example": "night-market",
+      "status": "pass",
+      "modules": 11
+    },
+    {
+      "example": "afterimage",
+      "status": "pass",
+      "modules": 0
+    },
+    {
+      "example": "cloister",
+      "status": "pass",
+      "modules": 0
+    },
+    {
+      "example": "fireworks",
+      "status": "pass",
+      "modules": 26
+    },
+    {
+      "example": "hex-isle",
+      "status": "pass",
+      "modules": 1
+    },
+    {
+      "example": "forest",
+      "status": "pass",
+      "modules": 6
+    },
+    {
+      "example": "quiver-trees",
+      "status": "pass",
+      "modules": 30
+    },
+    {
+      "example": "kinetic",
+      "status": "pass",
+      "modules": 11
+    },
+    {
+      "example": "falling-sand",
+      "status": "pass",
+      "modules": 61
+    },
+    {
+      "example": "ocean",
+      "status": "pass",
+      "modules": 30
+    },
+    {
+      "example": "censer",
+      "status": "pass",
+      "modules": 17
+    },
+    {
+      "example": "slime-mould",
+      "status": "pass",
+      "modules": 5
+    },
+    {
+      "example": "dominoes",
+      "status": "pass",
+      "modules": 12
+    },
+    {
       "example": "sph-sculpt",
       "status": "pass",
       "modules": 38
@@ -18,6 +93,16 @@
       "modules": 28
     },
     {
+      "example": "benthos",
+      "status": "pass",
+      "modules": 5
+    },
+    {
+      "example": "ember-mirror",
+      "status": "pass",
+      "modules": 5
+    },
+    {
       "example": "stampede",
       "status": "pass",
       "modules": 33
@@ -26,6 +111,66 @@
       "example": "skeletons",
       "status": "pass",
       "modules": 30
+    },
+    {
+      "example": "jellies",
+      "status": "pass",
+      "modules": 9
+    },
+    {
+      "example": "spider",
+      "status": "pass",
+      "modules": 8
+    },
+    {
+      "example": "robot-arm",
+      "status": "pass",
+      "modules": 15
+    },
+    {
+      "example": "solar-system",
+      "status": "pass",
+      "modules": 5
+    },
+    {
+      "example": "star-map",
+      "status": "pass",
+      "modules": 1
+    },
+    {
+      "example": "survey-model",
+      "status": "pass",
+      "modules": 6
+    },
+    {
+      "example": "platformer",
+      "status": "pass",
+      "modules": 13
+    },
+    {
+      "example": "blockfall",
+      "status": "pass",
+      "modules": 11
+    },
+    {
+      "example": "lattice",
+      "status": "pass",
+      "modules": 4
+    },
+    {
+      "example": "raymarch",
+      "status": "pass",
+      "modules": 0
+    },
+    {
+      "example": "flow-field",
+      "status": "pass",
+      "modules": 2
+    },
+    {
+      "example": "jump-flood",
+      "status": "pass",
+      "modules": 4
     }
   ],
   "execution": [
@@ -4532,12 +4677,12 @@
     "rows": 100000,
     "iterations": 3,
     "measurements": [
-      33.448916999999994, 31.123166000000026, 31.039041999999995, 30.27325000000002,
-      31.167708000000005
+      37.307124999999985, 31.370916000000022, 32.41262499999999, 32.268708000000004,
+      32.24783400000001
     ],
     "vectorOperationsPerInvocation": 30,
-    "milliseconds": 31.123166000000026,
-    "invocationsPerSecond": 9639122.189561298
+    "milliseconds": 32.268708000000004,
+    "invocationsPerSecond": 9296932.495716903
   },
   "scalarBenchmark": {
     "kernel": "scalar hash, eight multiply/add/xor/shift rounds per invocation",
@@ -4548,52 +4693,70 @@
   },
   "fallingSandSimulation": {
     "prewarmSteps": 450,
-    "prewarmMilliseconds": 3494.125,
+    "first50StepMilliseconds": [
+      9.847750000000019, 5.970165999999949, 6.144958999999972, 5.294624999999996, 6.135332999999946,
+      3.6207499999998163, 3.073750000000018, 3.1057919999998376, 3.0872079999999187,
+      3.3411670000000413, 3.3727499999999964, 3.45699999999988, 3.2484170000000177,
+      3.1842920000001413, 3.1523749999998927, 3.121415999999954, 3.044582999999875,
+      3.078207999999904, 3.2154579999998987, 3.04950000000008, 3.02929099999983, 3.1204170000000886,
+      3.1103330000000824, 3.2268340000000535, 3.168333000000075, 3.129667000000154,
+      3.137666000000081, 3.005957999999964, 3.064666999999872, 3.0025829999999587,
+      3.201667000000043, 3.0266250000001946, 3.0136669999999413, 3.1218750000000455,
+      3.2378340000000208, 3.118750000000091, 3.0237080000001697, 3.077333999999837,
+      2.9863749999999527, 3.2923339999999826, 3.2964999999999236, 3.1001249999999345,
+      3.030375000000049, 3.0087080000000697, 3.0213750000000346, 3.21291599999995,
+      3.175916000000143, 3.218166999999994, 3.207832999999937, 3.0042499999999563
+    ],
+    "firstStepMilliseconds": 9.847750000000019,
+    "first50StepMedian": 3.129667000000154,
+    "first5StepMedian": 6.135332999999946,
+    "last5OfFirst50StepMedian": 3.207832999999937,
+    "prewarmMilliseconds": 2459.238042,
     "steadySteps": 45,
     "dispatches": [
       {
         "entry": "step_1",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 5.043916999999965,
-        "fixedMilliseconds": 0.0022183399999994437,
-        "nanosecondsPerInvocation": 312.6053236607121,
+        "milliseconds": 2.9827080000000024,
+        "fixedMilliseconds": 0.0018012499999986175,
+        "nanosecondsPerInvocation": 184.82804749503993,
         "measurements": 45
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.409165999999459,
-        "fixedMilliseconds": 0.0010270800000034797,
-        "nanosecondsPerInvocation": 25.306232638855132,
+        "milliseconds": 0.3623339999999189,
+        "fixedMilliseconds": 0.0007083300000022063,
+        "nanosecondsPerInvocation": 22.422226562494835,
         "measurements": 90
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.3955839999998716,
-        "fixedMilliseconds": 0.0010229200000048877,
-        "nanosecondsPerInvocation": 24.464352678563166,
+        "milliseconds": 0.34620799999993324,
+        "fixedMilliseconds": 0.0006716600000027028,
+        "nanosecondsPerInvocation": 21.424624255948075,
         "measurements": 90
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.41108299999996234,
-        "fixedMilliseconds": 0.0009324999999989813,
-        "nanosecondsPerInvocation": 25.430958581346932,
+        "milliseconds": 0.3633340000001226,
+        "fixedMilliseconds": 0.0007216699999980846,
+        "nanosecondsPerInvocation": 22.48340339782518,
         "measurements": 45
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.41566599999987375,
-        "fixedMilliseconds": 0.0009445799999957672,
-        "nanosecondsPerInvocation": 25.71437375991307,
+        "milliseconds": 0.34666599999991377,
+        "fixedMilliseconds": 0.0006912499999998545,
+        "nanosecondsPerInvocation": 21.451807415669265,
         "measurements": 45
       }
     ],
@@ -5541,8 +5704,7 @@
     "note": "Same cells/cave/rules/embers as the scene. Light/render passes omitted. Steady medians exclude prewarm. Fixed cost measured with zero workgroups over the same bindings."
   },
   "compilationVerification": {
-    "baseRevision": "fdfd7ff1",
-    "note": "All33 examples compile in a clean verification checkout with current CPU-owned changes. Concurrent uncommitted grid work excluded."
+    "note": "All33 examples compile on the live tree, including the new grid merge pipelines."
   },
   "stampedeAfterAddressInlining": {
     "example": "stampede",
@@ -5874,6 +6036,584 @@
         "calls": 32,
         "milliseconds": 21.18653800000311,
         "invocations": 96
+      }
+    ]
+  },
+  "fallingSandBeforePersistentExecution": {
+    "prewarmSteps": 450,
+    "first50StepMilliseconds": [
+      10.353207999999995, 10.650833000000148, 7.777417000000014, 6.482749999999896,
+      6.698791000000028, 5.413291999999956, 4.928125000000136, 5.220708000000059, 5.087999999999965,
+      4.922624999999925, 5.023500000000013, 5.267374999999902, 5.1652500000000146,
+      4.9422920000001795, 4.9179169999999885, 4.965333999999984, 4.981833999999935,
+      6.821374999999989, 6.530458000000181, 5.303124999999909, 5.245333999999957, 5.168791999999939,
+      5.262665999999854, 5.158374999999978, 5.2910830000000715, 5.147334000000001,
+      5.401833000000124, 5.2091250000000855, 5.49391700000001, 5.233291999999892, 5.508833000000095,
+      5.197417000000087, 5.315708000000086, 5.041917000000012, 5.028750000000173, 5.009999999999991,
+      5.112333999999919, 5.006542000000081, 4.970833999999968, 4.948041999999987, 5.023749999999836,
+      5.02779200000009, 5.036750000000211, 4.954666999999972, 4.9287910000000466, 4.966415999999981,
+      4.981457999999975, 4.86912499999994, 5.00912500000004, 4.988624999999956
+    ],
+    "firstStepMilliseconds": 10.353207999999995,
+    "first50StepMedian": 5.147334000000001,
+    "first5StepMedian": 7.777417000000014,
+    "last5OfFirst50StepMedian": 4.981457999999975,
+    "prewarmMilliseconds": 3333.229958,
+    "steadySteps": 45,
+    "dispatches": [
+      {
+        "entry": "step_1",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 4.526625000000422,
+        "fixedMilliseconds": 0.002188749999995707,
+        "nanosecondsPerInvocation": 280.5330016121296,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.38087499999983265,
+        "fixedMilliseconds": 0.000948339999995369,
+        "nanosecondsPerInvocation": 23.556960565466103,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.36679199999980483,
+        "fixedMilliseconds": 0.0009149999999954161,
+        "nanosecondsPerInvocation": 22.685825892845326,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.38383299999986775,
+        "fixedMilliseconds": 0.0009383300000081363,
+        "nanosecondsPerInvocation": 23.740988963284945,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.37695800000074087,
+        "fixedMilliseconds": 0.0009970799999973678,
+        "nanosecondsPerInvocation": 23.311068948458797,
+        "measurements": 45
+      }
+    ],
+    "note": "Same cells/cave/rules/embers as the scene. Light/render passes omitted. Steady medians exclude prewarm. Fixed cost measured with zero workgroups over the same bindings."
+  },
+  "persistentExecutionPipelines": {
+    "note": "CPU-only fake execution after the live grid changed to GPU-targeted merge passes. Compare individual CPU kernels; totals include merge passes that run on the GPU in the real fallback.",
+    "examples": [
+      {
+        "example": "forest",
+        "pipelines": [
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 4.609438000000068,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 3.908208000000002,
+            "invocations": 1
+          }
+        ]
+      },
+      {
+        "example": "fishtank",
+        "pipelines": [
+          {
+            "entry": "merge",
+            "pipeline": "merger",
+            "calls": 60,
+            "milliseconds": 72.3500829999989,
+            "invocations": 245760
+          },
+          {
+            "entry": "steerKernel",
+            "pipeline": "steerPipeline",
+            "calls": 2.5,
+            "milliseconds": 12.702771000000212,
+            "invocations": 8480
+          },
+          {
+            "entry": "copy",
+            "pipeline": "copyingPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.39781249999987267,
+            "invocations": 8480
+          },
+          {
+            "entry": "unpack",
+            "pipeline": "unpacker",
+            "calls": 2.5,
+            "milliseconds": 0.25368699999978617,
+            "invocations": 10240
+          },
+          {
+            "entry": "seed",
+            "pipeline": "seeder",
+            "calls": 2.5,
+            "milliseconds": 0.23491749999993772,
+            "invocations": 10240
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.22435449999989032,
+            "invocations": 2048
+          },
+          {
+            "entry": "bound",
+            "pipeline": "bounding",
+            "calls": 2.5,
+            "milliseconds": 0.1974585000002662,
+            "invocations": 8480
+          },
+          {
+            "entry": "clear",
+            "pipeline": "clearing",
+            "calls": 2.5,
+            "milliseconds": 0.1898745000000872,
+            "invocations": 8480
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.12043699999981072,
+            "invocations": 5120
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.11902050000003328,
+            "invocations": 1024
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.09974949999991622,
+            "invocations": 2560
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 3,
+            "milliseconds": 0.014019999999618449,
+            "invocations": 192
+          },
+          {
+            "entry": "tally",
+            "pipeline": "tallying",
+            "calls": 2.5,
+            "milliseconds": 0.010708000000022366,
+            "invocations": 2.5
+          },
+          {
+            "entry": "flag",
+            "pipeline": "flaggingPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.009978499999988344,
+            "invocations": 160
+          },
+          {
+            "entry": "place",
+            "pipeline": "placing",
+            "calls": 2.5,
+            "milliseconds": 0.009667000000035841,
+            "invocations": 160
+          },
+          {
+            "entry": "total",
+            "pipeline": "totalPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.007811999999830732,
+            "invocations": 160
+          },
+          {
+            "entry": "listCount",
+            "pipeline": "countPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.004208499999890591,
+            "invocations": 2.5
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
+      },
+      {
+        "example": "stampede",
+        "pipelines": [
+          {
+            "entry": "merge",
+            "pipeline": "merger",
+            "calls": 70,
+            "milliseconds": 168.60423149999224,
+            "invocations": 573440
+          },
+          {
+            "entry": "step_1",
+            "pipeline": "stepping",
+            "calls": 2.5,
+            "milliseconds": 16.237229500000467,
+            "invocations": 10240
+          },
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 9.387374500000078,
+            "invocations": 11856
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 4.213687499999651,
+            "invocations": 3
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 2.7761869999976625,
+            "invocations": 3
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 2.125020499999664,
+            "invocations": 1
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 1.2053544999998849,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 1.1167500000010477,
+            "invocations": 1
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.9296665000001667,
+            "invocations": 8192
+          },
+          {
+            "entry": "copy",
+            "pipeline": "copyingPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.5377289999996719,
+            "invocations": 20480
+          },
+          {
+            "entry": "Gait_step",
+            "pipeline": "Gait_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.5175205000014103,
+            "invocations": 20480
+          },
+          {
+            "entry": "unpack",
+            "pipeline": "unpacker",
+            "calls": 2.5,
+            "milliseconds": 0.46379199999864795,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.45845900000131223,
+            "invocations": 1
+          },
+          {
+            "entry": "kick",
+            "pipeline": "kicking",
+            "calls": 2.5,
+            "milliseconds": 0.4333550000010291,
+            "invocations": 10240
+          },
+          {
+            "entry": "seed",
+            "pipeline": "seeder",
+            "calls": 2.5,
+            "milliseconds": 0.4326870000004419,
+            "invocations": 20480
+          },
+          {
+            "entry": "bound",
+            "pipeline": "bounding",
+            "calls": 2.5,
+            "milliseconds": 0.4058339999992313,
+            "invocations": 20480
+          },
+          {
+            "entry": "clear",
+            "pipeline": "clearing",
+            "calls": 2.5,
+            "milliseconds": 0.3992085000008956,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.2509794999987207,
+            "invocations": 3
+          },
+          {
+            "entry": "place",
+            "pipeline": "placing",
+            "calls": 2.5,
+            "milliseconds": 0.15460400000301888,
+            "invocations": 7840
+          },
+          {
+            "entry": "flag",
+            "pipeline": "flaggingPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.1541254999992816,
+            "invocations": 7840
+          },
+          {
+            "entry": "phaseCards",
+            "pipeline": "phasing",
+            "calls": 1,
+            "milliseconds": 0.134249999999156,
+            "invocations": 4096
+          },
+          {
+            "entry": "writeName",
+            "pipeline": "writing",
+            "calls": 1,
+            "milliseconds": 0.02841649999936635,
+            "invocations": 1
+          },
+          {
+            "entry": "total",
+            "pipeline": "totalPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.013042000000496046,
+            "invocations": 160
+          },
+          {
+            "entry": "tally",
+            "pipeline": "tallying",
+            "calls": 2.5,
+            "milliseconds": 0.008062999999310705,
+            "invocations": 2.5
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 1,
+            "milliseconds": 0.005853999999089865,
+            "invocations": 64
+          },
+          {
+            "entry": "listCount",
+            "pipeline": "countPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.004312499999286956,
+            "invocations": 2.5
+          }
+        ]
+      },
+      {
+        "example": "skeletons",
+        "pipelines": [
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 5.021354000000429,
+            "invocations": 7200
+          },
+          {
+            "entry": "merge",
+            "pipeline": "merger",
+            "calls": 15,
+            "milliseconds": 2.442542000004323,
+            "invocations": 7680
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.36437500000101863,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.3181250000016007,
+            "invocations": 1
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.2500835000009829,
+            "invocations": 1920
+          },
+          {
+            "entry": "march",
+            "pipeline": "marching",
+            "calls": 1,
+            "milliseconds": 0.24904150000111258,
+            "invocations": 1024
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.2027075000005425,
+            "invocations": 960
+          },
+          {
+            "entry": "Doing_step",
+            "pipeline": "Doing_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.15324949999921955,
+            "invocations": 800
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.11166649999904621,
+            "invocations": 768
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.07264600000053179,
+            "invocations": 512
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 1,
+            "milliseconds": 0.06520849999833445,
+            "invocations": 64
+          },
+          {
+            "entry": "seed",
+            "pipeline": "seeder",
+            "calls": 1,
+            "milliseconds": 0.05445800000052259,
+            "invocations": 512
+          },
+          {
+            "entry": "copy",
+            "pipeline": "copyingPipeline",
+            "calls": 1,
+            "milliseconds": 0.04445849999865459,
+            "invocations": 320
+          },
+          {
+            "entry": "unpack",
+            "pipeline": "unpacker",
+            "calls": 1,
+            "milliseconds": 0.015458499998203479,
+            "invocations": 320
+          },
+          {
+            "entry": "bound",
+            "pipeline": "bounding",
+            "calls": 1,
+            "milliseconds": 0.015041499998915242,
+            "invocations": 320
+          },
+          {
+            "entry": "clear",
+            "pipeline": "clearing",
+            "calls": 1,
+            "milliseconds": 0.013562500000261934,
+            "invocations": 320
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 2,
+            "milliseconds": 0.008520999997926992,
+            "invocations": 128
+          },
+          {
+            "entry": "place",
+            "pipeline": "placing",
+            "calls": 1,
+            "milliseconds": 0.006458000001657638,
+            "invocations": 64
+          },
+          {
+            "entry": "flag",
+            "pipeline": "flaggingPipeline",
+            "calls": 1,
+            "milliseconds": 0.004062500000145519,
+            "invocations": 64
+          },
+          {
+            "entry": "tally",
+            "pipeline": "tallying",
+            "calls": 1,
+            "milliseconds": 0.0035209999987273477,
+            "invocations": 1
+          },
+          {
+            "entry": "total",
+            "pipeline": "totalPipeline",
+            "calls": 1,
+            "milliseconds": 0.0032709999995859107,
+            "invocations": 64
+          },
+          {
+            "entry": "listCount",
+            "pipeline": "countPipeline",
+            "calls": 1,
+            "milliseconds": 0.0022710000012011733,
+            "invocations": 1
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
       }
     ]
   }
