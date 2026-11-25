@@ -1,3 +1,4 @@
+import * as backends from '../backends.ts';
 import * as bindings from '../bindings.ts';
 import * as cameras from '../cameras.ts';
 import * as pipelines from '../pipelines.ts';
@@ -151,6 +152,11 @@ const Focus = d.struct({
 });
 const FOCUS_OFFSET = d.memoryLayoutOf(Focus, (focus) => focus.focus).offset;
 const SETTINGS_FOCUS = d.memoryLayoutOf(Settings, (settings) => settings.focus).offset;
+/**
+ * The focus that `record` copies into the settings where compute runs on the CPU, in place of the
+ * moved one, which only the GPU holds there. Any other value is one the program wrote since.
+ */
+const UNSET = -1;
 
 /** Sizes in texels: the source region, its half, its tiles, and the depth's share. */
 const Regions = d.struct({
@@ -210,6 +216,10 @@ const outside = (): never => {
 const settingsOf = tgpu.accessor(Settings, outside);
 const regionsOf = tgpu.accessor(Regions, outside);
 const radiusOf = tgpu.slot<Radius>();
+/** Holds `Focus` where compute runs on the CPU, so the passes read the moved focus from it. */
+const movedOf = tgpu.accessor(Focus, outside);
+/** Tells whether `record` copies the moved focus into the settings: not where compute is on the CPU. */
+const copiedOf = tgpu.slot(true);
 
 const depthAt = (uv: d.v2f) => {
   'use gpu';
@@ -246,7 +256,9 @@ export const thinLens = (distance: number, focus: number) => {
  */
 export const focus = () => {
   'use gpu';
-  return settingsOf.$.focus;
+  if (copiedOf.$) return settingsOf.$.focus;
+  const set = settingsOf.$.focus;
+  return std.select(set, movedOf.$.focus, set === UNSET);
 };
 
 const atFocus = (distance: number, _uv: d.v2f) => {
@@ -374,7 +386,10 @@ const composite = /* @__PURE__ */ tgpu.fragmentFn({
  * largest that can spread onto each tile. A gather pass scales rings of taps to that radius, keeps
  * the far field from bleeding onto what is sharper and spreads the near field over it, as Jimenez
  * describes it in 2014. A composite pass mixes the blur into the full-size source by the radius at
- * each pixel.
+ * each pixel. With `pull` or after `aim`, a kernel moves the focus and `record` copies it into the
+ * settings. On a backend that runs compute on the CPU, where that copy would wait for the GPU, the
+ * prepare and the composite read the moved focus from its buffer instead, and the copy marks the
+ * settings' focus unset, so a focus the program writes still takes over.
  *
  * @injects hook the half-resolution picture and regions `dof.circle` reads, from the part
  * @binds 0 storage, 1 uniform: `dof.circle`, the regions, beside the texture
@@ -383,7 +398,7 @@ const composite = /* @__PURE__ */ tgpu.fragmentFn({
  * @owns targets, 2 buffers, a sampler, 5 pipelines, 6 bind groups: the half-resolution picture,
  * the tiles, their reach, the blur and the output; the settings and the regions; a group for each pass and one
  * for the depth. With `pull` or after `aim`, also the focus and its step, the kernel moving it and
- * its groups
+ * its groups. Where compute runs on the CPU, one more buffer: the unset focus the copy writes
  * @records `record` after the TAA resolve or whatever wrote the source, before bloom and the final
  * pass; then `output` holds the picture.
  * @param view the camera that drew `depth`
@@ -427,6 +442,11 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
   const part = shown.bind({ prepared: chain.textures.prepared, regions });
   const state = root.createBuffer(Focus).$usage('storage');
   const focusing = state.as('mutable');
+  // Where compute runs on the CPU, copying the moved focus would wait for the GPU to read it back,
+  // and for all the frame's work before it. The passes read it from the focus buffer instead, and
+  // the copy marks the settings' focus as unset, so a focus the program writes still takes over
+  const copied = backends.of(root).compute !== 'cpu';
+  const unset = copied ? undefined : root.createBuffer(d.f32, UNSET);
   const pace = root.createUniform(d.f32);
   const steps = ringSteps(rings);
   // The centre and 8r taps on each ring r
@@ -495,6 +515,13 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
     return d.vec4f(std.mix(back, front, alpha), alpha);
   });
 
+  /** Returns the focus the program wrote since the last `record`, else the one it moved to. */
+  const previous = () => {
+    'use gpu';
+    const set = settingsOf.$.focus;
+    return std.select(set, focusing.$.focus, set === UNSET);
+  };
+
   /** Reads the distance under an asked aim, then moves the focus towards it, evenly in blur. */
   const move = tgpu.computeFn({ workgroupSize: [1] })(() => {
     'use gpu';
@@ -503,7 +530,7 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
       focusing.$.asked = 0;
       focusing.$.aimed = 1;
     }
-    const now = settingsOf.$.focus;
+    const now = copied ? settingsOf.$.focus : previous();
     if (focusing.$.aimed === 0) {
       focusing.$.focus = now;
       return;
@@ -517,6 +544,7 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
     .pipe(view.inject())
     .with(settingsOf, settings)
     .with(regionsOf, regions.as('uniform'))
+    .pipe((cfg) => (copied ? cfg : cfg.with(copiedOf, false).with(movedOf, state.as('readonly'))))
     .with(radiusOf, options.radius ?? atFocus);
   const pipeline = (fragment: typeof prepare, format: 'rgba16float' | 'r16float' = FORMAT) =>
     configured.createRenderPipeline({
@@ -611,6 +639,7 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
   const destroy = () => {
     chain.destroy();
     state.destroy();
+    unset?.destroy();
   };
 
   const blur: Dof = {
@@ -657,12 +686,13 @@ export function create(root: TgpuRoot, view: CameraBase, options: Options): Dof 
         movePass.setPipeline(moved(deep));
         movePass.dispatchWorkgroups(1);
         movePass.end();
-        // Copy the focus into the settings through the encoder, so the passes below read it
+        // Copy the focus into the settings through the encoder, so the passes below read it, or
+        // mark it unset where they read it from the focus buffer
         root
           .unwrap(encoder)
           .copyBufferToBuffer(
-            root.unwrap(state),
-            FOCUS_OFFSET,
+            root.unwrap(unset ?? state),
+            unset ? 0 : FOCUS_OFFSET,
             root.unwrap(settings.buffer),
             SETTINGS_FOCUS,
             d.sizeOf(d.f32),
