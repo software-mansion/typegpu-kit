@@ -3,7 +3,7 @@ import { textureDevice } from './texture-device.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { tgpu } from 'typegpu';
 import { CpuGenerator } from '../../src/cpu/generator.ts';
-import { compile, isCpuModule, type CpuModule } from '../../src/cpu/index.ts';
+import { compile, isCpuModule, type CpuModule, type CpuResources } from '../../src/cpu/index.ts';
 
 const noop = () => {};
 export const cpuBackend: backends.Backend = {
@@ -16,6 +16,11 @@ export const cpuBackend: backends.Backend = {
 };
 
 type Command = () => void;
+export interface DispatchSnapshot {
+  module: CpuModule;
+  resources: CpuResources;
+  workgroups: [number, number, number];
+}
 interface Pipeline {
   label?: string;
   compute: { module: CpuModule };
@@ -27,7 +32,13 @@ export function cpuRoot(
       Parameters<typeof tgpu.initFromDevice>[0]['unstable_shaderGeneratorClass']
     >;
     onModule?: (code: string) => void;
-    onDispatch?: (code: string, milliseconds: number, invocations: number, label: string) => void;
+    onDispatch?: (
+      code: string,
+      milliseconds: number,
+      invocations: number,
+      label: string,
+      snapshot: DispatchSnapshot,
+    ) => void;
   } = {},
 ) {
   const recording = recordingRoot();
@@ -114,7 +125,7 @@ export function cpuRoot(
                 const bindings = new Map(groups);
                 commands.push(() => {
                   const start = performance.now();
-                  module.dispatch(x, y, z, {
+                  const resources: CpuResources = {
                     buffer(group, binding) {
                       const resource = Array.from(bindings.get(group)!.entries).find(
                         (entry) => entry.binding === binding,
@@ -138,12 +149,14 @@ export function cpuRoot(
                       )!.resource;
                       return texture.samplers.get(resource)!;
                     },
-                  });
+                  };
+                  module.dispatch(x, y, z, resources);
                   options.onDispatch?.(
                     sources.get(module)!,
                     performance.now() - start,
                     x * y * z * module.workgroupSize.reduce((a, b) => a * b, 1),
                     label,
+                    { module, resources, workgroups: [x, y, z] },
                   );
                 });
               };

@@ -4677,13 +4677,12 @@
     "rows": 100000,
     "iterations": 3,
     "measurements": [
-      19.70045799999997, 17.620416000000034, 16.660000000000025, 16.627583000000016,
-      17.266291999999964
+      33.448916999999994, 31.123166000000026, 31.039041999999995, 30.27325000000002,
+      31.167708000000005
     ],
     "vectorOperationsPerInvocation": 30,
-    "milliseconds": 17.266291999999964,
-    "invocationsPerSecond": 17374894.389600303,
-    "executionRevision": "a4cf5089"
+    "milliseconds": 31.123166000000026,
+    "invocationsPerSecond": 9639122.189561298
   },
   "scalarBenchmark": {
     "kernel": "scalar hash, eight multiply/add/xor/shift rounds per invocation",
@@ -4694,52 +4693,993 @@
   },
   "fallingSandSimulation": {
     "prewarmSteps": 450,
-    "prewarmMilliseconds": 4123.05625,
+    "prewarmMilliseconds": 3361.3591670000005,
     "steadySteps": 45,
     "dispatches": [
       {
         "entry": "step_1",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 5.837999999999738,
-        "fixedMilliseconds": 0.002333340000004682,
-        "nanosecondsPerInvocation": 361.83449032736445,
+        "milliseconds": 4.7702909999998155,
+        "fixedMilliseconds": 0.0023504100000081964,
+        "nanosecondsPerInvocation": 295.6312369791547,
         "measurements": 45
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.4242920000006052,
-        "fixedMilliseconds": 0.0012045799999941664,
-        "nanosecondsPerInvocation": 26.23309895837122,
+        "milliseconds": 0.4002090000003591,
+        "fixedMilliseconds": 0.0009425000000010186,
+        "nanosecondsPerInvocation": 24.75610739089522,
         "measurements": 90
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.40795799999978044,
-        "fixedMilliseconds": 0.0011675000000013825,
-        "nanosecondsPerInvocation": 25.222625248002174,
+        "milliseconds": 0.3742080000001806,
+        "fixedMilliseconds": 0.0011762499999986176,
+        "nanosecondsPerInvocation": 23.12944878473351,
         "measurements": 90
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.42208300000038435,
-        "fixedMilliseconds": 0.001306670000003578,
-        "nanosecondsPerInvocation": 26.089802207364883,
+        "milliseconds": 0.39400000000023283,
+        "fixedMilliseconds": 0.0009649999999965075,
+        "nanosecondsPerInvocation": 24.369729662713066,
         "measurements": 45
       },
       {
         "entry": "flow",
         "workgroups": [21, 12, 1],
         "invocations": 16128,
-        "milliseconds": 0.43641699999989214,
-        "fixedMilliseconds": 0.0014129099999991013,
-        "nanosecondsPerInvocation": 26.971979786699716,
+        "milliseconds": 0.39320800000041345,
+        "fixedMilliseconds": 0.0012600000000020373,
+        "nanosecondsPerInvocation": 24.30233134923186,
+        "measurements": 45
+      }
+    ],
+    "note": "Same cells/cave/rules/embers as the scene. Light/render passes omitted. Steady medians exclude prewarm. Fixed cost measured with zero workgroups over the same bindings."
+  },
+  "f32Performance": {
+    "beforeRevision": "39cf5871",
+    "afterRevision": "05050a27",
+    "samplesPerExample": 31,
+    "note": "CPU-only execution, current scene defaults and CPU backend brand. Median of 31 two-frame windows. Simulation advances through the windows, so compare the paired window counts. Small population differences change reserve invocation counts. Timing shares a machine with other agents.",
+    "before": [
+      {
+        "example": "forest",
+        "perFrame": {
+          "dispatches": 2,
+          "invocations": 2,
+          "milliseconds": 9.666520500000047
+        },
+        "pipelines": [
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 5.17512499999998,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 4.523979000000054,
+            "invocations": 1
+          }
+        ]
+      },
+      {
+        "example": "fishtank",
+        "perFrame": {
+          "dispatches": 30,
+          "invocations": 74626.5,
+          "milliseconds": 28.464770499999304
+        },
+        "pipelines": [
+          {
+            "entry": "steerKernel",
+            "pipeline": "steerPipeline",
+            "calls": 2.5,
+            "milliseconds": 14.310916500000076,
+            "invocations": 8480
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 2.5,
+            "milliseconds": 11.508666999999832,
+            "invocations": 12800
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.4439159999997173,
+            "invocations": 8480
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.36368750000008276,
+            "invocations": 2048
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 2.5,
+            "milliseconds": 0.2747295000001486,
+            "invocations": 8480
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 2.5,
+            "milliseconds": 0.21424950000005083,
+            "invocations": 8480
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.2091045000001941,
+            "invocations": 8480
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.20443700000009812,
+            "invocations": 8480
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.16704100000038125,
+            "invocations": 5120
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.16268749999994725,
+            "invocations": 1024
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.09256300000015472,
+            "invocations": 2560
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 3,
+            "milliseconds": 0.01929249999966487,
+            "invocations": 192
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 2.5,
+            "milliseconds": 0.010604000000284941,
+            "invocations": 2.5
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
+      },
+      {
+        "example": "stampede",
+        "perFrame": {
+          "dispatches": 38.5,
+          "invocations": 171583.5,
+          "milliseconds": 51.13124699999889
+        },
+        "pipelines": [
+          {
+            "entry": "step_1",
+            "pipeline": "stepping",
+            "calls": 2.5,
+            "milliseconds": 16.347687999999835,
+            "invocations": 10240
+          },
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 10.974708499999906,
+            "invocations": 11856
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 5.017667000000074,
+            "invocations": 3
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 2.5,
+            "milliseconds": 3.967187499999909,
+            "invocations": 4000
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 2.5171459999992294,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 2.2123334999996587,
+            "invocations": 3
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 1.626541499999803,
+            "invocations": 20480
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 1.305000000000291,
+            "invocations": 8192
+          },
+          {
+            "entry": "kick",
+            "pipeline": "kicking",
+            "calls": 2.5,
+            "milliseconds": 1.2925210000003062,
+            "invocations": 10240
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.9441039999996974,
+            "invocations": 1
+          },
+          {
+            "entry": "Gait_step",
+            "pipeline": "Gait_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.675791499999832,
+            "invocations": 20480
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 2.5,
+            "milliseconds": 0.5962500000005093,
+            "invocations": 20480
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.47425050000038027,
+            "invocations": 10240
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 2.5,
+            "milliseconds": 0.46791549999989,
+            "invocations": 20480
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.4541669999989608,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.40272899999945366,
+            "invocations": 3
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.26087550000011106,
+            "invocations": 10240
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.254187500000171,
+            "invocations": 1
+          },
+          {
+            "entry": "phaseCards",
+            "pipeline": "phasing",
+            "calls": 1,
+            "milliseconds": 0.16289599999981874,
+            "invocations": 4096
+          },
+          {
+            "entry": "writeName",
+            "pipeline": "writing",
+            "calls": 1,
+            "milliseconds": 0.04564600000048813,
+            "invocations": 1
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 1,
+            "milliseconds": 0.015583500000047934,
+            "invocations": 64
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 2.5,
+            "milliseconds": 0.012271500000679225,
+            "invocations": 2.5
+          }
+        ]
+      },
+      {
+        "example": "skeletons",
+        "perFrame": {
+          "dispatches": 23.5,
+          "invocations": 16579,
+          "milliseconds": 11.86569099999906
+        },
+        "pipelines": [
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 7.763583499999186,
+            "invocations": 7200
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 1,
+            "milliseconds": 2.235728999999992,
+            "invocations": 1600
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.285166499999832,
+            "invocations": 1920
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.25445849999960046,
+            "invocations": 960
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.20095800000035524,
+            "invocations": 768
+          },
+          {
+            "entry": "Doing_step",
+            "pipeline": "Doing_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.16927050000049348,
+            "invocations": 800
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.12366649999967194,
+            "invocations": 512
+          },
+          {
+            "entry": "march",
+            "pipeline": "marching",
+            "calls": 1,
+            "milliseconds": 0.11124999999992724,
+            "invocations": 1024
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.0984374999998181,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.08985450000000128,
+            "invocations": 1
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 1,
+            "milliseconds": 0.08056250000026921,
+            "invocations": 64
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 1,
+            "milliseconds": 0.05358349999914935,
+            "invocations": 320
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 1,
+            "milliseconds": 0.036145500000202446,
+            "invocations": 320
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 1,
+            "milliseconds": 0.02889549999963492,
+            "invocations": 320
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 1,
+            "milliseconds": 0.02868800000032934,
+            "invocations": 320
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 1,
+            "milliseconds": 0.024957999999969616,
+            "invocations": 320
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 2,
+            "milliseconds": 0.014062499999454303,
+            "invocations": 128
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 1,
+            "milliseconds": 0.005166500000996166,
+            "invocations": 1
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "example": "forest",
+        "perFrame": {
+          "dispatches": 2,
+          "invocations": 2,
+          "milliseconds": 8.757521499999939
+        },
+        "pipelines": [
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 4.510291999999993,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 4.275562500000035,
+            "invocations": 1
+          }
+        ]
+      },
+      {
+        "example": "fishtank",
+        "perFrame": {
+          "dispatches": 30,
+          "invocations": 74626.5,
+          "milliseconds": 26.621771999999964
+        },
+        "pipelines": [
+          {
+            "entry": "steerKernel",
+            "pipeline": "steerPipeline",
+            "calls": 2.5,
+            "milliseconds": 13.416437499999574,
+            "invocations": 8480
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 2.5,
+            "milliseconds": 11.590541999999914,
+            "invocations": 12800
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.4339994999999135,
+            "invocations": 8480
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.3383960000001025,
+            "invocations": 2048
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 2.5,
+            "milliseconds": 0.2895005000002584,
+            "invocations": 8480
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 2.5,
+            "milliseconds": 0.2069374999999809,
+            "invocations": 8480
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.20287499999994907,
+            "invocations": 8480
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.20131249999963075,
+            "invocations": 8480
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.16820800000004965,
+            "invocations": 1024
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.15129250000006778,
+            "invocations": 5120
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.10439599999972415,
+            "invocations": 2560
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 3,
+            "milliseconds": 0.019145499999467575,
+            "invocations": 192
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 2.5,
+            "milliseconds": 0.008895999999595006,
+            "invocations": 2.5
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
+      },
+      {
+        "example": "stampede",
+        "perFrame": {
+          "dispatches": 38.5,
+          "invocations": 171743.5,
+          "milliseconds": 56.652438999998594
+        },
+        "pipelines": [
+          {
+            "entry": "step_1",
+            "pipeline": "stepping",
+            "calls": 2.5,
+            "milliseconds": 18.93181199999981,
+            "invocations": 10240
+          },
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 9.348915999999917,
+            "invocations": 11856
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 7.820833500000845,
+            "invocations": 3
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 2.5,
+            "milliseconds": 3.8354375000008076,
+            "invocations": 4160
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 3.524395500000537,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 3.522687499999847,
+            "invocations": 3
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 1.4086664999995264,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 1.3257705000000897,
+            "invocations": 1
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 1.2854379999998855,
+            "invocations": 8192
+          },
+          {
+            "entry": "kick",
+            "pipeline": "kicking",
+            "calls": 2.5,
+            "milliseconds": 0.8195410000007541,
+            "invocations": 10240
+          },
+          {
+            "entry": "Gait_step",
+            "pipeline": "Gait_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.7072080000002643,
+            "invocations": 20480
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 2.5,
+            "milliseconds": 0.5998954999995476,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.4702289999995628,
+            "invocations": 1
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.4353754999992816,
+            "invocations": 20480
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.42218750000120053,
+            "invocations": 10240
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 2.5,
+            "milliseconds": 0.4130005000001802,
+            "invocations": 20480
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.3375625000007858,
+            "invocations": 3
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.22870900000089023,
+            "invocations": 10240
+          },
+          {
+            "entry": "phaseCards",
+            "pipeline": "phasing",
+            "calls": 1,
+            "milliseconds": 0.1719169999996666,
+            "invocations": 4096
+          },
+          {
+            "entry": "writeName",
+            "pipeline": "writing",
+            "calls": 1,
+            "milliseconds": 0.03700000000117143,
+            "invocations": 1
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 1,
+            "milliseconds": 0.012271000000509957,
+            "invocations": 64
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 2.5,
+            "milliseconds": 0.01097950000075798,
+            "invocations": 2.5
+          }
+        ]
+      },
+      {
+        "example": "skeletons",
+        "perFrame": {
+          "dispatches": 23.5,
+          "invocations": 16643,
+          "milliseconds": 11.442581500003143
+        },
+        "pipelines": [
+          {
+            "entry": "findJoints",
+            "pipeline": "finding",
+            "calls": 1,
+            "milliseconds": 6.920625000000655,
+            "invocations": 7200
+          },
+          {
+            "entry": "reserve",
+            "pipeline": "reserver",
+            "calls": 1,
+            "milliseconds": 2.3265624999994543,
+            "invocations": 1664
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.4933119999996052,
+            "invocations": 960
+          },
+          {
+            "entry": "stepKernel",
+            "pipeline": "stepPipeline",
+            "calls": 2.5,
+            "milliseconds": 0.29520750000119733,
+            "invocations": 1920
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.20004150000022491,
+            "invocations": 768
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.1646455000009155,
+            "invocations": 1
+          },
+          {
+            "entry": "walk",
+            "pipeline": "<unnamed>",
+            "calls": 1,
+            "milliseconds": 0.1639789999999266,
+            "invocations": 1
+          },
+          {
+            "entry": "Doing_step",
+            "pipeline": "Doing_stepping",
+            "calls": 2.5,
+            "milliseconds": 0.144978500000434,
+            "invocations": 800
+          },
+          {
+            "entry": "march",
+            "pipeline": "marching",
+            "calls": 1,
+            "milliseconds": 0.1421875000005457,
+            "invocations": 1024
+          },
+          {
+            "entry": "compact",
+            "pipeline": "live_compact",
+            "calls": 1,
+            "milliseconds": 0.12168750000000728,
+            "invocations": 512
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 1,
+            "milliseconds": 0.10837499999979627,
+            "invocations": 64
+          },
+          {
+            "entry": "count",
+            "pipeline": "counter",
+            "calls": 1,
+            "milliseconds": 0.10268699999960518,
+            "invocations": 320
+          },
+          {
+            "entry": "copyKernel",
+            "pipeline": "copyPipeline",
+            "calls": 1,
+            "milliseconds": 0.07020799999918381,
+            "invocations": 320
+          },
+          {
+            "entry": "boundKernel",
+            "pipeline": "boundPipeline",
+            "calls": 1,
+            "milliseconds": 0.036312500000349246,
+            "invocations": 320
+          },
+          {
+            "entry": "scatter",
+            "pipeline": "scatterer",
+            "calls": 1,
+            "milliseconds": 0.034853999999540974,
+            "invocations": 320
+          },
+          {
+            "entry": "clearKernel",
+            "pipeline": "clearPipeline",
+            "calls": 1,
+            "milliseconds": 0.030020999999578635,
+            "invocations": 320
+          },
+          {
+            "entry": "finishing",
+            "pipeline": "live_finish",
+            "calls": 2,
+            "milliseconds": 0.015521500000431843,
+            "invocations": 128
+          },
+          {
+            "entry": "size",
+            "pipeline": "sizer",
+            "calls": 1,
+            "milliseconds": 0.006979499999943073,
+            "invocations": 1
+          },
+          {
+            "entry": "spawnKernel",
+            "pipeline": "spawnPipeline",
+            "calls": 0,
+            "milliseconds": 0,
+            "invocations": 0
+          }
+        ]
+      }
+    ]
+  },
+  "fallingSandBeforeFieldProjection": {
+    "prewarmSteps": 450,
+    "prewarmMilliseconds": 3662.482417,
+    "steadySteps": 45,
+    "dispatches": [
+      {
+        "entry": "step_1",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 5.337999999999738,
+        "fixedMilliseconds": 0.002035410000007687,
+        "nanosecondsPerInvocation": 330.85097904264205,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.3956660000003467,
+        "fixedMilliseconds": 0.0009145799999987503,
+        "nanosecondsPerInvocation": 24.47615451391046,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.3718749999998181,
+        "fixedMilliseconds": 0.0009012499999971624,
+        "nanosecondsPerInvocation": 23.00184461804445,
+        "measurements": 90
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.42408400000022084,
+        "fixedMilliseconds": 0.0009966700000040873,
+        "nanosecondsPerInvocation": 26.233093377989633,
+        "measurements": 45
+      },
+      {
+        "entry": "flow",
+        "workgroups": [21, 12, 1],
+        "invocations": 16128,
+        "milliseconds": 0.40412500000002183,
+        "fixedMilliseconds": 0.0008962500000052387,
+        "nanosecondsPerInvocation": 25.00178261408833,
         "measurements": 45
       }
     ],

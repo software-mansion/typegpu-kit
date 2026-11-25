@@ -11,6 +11,7 @@ import {
   uniformArguments,
   matrixLocals,
   recordFields,
+  literalFields,
 } from './calls.ts';
 import { cpuRoot } from './device.ts';
 
@@ -24,6 +25,7 @@ it('preserves argument evaluation order and vector arguments across a helper bar
       2, 3, 7, 8, 7, 8, 2, 3, 2, 3, 7, 8, 2, 3, 7, 8, 12, 13, 17, 18, 17, 18, 12, 13, 12, 13, 17,
       18, 12, 13, 17, 18,
     ]);
+    expect(await literalFields(root)).toEqual([3, 4, 1]);
     expect(await recordValues(root)).toEqual([103, 4, 8, 9, 0, 1, 2]);
     expect(await matrixLocals(root)).toEqual([4, 4, 2, 3, 3, 2, 1, 91]);
     expect(await recordFields(root)).toEqual([

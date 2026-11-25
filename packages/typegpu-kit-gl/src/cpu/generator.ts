@@ -78,6 +78,16 @@ export class CpuGenerator extends WgslGenerator {
     return body;
   }
   #projectRecord(value: string, fields: readonly string[], unwrap: boolean): string | undefined {
+    if (value.startsWith('({') && isPureExpression(value, this.#functionEffects)) {
+      const projected = projectRecordBody(
+        `{return ${value};}`,
+        fields,
+        unwrap,
+        () => '0',
+        () => undefined,
+      );
+      return projected && /^\{return ([\s\S]*);}$/.exec(projected)?.[1];
+    }
     const call = completeCall(value);
     const definition = call && this.#recordFunctions.get(call.name);
     if (!call || !definition || this.#functionEffects.get(call.name) !== false) return undefined;
