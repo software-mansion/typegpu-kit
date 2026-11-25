@@ -460,13 +460,13 @@ importers:
 
   packages/typegpu-kit-gl:
     dependencies:
+      tinyest:
+        specifier: ~0.3.4
+        version: 0.3.4
+    devDependencies:
       '@typegpu/gl':
         specifier: workspace:*
         version: link:../typegpu-gl
-      tinyest:
-        specifier: 0.3.4
-        version: 0.3.4
-    devDependencies:
       '@typegpu/kit':
         specifier: workspace:*
         version: link:../typegpu-kit

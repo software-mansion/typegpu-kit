@@ -1,7 +1,6 @@
 {
   "name": "@typegpu/kit-gl",
   "version": "0.1.0",
-  "private": true,
   "description": "A WebGL 2 fallback for TypeGPU Kit: hosts the same scene where WebGPU is missing.",
   "homepage": "https://docs.swmansion.com/typegpu-kit/",
   "bugs": "https://github.com/software-mansion/typegpu-kit/issues",
@@ -11,21 +10,40 @@
     "url": "git+https://github.com/software-mansion/typegpu-kit.git",
     "directory": "packages/typegpu-kit-gl"
   },
+  "files": [
+    "dist",
+    "src",
+    "patches",
+    "README.md",
+    "LIMITATIONS.md"
+  ],
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./patches/*": "./patches/*",
     "./package.json": "./package.json"
   },
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.js",
+      "./patches/*": "./patches/*",
+      "./package.json": "./package.json"
+    },
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "prepack": "node ../../scripts/kit-gl-build.ts",
+    "postpack": "node -e \"require('node:fs').rmSync('patches',{recursive:true,force:true})\"",
     "test:types": "tsc -p ./tsconfig.json",
     "examples": "node scripts/examples.ts"
   },
   "dependencies": {
-    "@typegpu/gl": "workspace:*",
-    "tinyest": "0.3.4"
+    "tinyest": "~0.3.4"
   },
   "devDependencies": {
+    "@typegpu/gl": "workspace:*",
     "@typegpu/kit": "workspace:*",
     "@types/node": "catalog:types",
     "@webgpu/types": "catalog:types",
@@ -38,6 +56,11 @@
   },
   "peerDependencies": {
     "@typegpu/kit": "workspace:^",
-    "typegpu": "^0.12.11"
+    "typegpu": "0.12.11"
+  },
+  "peerDependenciesMeta": {
+    "@typegpu/kit": {
+      "optional": true
+    }
   }
 }

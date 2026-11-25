@@ -2,7 +2,7 @@
 
 A WebGL 2 fallback for TypeGPU Kit. It runs an unchanged Kit program in a browser without WebGPU: the root it creates is TypeGPU's own, on a `GPUDevice` implemented over a WebGL 2 context, and shaders compile to GLSL ES 3.00. Render pipelines draw with WebGL. Compute kernels run on the GPU as fragment passes or passes of points where their writes allow it, and on the CPU otherwise.
 
-The package is private and `@unstable` while it depends on TypeGPU patches that are not upstream yet.
+The package is `@unstable` while it depends on a TypeGPU patch that is not upstream yet: a program that installs it registers that patch, as [Using it outside this repository](#using-it-outside-this-repository) says.
 
 ## Using it
 
@@ -34,15 +34,46 @@ A root's `destroy` also frees the WebGL device.
 - `webgl.fallback({ force: true })` hosts on WebGL 2 in a browser that has WebGPU too. The docs' example pages do the same with `?backend=webgl`.
 - `webgl.init({ gpuCompute: false })` runs every kernel on the CPU, to compare a GPU form with the CPU module.
 - The device's `stats` report the time spent per kernel, readback and uploads, and why each pipeline ran on the CPU. `stats.reset()` starts over.
-- `pnpm test:gl` runs `*.test.gl.ts` in headless Chromium, on WebGL 2 beside WebGPU. `tests/device/diff.ts` runs a scene on both and compares every texture and buffer.
+- `pnpm test:gl` runs `*.test.gl.ts` in headless Chromium, on WebGL 2 beside WebGPU; install that Chromium once with `npx playwright install chromium`. `tests/device/diff.ts` runs a scene on both and compares every texture and buffer.
 - `node packages/typegpu-kit-gl/scripts/examples.ts --base <docs server> --backend both --reference <dir>` opens every example page on both backends, reports which ones draw and their frame rates, and scores screenshots against references.
 
 ## Using it outside this repository
 
-Until TypeGPU takes the patches this package relies on, a program that depends on it needs both of these:
+Install it beside the Kit and TypeGPU 0.12.11, the version its patch applies to:
 
-- TypeGPU 0.12.11 with `patches/typegpu@0.12.11.patch` from this repository applied. With pnpm, list it under `patchedDependencies` in `pnpm-workspace.yaml`: `typegpu@0.12.11: patches/typegpu@0.12.11.patch`.
-- The vendored `@typegpu/gl` from `packages/typegpu-gl`, which carries the GLSL generator's patches, in place of the published one.
+```sh
+pnpm add @typegpu/kit @typegpu/kit-gl typegpu@0.12.11
+```
+
+Then register the TypeGPU patch the package ships. Without it, TypeGPU writes WGSL for the samplers and textures of bind group layouts into shaders the fallback compiles as GLSL, and `webgl.init` throws an error that names the patch.
+
+1. Copy `node_modules/@typegpu/kit-gl/patches/typegpu@0.12.11.patch` into your project, for example into `patches/`, and commit it.
+2. Register it with your package manager. With pnpm, in `pnpm-workspace.yaml`:
+
+   ```yaml
+   patchedDependencies:
+     typegpu@0.12.11: patches/typegpu@0.12.11.patch
+   ```
+
+   Other package managers need their own way to apply a patch to a dependency; the package is tested with pnpm.
+
+3. Install again, so TypeGPU is patched in `node_modules`.
+
+The package bundles its own GLSL generator, so it needs no other TypeGPU package. Import it where a page needs it, so a browser with WebGPU never downloads it:
+
+```ts
+import * as web from '@typegpu/kit/web';
+
+web.host(createScene, {
+  canvas,
+  fallback: {
+    force: false,
+    init: async (canvas) => (await import('@typegpu/kit-gl')).webgl.init({ canvas }),
+  },
+});
+```
+
+Bundlers split that import into a chunk of its own, and drop the package from a program that imports it without using it.
 
 ## More
 
