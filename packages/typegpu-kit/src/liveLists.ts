@@ -1,7 +1,8 @@
 /**
  * Lists live slots by group on the GPU. Each frame, it writes one indirect draw and one indirect
  * dispatch per group. It accepts a table or any set of slots with a live test, or kernels that
- * list the rows they visit.
+ * list the rows they visit. On a backend that runs compute on the CPU, `compact` first marks each
+ * slot's group in a fifth buffer, with a third pipeline, and lists from the marks.
  *
  * @module
  * @injects member `slot`, `instanceSlot` and `count`, which read its own buffers in any
@@ -13,8 +14,6 @@
  * live lists throw
  * @owns 4 buffers, 2 pipelines: the live slots per group, their counts, the indirect draws and
  * the indirect dispatches
- * @owns 1 buffer and 1 pipeline more on a backend that runs compute on the CPU: each slot's group,
- * which `compact` marks before it lists
  * @records `compact` after the table's flush, or `finish` after the kernels that `list`, then
  * `draw` or `dispatch` each group from it.
  */
