@@ -511,6 +511,30 @@ describe('GPU forms with offsets and strides run as WebGPU runs them', () => {
   it('writes one half of a buffer from the other', () => halves(0));
   it('writes the other half when the uniform flips', () => halves(1));
 
+  it('copies one half into the other at offsets read through an alias of a uniform', async () => {
+    const Halves = d.struct({ now: d.u32, before: d.u32 });
+    const layout = tgpu
+      .bindGroupLayout({
+        cells: { storage: d.arrayOf(d.f32, 96), access: 'mutable' },
+        pass: { uniform: Halves },
+      })
+      .$idx(0);
+    await expectSame({
+      layout,
+      kernel: tgpu.computeFn({ workgroupSize: [16], in: gid })(({ gid: id }) => {
+        'use gpu';
+        if (id.x >= 48 || id.x % 5 === 0) return;
+        const time = layout.$.pass;
+        layout.$.cells[time.before + id.x] = (layout.$.cells[time.now + id.x] as number) * 2;
+      }),
+      workgroups: [3, 1, 1],
+      inputs: {
+        cells: { kind: 'buffer', schema: d.arrayOf(d.f32, 96), value: range(96, (i) => i - 40) },
+        pass: { kind: 'buffer', schema: Halves, value: { now: 48, before: 0 }, uniform: true },
+      },
+    });
+  });
+
   it('writes every third element from a constant phase', async () => {
     const layout = tgpu
       .bindGroupLayout({ out: { storage: d.arrayOf(d.f32, 200), access: 'mutable' } })

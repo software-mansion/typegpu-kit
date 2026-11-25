@@ -856,6 +856,29 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return super._emitVarDecl(keyword, name, dataType, rhs);
   }
 
+  /**
+   * An alias declares the address it names as a local of its own, which is settled when every
+   * invocation computes it alike, as a declaration's value is.
+   */
+  protected override _aliasConstStatement(
+    rawId: string,
+    eqNode: Expression,
+    eq: Snippet,
+  ): ResolvedStatement {
+    const result = super._aliasConstStatement(rawId, eqNode, eq);
+    const frame = this.#frame;
+    if (!frame || typeof result.code !== 'string') return result;
+    for (const [, name, rhs] of result.code.matchAll(/^\s*uint (\w+) = (.*);$/gm)) {
+      if (!name || rhs === undefined) continue;
+      frame.names.delete(name);
+      frame.settled.delete(name);
+      const from = this.#shared(rhs, frame);
+      if (from) frame.settled.set(name, { from, value: inlined(rhs, frame) });
+      else frame.locals.add(name);
+    }
+    return result;
+  }
+
   protected override _constStatement(statement: Const): ResolvedStatement {
     const result = super._constStatement(statement);
     const [, idNode, eqNode] = statement;
