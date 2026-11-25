@@ -82,6 +82,7 @@
   "/kit/history/",
   "/kit/history/#module-history",
   "/kit/hosting/",
+  "/kit/hosting/#module-backends",
   "/kit/hosting/#module-host",
   "/kit/hosting/#module-hosting",
   "/kit/hosting/#module-react",
