@@ -1,5 +1,5 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
 import { roots } from '../device/compare.ts';
 
@@ -14,6 +14,12 @@ afterAll(() => {
 });
 
 const gid = { gid: d.builtin.globalInvocationId };
+
+// A draw WebGL refuses leaves its error behind and the targets as they were, so a pass that fails
+// must not pass for one that wrote what it was meant to
+afterEach(() => {
+  expect((gl.device as unknown as GLDevice).gl.getError()).toBe(0);
+});
 
 /** Whether the fallback ran the last dispatch of `label` as a GPU form. */
 const onGpu = (label: string) => {
@@ -235,3 +241,93 @@ it('writes elements of four words, and of three that straddle texels', async () 
   expect(onGpu('widths')).toBe(true);
   expect(actual).toEqual(await widths(gpu));
 });
+
+/**
+ * Dispatches one scatter kernel three times in a pass and twice more in later submissions, each
+ * with its own target, permutation and value, into a buffer and a texture.
+ */
+async function repeated(root: TgpuRoot, stored: boolean) {
+  const N = 24;
+  const W = 6;
+  const layout = tgpu.bindGroupLayout({
+    order: { storage: d.arrayOf(d.u32, N), access: 'readonly' },
+    out: { storage: d.arrayOf(d.vec2u, N), access: 'mutable' },
+    image: { storageTexture: d.textureStorage2d('rgba16float', 'write-only') },
+    add: { uniform: d.u32 },
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [8], in: gid })(({ gid: at }) => {
+    'use gpu';
+    if (at.x >= N) return;
+    const to = layout.$.order[at.x] as number;
+    layout.$.out[to] = d.vec2u(at.x + layout.$.add, to);
+    if (!stored) return;
+    std.textureStore(
+      layout.$.image,
+      d.vec2u(to % W, std.intdiv(to, W)),
+      d.vec4f(d.f32(at.x), d.f32(layout.$.add), 1, 0.5),
+    );
+  });
+  const pipeline = root.createComputePipeline({ compute: kernel }).$name('repeated');
+  const targets = [0, 1, 2, 3, 4].map((k) => {
+    // A permutation of its own per dispatch
+    const order = Array.from({ length: N }, (_, i) => (i * (k * 2 + 5) + k) % N);
+    const out = root
+      .createBuffer(
+        d.arrayOf(d.vec2u, N),
+        Array.from({ length: N }, () => d.vec2u(7, 7)),
+      )
+      .$usage('storage');
+    const image = root
+      .createTexture({ size: [W, N / W], format: 'rgba16float' })
+      .$usage('storage', 'sampled');
+    const group = root.createBindGroup(layout, {
+      order: root.createBuffer(d.arrayOf(d.u32, N), order).$usage('storage'),
+      out,
+      image,
+      add: root.createUniform(d.u32, 1000 * (k + 1)).buffer,
+    });
+    return { out, image, group };
+  });
+  const run = (from: number, to: number) => {
+    const encoder = root.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    for (const { group } of targets.slice(from, to)) {
+      pass.setBindGroup(layout, group);
+      pass.dispatchWorkgroups(N / 8);
+    }
+    pass.end();
+    encoder.submit();
+  };
+  run(0, 3);
+  run(3, 4);
+  run(4, 5);
+  const read = tgpu.bindGroupLayout({ from: { texture: d.texture2d(d.f32) } });
+  const seen = root.createMutable(d.arrayOf(d.vec4f, N));
+  const copy = root.createComputePipeline({
+    compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+      'use gpu';
+      for (let i = d.u32(0); i < N; i++) {
+        seen.$[i] = std.textureLoad(read.$.from, d.vec2u(i % W, std.intdiv(i, W)), 0);
+      }
+    }),
+  });
+  const results = [];
+  for (const { out, image } of targets) {
+    copy.with(root.createBindGroup(read, { from: image })).dispatchWorkgroups(1);
+    results.push({
+      out: (await out.read()).map((v) => [v.x, v.y]),
+      image: (await seen.read()).map((v) => [v.x, v.y, v.z, v.w]),
+    });
+  }
+  return results;
+}
+
+it.each([false, true])(
+  'writes what each of several dispatches of one kernel scatters, in a pass and across submits (texture %s)',
+  async (stored) => {
+    const actual = await repeated(gl, stored);
+    expect(onGpu('repeated')).toBe(true);
+    expect(actual).toEqual(await repeated(gpu, stored));
+  },
+);
