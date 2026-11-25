@@ -525,6 +525,11 @@ export function copyLater(
     rows * rowBytes,
   );
   gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  // Older reads that outlast a write would finish after this one: they lose the bytes it covers
+  const end = destinationOffset + size;
+  for (const read of destination.reads.splice(0)) {
+    destination.reads.push(...(read.without?.(destinationOffset, end) ?? [read]));
+  }
   destination.reads.push({
     ready: () => signalled(ctx, packed),
     finish() {
