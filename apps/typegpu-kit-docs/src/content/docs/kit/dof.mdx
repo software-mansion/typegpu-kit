@@ -104,7 +104,7 @@ blur.record(frame);
 ```
 
 - The next `record` reads the distance at the aimed point, and each `record` from then on moves `settings.focus` towards it on the GPU by the frame's `dt`, in one more compute pass. Nothing is read back.
-- Where compute runs on the CPU, as on the [WebGL 2 fallback](/kit/hosting/#where-webgpu-is-missing), the passes read the moving focus from its own buffer, and `settings.focus` holds -1 after each `record` that moves the focus. A focus you write still takes over, as on WebGPU.
+- Where compute runs on the CPU, as on the [WebGL 2 fallback](/kit/hosting/#where-webgpu-is-missing), the passes read the moving focus from its own buffer and `settings.focus` holds -1 after a `record` that moves it. A focus you write still takes over.
 - Each second closes `1 - e^-pull` of the way, as [`clock.ease`](/kit/clock/#easing-towards-a-goal) does, evenly in blur rather than in distance, so a pull from far to near looks as smooth as one from near to far. Without `pull`, the focus jumps.
 - `settings.focus` sets the focus until the first `aim`. A `radius` of your own reads the moving focus with `dof.focus()`.
 - With an encoder in place of the frame, give the seconds yourself, `blur.record(encoder, { dt })`.
