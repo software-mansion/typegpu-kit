@@ -190,18 +190,24 @@ void main() {
 }
 `;
 
-const READBACK_FRAGMENT = `#version 300 es
+/**
+ * Fetches texels of a 2d, 2d-array or 3d texture and writes their bits to an RGBA32UI target,
+ * which every WebGL 2 renders to: a float target would need EXT_color_buffer_float.
+ */
+const readbackFragment = (sampler: 'sampler2D' | 'sampler2DArray' | 'sampler3D') => `#version 300 es
 precision highp float;
-precision highp sampler2D;
-uniform sampler2D source;
+precision highp ${sampler};
+uniform ${sampler} source;
 uniform ivec2 origin;
-out vec4 color;
+uniform int layer;
+out uvec4 color;
 void main() {
-  color = texelFetch(source, ivec2(gl_FragCoord.xy) + origin, 0);
+  ivec2 at = ivec2(gl_FragCoord.xy) + origin;
+  color = floatBitsToUint(texelFetch(source, ${sampler === 'sampler2D' ? 'at' : 'ivec3(at, layer)'}, 0));
 }
 `;
 
-/** Reads a region of one level and layer as RGBA floats by drawing it into an RGBA32F target. */
+/** Reads a region of one level and layer as RGBA floats by drawing their bits into an RGBA32UI target. */
 function readThroughShader(
   ctx: Ctx,
   texture: TextureImpl,
@@ -213,15 +219,11 @@ function readThroughShader(
   height: number,
 ): { values: Float32Array; stride: number } {
   const { gl, state } = ctx;
-  if (!ctx.ext.colorBufferFloat) {
-    throw new Error(
-      `@typegpu/kit-gl: reading '${texture.format}' back needs EXT_color_buffer_float.`,
-    );
-  }
   let source = texture;
   let sourceLevel = level;
   let temporary: WebGLTexture | null = null;
-  if (texture.target !== gl.TEXTURE_2D) {
+  // Cube faces have no texelFetch, so a face is copied out first
+  if (texture.target === gl.TEXTURE_CUBE_MAP) {
     const [w, h] = mipSize(texture, level);
     temporary = gl.createTexture();
     state.scratchTexture(gl.TEXTURE_2D, temporary);
@@ -236,18 +238,22 @@ function readThroughShader(
     );
     sourceLevel = 0;
   }
-  const linked = link(ctx, READBACK_VERTEX, READBACK_FRAGMENT, 'the readback program');
+  const sampler =
+    source.target === gl.TEXTURE_3D
+      ? 'sampler3D'
+      : source.target === gl.TEXTURE_2D_ARRAY
+        ? 'sampler2DArray'
+        : 'sampler2D';
+  const linked = link(ctx, READBACK_VERTEX, readbackFragment(sampler), 'the readback program');
   if (!linked.ok) throw new Error(linked.message);
   const { program, uniforms } = linked.program;
 
   const target = gl.createTexture();
   state.scratchTexture(gl.TEXTURE_2D, target);
-  // One channel reads back a quarter of the bytes where the driver reads R32F as RED
-  const single = texture.info.components === 1 && texture.info.format !== 'rgb9e5ufloat';
-  gl.texStorage2D(gl.TEXTURE_2D, 1, single ? gl.R32F : gl.RGBA32F, width, height);
-  state.scratchTexture(gl.TEXTURE_2D, source.texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, sourceLevel);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, sourceLevel);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32UI, width, height);
+  state.scratchTexture(source.target, source.texture);
+  gl.texParameteri(source.target, gl.TEXTURE_BASE_LEVEL, sourceLevel);
+  gl.texParameteri(source.target, gl.TEXTURE_MAX_LEVEL, sourceLevel);
   texture.levelRange = -1;
   state.sampler(state.scratchUnit, ctx.nearest);
 
@@ -257,6 +263,8 @@ function readThroughShader(
   state.program(program);
   gl.uniform1i(uniforms.get('source')!, state.scratchUnit);
   gl.uniform2i(uniforms.get('origin')!, x, y);
+  const layered = uniforms.get('layer');
+  if (layered) gl.uniform1i(layered, source === texture ? layer : 0);
   state.vertexArray(null);
   state.viewport(0, 0, width, height);
   for (const cap of [
@@ -283,10 +291,10 @@ function readThroughShader(
 
   state.readFramebuffer(ctx.scratch.draw);
   state.readBuffer(gl.COLOR_ATTACHMENT0);
-  const red = single && readsAs(ctx, gl.R32F, gl.RED, gl.FLOAT);
-  const stride = red ? 1 : 4;
-  const out = new Float32Array(width * height * stride);
-  gl.readPixels(0, 0, width, height, red ? gl.RED : gl.RGBA, gl.FLOAT, out);
+  const bits = new Uint32Array(width * height * 4);
+  gl.readPixels(0, 0, width, height, gl.RGBA_INTEGER, gl.UNSIGNED_INT, bits);
+  const out = new Float32Array(bits.buffer);
+  const stride = 4;
   gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
   gl.deleteTexture(target);
   if (temporary) gl.deleteTexture(temporary);
