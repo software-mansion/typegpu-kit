@@ -222,8 +222,10 @@ it('keeps a record per word of a small buffer, however many times an invocation 
 
 it("runs a kernel on the CPU where its records pass WebGL's stride", async () => {
   const actual = await many(gl, 'runtime', 'strided');
-  expect(stats().fallbacks.get('strided')).toBe(
-    'its writes need 288 bytes an invocation; WebGL 2 reads 255 a vertex',
+  // A context that records 64 transform feedback components refuses the 72 these records need
+  // before their stride comes into it
+  expect(stats().fallbacks.get('strided')).toMatch(
+    /^its writes need (288 bytes an invocation; WebGL 2 reads 255 a vertex|72 transform feedback components; WebGL 2 here records \d+)$/,
   );
   expect(actual).toEqual(await many(gpu, 'runtime', 'strided'));
 });
