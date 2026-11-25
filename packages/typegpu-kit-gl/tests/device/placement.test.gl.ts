@@ -136,3 +136,47 @@ test('without timer queries, fences around the draws move a crowded form to the 
     undo();
   }
 });
+
+test('a crowded form whose input only GL holds stays on the GPU, as a CPU run would read it back', async () => {
+  const root = glRoot();
+  try {
+    const fed = root.createMutable(d.arrayOf(d.u32, CROWD));
+    const cells = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+    const feeding = root
+      .createComputePipeline({
+        compute: tgpu.computeFn({ workgroupSize: [64], in: { id: d.builtin.globalInvocationId } })(
+          ({ id }) => {
+            'use gpu';
+            if (id.x >= CROWD) return;
+            fed.$[id.x] = d.u32(1);
+          },
+        ),
+      })
+      .$name('feeding');
+    const adding = root
+      .createComputePipeline({
+        compute: tgpu.computeFn({ workgroupSize: [64], in: { id: d.builtin.globalInvocationId } })(
+          ({ id }) => {
+            'use gpu';
+            if (id.x >= CROWD) return;
+            std.atomicAdd(cells.$[0], fed.$[id.x]);
+          },
+        ),
+      })
+      .$name('fed crowded');
+    const words: number[] = [];
+    for (let frame = 1; frame <= 24; frame++) {
+      feeding.dispatchWorkgroups(Math.ceil(CROWD / 64));
+      adding.dispatchWorkgroups(Math.ceil(CROWD / 64));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (frame % 3 === 0) words.push((await cells.read())[0] as number);
+    }
+    const { stats } = root.device as GLDevice;
+    expect(words).toEqual(Array.from({ length: 8 }, (_, i) => ((i + 1) * 3 * CROWD) >>> 0));
+    expect([...stats.kernels.keys()]).toContain('fed crowded (gpu)');
+    expect([...stats.kernels.keys()]).not.toContain('fed crowded');
+    expect(stats.placement.get('fed crowded')?.startsWith('cpu')).toBe(false);
+  } finally {
+    root.destroy();
+  }
+});

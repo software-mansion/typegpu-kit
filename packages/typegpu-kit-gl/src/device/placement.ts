@@ -50,11 +50,11 @@ const SAMPLE_EVERY = 16;
  */
 const UNSAMPLED = 4;
 /**
- * The least a CPU run costs an invocation, in nanoseconds, as the simplest kernels in
- * LIMITATIONS's table run: a form is tried only when its GPU time beats that run by `KEEP_SHARE`,
- * so a busy form of many cheap invocations is not.
+ * What a CPU run costs an invocation of a simple kernel, in nanoseconds, as LIMITATIONS gives it: a
+ * form is tried only when its GPU time beats such a run by `KEEP_SHARE`, so a busy form of many
+ * cheap invocations is not.
  */
-const CPU_NS = 10;
+const CPU_NS = 40;
 /**
  * The most invocations a costly form may have to be tried on the CPU: a million simple ones run
  * in about 11 ms once, where the forms this rule moves take ten times that on the GPU every time.
@@ -88,6 +88,8 @@ interface Record {
   waitBefore: number;
   /** The last input that GL alone held, for the stats. */
   held: string;
+  /** Whether GL alone held an input at the last dispatch, which a CPU run would read back. */
+  heldNow: boolean;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
   why: 'readback' | 'costly';
   /** The GPU time of the form's last sampled dispatches, in milliseconds. */
@@ -176,6 +178,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       gpuIssue: 0,
       waitBefore: 0,
       held: '',
+      heldNow: false,
       why: 'readback',
       samples: [],
       probe: undefined,
@@ -246,6 +249,7 @@ export function runsOnGpu(
   const record = recordOf(ctx, pipeline, label);
   record.dispatches++;
   const held = heldOnGl(module, groups, record);
+  record.heldNow = held !== undefined;
   if (held === undefined) record.cpuInputs++;
   else record.held = held;
   return !record.onCpu;
@@ -460,7 +464,10 @@ function sampled(ctx: Ctx, record: Record, ms: number): void {
   if (record.samples.length > 2) record.samples.shift();
   if (record.onCpu || record.triedCost || record.samples.length < 2) return;
   const least = Math.min(...record.samples);
-  if (least < COSTLY_MS || record.invocations * CPU_NS * 1e-6 >= least * KEEP_SHARE) return;
+  // A form whose inputs GL alone holds would read them back every CPU run, a wait the GPU time
+  // does not count
+  const cpuMs = record.invocations * CPU_NS * 1e-6;
+  if (least < COSTLY_MS || cpuMs >= least * KEEP_SHARE || record.heldNow) return;
   if (record.invocations > MOST_TRIED) {
     ctx.stats.placement.set(
       record.label,
