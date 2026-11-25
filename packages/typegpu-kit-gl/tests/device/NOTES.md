@@ -114,6 +114,33 @@ fallback's apart from animation and simulation state; WebKit's WebGL 2 (ANGLE on
 same extensions the device uses except `EXT_disjoint_timer_query_webgl2`, which the device does
 not need. `navigator.gpu` is absent in that WebKit build, so plain URLs fall back there too.
 
+## Ocean on SwiftShader
+
+`node scripts/examples.ts --backend nogpu --flag=--use-angle=swiftshader ocean` fails with "The GPU
+device was lost". With `--enable-logging=stderr`, Chromium's GPU process receives `signal 11
+SEGV_ACCERR 000000000000` about 2.4 s after load, during ocean's first frame. The frame bakes the
+environment and lasts about 2 s on SwiftShader; ocean is still behind its cover. Every other example
+survives SwiftShader. Measured at 89f8043f:
+
+- It happens offscreen too (`runScene` on `glRoot()` under the flag), at 800×600, 160×120 and 8×8,
+  so it is neither the canvas compositor nor the surface size.
+- `flush`, `finish` or `getError` after every GL call does not prevent it, so it is not command
+  batching. An earlier note that a round trip after every call avoided it was wrong: the loss is
+  only reported after the next idle tick, which that probe misread.
+- Ruled out by removing each in turn: `deleteBuffer` (the only call in the idle tick where the loss
+  shows; a no-op `deleteBuffer` still crashes), the `FinalizationRegistry` frees, blits,
+  `KHR_parallel_shader_compile` (all 43 programs link synchronously without loss) and
+  `EXT_texture_filter_anisotropic`. `--disable-angle-features=warmUpPipelineCacheAtLink` and
+  `enableParallelCompileAndLink` change nothing either, if Chromium applies them.
+- Deleting a uniform buffer that is bound, rebound or unbound, and an anisotropic sampler with a
+  mip chain, survive on their own.
+- With a `finish` after every call and timestamps against Chromium's log, the process dies
+  about 0.9 s into the `finish` after ocean's samplers are created (`TEXTURE_MAX_LOD` 32), which a
+  synchronous call cannot explain unless SwiftShader is still working through earlier commands.
+  Loss is reported to the page asynchronously, so a call log alone cannot name the culprit.
+
+Narrowing further means bisecting ocean's own passes, which would need changes to the example.
+
 ## Compute as fragment passes
 
 The device runs a compute pipeline's GPU form (`src/glsl/computeModule.ts`) when its module carries
