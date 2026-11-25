@@ -746,6 +746,8 @@ interface Frame {
   readonly params: readonly string[];
   /** Conditions of early returns at its top, before anything else it does, that hold after. */
   readonly guards: string[];
+  /** The `if` statements around its first call, which its own top is not inside. */
+  readonly depth: number;
   /** Its writes of blocks through a vector parameter. */
   readonly blockWrites: BlockWrite[];
 }
@@ -1361,7 +1363,8 @@ uint ${name}() {
         if (returns(statement[2] as Statement) && this.#beforeWrites()) {
           this.#exit = statement[1] as Expression;
         }
-        if (returns(statement[2] as Statement) && this.#loops === 0 && this.#branches === 0) {
+        const top = this.#branches === (this.#frame?.depth ?? 0);
+        if (returns(statement[2] as Statement) && this.#loops === 0 && top) {
           this.#guard = statement[1] as Expression;
         }
         this.#branches++;
@@ -2139,6 +2142,7 @@ ${stored.join('\n')}
       records: new Map(),
       params: options.args.map((arg) => arg.name),
       guards: [],
+      depth: this.#branches,
       blockWrites: [],
     };
     this.#functions.add(options.name);

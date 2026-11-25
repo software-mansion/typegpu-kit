@@ -834,6 +834,19 @@ function blockKernels(): [string, Make, number | string][] {
       2,
     ],
     [
+      'owns a block through a guarded helper it first calls under a condition',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          const o = d.vec2i(g.xy) * 2;
+          if (g.x % 2 === 0) put(o, d.u32(1));
+          put(o + d.vec2i(1, 0), d.u32(2));
+        });
+      },
+      2,
+    ],
+    [
       'owns a 1 × 2 pair through a guarded helper',
       (root) => {
         const { put } = parts(root, true);
