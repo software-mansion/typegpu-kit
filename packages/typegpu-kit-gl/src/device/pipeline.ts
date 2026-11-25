@@ -210,11 +210,12 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
     const blend = target.blend;
     const info = formatInfo(ctx.formats, target.format);
     const mask = target.writeMask ?? 0xf;
-    if (blend && !info.blendable && info.kind === 'float') {
+    // A target that cannot be rendered to was reported, with its extension, when it was created
+    if (blend && info.renderable && !info.blendable && info.kind === 'float') {
       // WebGPU rejects this too, without the `float32-blendable` feature this device then lacks
       ctx.errors.report(
         'validation',
-        `The pipeline '${descriptor.label ?? ''}' blends into '${target.format}', which needs EXT_float_blend and EXT_color_buffer_float on WebGL 2; it draws without blending.`,
+        `The pipeline '${descriptor.label ?? ''}' blends into '${target.format}', which needs EXT_float_blend on WebGL 2; it draws without blending.`,
       );
     }
     if (!blend || !info.blendable) return { blend: NO_BLEND, mask };
@@ -231,9 +232,12 @@ function renderState(ctx: Ctx, descriptor: GPURenderPipelineDescriptor): RenderS
       mask,
     };
   });
-  if (!ctx.ext.drawBuffersIndexed && targets.length > 1) {
-    const first = JSON.stringify(targets[0]);
-    if (targets.some((target) => JSON.stringify(target) !== first)) {
+  // Without OES_draw_buffers_indexed, a draw leaves out the targets that write nothing, and the
+  // others share one state
+  const written = targets.filter((target) => target.mask !== 0);
+  if (!ctx.ext.drawBuffersIndexed && written.length > 1) {
+    const first = JSON.stringify(written[0]);
+    if (written.some((target) => JSON.stringify(target) !== first)) {
       ctx.errors.report(
         'validation',
         `The pipeline '${descriptor.label ?? ''}' blends or masks its targets differently, which needs OES_draw_buffers_indexed; every target uses the first one's state.`,

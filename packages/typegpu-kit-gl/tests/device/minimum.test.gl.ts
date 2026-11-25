@@ -85,3 +85,41 @@ test('a half-float render target without its extension is an error that names it
     root.destroy();
   }
 });
+
+test('a draw that blends one target and masks the other needs no indexed draw buffers', async () => {
+  const root = glRoot();
+  try {
+    const shade = tgpu.fragmentFn({ out: { glow: d.vec4f, mark: d.vec4f } })(() => {
+      'use gpu';
+      return { glow: d.vec4f(0.5, 0.25, 0, 0), mark: d.vec4f(1) };
+    });
+    const textures = [0, 1].map(() =>
+      root.createTexture({ size: [4, 4], format: 'rgba8unorm' }).$usage('render', 'sampled'),
+    );
+    const [glow, mark] = textures.map((texture) => texture.createView('render'));
+    const add = { srcFactor: 'one', dstFactor: 'one', operation: 'add' } as const;
+    root.device.pushErrorScope('validation');
+    root
+      .createRenderPipeline({
+        vertex: common.fullScreenTriangle,
+        fragment: shade,
+        targets: {
+          glow: { format: 'rgba8unorm', blend: { color: add, alpha: add } },
+          mark: { format: 'rgba8unorm', writeMask: 0 },
+        },
+      })
+      .withColorAttachment({
+        glow: { view: glow!, loadOp: 'clear', storeOp: 'store', clearValue: [0.25, 0, 0, 1] },
+        mark: { view: mark!, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0.5, 0, 1] },
+      })
+      .draw(3);
+    expect(await root.device.popErrorScope()).toBeNull();
+    const [glowed, marked] = await Promise.all(
+      textures.map((texture) => readTexture(root.device, root.unwrap(texture))),
+    );
+    expect(Array.from(glowed!.bytes.subarray(0, 4))).toEqual([191, 64, 0, 255]);
+    expect(Array.from(marked!.bytes.subarray(0, 4))).toEqual([0, 128, 0, 255]);
+  } finally {
+    root.destroy();
+  }
+});

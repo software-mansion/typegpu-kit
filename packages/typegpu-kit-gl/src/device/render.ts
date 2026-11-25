@@ -114,6 +114,11 @@ export function beginRender(ctx: Ctx, targets: PassTargets): RenderPass {
   const [width, height] = first ? mipSize(first.texture, first.level) : [1, 1];
 
   state.drawFramebuffer(fbo);
+  // A draw without OES_draw_buffers_indexed may have left out the targets it did not write
+  const buffers = attachments.map((attachment, i) =>
+    attachment ? gl.COLOR_ATTACHMENT0 + i : gl.NONE,
+  );
+  state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
   state.enable(gl.SCISSOR_TEST, false);
   state.enable(gl.RASTERIZER_DISCARD, false);
   targets.colors.forEach((target, i) => {
@@ -239,15 +244,26 @@ function applyState(pass: RenderPass, pipeline: RenderPipelineImpl): void {
   state.enable(gl.POLYGON_OFFSET_FILL, s.bias !== undefined);
   if (s.bias) state.polygonOffset(s.bias.slope, s.bias.constant);
 
-  const count = pass.targets.colors.length;
-  for (let i = 0; i < count; i++) {
-    const target = s.targets[i];
-    if (target) {
-      state.blend(i, target.blend);
-      state.colorMask(i, target.mask);
-    } else {
-      state.colorMask(i, 0);
+  const colors = pass.targets.colors;
+  if (pass.ctx.ext.drawBuffersIndexed) {
+    for (let i = 0; i < colors.length; i++) {
+      const target = s.targets[i];
+      if (target) {
+        state.blend(i, target.blend);
+        state.colorMask(i, target.mask);
+      } else {
+        state.colorMask(i, 0);
+      }
     }
+  } else {
+    // One blend state and mask for every draw buffer, so a target that writes nothing leaves them
+    const buffers = colors.map((attached, i) =>
+      attached && (s.targets[i]?.mask ?? 0) !== 0 ? gl.COLOR_ATTACHMENT0 + i : gl.NONE,
+    );
+    const shared = s.targets[buffers.findIndex((buffer) => buffer !== gl.NONE)];
+    if (shared) state.blend(0, shared.blend);
+    state.colorMaskAll(shared?.mask ?? 0);
+    state.drawBuffers(buffers.length > 0 ? buffers : [gl.NONE]);
   }
   state.enable(gl.SAMPLE_ALPHA_TO_COVERAGE, s.alphaToCoverage);
   state.enable(gl.RASTERIZER_DISCARD, false);
