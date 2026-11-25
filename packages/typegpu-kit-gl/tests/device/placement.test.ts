@@ -56,6 +56,8 @@ function fakeCtx(options: { timer: boolean; gpuMs: number; signals?: boolean }) 
     stats: createStats(),
     placement: true,
     lost: false,
+    // What the device frees at `destroy`; the fake is never destroyed
+    track: () => () => {},
   } as unknown as Ctx;
   return { ctx, made, deleted, polls };
 }
