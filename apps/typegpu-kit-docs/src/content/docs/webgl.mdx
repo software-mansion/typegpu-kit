@@ -188,7 +188,7 @@ if (stats) {
 }
 ```
 
-Each map is keyed by the pipeline's label, so name your pipelines with `$name`. Read them after a few frames:
+Each map is keyed by the pipeline's label. A pipeline without one, or with TypeGPU's `<unnamed>`, takes its entry function's name, the fragment one for a render pipeline, and a number from the second pipeline whose entry has that name on, such as `flow 2`. Name pipelines with `$name` to choose the key. Read them after a few frames:
 
 <Rules>
 

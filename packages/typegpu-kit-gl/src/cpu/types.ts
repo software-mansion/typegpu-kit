@@ -52,6 +52,8 @@ export interface CpuModule {
   readonly kind: 'compute';
   readonly workgroupSize: readonly [number, number, number];
   readonly bindings: readonly CpuBindingUse[];
+  /** The entry function's name, which names a pipeline without a label. */
+  readonly entry?: string;
   /** Runs every invocation of `x * y * z` workgroups, in order, over `resources`. */
   dispatch(x: number, y: number, z: number, resources: CpuResources): void;
 }
