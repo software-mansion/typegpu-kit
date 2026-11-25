@@ -302,6 +302,7 @@ function targetGroup(pass: RenderPass, s: RenderState, group: number): void {
  */
 function issue(pass: RenderPass, pipeline: RenderPipelineImpl, call: () => void): void {
   const s = pipeline.state;
+  if (!s.writes) return;
   call();
   if (pass.ctx.ext.drawBuffersIndexed || s.shared.length < 2) return;
   const { gl, state } = pass.ctx;

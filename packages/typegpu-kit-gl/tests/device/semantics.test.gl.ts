@@ -1,7 +1,15 @@
 import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { GLDevice } from '../../src/device/index.ts';
-import { compare, compareRoots, hasWebGpu, pixel, readTexture, roots } from './compare.ts';
+import {
+  compare,
+  compareRoots,
+  errorsOf,
+  hasWebGpu,
+  pixel,
+  readTexture,
+  roots,
+} from './compare.ts';
 
 let gpu: TgpuRoot;
 let gl: TgpuRoot;
@@ -231,4 +239,48 @@ describe.skipIf(!hasWebGpu)('render passes keep WebGPU semantics', () => {
       expect(compare(expected, actual).first).toBeUndefined();
     },
   );
+});
+
+/** A triangle over the whole target from vertex positions, in a pipeline with `multisample`. */
+function maskedDraw(mask: number) {
+  return (root: TgpuRoot) => {
+    const color = root
+      .createTexture({ size: [SIZE, SIZE], format: 'rgba8unorm' })
+      .$usage('render', 'sampled');
+    root
+      .createRenderPipeline({
+        vertex: fullScreen,
+        fragment: solid(d.vec4f(1, 0, 0, 1)),
+        targets: { format: 'rgba8unorm' },
+        multisample: { count: 1, mask },
+      })
+      .withColorAttachment({ view: color, clearValue: [0, 0, 1, 1] })
+      .draw(3);
+    return color;
+  };
+}
+
+describe.skipIf(!hasWebGpu)('sample masks', () => {
+  test('a pipeline whose sample mask clears sample 0 writes nothing', async () => {
+    const result = await compareRoots(gpu, gl, maskedDraw(0));
+    expect(pixel(result.expected, 2, 2)).toEqual([0, 0, 255, 255]);
+    expect(result.first).toBeUndefined();
+    const kept = await compareRoots(gpu, gl, maskedDraw(1));
+    expect(pixel(kept.expected, 2, 2)).toEqual([255, 0, 0, 255]);
+    expect(kept.first).toBeUndefined();
+  });
+
+  test('a multisampled pipeline that masks samples is an error that names the mask', async () => {
+    const messages = await errorsOf(gl.device, () =>
+      gl
+        .createRenderPipeline({
+          vertex: fullScreen,
+          fragment: solid(d.vec4f(1, 0, 0, 1)),
+          targets: { format: 'rgba8unorm' },
+          multisample: { count: 4, mask: 0b0101 },
+        })
+        .initSync(),
+    );
+    expect(messages.join('\n')).toMatch(/multisample\.mask/);
+  });
 });
