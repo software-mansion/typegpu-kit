@@ -59,8 +59,9 @@ export function statsOf(root: TgpuRoot): DeviceStats | undefined {
 
 /**
  * Creates a root that runs on WebGL 2. Pass the canvas you draw to, so the device presents to it
- * without a copy; other canvases still work through `web.surface`. Throws if WebGL 2 is missing,
- * or if TypeGPU lacks the patch this package ships.
+ * without a copy. To draw to several canvases at once, pass none: the device then presents to each
+ * through a bitmap transfer. Throws if WebGL 2 is missing, or if TypeGPU lacks the patch this
+ * package ships.
  *
  * @returns a root whose `destroy` also frees the WebGL device
  */

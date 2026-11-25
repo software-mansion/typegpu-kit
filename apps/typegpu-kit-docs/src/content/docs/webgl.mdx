@@ -50,7 +50,7 @@ Then install again. Without the patch, `webgl.init` throws an error that names i
 
 ## What runs on the GPU
 
-Render pipelines draw with WebGL 2 as they do with WebGPU. Their shaders compile to GLSL, and a buffer that a shader reads reaches it as a texture.
+Render pipelines draw with WebGL 2 as they do with WebGPU. Their shaders compile to GLSL. A storage buffer that a shader reads reaches it as a texture, and so does a uniform buffer over 16 KiB; smaller uniforms are uniform blocks.
 
 A kernel runs on the GPU when the fallback can prove where each thread writes. These shapes qualify:
 
@@ -262,7 +262,7 @@ The kit's culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` a
 - **Waiting for the GPU** A CPU kernel that reads what a draw or a GPU kernel wrote waits for the GPU and reads it back, every dispatch. The wait includes every other page's GPU work in the same browser, so two such pages slow each other far more than they share the GPU.
 - **Indirect draws** WebGL 2 has no indirect draws, so the device reads their arguments on the CPU. A draw record a GPU kernel wrote waits for the GPU each frame.
 - **Extensions** An HDR target needs `EXT_color_buffer_half_float` or `EXT_color_buffer_float`. A 32-bit float target needs `EXT_color_buffer_float`, and blending into one `EXT_float_blend`, or fails with an error that names it. Sums, minimums and maximums need both, and run on the CPU without them.
-- **Content security** The device compiles CPU kernels with `new Function`. A page whose content security policy forbids `unsafe-eval` cannot run them.
+- **Content security** The device compiles each compute pipeline's CPU module with `new Function` when the pipeline is created, even one that then runs on the GPU. A page whose content security policy forbids `unsafe-eval` cannot create a compute pipeline.
 - **Browsers** The fallback is checked in Chromium and WebKit, not in Safari or Firefox. Firefox's WebGL on macOS skips the shader translator the other two share, so it is the likeliest to reject a shader.
 
 </Rules>

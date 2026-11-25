@@ -148,7 +148,7 @@ import { webgl } from '@typegpu/kit-gl';
 const hosted = web.host(createScene, { canvas, fallback: webgl.fallback() });
 ```
 
-The fallback root is TypeGPU's own root, on a device that draws with WebGL 2. The scene file and its modules stay as they are. Their shaders compile to GLSL, and a buffer that a shader reads reaches it as a texture.
+The fallback root is TypeGPU's own root, on a device that draws with WebGL 2. The scene file and its modules stay as they are. Their shaders compile to GLSL, and a storage buffer that a shader reads reaches it as a texture.
 
 <Rules>
 
