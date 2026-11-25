@@ -116,3 +116,60 @@ it('counts a write through a pointer a helper takes', () => {
     }),
   ).toBe(true);
 });
+
+/** The words a dispatch of `body` over a 64-word `data` reports it stored to. */
+function storedWords(
+  body: (data: TgpuMutable<d.WgslArray<d.U32>>) => (i: number) => void,
+  schema: d.AnyWgslData = d.arrayOf(d.u32, 64),
+) {
+  const { root } = recordingRoot();
+  const data = root.createMutable(schema as d.WgslArray<d.U32>).$name('data');
+  const step = body(data);
+  const kernel = tgpu.computeFn({ workgroupSize: [4], in: { id: d.builtin.globalInvocationId } })(({
+    id,
+  }) => {
+    'use gpu';
+    step(id.x);
+  });
+  const module = compile(tgpu.resolve([kernel], { unstable_shaderGenerator: new CpuGenerator() }));
+  const bytes = new ArrayBuffer(64 * 4);
+  module.dispatch(1, 1, 1, {
+    buffer: () => ({ bytes, offset: 0, size: bytes.byteLength }),
+    texture: () => {
+      throw new Error('unexpected texture');
+    },
+    sampler: () => {
+      throw new Error('unexpected sampler');
+    },
+  });
+  root.destroy();
+  return module.writtenWords?.(0, 0);
+}
+
+it('reports the words a dispatch stored to, from the lowest to past the highest', () => {
+  expect(
+    storedWords((data) => (i: number) => {
+      'use gpu';
+      data.$[10 + i * 3] = data.$[i] + 1;
+    }),
+  ).toEqual([10, 20]);
+  expect(
+    storedWords((data) => (i: number) => {
+      'use gpu';
+      if (i === 9) data.$[i] = 1;
+      data.$[0] += data.$[1];
+    }),
+  ).toEqual([0, 1]);
+});
+
+it('cannot tell the words an atomic stored to', () => {
+  expect(
+    storedWords(
+      (data) => (i: number) => {
+        'use gpu';
+        std.atomicAdd(data.$[i] as never, 1);
+      },
+      d.arrayOf(d.atomic(d.u32), 64),
+    ),
+  ).toBeUndefined();
+});

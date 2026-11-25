@@ -33,39 +33,42 @@ type ViewConstructor = typeof Uint32Array | typeof Int32Array | typeof Float32Ar
 const ASSIGNS = /^(?:=(?![=>])|(?:\+|-|\*\*?|\/|%|&&?|\|\|?|\^|<<|>>>?|\?\?)=|\+\+|--)/;
 
 /**
- * Whether a mutable buffer binding is only ever read, so a dispatch leaves GL's copy current:
- * every use of the typed arrays declared over it is an element read, `name[…]` neither assigned
- * nor stepped. Any other use, such as an atomic helper or a pointer taking the array whole, counts
- * as a write, so the answer errs towards one.
+ * The stores a module makes through a buffer binding, as the spans of `code` that index them, or
+ * undefined when it cannot tell: every use of the typed arrays declared over the binding must be
+ * an element access, `name[…]`, which is a store when assigned or stepped. Any other use, such as
+ * an atomic helper or a pointer taking the array whole, makes the answer undefined, so a caller
+ * that needs to know what was written treats the whole binding as written.
  */
-function onlyRead(code: string, use: CpuBindingUse): boolean {
+function storesOf(code: string, use: CpuBindingUse): [number, number][] | undefined {
   const declared = new RegExp(
     `^const ([A-Za-z_$][\\w$]*) = \\$buffer\\(${use.group}, ?${use.binding}, ?`,
     'gm',
   );
   const names = [...code.matchAll(declared)].map((match) => match[1]!);
-  if (names.length === 0) return false;
-  const body = code
-    .split('\n')
-    .filter((line) => !line.startsWith('//') && !/^const [A-Za-z_$][\w$]* = \$buffer\(/.test(line))
-    .join('\n');
+  if (names.length === 0) return undefined;
+  const stores: [number, number][] = [];
   for (const name of names) {
     const uses = new RegExp(`(?<![\\w$.])${name.replaceAll('$', '\\$')}(?![\\w$])`, 'g');
-    for (const match of body.matchAll(uses)) {
+    for (const match of code.matchAll(uses)) {
       const at = match.index;
-      if (/(?:\+\+|--)[\s(]*$/.test(body.slice(Math.max(0, at - 8), at))) return false;
+      const line = code.slice(code.lastIndexOf('\n', at) + 1, at);
       let i = at + name.length;
-      if (body[i] !== '[') return false;
-      for (let depth = 0; i < body.length; i++) {
-        if (body[i] === '[') depth++;
-        else if (body[i] === ']' && --depth === 0) break;
+      const declaring = line === 'const ' && code.startsWith(' = $buffer(', i);
+      if (line.startsWith('//') || declaring) continue;
+      if (code[i] !== '[') return undefined;
+      const open = i;
+      for (let depth = 0; i < code.length; i++) {
+        if (code[i] === '[') depth++;
+        else if (code[i] === ']' && --depth === 0) break;
       }
+      const close = i;
       i++;
-      while (i < body.length && /[\s)]/.test(body[i]!)) i++;
-      if (ASSIGNS.test(body.slice(i, i + 4))) return false;
+      while (i < code.length && /[\s)]/.test(code[i]!)) i++;
+      const stepped = /(?:\+\+|--)[\s(]*$/.test(code.slice(Math.max(0, at - 8), at));
+      if (stepped || ASSIGNS.test(code.slice(i, i + 4))) stores.push([open + 1, close]);
     }
   }
-  return true;
+  return stores;
 }
 
 export function compile(code: string): CpuModule {
@@ -79,16 +82,34 @@ export function compile(code: string): CpuModule {
     !entry.size.every((n) => Number.isInteger(n) && n > 0)
   )
     throw new Error('@typegpu/kit-gl CPU: invalid entry metadata');
+  // A binding the module only reads leaves GL's copy current; one whose stores it can see reports
+  // the words they touched, through `$written` around each store's index
+  const tracked = new Map<string, number>();
+  const edits: { at: number; end: number; slot: number }[] = [];
   const bindings = code
     .split('\n')
     .filter((line) => line.startsWith('//#binding '))
     .map((line) => {
       const value = JSON.parse(line.slice(11)) as CpuBindingUse;
       const use = { ...value, group: Number(value.group) };
-      return use.kind === 'buffer' && use.writes && onlyRead(code, use)
-        ? { ...use, writes: false }
-        : use;
+      if (use.kind !== 'buffer' || !use.writes) return use;
+      const stores = storesOf(code, use);
+      if (stores === undefined) return use;
+      if (stores.length === 0) return { ...use, writes: false };
+      const slot = tracked.size;
+      tracked.set(`${use.group}:${use.binding}`, slot);
+      for (const [at, end] of stores) edits.push({ at, end, slot });
+      return use;
     });
+  for (const { at, end, slot } of edits.toSorted((a, b) => b.at - a.at)) {
+    code = `${code.slice(0, at)}$written(${slot},(${code.slice(at, end)}))${code.slice(end)}`;
+  }
+  const ranges = new Float64Array(tracked.size * 2);
+  const writtenAt = (slot: number, index: number) => {
+    if (index < ranges[slot * 2]!) ranges[slot * 2] = index;
+    if (index + 1 > ranges[slot * 2 + 1]!) ranges[slot * 2 + 1] = index + 1;
+    return index;
+  };
   const privateNames = [...code.matchAll(/^\/\/#private (\w+)$/gm)].map((match) => match[1]!);
   const workgroupState = code.includes('//#scope workgroup');
   const workgroupVariables = [...code.matchAll(/^\/\/#workgroup (.*)$/gm)].map(
@@ -121,6 +142,7 @@ export function compile(code: string): CpuModule {
       '$textures',
       '$pack',
       '$unpack',
+      '$written',
     ],
     `${code}\nconst arrayLength = (value) => value.$.length;\nreturn {bind:(resources)=>{$resources=resources;${resourceBindings.map(({ name, value }) => `${name}=${value};`).join('')}${resetCaches}},release:()=>{$resources=undefined;${resourceBindings.map(({ name }) => `${name}=undefined;`).join('')}${resetCaches}},kernel:${entry.name},${entry.phases ? `phases:${entry.name}_phases,` : ''}capture:(values=[])=>{${privateNames.map((name, i) => `values[${i}]=${name};`).join('')}return values;},restore:(values)=>{${privateNames.map((name, i) => `${name}=values[${i}];`).join('')}},resetWorkgroup:()=>{${workgroupVariables.map(({ name, initial, reset }) => reset ?? `${name}=${initial};`).join('')}}};`,
   ) as (
@@ -134,6 +156,7 @@ export function compile(code: string): CpuModule {
     texturesValue: typeof textureOps,
     packValue: typeof pack,
     unpackValue: typeof unpack,
+    writtenValue: typeof writtenAt,
   ) => Execution;
   let boundResources: CpuResources | undefined;
   let heldExecution: Execution | undefined;
@@ -183,12 +206,22 @@ export function compile(code: string): CpuModule {
       textureOps,
       pack,
       unpack,
+      writtenAt,
     );
   return {
     kind: 'compute',
     workgroupSize: entry.size,
     bindings,
+    writtenWords(group, binding) {
+      const slot = tracked.get(`${group}:${binding}`);
+      if (slot === undefined) return undefined;
+      return [ranges[slot * 2]!, ranges[slot * 2 + 1]!];
+    },
     dispatch(x: number, y: number, z: number, resources: CpuResources): void {
+      for (let slot = 0; slot < tracked.size; slot++) {
+        ranges[slot * 2] = Infinity;
+        ranges[slot * 2 + 1] = 0;
+      }
       for (const count of [x, y, z])
         if (!Number.isInteger(count) || count < 0)
           throw new Error('@typegpu/kit-gl CPU: invalid dispatch size');
