@@ -456,6 +456,16 @@ const copy = (name: string, ...uses: GpuResourceUse[][]): GpuCommand => ({
   uses: uses.flat(),
 });
 
+/** The interfaces the instrumentation patches, all of which a set must have. */
+const PATCHED = [
+  'GPUDevice',
+  'GPUQueue',
+  'GPUCommandEncoder',
+  'GPUComputePassEncoder',
+  'GPURenderPassEncoder',
+  'GPUTexture',
+] as const satisfies readonly (keyof Interfaces)[];
+
 // Track installation globally because WebGPU prototypes are global
 let instrumented = false;
 let untracked = 0;
@@ -489,7 +499,9 @@ export function withoutTracking<T>(fn: () => T): T {
  */
 export function instrument(options: InstrumentOptions = {}): Instrumentation {
   const sets: Interfaces[] = [];
-  if (typeof GPUCommandEncoder !== 'undefined') sets.push(globalThis);
+  // A browser may define some of WebGPU's interfaces and not the rest, as WebKit does without it
+  const own = globalThis as Partial<Interfaces>;
+  if (PATCHED.every((name) => own[name] !== undefined)) sets.push(globalThis);
   if (options.interfaces) sets.push(options.interfaces);
   if (sets.length === 0) {
     return {
