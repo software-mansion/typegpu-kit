@@ -316,7 +316,10 @@ function plainlyComplete(attachments: readonly Attachment[]): boolean {
   });
 }
 
-/** A framebuffer with these attachments, made once and kept until a texture in it is freed. */
+/**
+ * A framebuffer with these attachments, made once and kept until a texture in it is freed, with
+ * every attachment's GL copy current.
+ */
 export function framebuffer(
   ctx: Ctx,
   colors: readonly (Attachment | null)[],
@@ -329,6 +332,9 @@ export function framebuffer(
   if (cached) {
     cache.delete(key);
     cache.set(key, cached);
+    // A kernel may have written an attachment on the CPU since; a clear still needs the upload
+    // when the texture has levels or layers beyond the one attached
+    for (const texture of cached.textures) onGl(ctx, texture);
     return cached.fbo;
   }
   if (cache.size >= KEPT_FRAMEBUFFERS) {
