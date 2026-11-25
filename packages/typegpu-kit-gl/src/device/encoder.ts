@@ -21,7 +21,9 @@ import {
   setBindGroup,
   setPipeline,
 } from './render.ts';
+import { shaped } from './interfaces.ts';
 import { textureImpl } from './texture.ts';
+import { carry, querySetImpl, resolve, write, writesOf } from './timestamps.ts';
 import {
   copyBufferToTexture,
   copyTextureToBuffer,
@@ -141,6 +143,34 @@ export function createRenderBundleEncoder(
   } as unknown as GPURenderBundleEncoder;
 }
 
+function copyBuffer(
+  ctx: Ctx,
+  source: BufferImpl,
+  sourceOffset: number,
+  destination: BufferImpl,
+  destinationOffset: number,
+  size: number,
+): void {
+  // Into a buffer only the CPU reads, a copy of what GL alone holds need not wait for it
+  const later =
+    destination.usage & BUFFER_USAGE.MAP_READ &&
+    source.gpuNewer &&
+    source.data &&
+    !source.destroyed &&
+    !destination.destroyed;
+  if (later) {
+    copyLater(ctx, source, sourceOffset, destination, destinationOffset, size);
+    return;
+  }
+  source.sync();
+  destination.sync();
+  destination.bytes.set(
+    source.bytes.subarray(sourceOffset, sourceOffset + size),
+    destinationOffset,
+  );
+  written(destination, destinationOffset, destinationOffset + size);
+}
+
 export function createCommandEncoder(
   ctx: Ctx,
   descriptor: GPUCommandEncoderDescriptor = {},
@@ -163,14 +193,16 @@ export function createCommandEncoder(
       if (open) fail(`beginRenderPass while a ${open} pass is open.`);
       open = 'render';
       const targets = resolveTargets(passDescriptor);
+      const writes = writesOf(ctx, passDescriptor.timestampWrites);
       record((exec) => {
+        write(ctx, writes, 'beginning');
         exec.render = beginRender(ctx, targets);
       });
       const inPass = (command: RenderCommand) =>
         record((exec) => {
           if (exec.render) command(exec.render);
         });
-      return {
+      return shaped('GPURenderPassEncoder', {
         __brand: 'GPURenderPassEncoder',
         label: passDescriptor.label ?? '',
         ...renderRecorder(inPass),
@@ -223,24 +255,30 @@ export function createCommandEncoder(
         end() {
           open = undefined;
           record((exec) => {
-            if (exec.render) endRender(exec.render);
-            exec.render = undefined;
+            try {
+              if (exec.render) endRender(exec.render);
+            } finally {
+              exec.render = undefined;
+              write(ctx, writes, 'end');
+            }
           });
         },
-      } as unknown as GPURenderPassEncoder;
+      }) as unknown as GPURenderPassEncoder;
     },
 
     beginComputePass(passDescriptor: GPUComputePassDescriptor = {}): GPUComputePassEncoder {
       if (open) fail(`beginComputePass while a ${open} pass is open.`);
       open = 'compute';
+      const writes = writesOf(ctx, passDescriptor.timestampWrites);
       record((exec) => {
+        write(ctx, writes, 'beginning');
         exec.compute = { pipeline: undefined, groups: [] };
       });
       const inPass = (command: (pass: ComputePass) => void) =>
         record((exec) => {
           if (exec.compute) command(exec.compute);
         });
-      return {
+      return shaped('GPUComputePassEncoder', {
         __brand: 'GPUComputePassEncoder',
         label: passDescriptor.label ?? '',
         setPipeline(pipeline: GPUComputePipeline) {
@@ -276,9 +314,10 @@ export function createCommandEncoder(
           open = undefined;
           record((exec) => {
             exec.compute = undefined;
+            write(ctx, writes, 'end');
           });
         },
-      } as unknown as GPUComputePassEncoder;
+      }) as unknown as GPUComputePassEncoder;
     },
 
     copyBufferToBuffer(
@@ -291,27 +330,15 @@ export function createCommandEncoder(
       const destination = bufferImpl(to);
       const size = given ?? source.size - sourceOffset;
       record(() => {
-        // Into a buffer only the CPU reads, a copy of what GL alone holds need not wait for it
-        const later =
-          destination.usage & BUFFER_USAGE.MAP_READ &&
-          source.gpuNewer &&
-          source.data &&
-          !source.destroyed &&
-          !destination.destroyed;
-        if (later) {
-          copyLater(ctx, source, sourceOffset, destination, destinationOffset, size);
-          return;
+        // Resolves not yet back go along to the destination, without waiting for the GPU
+        const carried = carry(ctx, source, sourceOffset, destination, destinationOffset, size);
+        try {
+          copyBuffer(ctx, source, sourceOffset, destination, destinationOffset, size);
+        } finally {
+          carried();
         }
-        source.sync();
-        destination.sync();
-        destination.bytes.set(
-          source.bytes.subarray(sourceOffset, sourceOffset + size),
-          destinationOffset,
-        );
-        written(destination, destinationOffset, destinationOffset + size);
       });
     },
-
     copyBufferToTexture(
       source: GPUTexelCopyBufferInfo,
       destination: GPUTexelCopyTextureInfo,
@@ -366,19 +393,15 @@ export function createCommandEncoder(
     },
 
     resolveQuerySet(
-      _set: GPUQuerySet,
+      set: GPUQuerySet,
       first: number,
       count: number,
       destination: GPUBuffer,
       offset: number,
     ) {
       const impl = bufferImpl(destination);
-      record(() => {
-        impl.sync();
-        impl.bytes.fill(0, offset, offset + count * 8);
-        written(impl, offset, offset + count * 8);
-        void first;
-      });
+      const from = querySetImpl(set);
+      record(() => resolve(ctx, from, first, count, impl, offset));
     },
 
     writeTimestamp: noop,
@@ -398,7 +421,7 @@ export function createCommandEncoder(
       } as unknown as GPUCommandBuffer;
     },
   };
-  return encoder as unknown as GPUCommandEncoder;
+  return shaped('GPUCommandEncoder', encoder) as unknown as GPUCommandEncoder;
 }
 
 /** Runs a command buffer's commands. */

@@ -72,6 +72,21 @@ export interface InstrumentOptions {
    * otherwise `'animate'`.
    */
   readonly frames?: 'animation-frame' | 'animate';
+  /**
+   * Patches these interface objects besides WebGPU's own, for a device whose objects are not
+   * WebGPU's, such as the WebGL fallback's `webgl.interfaces`. Default none.
+   */
+  readonly interfaces?: Interfaces;
+}
+
+/** The interface objects whose prototypes the instrumentation patches, by WebGPU's names. */
+export interface Interfaces {
+  readonly GPUDevice: { readonly prototype: GPUDevice };
+  readonly GPUQueue: { readonly prototype: GPUQueue };
+  readonly GPUCommandEncoder: { readonly prototype: GPUCommandEncoder };
+  readonly GPUComputePassEncoder: { readonly prototype: GPUComputePassEncoder };
+  readonly GPURenderPassEncoder: { readonly prototype: GPURenderPassEncoder };
+  readonly GPUTexture: { readonly prototype: GPUTexture };
 }
 
 export interface DriveOptions {
@@ -392,16 +407,21 @@ function beginSplitPass(
   state: EncoderState,
   descriptor: GPUComputePassDescriptor,
   next: (descriptor: GPUComputePassDescriptor) => GPUComputePassEncoder,
+  prototype: GPUComputePassEncoder,
 ) {
   const pass = ++passCount;
   const outer = state.groups.slice();
-  return splitComputePass(descriptor.label ?? '', (label, groups) => {
-    const entry = command('compute', 'compute pass', undefined, label);
-    entry.groups = [...outer, ...groups];
-    entry.pass = pass;
-    entry.split = true;
-    return trackPass(state, entry, next(withTimestamps(state, entry, {})));
-  });
+  return splitComputePass(
+    descriptor.label ?? '',
+    (label, groups) => {
+      const entry = command('compute', 'compute pass', undefined, label);
+      entry.groups = [...outer, ...groups];
+      entry.pass = pass;
+      entry.split = true;
+      return trackPass(state, entry, next(withTimestamps(state, entry, {})));
+    },
+    prototype,
+  );
 }
 
 function countCall(pass: PassEncoder) {
@@ -468,7 +488,10 @@ export function withoutTracking<T>(fn: () => T): T {
  * @returns patches you start with hooks, and dispose of to remove
  */
 export function instrument(options: InstrumentOptions = {}): Instrumentation {
-  if (typeof GPUCommandEncoder === 'undefined') {
+  const sets: Interfaces[] = [];
+  if (typeof GPUCommandEncoder !== 'undefined') sets.push(globalThis);
+  if (options.interfaces) sets.push(options.interfaces);
+  if (sets.length === 0) {
     return {
       start() {},
       stop() {},
@@ -485,15 +508,6 @@ export function instrument(options: InstrumentOptions = {}): Instrumentation {
   const frames = options.frames ?? (typeof window === 'undefined' ? 'animate' : 'animation-frame');
   let disposed = false;
   const { patch, restore } = patches();
-
-  // Use the original encoder method to keep timestamp copies out of recorded commands
-  const copyBufferToBuffer = GPUCommandEncoder.prototype.copyBufferToBuffer as (
-    source: GPUBuffer,
-    sourceOffset: number,
-    destination: GPUBuffer,
-    destinationOffset: number,
-    size: number,
-  ) => undefined;
 
   let hooks: InstrumentHooks | undefined;
   let timestampQuery: boolean | undefined;
@@ -693,7 +707,7 @@ export function instrument(options: InstrumentOptions = {}): Instrumentation {
     return state?.hooks === hooks ? state : undefined;
   }
 
-  trackMetadata(patch);
+  for (const set of sets) trackMetadata(patch, set);
 
   // Driven frames draw into a texture of the canvas's size and configuration in place of the
   // canvas's own, so the browser doesn't hand the canvas's texture between the GPU and the screen
@@ -785,216 +799,252 @@ export function instrument(options: InstrumentOptions = {}): Instrumentation {
     );
   }
 
-  whileActive(GPUDevice.prototype, 'createCommandEncoder', (self, args, next) => {
-    const encoder = next(...args);
-    knowTimestamps(self);
-    if (hooks && untracked === 0) {
-      encoders.set(encoder, { device: self, hooks, commands: [], batches: [], groups: [] });
-      lastDevice = self;
-    }
-    return encoder;
-  });
+  /** Patches one set of interface objects, which shadow WebGPU's own names in here. */
+  function patchInterfaces({
+    GPUDevice,
+    GPUQueue,
+    GPUCommandEncoder,
+    GPUComputePassEncoder,
+    GPURenderPassEncoder,
+  }: Interfaces) {
+    // Use the original encoder method to keep timestamp copies out of recorded commands
+    const copyBufferToBuffer = GPUCommandEncoder.prototype.copyBufferToBuffer as (
+      source: GPUBuffer,
+      sourceOffset: number,
+      destination: GPUBuffer,
+      destinationOffset: number,
+      size: number,
+    ) => undefined;
 
-  whileActive(GPUCommandEncoder.prototype, 'beginComputePass', (self, [descriptor = {}], next) => {
-    const state = tracked(self);
-    if (!state) return next(descriptor);
+    whileActive(GPUDevice.prototype, 'createCommandEncoder', (self, args, next) => {
+      const encoder = next(...args);
+      knowTimestamps(self);
+      if (hooks && untracked === 0) {
+        encoders.set(encoder, { device: self, hooks, commands: [], batches: [], groups: [] });
+        lastDevice = self;
+      }
+      return encoder;
+    });
 
-    if (state.hooks.splitComputePasses() && timeable(state, descriptor)) {
-      return beginSplitPass(state, descriptor, next);
-    }
+    whileActive(
+      GPUCommandEncoder.prototype,
+      'beginComputePass',
+      (self, [descriptor = {}], next) => {
+        const state = tracked(self);
+        if (!state) return next(descriptor);
 
-    return beginComputePass(state, descriptor, next);
-  });
+        if (state.hooks.splitComputePasses() && timeable(state, descriptor)) {
+          return beginSplitPass(state, descriptor, next, GPUComputePassEncoder.prototype);
+        }
 
-  whileActive(GPUCommandEncoder.prototype, 'beginRenderPass', (self, [descriptor], next) => {
-    const state = tracked(self);
-    if (!state) return next(descriptor);
-
-    const entry = command('render', 'render pass', descriptor.label);
-    entry.groups = state.groups.slice();
-    entry.pass = ++passCount;
-    if (state.hooks.capturing()) entry.uses = usesOfAttachments(descriptor);
-
-    return trackPass(state, entry, next(withTimestamps(state, entry, descriptor)));
-  });
-
-  whileActive(GPUCommandEncoder.prototype, 'pushDebugGroup', (self, [group], next) => {
-    tracked(self)?.groups.push(group);
-    return next(group);
-  });
-
-  whileActive(GPUCommandEncoder.prototype, 'popDebugGroup', (self, args, next) => {
-    tracked(self)?.groups.pop();
-    return next(...args);
-  });
-
-  // Optional chaining skips building the copy's command unless its frame is captured
-  whileActive(GPUCommandEncoder.prototype, 'copyBufferToBuffer', (self, args, next) => {
-    captured(self)?.commands.push(
-      copy(
-        'copyBufferToBuffer',
-        usesOf(args[0], 'read'),
-        usesOf((typeof args[1] === 'number' ? args[2] : args[1]) as GPUBuffer, 'write'),
-      ),
+        return beginComputePass(state, descriptor, next);
+      },
     );
-    return next(...args);
-  });
 
-  whileActive(GPUCommandEncoder.prototype, 'copyBufferToTexture', (self, args, next) => {
-    captured(self)?.commands.push(
-      copy('copyBufferToTexture', usesOf(args[0].buffer, 'read'), usesOf(args[1].texture, 'write')),
-    );
-    return next(...args);
-  });
+    whileActive(GPUCommandEncoder.prototype, 'beginRenderPass', (self, [descriptor], next) => {
+      const state = tracked(self);
+      if (!state) return next(descriptor);
 
-  whileActive(GPUCommandEncoder.prototype, 'copyTextureToBuffer', (self, args, next) => {
-    captured(self)?.commands.push(
-      copy('copyTextureToBuffer', usesOf(args[0].texture, 'read'), usesOf(args[1].buffer, 'write')),
-    );
-    return next(...args);
-  });
+      const entry = command('render', 'render pass', descriptor.label);
+      entry.groups = state.groups.slice();
+      entry.pass = ++passCount;
+      if (state.hooks.capturing()) entry.uses = usesOfAttachments(descriptor);
 
-  whileActive(GPUCommandEncoder.prototype, 'copyTextureToTexture', (self, args, next) => {
-    captured(self)?.commands.push(
-      copy(
-        'copyTextureToTexture',
-        usesOf(args[0].texture, 'read'),
-        usesOf(args[1].texture, 'write'),
-      ),
-    );
-    return next(...args);
-  });
+      return trackPass(state, entry, next(withTimestamps(state, entry, descriptor)));
+    });
 
-  whileActive(GPUCommandEncoder.prototype, 'clearBuffer', (self, args, next) => {
-    captured(self)?.commands.push(copy('clearBuffer', usesOf(args[0], 'write')));
-    return next(...args);
-  });
+    whileActive(GPUCommandEncoder.prototype, 'pushDebugGroup', (self, [group], next) => {
+      tracked(self)?.groups.push(group);
+      return next(group);
+    });
 
-  // Resolve passes timed before a stop even while profiling is stopped, so submission releases
-  // their query sets
-  patch(GPUCommandEncoder.prototype, 'finish', (self, args, next) => {
-    const state = encoders.get(self);
-    // Resolve at offset 0 to meet the 256-byte alignment requirement, then copy each batch to
-    // its destination
-    for (const batch of state?.batches ?? []) {
-      const { slot, first, passes: timed } = batch;
-      if (batch.generation !== slot.generation) continue;
-      batch.state = 'finished';
-      self.resolveQuerySet(slot.querySet, first * 2, timed.length * 2, slot.resolve, 0);
-      copyBufferToBuffer.call(
-        self,
-        slot.resolve,
-        0,
-        slot.readback,
-        first * bytesPerPass,
-        timed.length * bytesPerPass,
-      );
-    }
-
-    const buffer = next(...args);
-    if (state) commandBuffers.set(buffer, state);
-    return buffer;
-  });
-
-  whileActive(GPUComputePassEncoder.prototype, 'setPipeline', (self, [pipeline], next) => {
-    addPipeline(self, pipeline, hooks?.capturing());
-    return next(pipeline);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'setPipeline', (self, [pipeline], next) => {
-    addPipeline(self, pipeline, hooks?.capturing());
-    return next(pipeline);
-  });
-
-  for (const Pass of [GPUComputePassEncoder, GPURenderPassEncoder] as const) {
-    whileActive(Pass.prototype as PassEncoder, 'setBindGroup', (self, args, next) => {
-      capturedPass(self)?.uses.push(...usesOfBindGroup(args[1]));
+    whileActive(GPUCommandEncoder.prototype, 'popDebugGroup', (self, args, next) => {
+      tracked(self)?.groups.pop();
       return next(...args);
+    });
+
+    // Optional chaining skips building the copy's command unless its frame is captured
+    whileActive(GPUCommandEncoder.prototype, 'copyBufferToBuffer', (self, args, next) => {
+      captured(self)?.commands.push(
+        copy(
+          'copyBufferToBuffer',
+          usesOf(args[0], 'read'),
+          usesOf((typeof args[1] === 'number' ? args[2] : args[1]) as GPUBuffer, 'write'),
+        ),
+      );
+      return next(...args);
+    });
+
+    whileActive(GPUCommandEncoder.prototype, 'copyBufferToTexture', (self, args, next) => {
+      captured(self)?.commands.push(
+        copy(
+          'copyBufferToTexture',
+          usesOf(args[0].buffer, 'read'),
+          usesOf(args[1].texture, 'write'),
+        ),
+      );
+      return next(...args);
+    });
+
+    whileActive(GPUCommandEncoder.prototype, 'copyTextureToBuffer', (self, args, next) => {
+      captured(self)?.commands.push(
+        copy(
+          'copyTextureToBuffer',
+          usesOf(args[0].texture, 'read'),
+          usesOf(args[1].buffer, 'write'),
+        ),
+      );
+      return next(...args);
+    });
+
+    whileActive(GPUCommandEncoder.prototype, 'copyTextureToTexture', (self, args, next) => {
+      captured(self)?.commands.push(
+        copy(
+          'copyTextureToTexture',
+          usesOf(args[0].texture, 'read'),
+          usesOf(args[1].texture, 'write'),
+        ),
+      );
+      return next(...args);
+    });
+
+    whileActive(GPUCommandEncoder.prototype, 'clearBuffer', (self, args, next) => {
+      captured(self)?.commands.push(copy('clearBuffer', usesOf(args[0], 'write')));
+      return next(...args);
+    });
+
+    // Resolve passes timed before a stop even while profiling is stopped, so submission releases
+    // their query sets
+    patch(GPUCommandEncoder.prototype, 'finish', (self, args, next) => {
+      const state = encoders.get(self);
+      // Resolve at offset 0 to meet the 256-byte alignment requirement, then copy each batch to
+      // its destination
+      for (const batch of state?.batches ?? []) {
+        const { slot, first, passes: timed } = batch;
+        if (batch.generation !== slot.generation) continue;
+        batch.state = 'finished';
+        self.resolveQuerySet(slot.querySet, first * 2, timed.length * 2, slot.resolve, 0);
+        copyBufferToBuffer.call(
+          self,
+          slot.resolve,
+          0,
+          slot.readback,
+          first * bytesPerPass,
+          timed.length * bytesPerPass,
+        );
+      }
+
+      const buffer = next(...args);
+      if (state) commandBuffers.set(buffer, state);
+      return buffer;
+    });
+
+    whileActive(GPUComputePassEncoder.prototype, 'setPipeline', (self, [pipeline], next) => {
+      addPipeline(self, pipeline, hooks?.capturing());
+      return next(pipeline);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'setPipeline', (self, [pipeline], next) => {
+      addPipeline(self, pipeline, hooks?.capturing());
+      return next(pipeline);
+    });
+
+    for (const Pass of [GPUComputePassEncoder, GPURenderPassEncoder] as const) {
+      whileActive(Pass.prototype as PassEncoder, 'setBindGroup', (self, args, next) => {
+        capturedPass(self)?.uses.push(...usesOfBindGroup(args[1]));
+        return next(...args);
+      });
+    }
+
+    whileActive(GPUComputePassEncoder.prototype, 'dispatchWorkgroups', (self, args, next) => {
+      countCall(self);
+      return next(...args);
+    });
+
+    whileActive(
+      GPUComputePassEncoder.prototype,
+      'dispatchWorkgroupsIndirect',
+      (self, args, next) => {
+        countCall(self);
+        capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
+        return next(...args);
+      },
+    );
+
+    whileActive(GPURenderPassEncoder.prototype, 'setVertexBuffer', (self, args, next) => {
+      capturedPass(self)?.uses.push(...usesOf(args[1], 'read'));
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'setIndexBuffer', (self, args, next) => {
+      capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'draw', (self, args, next) => {
+      countCall(self);
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'drawIndexed', (self, args, next) => {
+      countCall(self);
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'drawIndirect', (self, args, next) => {
+      countCall(self);
+      capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'drawIndexedIndirect', (self, args, next) => {
+      countCall(self);
+      capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
+      return next(...args);
+    });
+
+    whileActive(GPURenderPassEncoder.prototype, 'executeBundles', (self, args, next) => {
+      countCall(self);
+      return next(...args);
+    });
+
+    whileActive(GPUQueue.prototype, 'writeBuffer', (_self, args, next) => {
+      recordUpload('writeBuffer', args[0]);
+      return next(...args);
+    });
+
+    whileActive(GPUQueue.prototype, 'writeTexture', (_self, args, next) => {
+      recordUpload('writeTexture', args[0].texture);
+      return next(...args);
+    });
+
+    whileActive(GPUQueue.prototype, 'copyExternalImageToTexture', (_self, args, next) => {
+      recordUpload('copyExternalImageToTexture', args[1].texture);
+      return next(...args);
+    });
+
+    patch(GPUQueue.prototype, 'submit', (_self, [buffers], next) => {
+      // Read an iterable once, and hand the queue the array read
+      const list = Array.isArray(buffers) ? buffers : [...buffers];
+      const result = next(list);
+
+      for (const buffer of list) {
+        const state = commandBuffers.get(buffer);
+        if (!state) continue;
+
+        state.hooks.submitted(state.commands);
+        for (const batch of state.batches) {
+          if (batch.generation !== batch.slot.generation) continue;
+          batch.state = 'submitted';
+          settle(batch.slot);
+        }
+      }
+
+      return result;
     });
   }
 
-  whileActive(GPUComputePassEncoder.prototype, 'dispatchWorkgroups', (self, args, next) => {
-    countCall(self);
-    return next(...args);
-  });
-
-  whileActive(GPUComputePassEncoder.prototype, 'dispatchWorkgroupsIndirect', (self, args, next) => {
-    countCall(self);
-    capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'setVertexBuffer', (self, args, next) => {
-    capturedPass(self)?.uses.push(...usesOf(args[1], 'read'));
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'setIndexBuffer', (self, args, next) => {
-    capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'draw', (self, args, next) => {
-    countCall(self);
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'drawIndexed', (self, args, next) => {
-    countCall(self);
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'drawIndirect', (self, args, next) => {
-    countCall(self);
-    capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'drawIndexedIndirect', (self, args, next) => {
-    countCall(self);
-    capturedPass(self)?.uses.push(...usesOf(args[0], 'read'));
-    return next(...args);
-  });
-
-  whileActive(GPURenderPassEncoder.prototype, 'executeBundles', (self, args, next) => {
-    countCall(self);
-    return next(...args);
-  });
-
-  whileActive(GPUQueue.prototype, 'writeBuffer', (_self, args, next) => {
-    recordUpload('writeBuffer', args[0]);
-    return next(...args);
-  });
-
-  whileActive(GPUQueue.prototype, 'writeTexture', (_self, args, next) => {
-    recordUpload('writeTexture', args[0].texture);
-    return next(...args);
-  });
-
-  whileActive(GPUQueue.prototype, 'copyExternalImageToTexture', (_self, args, next) => {
-    recordUpload('copyExternalImageToTexture', args[1].texture);
-    return next(...args);
-  });
-
-  patch(GPUQueue.prototype, 'submit', (_self, [buffers], next) => {
-    // Read an iterable once, and hand the queue the array read
-    const list = Array.isArray(buffers) ? buffers : [...buffers];
-    const result = next(list);
-
-    for (const buffer of list) {
-      const state = commandBuffers.get(buffer);
-      if (!state) continue;
-
-      state.hooks.submitted(state.commands);
-      for (const batch of state.batches) {
-        if (batch.generation !== batch.slot.generation) continue;
-        batch.state = 'submitted';
-        settle(batch.slot);
-      }
-    }
-
-    return result;
-  });
+  for (const set of sets) patchInterfaces(set);
 
   return {
     start(started) {

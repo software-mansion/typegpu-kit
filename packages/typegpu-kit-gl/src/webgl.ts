@@ -19,6 +19,7 @@ import {
   type GLDevice,
 } from './device/index.ts';
 import { KitGenerator } from './generator.ts';
+import { interfaces as deviceInterfaces } from './device/interfaces.ts';
 import { defineConstants } from './globals.ts';
 import { assertPatched } from './patched.ts';
 
@@ -34,6 +35,13 @@ export interface FallbackOptions extends Omit<InitOptions, 'canvas'> {
   /** Hosts on WebGL 2 even where WebGPU works, to see a scene on the fallback. Default false. */
   readonly force?: boolean;
 }
+
+/**
+ * WebGPU's interface objects, such as `GPUCommandEncoder`, for the devices `init` creates, which
+ * are not WebGPU's own objects. Give them to `gpuDebug.install({ interfaces })` from
+ * `@typegpu/kit/debug` to profile a scene on WebGL 2.
+ */
+export const interfaces = deviceInterfaces;
 
 /** Reports whether this browser can create a WebGL 2 context. */
 export function supported(): boolean {

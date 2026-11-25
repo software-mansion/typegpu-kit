@@ -18,6 +18,7 @@ function replay(pass: GPUComputePassEncoder, [method, args]: Call) {
 export function splitComputePass(
   label: string,
   begin: (label: string, groups: readonly string[]) => GPUComputePassEncoder,
+  prototype: GPUComputePassEncoder,
 ): GPUComputePassEncoder {
   const state = new Map<string, Call>();
   const debugGroups: string[] = [];
@@ -56,7 +57,6 @@ export function splitComputePass(
   };
 
   // State methods use their first argument as a slot key, for example `setBindGroup(0, …)`
-  const prototype = GPUComputePassEncoder.prototype;
   const properties: PropertyDescriptorMap = {
     label: {
       get: () => label,

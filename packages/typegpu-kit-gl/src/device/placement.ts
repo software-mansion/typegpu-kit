@@ -24,6 +24,7 @@ import type { BufferImpl } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import type { GpuCompute } from './gpuCompute.ts';
 import type { TextureImpl } from './texture.ts';
+import { disjointFor, mayTime } from './timestamps.ts';
 
 /** Dispatches watched before a decision. */
 const WINDOW = 6;
@@ -449,7 +450,7 @@ export function beginProbe(
   record.invocations = invocations;
   const { gl } = ctx;
   const timer = ctx.ext.timerQuery;
-  if (timer) {
+  if (timer && mayTime(ctx)) {
     const query = gl.createQuery();
     if (!query) return undefined;
     gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
@@ -505,7 +506,7 @@ function pollProbes(ctx: Ctx): void {
   if (state.probing.size === 0) return;
   const { gl } = ctx;
   const timer = ctx.ext.timerQuery;
-  const disjoint = timer ? (gl.getParameter(timer.GPU_DISJOINT_EXT) as boolean) : false;
+  const disjoint = timer ? disjointFor(ctx, state) : false;
   for (const record of state.probing) {
     const probe = record.probe as Probe;
     let ms: number | undefined;
