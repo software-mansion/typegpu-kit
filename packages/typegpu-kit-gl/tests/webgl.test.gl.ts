@@ -79,3 +79,10 @@ test('draws a triangle on WebGL 2 as WebGPU does, the right way up', async () =>
   gpu.destroy();
   gl.destroy();
 });
+
+test('reports no WGSL language features, whatever the browser has', async () => {
+  const gl = await webgl.init();
+  expect(navigator.gpu).toBeDefined();
+  expect(gl.enabledWgslLanguageFeatures.size).toBe(0);
+  gl.destroy();
+});

@@ -46,6 +46,12 @@ export async function init(options: InitOptions = {}): Promise<TgpuRoot> {
   defineConstants();
   const device = createDevice(options);
   const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: KitGenerator });
+  // TypeGPU reads WGSL language features from `navigator.gpu`, whatever the device. This device
+  // compiles no WGSL, so it has none, also in a browser whose WebGPU has them but gave no adapter
+  Object.defineProperty(root, 'enabledWgslLanguageFeatures', {
+    value: new Set<string>(),
+    configurable: true,
+  });
 
   const destroyRoot = root.destroy.bind(root);
   root.destroy = () => {
