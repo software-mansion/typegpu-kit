@@ -1,4 +1,4 @@
-import { pipelines, type SizeSource } from '@typegpu/kit';
+import { backends, pipelines, type SizeSource } from '@typegpu/kit';
 import { randf } from '@typegpu/noise';
 import {
   common,
@@ -295,8 +295,67 @@ export function createJumpFlood(
     );
   });
 
+  // Where compute runs on the CPU, placing and linking with atomics keeps those passes there and
+  // reads the cells back around the flood. Instead each seed places itself, each cell gathers the
+  // lowest seed in it, and every region counts as touching every other: a region is the
+  // intersection of its bisectors' half-planes, so the nearest bisector is one of a neighbour's
+  const alone = backends.of(root).compute === 'cpu';
+
+  const seedKernel = tgpu.computeFn({
+    workgroupSize: [SEED_WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= count) return;
+
+    randf.seed2(d.vec2f(d.f32(gid.x), 0.5));
+    const center = d.vec2f(randf.sample(), randf.sample());
+    const radius = std.mix(CIRCLES[0], CIRCLES[1], randf.sample());
+    const speed = (randf.sample() * 2 - 1) * DRIFT;
+    const angle = randf.sample() * TAU + time.$ * speed;
+    const circling = center + d.vec2f(std.cos(angle), std.sin(angle)) * radius;
+    writableSeeds.$[gid.x] = Seed({
+      position: std.clamp(circling, d.vec2f(0), d.vec2f(1 - 0.5 / size)),
+    });
+  });
+
+  const gatherKernel = tgpu.computeFn({
+    workgroupSize: [WORKGROUP, WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= size || gid.y >= size) return;
+    let lowest = d.u32(NONE);
+    for (let seed = d.u32(0); seed < count; seed++) {
+      const cell = d.vec2u(readableSeeds.$[seed].position * size);
+      if (cell.x === gid.x && cell.y === gid.y) {
+        lowest = seed;
+        break;
+      }
+    }
+    writableCells.$[gid.y * size + gid.x] = lowest;
+  });
+
+  if (alone) {
+    // Each row sets every bit but its own seed's and those past the last seed
+    touching.write(
+      Array.from({ length: count * words }, (_, i) => {
+        const from = Math.floor(i / words);
+        let bits = 0;
+        for (let bit = 0; bit < 32; bit++) {
+          const to = (i % words) * 32 + bit;
+          if (to < count && to !== from) bits |= 1 << bit;
+        }
+        return bits >>> 0;
+      }),
+    );
+  }
+
   const clearPipeline = root.createComputePipeline({ compute: clearKernel });
-  const placePipeline = root.createComputePipeline({ compute: placeKernel });
+  const placePipeline = alone
+    ? root.createComputePipeline({ compute: seedKernel })
+    : root.createComputePipeline({ compute: placeKernel });
+  const gatherPipeline = root.createComputePipeline({ compute: gatherKernel });
   const neighboursPipeline = root.createComputePipeline({ compute: neighboursKernel });
 
   /** Each way of setting the flood's dispatch values, made when first chosen. */
@@ -356,20 +415,26 @@ export function createJumpFlood(
 
     initAsync: () =>
       pipelines.compile([
-        clearPipeline,
+        ...(alone ? [gatherPipeline] : [clearPipeline, neighboursPipeline]),
         placePipeline,
         flooding.pipeline,
-        neighboursPipeline,
         drawPipeline,
       ]),
 
     /** Places seeds, records the first `passes` flood dispatches and finds touching regions. */
     flood(pass: TgpuComputePass, passes = steps.length) {
-      pass.setPipeline(clearPipeline);
-      pass.dispatchWorkgroups(cellGroups, cellGroups);
-      pass.setPipeline(placePipeline);
-      pass.setBindGroup(placing, placingCells);
-      pass.dispatchWorkgroups(Math.ceil(count / SEED_WORKGROUP));
+      if (alone) {
+        pass.setPipeline(placePipeline);
+        pass.dispatchWorkgroups(Math.ceil(count / SEED_WORKGROUP));
+        pass.setPipeline(gatherPipeline);
+        pass.dispatchWorkgroups(cellGroups, cellGroups);
+      } else {
+        pass.setPipeline(clearPipeline);
+        pass.dispatchWorkgroups(cellGroups, cellGroups);
+        pass.setPipeline(placePipeline);
+        pass.setBindGroup(placing, placingCells);
+        pass.dispatchWorkgroups(Math.ceil(count / SEED_WORKGROUP));
+      }
 
       pass.setPipeline(flooding.pipeline);
       for (let index = 0; index < passes; index++) {
@@ -383,6 +448,7 @@ export function createJumpFlood(
         view.patch({ result });
       }
 
+      if (alone) return;
       pass.setPipeline(neighboursPipeline);
       pass.dispatchWorkgroups(cellGroups, cellGroups);
     },

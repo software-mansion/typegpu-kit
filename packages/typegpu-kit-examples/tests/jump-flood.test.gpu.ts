@@ -1,3 +1,4 @@
+import { backends } from '@typegpu/kit';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 import { d } from 'typegpu';
 import { describe, expect, it } from 'vitest';
@@ -15,6 +16,8 @@ interface Flooding {
   readonly time?: number;
   /** Flood dispatches to record. Default all. */
   readonly passes?: number;
+  /** Where the device says compute runs. Default the GPU. */
+  readonly compute?: 'gpu' | 'cpu';
 }
 
 /** Floods a grid once, and reads back each cell's seed and each seed's position. */
@@ -25,8 +28,15 @@ async function flooded({
   seeds = 12,
   time = 0,
   passes,
+  compute = 'gpu',
 }: Flooding) {
   const root = await gpuRoot();
+  // A device that says its compute runs on the CPU places seeds by gathering, without atomics
+  if (compute === 'cpu') {
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+  }
   const flood = createJumpFlood(root, {
     size,
     seeds,
@@ -57,6 +67,14 @@ async function flooded({
 }
 
 describe('jump flood', () => {
+  it('places and floods the same seeds where compute runs on the CPU', async () => {
+    const options = { immediates: false, size: 128, seeds: 64, time: 3 };
+    const shared = await flooded(options);
+    const gathered = await flooded({ ...options, compute: 'cpu' });
+    expect(gathered.positions).toEqual(shared.positions);
+    expect(gathered.cells).toEqual(shared.cells);
+  });
+
   it('finds the nearest seed of almost every cell, with immediates or with bind groups', async () => {
     const withImmediates = await flooded({ immediates: true });
     const withBindGroups = await flooded({ immediates: false });
