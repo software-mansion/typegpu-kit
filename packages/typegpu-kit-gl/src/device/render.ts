@@ -33,7 +33,9 @@ export interface PassTargets {
         readonly clearStencil: number | undefined;
         readonly depthReadOnly: boolean;
         readonly stencilReadOnly: boolean;
-        readonly store: boolean;
+        /** Whether the pass keeps the depth it wrote; false with `depthStoreOp: 'discard'`. */
+        readonly storeDepth: boolean;
+        readonly storeStencil: boolean;
       }
     | undefined;
 }
@@ -100,7 +102,8 @@ export function resolveTargets(descriptor: GPURenderPassDescriptor): PassTargets
               : undefined,
           depthReadOnly: depthStencil.depthReadOnly ?? false,
           stencilReadOnly: depthStencil.stencilReadOnly ?? false,
-          store: depthStencil.depthStoreOp !== 'discard',
+          storeDepth: depthStencil.depthStoreOp !== 'discard',
+          storeStencil: depthStencil.stencilStoreOp !== 'discard',
         }
       : undefined,
   };
@@ -197,12 +200,18 @@ export function endRender(pass: RenderPass): void {
     if (target.store) written(ctx, target.attachment.texture);
     else discards.push(gl.COLOR_ATTACHMENT0 + i);
   });
-  if (targets.depth) {
-    if (targets.depth.store) written(ctx, targets.depth.attachment.texture);
-    else {
-      const { info } = targets.depth.attachment.texture;
-      discards.push(info.hasStencil ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT);
+  const depth = targets.depth;
+  if (depth) {
+    const { info } = depth.attachment.texture;
+    const discardDepth = info.hasDepth && !depth.storeDepth;
+    const discardStencil = info.hasStencil && !depth.storeStencil;
+    if ((info.hasDepth && !discardDepth) || (info.hasStencil && !discardStencil)) {
+      written(ctx, depth.attachment.texture);
     }
+    // Each aspect is discarded alone: invalidating a combined attachment loses both
+    if (discardDepth && discardStencil) discards.push(gl.DEPTH_STENCIL_ATTACHMENT);
+    else if (discardDepth) discards.push(gl.DEPTH_ATTACHMENT);
+    else if (discardStencil) discards.push(gl.STENCIL_ATTACHMENT);
   }
   if (discards.length > 0) {
     state.drawFramebuffer(pass.fbo);
