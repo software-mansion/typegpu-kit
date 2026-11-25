@@ -32,6 +32,7 @@ async function sampled(compute: 'gpu' | 'cpu', steps: number) {
     const stepped = stepping.beginComputePass();
     waves.record(stepped);
     stepped.end();
+    waves.recordMips(stepping);
     stepping.submit();
   }
 
