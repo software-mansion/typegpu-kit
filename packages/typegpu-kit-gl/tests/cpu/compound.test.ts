@@ -1,4 +1,5 @@
-import { d, tgpu } from 'typegpu';
+import { workgroup } from '@typegpu/kit';
+import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
 import { cpuRoot } from './device.ts';
 
@@ -31,5 +32,46 @@ it('evaluates scalar compound destinations once for buffers and local arrays', a
     .dispatchWorkgroups(1);
   expect(await values.read()).toEqual([11, 20, 30, 40]);
   expect(await output.read()).toEqual([1, 1, 30, 20]);
+  root.destroy();
+});
+
+const f = () => {
+  'use gpu';
+  std.workgroupBarrier();
+  return d.u32(1);
+};
+
+it('suspends a compound RHS without losing its cached destination', async () => {
+  const root = cpuRoot();
+  const values = root.createMutable(d.arrayOf(d.u32, 2), [10, 20]);
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [1], in: { id: d.builtin.localInvocationId } })(
+        ({ id }) => {
+          'use gpu';
+          values.$[id.x + 1] += f();
+        },
+      ),
+    })
+    .dispatchWorkgroups(1);
+  expect(await values.read()).toEqual([10, 21]);
+  root.destroy();
+});
+
+it('uses a workgroup scan result in an indexed compound store', async () => {
+  const root = cpuRoot();
+  const values = root.createMutable(d.arrayOf(d.u32, 5), [10, 20, 30, 40, 50]);
+  const prefix = workgroup.scan(workgroup.sum(d.u32), 4);
+  root
+    .createComputePipeline({
+      compute: tgpu.computeFn({ workgroupSize: [4], in: { lid: d.builtin.localInvocationIndex } })(
+        ({ lid }) => {
+          'use gpu';
+          values.$[lid + 1] += prefix(lid + 1, lid);
+        },
+      ),
+    })
+    .dispatchWorkgroups(1);
+  expect(await values.read()).toEqual([10, 20, 31, 43, 56]);
   root.destroy();
 });
