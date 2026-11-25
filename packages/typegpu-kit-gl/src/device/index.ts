@@ -21,6 +21,7 @@ import { formatTable } from './formats.ts';
 import { featuresOf, limitsOf } from './limits.ts';
 import {
   createComputePipeline,
+  createComputePipelineAsync,
   createRenderPipeline,
   createRenderPipelineAsync,
 } from './pipeline.ts';
@@ -313,7 +314,7 @@ export function createDevice(options: DeviceOptions = {}): GLDevice {
     createComputePipeline: (descriptor: GPUComputePipelineDescriptor) =>
       createComputePipeline(ctx, descriptor),
     createComputePipelineAsync: (descriptor: GPUComputePipelineDescriptor) =>
-      Promise.resolve(createComputePipeline(ctx, descriptor)),
+      createComputePipelineAsync(ctx, descriptor),
     createRenderPipeline: (descriptor: GPURenderPipelineDescriptor) =>
       createRenderPipeline(ctx, descriptor),
     createRenderPipelineAsync: (descriptor: GPURenderPipelineDescriptor) =>

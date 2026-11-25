@@ -1,6 +1,7 @@
 /** Render and compute pipelines: a linked program with its fixed-function state, or a CPU kernel. */
 
 import type { CpuModule } from '../cpu/types.ts';
+import { PASS_VERTEX } from '../glsl/computeModule.ts';
 import { BASE_VERTEX, FIRST_INSTANCE } from '../glsl/renderModule.ts';
 import { makeLayout, makePipelineLayout, pipelineLayoutGroups } from './binding.ts';
 import { type Ctx, IMPL, SHADER_STAGE } from './context.ts';
@@ -499,9 +500,38 @@ export async function createRenderPipelineAsync(
   return pipeline;
 }
 
+/**
+ * Starts compiling the programs of a compute module's GPU form without waiting for them; resolves
+ * once the driver has linked them all.
+ */
+function compileGpu(ctx: Ctx, descriptor: GPUComputePipelineDescriptor): Promise<unknown> {
+  const module = moduleImpl(descriptor.compute.module);
+  if (module.kind !== 'compute' || !module.gpu || !ctx.gpuCompute) return Promise.resolve();
+  const label = `a pass of '${descriptor.label ?? ''}'`;
+  return Promise.all(
+    module.gpu.passes.map((pass) =>
+      linkAsync(ctx, pass.scatter?.vertex ?? PASS_VERTEX, pass.fragment, label),
+    ),
+  );
+}
+
+/** Links the programs of a compute module's GPU form in the background, then makes the pipeline. */
+export async function createComputePipelineAsync(
+  ctx: Ctx,
+  descriptor: GPUComputePipelineDescriptor,
+): Promise<GPUComputePipeline> {
+  await compileGpu(ctx, descriptor);
+  return createComputePipeline(ctx, descriptor, true);
+}
+
+/**
+ * Makes a compute pipeline. Its GPU form's programs start compiling here and, unless `eager`, are
+ * linked at the first dispatch, so a pipeline made and not yet used costs no wait.
+ */
 export function createComputePipeline(
   ctx: Ctx,
   descriptor: GPUComputePipelineDescriptor,
+  eager = false,
 ): GPUComputePipeline {
   const label = descriptor.label ?? '';
   const module = moduleImpl(descriptor.compute.module);
@@ -511,17 +541,45 @@ export function createComputePipeline(
   else if (module.kind === 'error') error = module.message;
   else error = `The compute pipeline '${label}' was given a render module.`;
   if (error) ctx.errors.report('validation', error);
-  let gpu: GpuCompute | undefined;
   if (module.kind === 'compute' && module.gpuError) ctx.stats.fallbacks.set(label, module.gpuError);
+  let impl: ComputePipelineImpl = { label, module: cpu, error, gpu: undefined };
   if (module.kind === 'compute' && module.gpu && ctx.gpuCompute) {
-    const prepared = prepareGpu(ctx, label, module.module, module.gpu);
-    if (typeof prepared === 'string') ctx.stats.fallbacks.set(label, prepared);
-    else gpu = prepared;
+    const form = module.gpu;
+    if (!eager) void compileGpu(ctx, descriptor);
+    let gpu: GpuCompute | undefined;
+    let unprepared = true;
+    const prepared = () => {
+      if (unprepared) {
+        unprepared = false;
+        const made = prepareGpu(ctx, label, module.module, form);
+        if (typeof made === 'string') ctx.stats.fallbacks.set(label, made);
+        else gpu = made;
+      }
+      return gpu;
+    };
+    if (eager) prepared();
+    impl = {
+      label,
+      module: cpu,
+      error,
+      get gpu() {
+        return prepared();
+      },
+    };
   }
+  return computePipeline(descriptor, label, cpu, impl);
+}
+
+function computePipeline(
+  descriptor: GPUComputePipelineDescriptor,
+  label: string,
+  cpu: CpuModule | undefined,
+  impl: ComputePipelineImpl,
+): GPUComputePipeline {
   const explicit =
     descriptor.layout === 'auto' ? undefined : pipelineLayoutGroups(descriptor.layout);
   return {
-    [IMPL]: { label, module: cpu, error, gpu } satisfies ComputePipelineImpl,
+    [IMPL]: impl,
     __brand: 'GPUComputePipeline',
     label,
     getBindGroupLayout(index: number): GPUBindGroupLayout {

@@ -12,7 +12,13 @@ export type Linked =
   | { readonly ok: true; readonly program: Program }
   | { readonly ok: false; readonly message: string };
 
-const caches = new WeakMap<Ctx, Map<string, Linked | Promise<Linked>>>();
+/** A program the driver may still be compiling, which `settle` finishes at once if it is. */
+interface Pending {
+  readonly done: Promise<Linked>;
+  settle(): Linked;
+}
+
+const caches = new WeakMap<Ctx, Map<string, Linked | Pending>>();
 
 function cacheOf(ctx: Ctx) {
   let cache = caches.get(ctx);
@@ -112,7 +118,7 @@ export function link(
   const key = `${vertex}\u0000${fragmentSource}`;
   const cache = cacheOf(ctx);
   const cached = cache.get(key);
-  if (cached && !(cached instanceof Promise)) return cached;
+  if (cached) return 'settle' in cached ? cached.settle() : cached;
   const { program, shaders, sources } = start(ctx, vertex, fragmentSource);
   const linked = finish(ctx, program, shaders, sources, label);
   cache.set(key, linked);
@@ -135,21 +141,29 @@ export function linkAsync(
   const key = `${vertex}\u0000${fragmentSource}`;
   const cache = cacheOf(ctx);
   const cached = cache.get(key);
-  if (cached) return Promise.resolve(cached);
+  if (cached) return 'settle' in cached ? cached.done : Promise.resolve(cached);
   const { gl } = ctx;
   const { program, shaders, sources } = start(ctx, vertex, fragmentSource);
-  const pending = new Promise<Linked>((resolve) => {
-    const poll = () => {
-      if (ctx.lost || gl.getProgramParameter(program, parallel.COMPLETION_STATUS_KHR)) {
-        const linked = finish(ctx, program, shaders, sources, label);
-        cache.set(key, linked);
-        resolve(linked);
-        return;
-      }
-      setTimeout(poll, 4);
-    };
-    poll();
+  let linked: Linked | undefined;
+  let resolve!: (linked: Linked) => void;
+  const done = new Promise<Linked>((settled) => {
+    resolve = settled;
   });
-  cache.set(key, pending);
-  return pending;
+  // Asking for the link status waits for the driver, so a caller that cannot wait settles early
+  const settle = () => {
+    if (!linked) {
+      linked = finish(ctx, program, shaders, sources, label);
+      cache.set(key, linked);
+      resolve(linked);
+    }
+    return linked;
+  };
+  const poll = () => {
+    if (linked) return;
+    if (ctx.lost || gl.getProgramParameter(program, parallel.COMPLETION_STATUS_KHR)) settle();
+    else setTimeout(poll, 4);
+  };
+  cache.set(key, { done, settle });
+  poll();
+  return done;
 }
