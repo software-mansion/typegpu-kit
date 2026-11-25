@@ -13,6 +13,8 @@
  * live lists throw
  * @owns 4 buffers, 2 pipelines: the live slots per group, their counts, the indirect draws and
  * the indirect dispatches
+ * @owns 1 buffer and 1 pipeline more on a backend that runs compute on the CPU: each slot's group,
+ * which `compact` marks before it lists
  * @records `compact` after the table's flush, or `finish` after the kernels that `list`, then
  * `draw` or `dispatch` each group from it.
  */
@@ -27,6 +29,7 @@ import {
   type TgpuComputePass,
   type TgpuRoot,
 } from 'typegpu';
+import * as backends from './backends.ts';
 import * as pipelines from './pipelines.ts';
 import { checkDispatch } from './dispatchLimit.ts';
 import type { Inject } from './inject.ts';
@@ -248,8 +251,10 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
     .createBuffer(d.arrayOf(d.u32, groups * 3))
     .$usage('storage', 'indirect')
     .$name(`${label}_dispatches`);
+  let groupBuffer: (TgpuBuffer<d.WgslArray<d.U32>> & StorageFlag) | undefined;
   const destroy = () => {
     for (const buffer of [slotsBuffer, countsBuffer, argsBuffer, dispatchBuffer]) buffer.destroy();
+    groupBuffer?.destroy();
   };
 
   const written = slotsBuffer.as('mutable');
@@ -336,9 +341,52 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
     dispatching.$[g * 3 + 2] = 1;
   });
 
-  const compactPipeline = root
-    .createComputePipeline({ compute: compact })
-    .$name(`${label}_compact`);
+  // Where compute runs on the CPU, a workgroup that synchronises costs a thread switch per row.
+  // Testing a row needs no other thread, so a backend that draws such kernels on the GPU keeps
+  // that there: each thread marks its own slot with its group, and one thread per block of slots
+  // then lists the marked ones, reading no row
+  const alone = backends.of(root).compute === 'cpu';
+  groupBuffer = alone
+    ? root.createBuffer(d.arrayOf(d.u32, capacity)).$usage('storage').$name(`${label}_groups`)
+    : undefined;
+  const marked = groupBuffer?.as('mutable');
+
+  const mark = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const i = gid.x;
+    if (i >= capacity) return;
+    let group = d.u32(groups);
+    if (alive === undefined || alive(i)) {
+      group = groupOf === undefined ? d.u32(0) : d.u32(groupOf(i));
+    }
+    marked!.$[i] = group;
+  });
+
+  const gather = tgpu.computeFn({
+    workgroupSize: [1],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    for (let j = d.u32(0); j < WORKGROUP; j++) {
+      const i = gid.x * WORKGROUP + j;
+      if (i < capacity) {
+        const group = marked!.$[i];
+        if (group < groups) {
+          written.$[group * capacity + std.atomicAdd(counts.$[group], 1)] = i;
+        }
+      }
+    }
+  });
+
+  const compactPipeline = alone
+    ? root.createComputePipeline({ compute: mark }).$name(`${label}_mark`)
+    : root.createComputePipeline({ compute: compact }).$name(`${label}_compact`);
+  const gatherPipeline = alone
+    ? root.createComputePipeline({ compute: gather }).$name(`${label}_gather`)
+    : undefined;
   const finishPipeline = root
     .createComputePipeline({ compute: finishing })
     .$name(`${label}_finish`);
@@ -401,7 +449,12 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
     dispatches: dispatchBuffer,
     setDraw,
 
-    initAsync: () => pipelines.compile([compactPipeline, finishPipeline]),
+    initAsync: () =>
+      pipelines.compile([
+        compactPipeline,
+        ...(gatherPipeline ? [gatherPipeline] : []),
+        finishPipeline,
+      ]),
 
     list,
 
@@ -410,6 +463,10 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
       if (rows > 0) {
         pass.setPipeline(compactPipeline);
         pass.dispatchWorkgroups(Math.ceil(rows / WORKGROUP));
+        if (gatherPipeline) {
+          pass.setPipeline(gatherPipeline);
+          pass.dispatchWorkgroups(Math.ceil(rows / WORKGROUP));
+        }
       }
       finish(pass);
     },

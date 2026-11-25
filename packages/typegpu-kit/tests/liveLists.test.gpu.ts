@@ -1,56 +1,65 @@
 import { d, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
-import { liveLists, frames, table } from '../src/index.ts';
+import { backends, liveLists, frames, table } from '../src/index.ts';
 import { gpuRoot } from '@typegpu/kit/testing/dawn';
 
 const Block = table.define('Block', { host: { kind: d.u32 } });
 /** Multiples of 3 list in group 0, other odd rows in group 1, the rest nowhere. */
 const groupOf = (i: number) => (i % 3 === 0 ? 0 : i % 2 === 1 ? 1 : 2);
 
-it('lists every live row once, in its group, across workgroups', async () => {
-  const root = await gpuRoot();
-  const capacity = 5000;
-  const blocks = table.create(root, Block, { capacity });
+// A device that says its compute runs on the CPU marks each slot, then lists the marked ones
+it.each(['gpu', 'cpu'] as const)(
+  'lists every live row once, in its group, across workgroups, where compute runs on the %s',
+  async (compute) => {
+    const root = await gpuRoot();
+    Object.assign(root.device, {
+      [backends.brand]: { ...backends.of(root), compute } satisfies backends.Backend,
+    });
+    const capacity = 5000;
+    const blocks = table.create(root, Block, { capacity });
 
-  const live = liveLists.create(root, {
-    capacity,
-    alive: Block.alive.pipe(blocks.inject()),
-    group: Block.kind.pipe(blocks.inject()),
-    draws: [{ vertexCount: 3 }, { vertexCount: 3 }, { indexCount: 6 }],
-  });
+    const live = liveLists.create(root, {
+      capacity,
+      alive: Block.alive.pipe(blocks.inject()),
+      group: Block.kind.pipe(blocks.inject()),
+      draws: [{ vertexCount: 3 }, { vertexCount: 3 }, { indexCount: 6 }],
+    });
 
-  const ids = Array.from({ length: capacity }, (_, i) => blocks.add({ kind: i % 4 })); // 3 skips
-  for (let i = 0; i < capacity; i += 3) blocks.remove(ids[i]);
-  blocks.remove(ids[capacity - 1]); // shrinks the span
+    const ids = Array.from({ length: capacity }, (_, i) => blocks.add({ kind: i % 4 })); // 3 skips
+    for (let i = 0; i < capacity; i += 3) blocks.remove(ids[i]);
+    blocks.remove(ids[capacity - 1]); // shrinks the span
 
-  const loop = frames.create(root, (frame) => {
-    blocks.flush();
-    const pass = frame.encoder.beginComputePass();
-    live.compact(pass);
-    pass.end();
-  });
+    const loop = frames.create(root, (frame) => {
+      blocks.flush();
+      const pass = frame.encoder.beginComputePass();
+      live.compact(pass);
+      pass.end();
+    });
 
-  loop.run(0);
-  loop.run(1); // the counts reset between frames
+    loop.run(0);
+    loop.run(1); // the counts reset between frames
 
-  const [args, slots] = await Promise.all([live.args.read(), live.slots.read()]);
+    const [args, slots] = await Promise.all([live.args.read(), live.slots.read()]);
 
-  const expected = [0, 1, 2].map((g) =>
-    ids
-      .map((id, slot) => ({ id, slot }))
-      .filter(({ id, slot }) => blocks.has(id) && slot % 4 === g)
-      .map(({ slot }) => slot),
-  );
+    const expected = [0, 1, 2].map((g) =>
+      ids
+        .map((id, slot) => ({ id, slot }))
+        .filter(({ id, slot }) => blocks.has(id) && slot % 4 === g)
+        .map(({ slot }) => slot),
+    );
 
-  for (const [g, rows] of expected.entries()) {
-    expect(args[g * 5 + 1]).toBe(rows.length);
-    const listed = slots.slice(g * capacity, g * capacity + rows.length).toSorted((a, b) => a - b);
-    expect(listed).toEqual(rows);
-  }
-  expect([args[0], args[2], args[3], args[5], args[10]]).toEqual([3, 0, 0, 3, 6]);
+    for (const [g, rows] of expected.entries()) {
+      expect(args[g * 5 + 1]).toBe(rows.length);
+      const listed = slots
+        .slice(g * capacity, g * capacity + rows.length)
+        .toSorted((a, b) => a - b);
+      expect(listed).toEqual(rows);
+    }
+    expect([args[0], args[2], args[3], args[5], args[10]]).toEqual([3, 0, 0, 3, 6]);
 
-  root.destroy();
-});
+    root.destroy();
+  },
+);
 
 it("runs a kernel over one group's live rows alone, from its indirect dispatch", async () => {
   const root = await gpuRoot();
