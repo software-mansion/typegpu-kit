@@ -1,3 +1,4 @@
+import { cornerDirections, cornerData } from './cube-corners.ts';
 import { recordingRoot } from '@typegpu/kit/testing';
 import { d, std, tgpu } from 'typegpu';
 import { expect, it } from 'vitest';
@@ -113,4 +114,27 @@ it('samples cube faces and compares depth before filtering', () => {
     ),
   ).toBe(0.5);
   expect(textureOps.textureLoad(depth, [0, 0], 0)).toBe(0.25);
+});
+
+it('preserves uniform incident faces at cube corners', () => {
+  for (const size of [1, 2, 4]) {
+    const data = cornerData(size);
+    for (let word = 0; word < data.length; word++) data[word] = encodeHalf(word % 4 === 3 ? 1 : 7);
+    const texture: CpuTexture = {
+      format: 'rgba16float',
+      dimension: 'cube-array',
+      levels: [{ width: size, height: size, depthOrArrayLayers: 12, data }],
+    };
+    for (let layer = 0; layer < 2; layer++)
+      for (const direction of cornerDirections)
+        expect(
+          textureOps.textureSampleLevel(
+            texture,
+            { magFilter: 'linear', minFilter: 'linear' },
+            [...direction],
+            layer,
+            0,
+          ),
+        ).toEqual([7, 7, 7, 1]);
+  }
 });

@@ -1,3 +1,7 @@
+import { tracePrefilter } from './prefilter-trace.ts';
+import { traceSky } from './sky-trace.ts';
+import { traceMaterial } from './material-trace.ts';
+import { writeFileSync } from 'node:fs';
 import { traceAdvection, summarizeAdvection } from './advection-trace.ts';
 import type { CpuBindingUse, CpuBuffer, CpuResources, CpuTexture } from '../../src/cpu/types.ts';
 import { compile } from '../../src/cpu/index.ts';
@@ -11,6 +15,8 @@ import {
 } from './example-comparison.ts';
 
 const ordered = (bits: number) => (bits & 0x8000 ? -(bits & 0x7fff) : bits);
+
+const unorm = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255);
 
 interface HeldBinding {
   use: CpuBindingUse;
@@ -116,6 +122,10 @@ export async function replay(
       `No WGSL dispatch matches ${snapshot.label}: ${keys.join(', ')}; available ${[...new Set(events.map((item) => item.label))].join(', ')}`,
     );
 
+  if (process.env.CPU_REPLAY_SOURCE) {
+    writeFileSync(`${process.env.CPU_REPLAY_SOURCE}.wgsl`, event.code);
+    writeFileSync(`${process.env.CPU_REPLAY_SOURCE}.js`, snapshot.code);
+  }
   const groups = new Map<number, GPUBindGroupEntry[]>();
   const append = (group: number, binding: number, resource: GPUBindingResource) => {
     const entries = groups.get(group) ?? [];
@@ -337,7 +347,98 @@ ${snapshot.code}`;
         traces: traces.slice(0, 10),
       };
     }
+    let materialTrace;
+    if (process.env.CPU_MATERIAL_TRACE === '1') {
+      const binding = snapshot.bindings.find((item) => item.texture && item.use.writes)!;
+      const level = binding.texture!.levels[0]!;
+      const actual = level.data as Uint8Array;
+      const expected = new Uint8Array(
+        gpu.find((item) => item.key === binding.key)!.levels[0]!.bytes,
+      );
+      const worst = Array.from({ length: actual.length / 4 }, (_, texel) => ({
+        texel,
+        gap: Math.abs(actual[texel * 4]! - expected[texel * 4]!),
+        cpu: actual[texel * 4],
+        dawn: expected[texel * 4],
+      }))
+        .toSorted((a, b) => b.gap - a.gap)
+        .filter((item) => item.gap > 1);
+      const traces = await traceMaterial(
+        device,
+        event.code,
+        groups,
+        snapshot,
+        resources,
+        worst.map((item) => item.texel),
+        [level.width, level.height, level.depthOrArrayLayers],
+      );
+      const rawBits = new Uint32Array(1),
+        float = new Float32Array(rawBits.buffer);
+      const bits = (value: number) => {
+        float[0] = value;
+        return rawBits[0]!;
+      };
+
+      const summary = traces.map((trace) => {
+        const c = trace.cpu.find((row) => row.tag === 3)!.value,
+          d = trace.dawn.find((row) => row.tag === 3)!.value;
+        const actualStore = trace.sameCenter.find((row) => row.tag === 112)!.value,
+          expectedStore = trace.dawn.find((row) => row.tag === 112)!.value;
+        return {
+          cell: trace.cell,
+          coordinateUlps: Math.max(
+            ...c.slice(0, 2).map((value, i) => Math.abs(bits(value) - bits(d[i]!))),
+          ),
+          centerChanged: c[2] !== d[2] || c[3] !== d[3],
+          sameCenterMaxBytes: Math.max(
+            ...actualStore.map((value, i) => Math.abs(unorm(value) - unorm(expectedStore[i]!))),
+          ),
+        };
+      });
+      materialTrace = { summary, worst: worst.slice(0, 10), traces: traces.slice(0, 10) };
+    }
+    let skyTrace;
+    let prefilterTrace;
+    if (process.env.CPU_SKY_TRACE === '1' || process.env.CPU_PREFILTER_TRACE === '1') {
+      const binding = snapshot.bindings.find((item) => item.texture && item.use.writes)!;
+      const level = binding.texture!.levels[0]!;
+      const actual = level.data as Uint16Array,
+        expected = new Uint16Array(gpu.find((item) => item.key === binding.key)!.levels[0]!.bytes);
+      const worst = Array.from({ length: actual.length / 4 }, (_, texel) => ({
+        texel,
+        gap: Math.max(
+          ...[0, 1, 2].map((c) => Math.abs(actual[texel * 4 + c]! - expected[texel * 4 + c]!)),
+        ),
+      }))
+        .toSorted((a, b) => b.gap - a.gap)
+        .slice(0, 10);
+      skyTrace =
+        process.env.CPU_PREFILTER_TRACE === '1'
+          ? undefined
+          : await traceSky(
+              device,
+              event.code,
+              groups,
+              snapshot,
+              resources,
+              worst.map((item) => item.texel),
+              level.width,
+            );
+      if (process.env.CPU_PREFILTER_TRACE === '1')
+        prefilterTrace = await tracePrefilter(
+          device,
+          event.code,
+          groups,
+          snapshot,
+          resources,
+          worst.map((item) => item.texel),
+          level.width,
+        );
+    }
     return {
+      prefilterTrace,
+      skyTrace,
+      materialTrace,
       advectionTrace,
       filterModels,
       pipeline: snapshot.label,

@@ -9,6 +9,22 @@ interface Mechanism {
 
 const mechanisms: Mechanism[] = [
   {
+    example: 'sph-sculpt',
+    resource: /^texture:(?:origin|volume):host#0$/,
+    mechanism: 'one-ulp coordinate contraction crosses the integer material-search window boundary',
+    evidence:
+      'CPU_MATERIAL_TRACE: all 192 origin and 269 volume residual texels have one-ulp pre-round coordinate differences selecting different search centers; substituting Dawn centers makes every encoded byte exact',
+  },
+  {
+    example: 'sph-sculpt',
+    resource: /^(?:texture:<unnamed>:host#[01]|buffer:shBuffer:host#0)$/,
+    mechanism:
+      'atmosphere radius cancellation and implementation-dependent cube corner/filter precision propagate through environment mipmaps and projection',
+    evidence:
+      'CPU_SKY_TRACE: ten worst base texels have radius differences at most three f32 ulps; substituting ray lengths/radii makes their final half bits exact. CPU_PREFILTER_TRACE: all 640 samples fit an incident-corner policy plus one 8-bit interpolation-weight step and adjacent-half bounds; substituting samples makes all ten outputs exact. Identical-input halve, projectRow and projectRows pass the ordinary field policy',
+  },
+
+  {
     example: 'censer',
     resource: /^texture:smoke advected:host#0$/,
     mechanism:

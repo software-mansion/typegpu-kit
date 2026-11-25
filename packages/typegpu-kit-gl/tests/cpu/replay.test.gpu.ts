@@ -116,6 +116,26 @@ for (const probe of probes)
           expect(summary.coordinateMaxUlps).toBeLessThanOrEqual(3);
           expect(summary.sampleModelMaxHalfUlps).toBeLessThanOrEqual(1);
           expect(summary.injectedPositionMaxHalfUlps).toBeLessThanOrEqual(1);
+        } else if (result.skyTrace) {
+          for (const row of result.skyTrace) {
+            expect(row.radiusMaxUlps).toBeLessThanOrEqual(4);
+            expect(row.sameInputsMaxHalfUlps).toBeLessThanOrEqual(1);
+          }
+        } else if (result.prefilterTrace) {
+          for (const row of result.prefilterTrace) {
+            expect(row.sameSamplesMaxHalfUlps).toBeLessThanOrEqual(1);
+            for (const sample of row.samples)
+              for (let c = 0; c < 4; c++) {
+                expect(sample.dawn![c]!).toBeGreaterThanOrEqual(sample.envelope[c]![0]!);
+                expect(sample.dawn![c]!).toBeLessThanOrEqual(sample.envelope[c]![1]!);
+              }
+          }
+        } else if (result.materialTrace) {
+          for (const row of result.materialTrace.summary) {
+            expect(row.coordinateUlps).toBeLessThanOrEqual(3);
+            expect(row.centerChanged).toBe(true);
+            expect(row.sameCenterMaxBytes).toBeLessThanOrEqual(1);
+          }
         } else expect(classified.differences).toEqual([]);
       } finally {
         gpu.destroy();

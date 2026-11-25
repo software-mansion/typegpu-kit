@@ -82,13 +82,23 @@ The largest residual is at (93,26,49): normalized y is 0.2365896850824356 on the
 
 All 595 samples in the 85 traces agree with trilinear interpolation of Dawn's recorded taps using 8-bit weights and half-rounded results to within one half ulp. Replaying Dawn's sampled values through the CPU module leaves only (75,33,40) two half ulps apart: world position differs by one f32 ulp from contraction; `force`/`carry` amplify it and the final mix cancels to about -9.7e-6. Replaying that world-position input as well puts every affected component within one half-store ulp. These substitutions are diagnostic only; neither the production sampler nor the arithmetic changes. The opt-in test asserts these source bounds and does not claim bit-exact whole-scene equality.
 
+### Sph-sculpt material and environment traces
+
+`CPU_MATERIAL_TRACE=1` with replay entries `originating` and `generating` (skip 1 for the latter) traces all 192 origin and 269 mip-volume residual texels. Every pre-round search coordinate differs by one f32 ulp and selects a different integer center. For origin (10,13,37), the CPU's 20.500001907348633 rounds to 21 while Dawn's 20.5 rounds to 20: shifting the finite search window loses the nearest candidate. Substituting only Dawn's center makes all 461 encoded output bytes exact. `results.json` retains every summary and the ten worst full traces.
+
+`CPU_SKY_TRACE=1` on the base environment bake traces the ten worst texels. Atmospheric radii agree within three f32 ulps; subtracting the Earth radius 6360 amplifies this. The near-horizon ray/ground intersection also subtracts large nearly equal terms. Substituting Dawn ray lengths, radii and heights makes the final half encodings exact for all ten. Optional `CPU_SKY_DISCRIMINANT=1` materializes multiplication terms and thereby changes Dawn's contraction: it is a separate diagnostic, not an unchanged-kernel comparison. Replays of `halve`, `projectRow` and `projectRows` pass the ordinary field policy from identical bytes.
+
+`CPU_PREFILTER_TRACE=1` traces the ten worst reflection texels and their 640 cube samples. Substituting Dawn's samples makes every final half encoding exact. The largest sample discrepancy occurs at low mip levels, where a bilinear footprint crosses both cube-face axes. The ambiguous corner tap differs: for a one-texel cube with incident faces 3, 12 and 48, CPU filtering gives 18.75, Dawn 16.5, and three-face averaging would give 21. The [Vulkan cube-map edge handling rules](https://docs.vulkan.org/spec/latest/chapters/textures.html#textures-cubemapedge) permit other corner methods, constrained to preserve equal incident values; WebGPU's sampler description refers to Vulkan filtering. The dedicated `cube-corners` probe records all eight corners, cube arrays and sizes 1, 2 and 4, and the unit test checks the equal-incident invariant. An averaging experiment was disproved and removed; production sampling is unchanged.
+
+A test-only corner policy selecting the X incident face at an ambiguous corner, combined with 8-bit interpolation, predicts the large sampled differences. All 640 Dawn samples fit tap-derived intervals allowing one 8-bit step in spatial/LOD weights and adjacent-half rounding at each filter stage. A fixed nearest-weight model leaves 11 samples 3–4 half ulps apart; flooring LOD reduces that to three samples at three half ulps, so the tests assert the bounded interval rather than claim exact knowledge of Metal's internal sequence. These are measured sampling differences from identical coordinates and texture bytes, not an unexplained arithmetic error or an added production tolerance.
+
 ### Unresolved comparisons
 
 These are still review failures in the opt-in whole-example comparison, not accepted tolerances:
 
 - Censer: the identical-input advection residual is now source-traced below. Other whole-scene velocity/curl and pressure resources have not independently been replayed; they are not automatically classified by this result.
 - Ocean: sky/cloud, environment, foam and wave-map outputs beyond the classified frequency buffer have not all been traced. Half-store chains and frequency quantization are known sources, but their presence alone does not prove every reported output difference.
-- Sph-sculpt: the two environment textures, harmonic buffer, and `origin`/`volume` material textures remain unclassified. The height buffer's rim mechanism is established separately.
+- Sph-sculpt: the five environment/material resources are source-traced in the probes below. Allocation-order and render-dependent outputs remain separately excluded.
 
 The detailed resource keys, differing-word counts and first values remain in `results.json`. Render-dependent resources, backend-specific scratch storage and resources with atomic allocation order are listed separately; their exclusion is not a claim of equality.
 
