@@ -121,12 +121,12 @@ function mostOf(root: TgpuRoot) {
 }
 
 it('runs a dispatch on the CPU where a cell could take more records than a sum keeps exact', async () => {
-  // Four additions an invocation, one invocation past the bound's quarter; the device counts
-  // every invocation of the workgroups dispatched
-  const invocations = Math.floor(mostOf(gl) / 4) + 1;
+  // Three additions to the counts an invocation, one invocation past the bound's third; the
+  // device counts every invocation of the workgroups dispatched
+  const invocations = Math.floor(mostOf(gl) / 3) + 1;
   const actual = await counted(gl, invocations, 'crowded');
   expect(stats().fallbacks.get('crowded')).toBe(
-    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 4} times to one cell, past ${mostOf(gl)}`,
+    `the dispatch may add ${Math.ceil(invocations / 64) * 64 * 3} times to one cell, past ${mostOf(gl)}`,
   );
   expect(actual).toEqual(await counted(gpu, invocations, 'crowded'));
 });
@@ -179,4 +179,56 @@ it('sums bytes on a device of four draw buffers, to their own bound', async () =
     small.destroy();
     undo();
   }
+});
+
+const schema = (n: number) => d.arrayOf(d.atomic(d.u32), n);
+
+/**
+ * Adds 24 times an invocation, through a helper at three sites, to `words` counters: a fixed few
+ * that share a record per word, or a runtime-sized array whose records pass WebGL's stride.
+ */
+async function many(root: TgpuRoot, words: number | 'runtime', label: string) {
+  const layout = tgpu.bindGroupLayout({
+    counts: { storage: words === 'runtime' ? schema : schema(words), access: 'mutable' },
+  });
+  const size = words === 'runtime' ? 3 : words;
+  const eight = (i: number, amount: number) => {
+    'use gpu';
+    std.atomicAdd(layout.$.counts[(i + 0) % size], amount + d.u32(0));
+    std.atomicAdd(layout.$.counts[(i + 1) % size], amount + d.u32(1));
+    std.atomicAdd(layout.$.counts[(i + 2) % size], amount + d.u32(2));
+    std.atomicAdd(layout.$.counts[(i + 3) % size], amount + d.u32(3));
+    std.atomicAdd(layout.$.counts[(i + 4) % size], amount + d.u32(4));
+    std.atomicAdd(layout.$.counts[(i + 5) % size], amount + d.u32(5));
+    std.atomicAdd(layout.$.counts[(i + 6) % size], amount + d.u32(6));
+    std.atomicAdd(layout.$.counts[(i + 7) % size], amount + d.u32(7));
+  };
+  const kernel = tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+    'use gpu';
+    if (id.x >= 200) return;
+    eight(id.x, id.x * d.u32(0x01000193));
+    eight(id.x * 3, d.u32(0xfffffff0));
+    if (id.x % 2 === 0) eight(id.x + 1, d.u32(7));
+  });
+  const counts = root
+    .createBuffer(schema(size), [1, 2, 0xffffffff].slice(0, size))
+    .$usage('storage');
+  const pipeline = root.createComputePipeline({ compute: kernel }).$name(label);
+  const group = root.createBindGroup(layout, { counts });
+  for (let k = 0; k < 2; k++) pipeline.with(group).dispatchWorkgroups(4);
+  return counts.read();
+}
+
+it('keeps a record per word of a small buffer, however many times an invocation adds to it', async () => {
+  const actual = await many(gl, 3, 'merged');
+  expect(onGpu('merged')).toBe(true);
+  expect(actual).toEqual(await many(gpu, 3, 'merged'));
+});
+
+it("runs a kernel on the CPU where its records pass WebGL's stride", async () => {
+  const actual = await many(gl, 'runtime', 'strided');
+  expect(stats().fallbacks.get('strided')).toBe(
+    'its writes need 288 bytes an invocation; WebGL 2 reads 255 a vertex',
+  );
+  expect(actual).toEqual(await many(gpu, 'runtime', 'strided'));
 });

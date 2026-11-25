@@ -94,8 +94,8 @@ export interface ComputePlan {
   readonly scatters: ReadonlySet<string>;
   /** The buffers the kernel only adds to with atomics whose results it drops, a pass each. */
   readonly adds?: ReadonlySet<string>;
-  /** The most additions an invocation makes, which bounds its records. */
-  readonly slots?: number;
+  /** The most additions an invocation makes to each such buffer, which bounds its records. */
+  readonly slots?: ReadonlyMap<string, number>;
   /** The most writes an invocation makes at computed cells of each such resource. */
   readonly records?: ReadonlyMap<string, number>;
   /** The counters the kernel takes values of, among `adds`. */
@@ -738,8 +738,8 @@ interface Frame {
   readonly choosing: Set<string>;
   /** Whether its code depends on its arguments being the invocation's own. */
   relies: boolean;
-  /** The most additions to shared cells it makes, counting those of the functions it calls. */
-  adds: number;
+  /** The most additions to shared cells it makes per buffer, its callees' included. */
+  readonly adds: Map<string, number>;
   /** The most writes at computed cells it makes per resource, its callees' included. */
   readonly records: Map<string, number>;
   /** Its parameters' names, in order. */
@@ -766,7 +766,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   /** Buffers the kernel adds to at shared cells, dropping the atomics' results. */
   readonly #adds = new Map<string, BufferInfo>();
   /** The most additions each generated function makes, its callees' included. */
-  readonly #addsOf = new Map<string, number>();
+  readonly #addsOf = new Map<string, ReadonlyMap<string, number>>();
   /** The most writes at computed cells each generated function makes, per resource. */
   readonly #recordsOf = new Map<string, ReadonlyMap<string, number>>();
   /** The entry's writes at computed cells per resource, which size the records of each. */
@@ -786,7 +786,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #loads = new Set<string>();
   /** Every function's code, which the takes are checked over once the walk has seen it all. */
   readonly #codes: string[] = [];
-  #slots = 0;
+  #slots = new Map<string, number>();
   /** Runtime loops around the statement being generated. */
   #loops = 0;
   /** `if` statements around the statement being generated. */
@@ -872,7 +872,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       maps: new Map(this.#maps),
       scatters: new Set(this.#scatters.keys()),
       adds: new Set(this.#adds.keys()),
-      slots: this.#slots,
+      slots: new Map(this.#slots),
       records: new Map(this.#records),
       takes: new Set(this.#takes),
       blocks: new Map(
@@ -1037,8 +1037,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
     if (!nested && name !== undefined) this.#blockCall(name, args);
     // A call reaches here once more through the generator's own call, which counts it
-    const adds = (!nested && name !== undefined && this.#addsOf.get(name)) || 0;
-    if (adds > 0) this.#added(adds);
+    const adds = !nested && name !== undefined ? this.#addsOf.get(name) : undefined;
+    for (const [id, count] of adds ?? []) this.#added(id, count);
     const records = !nested && name !== undefined ? this.#recordsOf.get(name) : undefined;
     for (const [id, count] of records ?? []) this.#wrote(id, count);
     if (name === undefined || !this.#relies.has(name)) return result;
@@ -1140,10 +1140,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   }
 
   /** Counts additions the statement being generated makes, which loops would leave unbounded. */
-  #added(count: number): void {
+  #added(id: string, count: number): void {
     if (this.#loops > 0) throw new Ineligible('adds to shared cells inside a loop');
     const frame = this.#frame;
-    if (frame) frame.adds += count;
+    if (frame) frame.adds.set(id, (frame.adds.get(id) ?? 0) + count);
   }
 
   /**
@@ -1156,28 +1156,55 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       throw new Ineligible(`adds to '${buffer.id}', which it also writes`);
     }
     this.#adds.set(buffer.id, buffer);
-    this.#added(1);
+    this.#added(buffer.id, 1);
     const operand = this.#valueAs(amount, inner);
     const bits = inner === d.u32 ? operand : `uint(${operand})`;
     const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
     if (!this.#plan) return snip('', d.Void, 'runtime', true);
-    const slots = this.#plan.slots ?? 0;
+    // The records are kept per pass, one buffer's additions each, in arrays the most of them fit
+    const slots = Math.max(0, ...(this.#plan.slots?.values() ?? []));
     this.helper(
       ADD,
       `uint ${ADDED};\nuint ${ADDED}_at[${slots}];\nuint ${ADDED}_amount[${slots}];
-void ${ADD}(int aim, uint at, uint amount) {
-  if (${AIM} != aim || ${ADDED} >= ${slots}u) return;
+void ${ADD}(int aim, uint at, uint amount, uint words, uint first) {
+  if (${AIM} != aim) return;
+  // A buffer of a fixed size keeps a record per word; an access past its words may be discarded
+  if (words > 0u) {
+    if (at - first >= words) return;
+    for (uint i = 0u; i < ${ADDED}; i++) {
+      if (${ADDED}_at[i] == at) {
+        ${ADDED}_amount[i] += amount;
+        return;
+      }
+    }
+  }
+  if (${ADDED} >= ${slots}u) return;
   ${ADDED}_at[${ADDED}] = at;
   ${ADDED}_amount[${ADDED}] = amount;
   ${ADDED} += 1u;
 }`,
     );
+    const merged = this.#merges(buffer);
+    const range = merged ? `${this.#wordsOf(buffer)}u, ${buffer.range as string}.x` : '0u, 0u';
     return snip(
-      `${ADD}(${this.#aim(buffer.id)}, uint(${place.address}), uint(${signed}))`,
+      `${ADD}(${this.#aim(buffer.id)}, uint(${place.address}), uint(${signed}), ${range})`,
       d.Void,
       'runtime',
       true,
     );
+  }
+
+  /**
+   * Whether an invocation's additions to `buffer` share a record per word, so it keeps no more
+   * records than the buffer has words: a buffer of a fixed size the kernel takes no values of,
+   * whose takes are counted by records. Sums of a word's amounts wrap as their atomics do.
+   */
+  #merges(buffer: BufferInfo): boolean {
+    return !this.#takes.has(buffer.id) && Number.isFinite(this.#wordsOf(buffer));
+  }
+
+  #wordsOf(buffer: BufferInfo): number {
+    return Math.floor(d.sizeOf(buffer.schema as d.AnyData) / 4);
   }
 
   /**
@@ -2108,7 +2135,7 @@ ${stored.join('\n')}
       assigned: new Set(),
       choosing: new Set(),
       relies: false,
-      adds: 0,
+      adds: new Map(),
       records: new Map(),
       params: options.args.map((arg) => arg.name),
       guards: [],
@@ -2175,7 +2202,13 @@ ${stored.join('\n')}
     }
     const body = this._block(options.body, /* allowInlining */ false).code;
     options.determineReturnType();
-    this.#slots = this.#frame?.adds ?? 0;
+    this.#slots = new Map(
+      [...(this.#frame?.adds ?? [])].map(([id, count]) => {
+        const buffer = this.#adds.get(id);
+        const merged = buffer && this.#merges(buffer);
+        return [id, merged ? Math.min(count, this.#wordsOf(buffer)) : count];
+      }),
+    );
     this.#records = new Map(this.#frame?.records);
 
     const wg = `uvec3(${size.join('u, ')}u)`;
@@ -2244,8 +2277,8 @@ ${stored.join('\n')}
       for (const id of this.#scatters.keys()) {
         if (!this.#records.get(id)) throw new Ineligible(`writes '${id}' where it cannot count`);
       }
-      if (this.#adds.size > 0 && this.#slots === 0) {
-        throw new Ineligible('adds where it cannot count');
+      for (const id of this.#adds.keys()) {
+        if (!this.#slots.get(id)) throw new Ineligible('adds where it cannot count');
       }
       for (const id of this.#columns) {
         if (this.#loaded.has(id)) {
@@ -2639,7 +2672,7 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
    * additions, and every record becomes a point on its word, which the device accumulates.
    */
   #addPass(buffer: BufferInfo, index: number, kernel: string): string {
-    const slots = this.#slots;
+    const slots = this.#plan?.slots?.get(buffer.id) ?? 0;
     const outputs: string[] = [];
     const lines: string[] = [];
     for (let slot = 0; slot < slots; slot++) {

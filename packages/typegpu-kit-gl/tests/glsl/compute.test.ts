@@ -962,4 +962,35 @@ describe('GPU forms of compute kernels', () => {
     }
   });
 
+  it("keeps each pass of sums its own buffer's records, one a word where the buffer is fixed", () => {
+    const verdict = verdictOf((root) => {
+      const counts = root.createMutable(d.arrayOf(d.atomic(d.u32), 2));
+      const many = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const head = root.createMutable(d.atomic(d.u32));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      const add = (i: number) => {
+        'use gpu';
+        std.atomicAdd(counts.$[i % 2], d.u32(1));
+        std.atomicAdd(counts.$[(i + 1) % 2], d.u32(2));
+        std.atomicAdd(many.$[i % 64], d.u32(3));
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: g }) => {
+        'use gpu';
+        add(g.x);
+        add(g.x + 1);
+        add(g.x + 2);
+        out.$[g.x] = std.atomicAdd(head.$, 1) + std.atomicAdd(head.$, 1);
+      });
+    });
+    if ('reason' in verdict) throw new Error(`Ineligible: ${verdict.reason}`);
+    // Six additions to two words keep two records, three to 64 words three, and two takes two
+    const sites = verdict.module.passes
+      .filter((pass) => pass.scatter?.accumulate)
+      .map((pass) => [pass.scatter?.sites, pass.scatter?.takes !== undefined]);
+    expect(sites.toSorted()).toEqual([
+      [2, false],
+      [2, true],
+      [3, false],
+    ]);
+  });
 });

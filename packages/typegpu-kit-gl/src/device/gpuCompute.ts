@@ -179,6 +179,10 @@ function preparePoints(
   if (components > limit) {
     return `its writes need ${components} transform feedback components; WebGL 2 here records ${limit}`;
   }
+  // Points read each site's record as attributes, whose stride WebGL keeps to 255 bytes
+  if (components * 4 > 255) {
+    return `its writes need ${components * 4} bytes an invocation; WebGL 2 reads 255 a vertex`;
+  }
   const capture = linkCapture(ctx, scatter.capture, varyings, `'${label}'`);
   if (typeof capture === 'string') return capture;
   const captureUses = connectUses(ctx, label, module, capture);
