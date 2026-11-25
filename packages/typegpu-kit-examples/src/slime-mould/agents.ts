@@ -1,4 +1,4 @@
-import { backends, pipelines } from '@typegpu/kit';
+import { pipelines } from '@typegpu/kit';
 import { randf } from '@typegpu/noise';
 import {
   d,
@@ -23,11 +23,6 @@ const CROWD = 30;
 const THINNING = 0.05;
 /** The golden angle prevents agents in the initial blob from lining up. */
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-/**
- * Agents in a 3 × 3 neighbourhood per unit of trail density there, roughly, from an agent's
- * deposit, the decay and the blur. Estimates crowding where agents leave cells unclaimed.
- */
-const AGENTS_PER_TRAIL = 0.85;
 /** How much an agent's heading wanders each step on its own, in radians either way. */
 const WANDER = 0.08;
 
@@ -80,13 +75,9 @@ export function createAgents(
   const { capacity, food = enough } = options;
   const size = trail.size;
   const centre = d.vec2f(size / 2);
-  const agentData = root.createBuffer(d.arrayOf(Agent, capacity)).$usage('storage');
-  const agents = agentData.as('mutable');
+  const agents = root.createMutable(d.arrayOf(Agent, capacity));
   const physarum = root.createUniform(Physarum);
-  // Where kernels run on the CPU, agents leave cells unclaimed, so each writes only itself and
-  // runs as a GPU pass; growth then skips the room check and crowds never thin
-  const claims = backends.of(root).compute === 'gpu';
-  const taken = root.createMutable(d.arrayOf(d.atomic(d.u32), claims ? size * size : 1));
+  const taken = root.createMutable(d.arrayOf(d.atomic(d.u32), size * size));
 
   const cellOf = (position: d.v2f) => {
     'use gpu';
@@ -103,19 +94,13 @@ export function createAgents(
   const enter = (position: d.v2f) => {
     'use gpu';
     if (!onSheet(position)) return false;
-    if (claims) {
-      std.atomicAdd(taken.$[cellOf(position)], 1);
-    }
+    std.atomicAdd(taken.$[cellOf(position)], 1);
     return true;
   };
 
   const neighbours = (position: d.v2f) => {
     'use gpu';
     let count = d.u32(0);
-    if (!claims) {
-      // Agents in the neighbourhood, estimated from the trail they keep up
-      return d.u32(trail.at(position / size) * AGENTS_PER_TRAIL);
-    }
     for (let y = -1; y <= 1; y++) {
       for (let x = -1; x <= 1; x++) {
         count += std.atomicLoad(taken.$[cellOf(position + d.vec2f(d.f32(x), d.f32(y)))]);
@@ -184,9 +169,7 @@ export function createAgents(
     // Starved or crowded agents sleep until they can regrow where there is room
     const crowded = randf.sample() < THINNING && neighbours(agent.position) >= CROWD;
     if (agent.fed <= 0 || crowded) {
-      if (claims) {
-        std.atomicSub(taken.$[cellOf(agent.position)], 1);
-      }
+      std.atomicSub(taken.$[cellOf(agent.position)], 1);
       agent.awake = 0;
       return;
     }
@@ -213,7 +196,7 @@ export function createAgents(
     if (!onSheet(next)) {
       heading += Math.PI * (0.75 + 0.5 * randf.sample());
     } else {
-      if (claims && cellOf(next) !== from) {
+      if (cellOf(next) !== from) {
         std.atomicSub(taken.$[from], 1);
         std.atomicAdd(taken.$[cellOf(next)], 1);
       }
@@ -269,7 +252,7 @@ export function createAgents(
     },
 
     destroy() {
-      agentData.destroy();
+      agents.buffer.destroy();
       taken.buffer.destroy();
     },
   };

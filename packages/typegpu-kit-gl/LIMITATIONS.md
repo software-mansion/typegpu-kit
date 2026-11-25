@@ -40,11 +40,10 @@ CPU `f32` literals, conversions and arithmetic round to 32 bits at each operatio
 
 ## What still needs a branch
 
-Most examples run on the fallback as they are. Five choose other kernels with `backends.of(root)`, because the kernels they run on WebGPU would stay on the CPU here and be too slow there. Each waits on a form the fallback does not have:
+Most examples run on the fallback as they are. Four choose other kernels with `backends.of(root)`, because the kernels they run on WebGPU would stay on the CPU here and be too slow there. Each waits on a form the fallback does not have:
 
 - `ocean`, `censer` and `sph-sculpt` share workgroup memory behind barriers: the FFT and its mip reductions, the smoke's coarse average, the water's tally and occupancy. A fragment that reran its whole workgroup would compute it, at the workgroup's size in cost, so for `censer` at eight times its heaviest kernel. Their branches read back or recompute what the first phase stored instead, which is cheaper.
 - `jump-flood` places seeds with `atomicMin` used as a minimum and links regions with `atomicOr` into rows of bits. No form covers either.
-- `slime-mould` claims cells with counters that its agents add to and load in the same dispatch, so each agent counts its neighbours from additions still being made. Each agent loads before it adds, so a pass of sums now runs its `move` on the GPU, reading the counters from before the dispatch; at most two additions an agent, 2 000 000 records at the most agents, need sums drawn in batches before the branch can go.
 
 In the Kit, the culling, `exposure`, `environment`, `grid`, `liveLists`, `particles` and `poses` branch for the same reasons: workgroup memory, counters per cell whose results are used, and a ring slot taken inside a loop or passed on to a callback.
 
