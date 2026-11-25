@@ -69,7 +69,8 @@ export interface Culling {
  * and mesh. The second uses a block scan to place each visible row after the visible rows that
  * precede it. Both dispatch over every active layer at once, y indexing the active layers' list,
  * and the kernels read the layer through `passes.layer`. On a backend that runs compute on the
- * CPU, one kernel walks each layer's rows in order instead and writes the same lists and draws.
+ * CPU, the first kernel only marks, each thread its own row, and one thread per layer then walks
+ * the marks in order and writes the same lists and draws.
  */
 export function createCulling(root: TgpuRoot, cfg: WithBinding, options: CullingOptions): Culling {
   const { meshes, capacity, layers, firstInstance, listed, entries, meshOf, seen, active } =
@@ -202,19 +203,44 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
   });
 
   // Where compute runs on the CPU, invocations run one after another, so a scan across workgroups
-  // costs more than the walk it replaces: one invocation per layer lists that layer's rows in order
+  // costs more than a walk. Seeing a row is the costly part and needs no other thread, so a backend
+  // that draws such kernels on the GPU keeps it there: each thread marks its own row, in a buffer
+  // of its own that the kernel never reads, and one invocation per layer then lists the marked
+  // rows in order, reading no instance
+  const alone = backends.of(root).compute === 'cpu';
+  const flagBuffer = alone
+    ? root.createBuffer(d.arrayOf(d.u32, capacity * layers)).$usage('storage')
+    : undefined;
+  const flags = flagBuffer?.as('mutable');
+
+  const flag = tgpu.computeFn({
+    workgroupSize: [WORKGROUP],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    if (gid.x >= capacity) return;
+    culledLayer.$ = layerAt(gid.y);
+    let marked = d.u32(0);
+    if (gid.x < entries.$) {
+      const row = listed.$[meshes + gid.x];
+      marked = d.u32(meshOf(row)) << 1;
+      if (seen(row)) marked |= 1;
+    }
+    // Marks go by the row of workgroups, not the layer it culls, so each thread's own cell
+    flags!.$[gid.y * capacity + gid.x] = marked;
+  });
+
   const walk = tgpu.computeFn({ workgroupSize: [1], in: { gid: d.builtin.globalInvocationId } })(({
     gid,
   }) => {
     'use gpu';
     const k = layerAt(gid.y);
-    culledLayer.$ = k;
     const base = k * span;
     let at = base + meshes;
 
     for (let t = d.u32(0); t < entries.$; t++) {
-      const row = listed.$[meshes + t];
-      const mesh = d.u32(meshOf(row));
+      const marked = flags!.$[gid.y * capacity + t];
+      const mesh = marked >>> 1;
       const record = (k * meshes + mesh) * RECORD;
       // The first row of each mesh starts its list and resets its draw count
       if (listed.$[mesh] === meshes + t) {
@@ -222,8 +248,8 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
         draws.$[record + 1] = 0;
         if (firstInstance) draws.$[record + 4] = at;
       }
-      if (seen(row)) {
-        culled.$[at] = row;
+      if ((marked & 1) === 1) {
+        culled.$[at] = listed.$[meshes + t];
         at += 1;
         draws.$[record + 1] += 1;
       }
@@ -232,12 +258,14 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
 
   // Each invocation reads the layer it culls for, not the layer of a pass
   const culling = cfg.with(layer, layerOf);
-  const walking =
-    backends.of(root).compute === 'cpu'
-      ? culling.createComputePipeline({ compute: walk })
-      : undefined;
-  const marking = walking ? undefined : culling.createComputePipeline({ compute: mark });
-  const placing = walking ? undefined : culling.createComputePipeline({ compute: place });
+  const flagging = alone
+    ? culling.createComputePipeline({ compute: flag }).$name('cullFlagging')
+    : undefined;
+  const walking = alone
+    ? root.createComputePipeline({ compute: walk }).$name('cullWalking')
+    : undefined;
+  const marking = alone ? undefined : culling.createComputePipeline({ compute: mark });
+  const placing = alone ? undefined : culling.createComputePipeline({ compute: place });
 
   return {
     layers,
@@ -255,12 +283,14 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
         for (let i = 0; i < count; i++) written[i] = order[i];
         root.device.queue.writeBuffer(root.unwrap(scratchBuffer), orderAt, order, 0, count);
       }
-      if (walking) {
+      const groups = Math.ceil(rows / WORKGROUP);
+      if (flagging && walking) {
+        pass.setPipeline(flagging);
+        pass.dispatchWorkgroups(groups, count);
         pass.setPipeline(walking);
         pass.dispatchWorkgroups(1, count);
         return;
       }
-      const groups = Math.ceil(rows / WORKGROUP);
       pass.setPipeline(marking!);
       pass.dispatchWorkgroups(groups, count);
       pass.setPipeline(placing!);
@@ -268,11 +298,12 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
     },
 
     async initAsync() {
-      await pipelines.compile(walking ? [walking] : [marking!, placing!]);
+      await pipelines.compile(flagging && walking ? [flagging, walking] : [marking!, placing!]);
     },
 
     destroy() {
       scratchBuffer.destroy();
+      flagBuffer?.destroy();
       culledBuffer.destroy();
       drawBuffer.destroy();
     },
