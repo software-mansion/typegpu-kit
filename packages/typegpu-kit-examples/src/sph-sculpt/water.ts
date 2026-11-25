@@ -1,4 +1,4 @@
-import { pipelines } from '@typegpu/kit';
+import { backends, pipelines } from '@typegpu/kit';
 import * as grid from '@typegpu/kit/grid';
 import { randf } from '@typegpu/noise';
 import {
@@ -384,12 +384,79 @@ export function createWater(root: TgpuRoot, clay: Clay, formats: Formats) {
     std.textureStore(surfaceCoarse.$, gid, d.vec4f(encode(gap, COARSE), 0, 0, 1));
   });
 
+  /** Whether tile `t` or one of its 26 neighbours holds water. */
+  const wet = (t: d.v3i) => {
+    'use gpu';
+    for (let z = -1; z <= 1; z++) {
+      for (let y = -1; y <= 1; y++) {
+        for (let x = -1; x <= 1; x++) {
+          if (held(t + d.vec3i(x, y, z))) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  /**
+   * `surfaceKernel` for backends where workgroups share nothing: one thread per voxel of the whole
+   * box, each testing the tiles around its own. Voxels away from water get the far distance.
+   */
+  const surfaceEach = tgpu.computeFn({
+    workgroupSize: [T, T, T],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const p = (d.vec3f(gid) + 0.5) * CELL;
+    let dist = d.f32(1.5 * CELL - BLOB);
+    if (wet(d.vec3i(gid / T))) {
+      const from = cells.around(p);
+      for (let r = d.u32(0); r < grid.RANGES; r++) {
+        const range = cells.range(from, r);
+        for (let j = d.u32(0); j < range.count; j++) {
+          const blob = std.length(stateIn.$[cells.index(range, j)].pos.xyz - p) - BLOB;
+          const h = std.max(BLEND - std.abs(dist - blob), 0) / BLEND;
+          dist = std.min(dist, blob) - h * h * BLEND * 0.25;
+        }
+      }
+    }
+    std.textureStore(surfaceFine.$, gid, d.vec4f(encode(dist, CELL), 0, 0, 1));
+  });
+
+  /** `coarseKernel` for backends where workgroups share nothing: each thread searches alone. */
+  const coarseEach = tgpu.computeFn({
+    workgroupSize: [4, 4, 4],
+    in: { gid: d.builtin.globalInvocationId },
+  })(({ gid }) => {
+    'use gpu';
+    const at = d.vec3i(gid);
+    let gap = d.f32(SEARCH * COARSE);
+    for (let z = -SEARCH; z <= SEARCH; z++) {
+      for (let y = -SEARCH; y <= SEARCH; y++) {
+        for (let x = -SEARCH; x <= SEARCH; x++) {
+          if (!held(at + d.vec3i(x, y, z))) continue;
+          const apart = std.max(std.abs(d.vec3f(x, y, z)) - 1, d.vec3f()) * COARSE;
+          gap = std.min(gap, std.length(apart));
+        }
+      }
+    }
+    gap = std.max(gap - CELL, 0);
+    std.textureStore(surfaceCoarse.$, gid, d.vec4f(encode(gap, COARSE), 0, 0, 1));
+  });
+
+  // Where compute runs on the CPU, the shared tally and staged occupancy keep the surface there;
+  // a thread per voxel that reads what it needs runs on the GPU
+  const alone = backends.of(root).compute === 'cpu';
+
   const integrating = root.createComputePipeline({ compute: integrate });
   const recounting = root.createComputePipeline({ compute: recount });
   const densities = root.createComputePipeline({ compute: density });
   const relaxing = root.createComputePipeline({ compute: relax });
-  const surfacing = root.createComputePipeline({ compute: surfaceKernel });
-  const coarsening = root.createComputePipeline({ compute: coarseKernel });
+  const surfacing = alone
+    ? root.createComputePipeline({ compute: surfaceEach })
+    : root.createComputePipeline({ compute: surfaceKernel });
+  const coarsening = alone
+    ? root.createComputePipeline({ compute: coarseEach })
+    : root.createComputePipeline({ compute: coarseKernel });
 
   /** Fluid distance in metres at a fine sample point, filtered. */
   const fluidAt = (p: d.v3f) => {
@@ -434,7 +501,8 @@ export function createWater(root: TgpuRoot, clay: Clay, formats: Formats) {
     /** Rebuilds the fluid surface from the last step's tiles. */
     surface(pass: TgpuComputePass) {
       pass.setPipeline(surfacing);
-      cells.dispatchBlocks(pass);
+      if (alone) pass.dispatchWorkgroups(TILES[0], TILES[1], TILES[2]);
+      else cells.dispatchBlocks(pass);
       pass.setPipeline(coarsening);
       pass.dispatchWorkgroups(TILES[0] / 4, TILES[1] / 4, TILES[2] / 4);
     },
