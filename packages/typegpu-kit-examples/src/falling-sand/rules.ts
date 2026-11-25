@@ -1,4 +1,4 @@
-import { pipelines, type Counters } from '@typegpu/kit';
+import { backends, pipelines, type Counters } from '@typegpu/kit';
 import { randf } from '@typegpu/noise';
 import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
 import {
@@ -29,6 +29,7 @@ const ROWS = HEIGHT / 2;
 /** Workgroups over the blocks, and over one parity's rows. */
 const BLOCK_GROUPS = { x: Math.ceil(BLOCKS_X / WORKGROUP), y: Math.ceil(BLOCKS_Y / WORKGROUP) };
 const ROW_GROUPS = Math.ceil(ROWS / WORKGROUP);
+const GRID_GROUPS = { x: Math.ceil(WIDTH / WORKGROUP), y: Math.ceil(HEIGHT / WORKGROUP) };
 
 /** Liquid-flow passes per simulation step. Each covers both row parities. */
 const FLOW_PASSES = 3;
@@ -69,6 +70,18 @@ export const SPRINGS = true;
 
 const Controls = d.struct({ springs: d.u32 });
 
+/** A spit's cell and heat in 31 bits, and its top bit set. */
+const packSpit = (at: d.v2f, heat: number) => {
+  'use gpu';
+  const cell = d.vec2u(at);
+  const warmth = d.u32(std.saturate(heat) * 1023);
+  return d.u32(0x80000000) | cell.x | (cell.y << 10) | (warmth << 20);
+};
+
+type Counted = Pick<Counters<'cooled' | 'burnt'>, 'add'>;
+/** Emits from a cell in y-down coordinates, with `heat` from 0 to 1. */
+type Spat = (at: d.v2f, heat: number) => void;
+
 const between = tgpu.fn(
   [d.f32, d.f32],
   d.f32,
@@ -85,104 +98,123 @@ export function createRules(
   root: TgpuRoot,
   options: {
     readonly cells: Cells;
-    readonly counts: Pick<Counters<'cooled' | 'burnt'>, 'add'>;
-    /** Emits from a cell in y-down coordinates, with `heat` from 0 to 1. */
-    readonly spark: (at: d.v2f, heat: number) => void;
+    readonly counts: Counted;
+    readonly spark: Spat;
+    /** Draws from `randf` what `spark` draws, without emitting. */
+    readonly sparked: Spat;
   },
 ) {
-  const { cells, counts, spark } = options;
+  const { cells, counts, spark, sparked } = options;
   const tick = root.createMutable(d.u32);
   const controls = root.createUniform(Controls, { springs: SPRINGS ? 1 : 0 });
 
-  const ignite = () => {
-    'use gpu';
-    counts.add.burnt(1);
-    return cellOf(Matter.burning, between(KINDLED_LIFE.least, KINDLED_LIFE.most));
-  };
+  /**
+   * The rules that count or spit, counting into `counted` and spitting through `spat`, so a backend
+   * can run them more than once a block and keep what they did aside.
+   */
+  const rulesWith = (counted: Counted, spat: Spat) => {
+    const ignite = () => {
+      'use gpu';
+      counted.add.burnt(1);
+      return cellOf(Matter.burning, between(KINDLED_LIFE.least, KINDLED_LIFE.most));
+    };
 
-  /** Contact reaction for `a` and `b`. */
-  const act = (a: number, b: number) => {
-    'use gpu';
-    const actor = matterOf(a);
-    const other = matterOf(b);
-    let first = d.u32(a);
-    let second = d.u32(b);
-    switch (actor) {
-      case Matter.lava:
-        if (other === Matter.water) {
-          first = cellOf(Matter.obsidian, 0);
-          second = cellOf(Matter.steam, between(STEAM_LIFE.least, STEAM_LIFE.most));
-          counts.add.cooled(1);
-        } else if (other === Matter.wood && randf.sample() < LAVA_IGNITES) {
-          second = ignite();
-        } else if (other === Matter.sand && randf.sample() < MELTS_SAND) {
-          second = d.u32(Matter.empty);
-        } else if (other === Matter.obsidian && randf.sample() < MELTS_OBSIDIAN) {
-          second = cellOf(Matter.lava, 0);
-        }
-        break;
-      case Matter.burning:
-      case Matter.fire: {
-        const burning = actor === Matter.burning;
-        if (other === Matter.wood) {
-          const spreading = burning ? EMBER_SPREADS : FIRE_SPREADS;
-          if (randf.sample() < spreading) second = ignite();
-        } else if (other === Matter.water) {
-          if (randf.sample() < DOUSED) {
-            if (burning) first = cellOf(Matter.wood, 0);
-            else first = cellOf(Matter.steam, between(STEAM_LIFE.least, STEAM_LIFE.most));
+    /** Contact reaction for `a` and `b`. */
+    const act = (a: number, b: number) => {
+      'use gpu';
+      const actor = matterOf(a);
+      const other = matterOf(b);
+      let first = d.u32(a);
+      let second = d.u32(b);
+      switch (actor) {
+        case Matter.lava:
+          if (other === Matter.water) {
+            first = cellOf(Matter.obsidian, 0);
             second = cellOf(Matter.steam, between(STEAM_LIFE.least, STEAM_LIFE.most));
+            counted.add.cooled(1);
+          } else if (other === Matter.wood && randf.sample() < LAVA_IGNITES) {
+            second = ignite();
+          } else if (other === Matter.sand && randf.sample() < MELTS_SAND) {
+            second = d.u32(Matter.empty);
+          } else if (other === Matter.obsidian && randf.sample() < MELTS_OBSIDIAN) {
+            second = cellOf(Matter.lava, 0);
           }
-        } else if (burning && other === Matter.empty && randf.sample() < FLAMES) {
-          second = cellOf(Matter.fire, between(FLAME_LIFE.least, FLAME_LIFE.most));
+          break;
+        case Matter.burning:
+        case Matter.fire: {
+          const burning = actor === Matter.burning;
+          if (other === Matter.wood) {
+            const spreading = burning ? EMBER_SPREADS : FIRE_SPREADS;
+            if (randf.sample() < spreading) second = ignite();
+          } else if (other === Matter.water) {
+            if (randf.sample() < DOUSED) {
+              if (burning) first = cellOf(Matter.wood, 0);
+              else first = cellOf(Matter.steam, between(STEAM_LIFE.least, STEAM_LIFE.most));
+              second = cellOf(Matter.steam, between(STEAM_LIFE.least, STEAM_LIFE.most));
+            }
+          } else if (burning && other === Matter.empty && randf.sample() < FLAMES) {
+            second = cellOf(Matter.fire, between(FLAME_LIFE.least, FLAME_LIFE.most));
+          }
+          break;
         }
-        break;
-      }
-      case Matter.spring: {
-        const pours = lifeOf(a);
-        const open = cells.traitsOf(b).kind === Kind.gas;
-        if (open && controls.$.springs !== 0 && randf.sample() < pourOf(a)) {
-          second = cellOf(pours, 0);
-        } else if (pours === Matter.lava && other === Matter.obsidian) {
-          // Melt cooled crust around the lava spout to keep it open
-          second = cellOf(Matter.lava, 0);
+        case Matter.spring: {
+          const pours = lifeOf(a);
+          const open = cells.traitsOf(b).kind === Kind.gas;
+          if (open && controls.$.springs !== 0 && randf.sample() < pourOf(a)) {
+            second = cellOf(pours, 0);
+          } else if (pours === Matter.lava && other === Matter.obsidian) {
+            // Melt cooled crust around the lava spout to keep it open
+            second = cellOf(Matter.lava, 0);
+          }
+          break;
         }
-        break;
-      }
-      case Matter.steam: {
-        const life = lifeOf(a);
-        if (other === Matter.empty && life > YOUNG_STEAM && randf.sample() < BILLOWS) {
-          first = cellOf(Matter.steam, life / 2);
-          second = cellOf(Matter.steam, life / 2);
+        case Matter.steam: {
+          const life = lifeOf(a);
+          if (other === Matter.empty && life > YOUNG_STEAM && randf.sample() < BILLOWS) {
+            first = cellOf(Matter.steam, life / 2);
+            second = cellOf(Matter.steam, life / 2);
+          }
+          break;
         }
-        break;
-      }
-      case Matter.drain: {
-        const kind = cells.traitsOf(b).kind;
-        const takes = kind === Kind.powder || (kind === Kind.liquid && other !== Matter.water);
-        const seeps = d.f32(lifeOf(a)) / 255;
-        if ((takes || (other === Matter.water && drainsWater(a))) && randf.sample() < seeps) {
-          second = d.u32(Matter.empty);
+        case Matter.drain: {
+          const kind = cells.traitsOf(b).kind;
+          const takes = kind === Kind.powder || (kind === Kind.liquid && other !== Matter.water);
+          const seeps = d.f32(lifeOf(a)) / 255;
+          if ((takes || (other === Matter.water && drainsWater(a))) && randf.sample() < seeps) {
+            second = d.u32(Matter.empty);
+          }
+          break;
         }
-        break;
       }
-    }
-    return d.vec2u(first, second);
-  };
+      return d.vec2u(first, second);
+    };
 
-  /** Tests contact reactions in both directions. */
-  const react = (a: number, b: number) => {
-    'use gpu';
-    const once = act(a, b);
-    const twice = act(once.y, once.x);
-    return d.vec2u(twice.y, twice.x);
-  };
+    /** Tests contact reactions in both directions. */
+    const react = (a: number, b: number) => {
+      'use gpu';
+      const once = act(a, b);
+      const twice = act(once.y, once.x);
+      return d.vec2u(twice.y, twice.x);
+    };
 
-  /** Reacts the cells in a block's `x` and `y`, then those in its `z` and `w`. */
-  const reactPairs = (block: d.v4u) => {
-    'use gpu';
-    return d.vec4u(react(block.x, block.y), react(block.z, block.w));
+    /** Reacts the cells in a block's `x` and `y`, then those in its `z` and `w`. */
+    const reactPairs = (block: d.v4u) => {
+      'use gpu';
+      return d.vec4u(react(block.x, block.y), react(block.z, block.w));
+    };
+
+    /** Spits an ember from lava or a burning cell with air above it. */
+    const spits = (over: number, hot: number, at: d.v2i) => {
+      'use gpu';
+      if (matterOf(over) !== Matter.empty) return;
+      const matter = matterOf(hot);
+      if (matter !== Matter.lava && matter !== Matter.burning) return;
+      if (randf.sample() < SPITS) spat(d.vec2f(at) + 0.5, randf.sample());
+    };
+
+    return { reactPairs, spits };
   };
+  const { reactPairs, spits } = rulesWith(counts, spark);
 
   /** Decays a cell's lifetime and transforms expired cells. */
   const age = (cell: number) => {
@@ -323,15 +355,6 @@ export function createRules(
     return d.vec2u(left, right);
   };
 
-  /** Spits an ember from lava or a burning cell with air above it. */
-  const spits = (over: number, hot: number, at: d.v2i) => {
-    'use gpu';
-    if (matterOf(over) !== Matter.empty) return;
-    const matter = matterOf(hot);
-    if (matter !== Matter.lava && matter !== Matter.burning) return;
-    if (randf.sample() < SPITS) spark(d.vec2f(at) + 0.5, randf.sample());
-  };
-
   const step = gridKernel(function step({ gid }) {
     'use gpu';
     if (gid.x >= BLOCKS_X || gid.y >= BLOCKS_Y) return;
@@ -404,6 +427,176 @@ export function createRules(
       cells.put(right, pair.y);
     });
 
+  // Where compute runs on the CPU, the 2 × 2 blocks keep the step there: each thread writes four
+  // computed cells and counts and spits with atomics. Instead every cell runs its block's rules
+  // itself and keeps its own corner, and each pair of a flow keeps its own cell, all reading a
+  // copy of the cells taken before. A kernel a block runs the rules once more, keeping what they
+  // count and spit, and a small one on the CPU adds the counts and spits the embers
+  const alone = backends.of(root).compute === 'cpu';
+
+  const quiet = rulesWith(
+    {
+      add: {
+        cooled: (_amount: number) => {
+          'use gpu';
+        },
+        burnt: (_amount: number) => {
+          'use gpu';
+        },
+      },
+    },
+    (at: d.v2f, heat: number) => {
+      'use gpu';
+      sparked(at, heat);
+    },
+  );
+
+  const cooledHere = tgpu.privateVar(d.u32);
+  const burntHere = tgpu.privateVar(d.u32);
+  const spatHere = tgpu.privateVar(d.vec2u);
+  const noted = rulesWith(
+    {
+      add: {
+        cooled: (amount: number) => {
+          'use gpu';
+          cooledHere.$ += d.u32(amount);
+        },
+        burnt: (amount: number) => {
+          'use gpu';
+          burntHere.$ += d.u32(amount);
+        },
+      },
+    },
+    (at: d.v2f, heat: number) => {
+      'use gpu';
+      sparked(at, heat);
+      if (spatHere.$.x === 0) spatHere.$.x = packSpit(at, heat);
+      else spatHere.$.y = packSpit(at, heat);
+    },
+  );
+
+  /** The block `gid` after this step under `rules`: top left, top right, bottom left and right. */
+  const settledBy = (rules: typeof quiet) => (gid: d.v2u) => {
+    'use gpu';
+    const phase = tick.$ & 3;
+    const shift = d.vec2i(d.i32(((phase + 1) >>> 1) & 1), d.i32(phase & 1));
+    const origin = d.vec2i(gid) * 2 - shift;
+    randf.seed4(d.vec4f(d.vec2f(gid), d.f32(tick.$ & 0xffff), d.f32(tick.$ >>> 16)));
+
+    const atTopRight = origin + d.vec2i(1, 0);
+    const atBottomLeft = origin + d.vec2i(0, 1);
+    const atBottomRight = origin + d.vec2i(1, 1);
+    let block = d.vec4u(
+      cells.cellAt(origin),
+      cells.cellAt(atTopRight),
+      cells.cellAt(atBottomLeft),
+      cells.cellAt(atBottomRight),
+    );
+    block = rules.reactPairs(block);
+    block = rules.reactPairs(block.xzyw).xzyw;
+    block = rules.reactPairs(block.xwyz).xzwy;
+    block = d.vec4u(age(block.x), age(block.y), age(block.z), age(block.w));
+    rules.spits(block.x, block.z, atBottomLeft);
+    rules.spits(block.y, block.w, atBottomRight);
+
+    const mirrored = randf.sample() < 0.5;
+    if (mirrored) block = block.yxwz;
+    if (sprays(block.x, block.z, block.w)) block = block.wyzx;
+    if (sinks(block.x, block.z)) block = block.zyxw;
+    if (sinks(block.y, block.w)) block = block.xwzy;
+    if (slides(block.x, block.z, block.w, block.y)) block = block.wyzx;
+    if (slides(block.y, block.w, block.z, block.x)) block = block.xzyw;
+    if (rises(block.z, block.x, block.y, block.w)) block = block.xzyw;
+    if (rises(block.w, block.y, block.x, block.z)) block = block.wyzx;
+    if (mirrored) block = block.yxwz;
+
+    const top = pour(block.x, block.y, block.z, block.w);
+    const bottom = drift(block.z, block.w, top.x, top.y);
+    return d.vec4u(top, bottom);
+  };
+  const settledQuietly = settledBy(quiet);
+  const settledNoting = settledBy(noted);
+
+  const stepEach = gridKernel(function stepEach({ gid }) {
+    'use gpu';
+    if (gid.x >= WIDTH || gid.y >= HEIGHT) return;
+    const phase = tick.$ & 3;
+    const shift = d.vec2u(((phase + 1) >>> 1) & 1, phase & 1);
+    const shifted = gid.xy + shift;
+    const corner = settledQuietly(d.vec2u(shifted.x >>> 1, shifted.y >>> 1));
+    const lane = (shifted.y & 1) * 2 + (shifted.x & 1);
+    cells.put(d.vec2i(gid.xy), corner[lane] as number);
+  });
+
+  const Notes = d.arrayOf(d.vec4u, BLOCKS_X * BLOCKS_Y);
+  const events = alone ? root.createBuffer(Notes).$usage('storage') : undefined;
+  const noting = tgpu.mutableAccessor(Notes, events?.as('mutable'));
+  const notes = tgpu.accessor(Notes, events?.as('readonly'));
+
+  const noteEach = gridKernel(function noteEach({ gid }) {
+    'use gpu';
+    if (gid.x >= BLOCKS_X || gid.y >= BLOCKS_Y) return;
+    const phase = tick.$ & 3;
+    const shift = d.vec2i(d.i32(((phase + 1) >>> 1) & 1), d.i32(phase & 1));
+    const origin = d.vec2i(gid.xy) * 2 - shift;
+    let note = d.vec4u();
+    if (origin.x < WIDTH && origin.y < HEIGHT) {
+      settledNoting(gid.xy);
+      note = d.vec4u(cooledHere.$, burntHere.$, spatHere.$.x, spatHere.$.y);
+    }
+    noting.$[gid.y * BLOCKS_X + gid.x] = d.vec4u(note);
+  });
+
+  const spitOut = (spit: number, at: d.v2u, k: number) => {
+    'use gpu';
+    if (spit >>> 31 === 0) return;
+    randf.seed4(d.vec4f(d.vec2f(at), d.f32(tick.$ & 0xffff), d.f32(k) + 0.5));
+    const cell = d.vec2f(d.f32(spit & 1023), d.f32((spit >>> 10) & 1023)) + 0.5;
+    spark(cell, d.f32((spit >>> 20) & 1023) / 1023);
+  };
+
+  const effects = gridKernel(function effects({ gid }) {
+    'use gpu';
+    if (gid.x >= BLOCKS_X || gid.y >= BLOCKS_Y) return;
+    const note = notes.$[gid.y * BLOCKS_X + gid.x] as d.v4u;
+    if (note.x !== 0) counts.add.cooled(note.x);
+    if (note.y !== 0) counts.add.burnt(note.y);
+    spitOut(note.z, gid.xy, 0);
+    spitOut(note.w, gid.xy, 1);
+  });
+
+  const flowEach = (parity: number, offset: number) =>
+    gridKernel(function flowAlone({ gid }) {
+      'use gpu';
+      if (gid.x >= WIDTH || gid.y >= HEIGHT || (gid.y & 1) !== parity) return;
+      const along = gid.x + offset;
+      const left = d.vec2i(d.i32((along >>> 1) << 1) - offset, d.i32(gid.y));
+      const right = left + d.vec2i(1, 0);
+      const l = cells.cellAt(left);
+      const r = cells.cellAt(right);
+      if (!isLiquid(l) && !isLiquid(r)) return;
+      randf.seed4(d.vec4f(d.vec2f(left), d.f32(tick.$ & 0xffff), d.f32(tick.$ >>> 16) + offset));
+      const below = d.vec2i(0, 1);
+      const poured = pour(l, r, cells.cellAt(left + below), cells.cellAt(right + below));
+      cells.put(d.vec2i(gid.xy), std.select(poured.x, poured.y, (along & 1) === 1));
+    });
+
+  const kept = root.pipe(cells.fromKept);
+  const steppingEach = alone
+    ? kept.createComputePipeline({ compute: stepEach }).$name('steppingEach')
+    : undefined;
+  const notingEach = alone
+    ? kept.createComputePipeline({ compute: noteEach }).$name('notingEach')
+    : undefined;
+  const affecting = alone
+    ? root.createComputePipeline({ compute: effects }).$name('affecting')
+    : undefined;
+  const flowsEach = alone
+    ? [0, 1].map((offset) =>
+        [0, 1].map((parity) => kept.createComputePipeline({ compute: flowEach(parity, offset) })),
+      )
+    : undefined;
+
   const ticking = root.createComputePipeline({
     compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
       'use gpu';
@@ -420,11 +613,34 @@ export function createRules(
 
   return {
     controls,
-    initAsync: () => pipelines.compile([ticking, stepping, ...pairings.flat()]),
+    initAsync: () =>
+      pipelines.compile(
+        steppingEach && notingEach && affecting && flowsEach
+          ? [ticking, steppingEach, notingEach, affecting, ...flowsEach.flat()]
+          : [ticking, stepping, ...pairings.flat()],
+      ),
     /** Steps all cells, then moves liquids along their rows. */
     step(pass: TgpuComputePass) {
       pass.setPipeline(ticking);
       pass.dispatchWorkgroups(1);
+      if (steppingEach && notingEach && affecting && flowsEach) {
+        cells.keep(pass);
+        pass.setPipeline(notingEach);
+        pass.dispatchWorkgroups(BLOCK_GROUPS.x, BLOCK_GROUPS.y);
+        pass.setPipeline(steppingEach);
+        pass.dispatchWorkgroups(GRID_GROUPS.x, GRID_GROUPS.y);
+        for (let k = 0; k < FLOW_PASSES; k++) {
+          for (const flow of flowsEach[k % 2]!) {
+            cells.keep(pass);
+            pass.setPipeline(flow);
+            pass.dispatchWorkgroups(GRID_GROUPS.x, GRID_GROUPS.y);
+          }
+        }
+        // Last, so the CPU waits for the step's GPU work once, as the embers then read the cells
+        pass.setPipeline(affecting);
+        pass.dispatchWorkgroups(BLOCK_GROUPS.x, BLOCK_GROUPS.y);
+        return;
+      }
       pass.setPipeline(stepping);
       pass.dispatchWorkgroups(BLOCK_GROUPS.x, BLOCK_GROUPS.y);
       for (const flow of flows) {
@@ -434,6 +650,7 @@ export function createRules(
     },
     destroy() {
       tick.buffer.destroy();
+      events?.destroy();
     },
   };
 }

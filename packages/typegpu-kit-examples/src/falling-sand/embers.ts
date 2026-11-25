@@ -32,6 +32,25 @@ const glowing = (ember: Particle, local: d.v2f) => {
 };
 
 /** Emits sparks from lava and burning wood. Sparks ignite wood and turn to steam on water. */
+/**
+ * The ember `spark` emits, without emitting it: it draws the same samples from `randf`, so rules
+ * run again aside stay on the same random sequence as the run that spits.
+ */
+const sparked = (at: d.v2f, heat: number) => {
+  'use gpu';
+  const speed = SPEED.least + (SPEED.most - SPEED.least) * (randf.sample() * 0.6 + heat * 0.4);
+  const across = (randf.sample() * 2 - 1) * SPEED.across;
+  return Particle({
+    position: d.vec3f(at.x, HEIGHT - at.y + 0.5, 0),
+    age: 0,
+    velocity: d.vec3f(across, speed, 0),
+    life: LIFE_SECONDS.least + (LIFE_SECONDS.most - LIFE_SECONDS.least) * randf.sample(),
+    color: d.vec4f(std.mix(COOL, HOT, heat), 1),
+    size: SIZE_CELLS,
+    seed: randf.sample(),
+  });
+};
+
 export function createEmbers(
   root: TgpuRoot,
   options: {
@@ -92,5 +111,5 @@ export function createEmbers(
     );
   };
 
-  return { sparks, spark };
+  return { sparks, spark, sparked };
 }
