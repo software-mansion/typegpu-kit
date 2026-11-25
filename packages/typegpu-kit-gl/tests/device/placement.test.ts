@@ -553,3 +553,49 @@ test('a grouped form whose dispatch outgrows the CPU sends its group back before
     'gpu: 67108864 invocations are too many to run on the CPU',
   );
 });
+
+test('a group whose leader stops dispatching goes back to the GPU', async () => {
+  const { ctx, stars } = await grouped();
+  // `shells` led the group; only `stars` dispatches from here
+  let back = -1;
+  for (let i = 0; i < 20 && back < 0; i++) {
+    if (stars() === 'gpu') back = i;
+    await task();
+  }
+  // Within a window's worth of member dispatches after the leader's last
+  expect(back).toBeGreaterThanOrEqual(0);
+  expect(back).toBeLessThanOrEqual(13);
+  expect(ctx.stats.placement.get('stars')).toBe(
+    'gpu: the form that led its group stopped dispatching',
+  );
+});
+
+test("a group's GPU baseline counts each member's GPU cost, whichever window just closed", async () => {
+  // 0.6 ms a GPU dispatch each and 1 ms a CPU run each: 0.8 ms more a round, against 1 ms waited
+  const { ctx, frame } = await grouped({ gpuMs: 0.6 });
+  for (let i = 0; i < 30; i++) {
+    expect(frame(1).where).toEqual(['cpu', 'cpu']);
+    await task();
+  }
+  expect(ctx.stats.placement.get('shells')).toBe(
+    'cpu: CPU runs of its group cost 0.80 ms more than their GPU forms, and saved 0.83 ms of readback waits',
+  );
+});
+
+test('a group is credited only the waits charged to its own outputs', async () => {
+  // An unrelated 10 ms readback a frame while the group forms, gone after
+  let unrelated = true;
+  const { ctx, frame } = await grouped({}, (each) => {
+    if (unrelated) readBack(each, buffer('unrelated'), 10);
+  });
+  unrelated = false;
+  const where: string[][] = [];
+  for (let i = 0; i < 30; i++) {
+    where.push(frame(3).where);
+    await task();
+  }
+  expect(where.at(-1)).toEqual(['gpu', 'gpu']);
+  expect(ctx.stats.placement.get('shells')).toMatch(
+    /^gpu: CPU runs of its group cost 5\.80 ms more than their GPU forms, and saved 0\.83 ms/,
+  );
+});

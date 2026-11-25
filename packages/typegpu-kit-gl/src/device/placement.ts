@@ -131,6 +131,15 @@ interface Record {
   lastLoose: boolean;
   /** The pipelines it moved to the CPU with, if it did. */
   group: Group | undefined;
+  /** GPU dispatches this window, and its last completed window's GPU and charged wait per one. */
+  gpuRuns: number;
+  gpuPer: number;
+  waitPer: number;
+  /** In a group: its GPU cost and charged wait per dispatch at the move, and its span's runs. */
+  baseGpu: number;
+  baseWait: number;
+  spanMs: number;
+  spanRuns: number;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
   why: 'readback' | 'costly';
   /** The GPU time of the form's last sampled dispatches, in milliseconds. */
@@ -155,23 +164,21 @@ interface Record {
 /**
  * Pipelines on the CPU together: one whose outputs the CPU read back, the leader, and the GPU forms
  * that rewrote its inputs, transitively, which a CPU run of it alone would read back every time.
- * They are judged as one, at the leader's windows: their CPU runs against their GPU forms' issue
- * and the device's readback waits before and after.
+ * They are judged as one, over spans of every member's dispatches: each member's CPU runs against
+ * what its GPU form cost those dispatches, and the readback waits charged to its outputs before.
+ * The group reaches its records weakly, so it keeps no pipeline's record alive.
  */
 interface Group {
-  readonly leader: Record;
-  readonly members: ReadonlySet<Record>;
-  /** CPU milliseconds of every member since judging began, the leader's dispatches and windows. */
-  cpuMs: number;
-  dispatches: number;
-  windows: number;
-  /** The device's readback wait when judging began. */
-  waitAt: number;
-  /** At the move: the members' GPU issue, and the device's readback wait, per leader dispatch. */
-  readonly gpuIssue: number;
-  readonly waitBefore: number;
+  readonly leader: WeakRef<Record>;
+  readonly members: WeakSet<Record>;
+  readonly list: readonly WeakRef<Record>[];
   /** Just moved: the first window reads back what GL held, so it is not judged. */
   settling: boolean;
+  /** Windows judged together so far, and member dispatches in the open window. */
+  windows: number;
+  dispatches: number;
+  /** Member dispatches since the leader's last. */
+  sinceLeader: number;
 }
 
 /** A dispatch's GPU time in flight: a timer query, or fences before and after its draws. */
@@ -302,6 +309,13 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       loose: false,
       lastLoose: false,
       group: undefined,
+      gpuRuns: 0,
+      gpuPer: 0,
+      waitPer: 0,
+      baseGpu: 0,
+      baseWait: 0,
+      spanMs: 0,
+      spanRuns: 0,
       why: 'readback',
       samples: [],
       probe: undefined,
@@ -320,6 +334,11 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
 }
 
 function restart(ctx: Ctx, record: Record): void {
+  if (record.gpuRuns > 0) {
+    record.gpuPer = record.gpuMs / record.gpuRuns;
+    record.waitPer = record.waitMs / record.gpuRuns;
+  }
+  record.gpuRuns = 0;
   record.waitAt = waitedOf(ctx).ms;
   record.dispatches = 0;
   record.readBack = 0;
@@ -460,6 +479,7 @@ export function ranOnGpu(
 ): void {
   const record = recordOf(ctx, pipeline, label);
   record.gpuMs += ms;
+  record.gpuRuns++;
   const writer = { record, dispatch: ++record.written };
   for (const buffer of replaced) writers.set(buffer, writer);
   for (const { target } of gpu.passes) {
@@ -535,17 +555,14 @@ function groupOf(leader: Record): Set<Record> | undefined {
 function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
   const members = groupOf(leader);
   if (!members) return false;
-  const perDispatch = (member: Record) => member.gpuMs / Math.max(1, member.dispatches);
   const group: Group = {
-    leader,
-    members,
-    cpuMs: 0,
-    dispatches: 0,
-    windows: 0,
-    waitAt: 0,
-    gpuIssue: [...members].reduce((sum, member) => sum + perDispatch(member), 0),
-    waitBefore: (waitedOf(ctx).ms - leader.waitAt) / leader.dispatches,
+    leader: new WeakRef(leader),
+    members: new WeakSet(members),
+    list: [...members].map((member) => new WeakRef(member)),
     settling: true,
+    windows: 0,
+    dispatches: 0,
+    sinceLeader: 0,
   };
   const others = [...members].filter((member) => member !== leader);
   const names = others.map((member) => `'${member.label}'`).join(', ');
@@ -554,12 +571,17 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
     `cpu: the CPU read back its outputs after ${reads} of ${leader.dispatches} dispatches, waiting ${(leader.waitMs / leader.dispatches).toFixed(2)} ms each, and ${names} rewrote its inputs, so they moved with it`,
   );
   for (const member of members) {
+    // The window in progress where it has GPU dispatches, else the last one that completed
+    const current = member.gpuRuns > 0;
+    member.baseGpu = current ? member.gpuMs / member.gpuRuns : member.gpuPer;
+    member.baseWait = current ? member.waitMs / member.gpuRuns : member.waitPer;
+    member.spanMs = 0;
+    member.spanRuns = 0;
     member.onCpu = true;
     member.why = 'readback';
     member.settling = false;
     member.group = group;
     if (member !== leader) {
-      restart(ctx, member);
       ctx.stats.placement.set(
         member.label,
         `cpu: it rewrote an input of '${leader.label}', whose outputs the CPU read back, so it moved with it`,
@@ -569,12 +591,17 @@ function moveGroup(ctx: Ctx, leader: Record, reads: number): boolean {
   return true;
 }
 
+/** The records of a group whose pipelines are still alive. */
+function membersOf(group: Group): Record[] {
+  return group.list.map((each) => each.deref()).filter((each) => each !== undefined);
+}
+
 /**
  * Sends every pipeline of a group back to the GPU: for good when its CPU runs cost more than they
- * saved, or, when a GPU form outside it rewrote a member's input, counting a return for each.
+ * saved, or, when a dispatch it cannot run on the CPU comes, counting a return for each.
  */
 function breakGroup(ctx: Ctx, group: Group, why: string, lost = false): void {
-  for (const member of group.members) {
+  for (const member of membersOf(group)) {
     member.onCpu = false;
     member.group = undefined;
     if (lost) member.pinned = true;
@@ -589,35 +616,51 @@ function breakGroup(ctx: Ctx, group: Group, why: string, lost = false): void {
 }
 
 /**
- * Notes a CPU run of a member of a group, judged at the leader's windows as the single rule judges
- * one pipeline: every member's CPU time against their GPU issue and the readback waits saved.
+ * Notes a CPU run of a member of a group. Every member's dispatches count towards the group's
+ * windows, so a group goes on being judged whichever members dispatch, and one whose leader stopped
+ * dispatching goes back. A judgement weighs each member's CPU runs against what its GPU form cost
+ * as many dispatches, and the readback waits charged to its outputs before the move against none.
  */
 function ranGrouped(ctx: Ctx, record: Record, group: Group, ms: number): void {
-  group.cpuMs += ms;
-  if (record !== group.leader || record.dispatches < WINDOW) return;
-  if (group.settling) {
-    group.settling = false;
-    return judgeFrom(ctx, record, group);
+  record.spanMs += ms;
+  record.spanRuns++;
+  group.dispatches++;
+  const members = membersOf(group);
+  if (record === group.leader.deref()) group.sinceLeader = 0;
+  else if (++group.sinceLeader > WINDOW * members.length) {
+    return breakGroup(ctx, group, 'the form that led its group stopped dispatching');
   }
-  group.dispatches += record.dispatches;
-  restart(ctx, record);
-  if (++group.windows < GROUP_WINDOWS) return;
-  const { dispatches } = group;
-  const extra = group.cpuMs / dispatches - group.gpuIssue;
-  const saved = group.waitBefore - (waitedOf(ctx).ms - group.waitAt) / dispatches;
-  const cost = `CPU runs of its group cost ${extra.toFixed(2)} ms more than their GPU forms, and saved ${saved.toFixed(2)} ms of readback waits`;
-  if (extra > CHEAP_MS && extra > saved) return breakGroup(ctx, group, cost, true);
-  ctx.stats.placement.set(record.label, `cpu: ${cost}`);
-  judgeFrom(ctx, record, group);
+  if (group.dispatches < WINDOW * members.length) return;
+  group.dispatches = 0;
+  if (group.settling || ++group.windows === GROUP_WINDOWS) {
+    if (!group.settling) judge(ctx, group, members);
+    group.settling = false;
+    group.windows = 0;
+    for (const member of members) {
+      member.spanMs = 0;
+      member.spanRuns = 0;
+    }
+  }
 }
 
-/** Starts the group's next judging span at the leader's next window. */
-function judgeFrom(ctx: Ctx, leader: Record, group: Group): void {
-  restart(ctx, leader);
-  group.cpuMs = 0;
-  group.dispatches = 0;
-  group.windows = 0;
-  group.waitAt = waitedOf(ctx).ms;
+/** Keeps a group on the CPU or sends it back for good, from its members' spans. */
+function judge(ctx: Ctx, group: Group, members: readonly Record[]): void {
+  let extra = 0;
+  let saved = 0;
+  let runs = 0;
+  for (const member of members) {
+    extra += member.spanMs - member.baseGpu * member.spanRuns;
+    saved += member.baseWait * member.spanRuns;
+    runs += member.spanRuns;
+  }
+  // Per round of the group, one dispatch of each member
+  const rounds = runs / members.length;
+  extra /= rounds;
+  saved /= rounds;
+  const cost = `CPU runs of its group cost ${extra.toFixed(2)} ms more than their GPU forms, and saved ${saved.toFixed(2)} ms of readback waits`;
+  if (extra > CHEAP_MS && extra > saved) return breakGroup(ctx, group, cost, true);
+  const leader = group.leader.deref();
+  if (leader) ctx.stats.placement.set(leader.label, `cpu: ${cost}`);
 }
 
 /** Notes a CPU run of a pipeline that has a GPU form, and moves it back if the CPU costs more. */
