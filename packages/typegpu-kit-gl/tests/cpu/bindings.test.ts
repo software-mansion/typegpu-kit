@@ -174,9 +174,9 @@ it('cannot tell the words an atomic stored to', () => {
   ).toBeUndefined();
 });
 
-/** Dispatches `module` once over one buffer per binding, of `words` words each: their words. */
-function runOver(module: ReturnType<typeof compile>, words: number[], workgroups = 1) {
-  const buffers = words.map((count) => new ArrayBuffer(count * 4));
+/** Dispatches `module` once over one buffer per binding, of `sizes` words each: their words. */
+function runOver(module: ReturnType<typeof compile>, sizes: number[], workgroups = 1) {
+  const buffers = sizes.map((count) => new ArrayBuffer(count * 4));
   module.dispatch(workgroups, 1, 1, {
     buffer: (_group, binding) => {
       const bytes = buffers[binding]!;
