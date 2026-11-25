@@ -12,6 +12,9 @@ import { diffScene } from './diff.ts';
 
 const COUNT = 128;
 
+// Rounding may leave -0 on one side and 0 on the other
+const unsigned = (rows: number[][]) => rows.map((row) => row.map((c) => c + 0));
+
 /** Writes the positions of a cylinder's vertices, as the mesh pool's bake does. */
 async function cylinder(root: TgpuRoot) {
   const shape = meshes.cylinder({ radius: 0.55, height: 0.4 });
@@ -31,19 +34,20 @@ async function cylinder(root: TgpuRoot) {
   return (await out.read()).map((v) => [v.x, v.y, v.z].map((c) => Number(c.toFixed(4))));
 }
 
-// The top cap's ring, vertices 67 to 98, comes out at x = z = 0 on the CPU
-test
-  .skipIf(!hasWebGpu)
-  .fails("a cylinder's cap vertices from a CPU kernel", { timeout: 60_000 }, async () => {
+test.skipIf(!hasWebGpu)(
+  "a cylinder's cap vertices from a CPU kernel",
+  { timeout: 60_000 },
+  async () => {
     const gpu = await tgpu.init();
     const gl = glRoot({ gpuCompute: false });
     try {
-      expect(await cylinder(gl)).toEqual(await cylinder(gpu));
+      expect(unsigned(await cylinder(gl))).toEqual(unsigned(await cylinder(gpu)));
     } finally {
       gpu.destroy();
       gl.destroy();
     }
-  });
+  },
+);
 
 /** Bakes a box into a mesh pool and reads back the bounds the bake's atomics wrote. */
 async function boxBounds(root: TgpuRoot) {
