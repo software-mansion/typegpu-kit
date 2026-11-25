@@ -14,6 +14,7 @@ import { tgpu, type TgpuRoot } from 'typegpu';
 import { createDevice, isSupported, type DeviceOptions } from './device/index.ts';
 import { KitGenerator } from './generator.ts';
 import { defineConstants } from './globals.ts';
+import { assertPatched } from './patched.ts';
 
 export interface InitOptions extends DeviceOptions {}
 
@@ -35,11 +36,13 @@ export function supported(): boolean {
 
 /**
  * Creates a root that runs on WebGL 2. Pass the canvas you draw to, so the device presents to it
- * without a copy; other canvases still work through `web.surface`. Throws if WebGL 2 is missing.
+ * without a copy; other canvases still work through `web.surface`. Throws if WebGL 2 is missing,
+ * or if TypeGPU lacks the patch this package ships.
  *
  * @returns a root whose `destroy` also frees the WebGL device
  */
 export async function init(options: InitOptions = {}): Promise<TgpuRoot> {
+  assertPatched();
   defineConstants();
   const device = createDevice(options);
   const root = tgpu.initFromDevice({ device, unstable_shaderGeneratorClass: KitGenerator });
