@@ -5,7 +5,7 @@ import { type Bound, bufferEntry } from './binding.ts';
 import { type BufferImpl, written } from './buffer.ts';
 import type { Ctx } from './context.ts';
 import { runGpu } from './gpuCompute.ts';
-import { ranOnCpu, ranOnGpu, runsOnGpu } from './placement.ts';
+import { beginProbe, endProbe, ranOnCpu, ranOnGpu, runsOnGpu } from './placement.ts';
 import type { ComputePipelineImpl } from './pipeline.ts';
 import { cpuWritten, type TextureImpl, type ViewImpl } from './texture.ts';
 import { cpuLevels } from './transfer.ts';
@@ -64,7 +64,17 @@ function count(ctx: Ctx, label: string, ms: number, invocations: number): void {
   }
 }
 
-export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: number): void {
+export function dispatch(ctx: Ctx, pass: ComputePass, ...counts: [number, number, number]): void {
+  // WebGPU takes counts as [EnforceRange] GPUSize32: a fraction truncates, and the GPU form and
+  // the CPU module must run the same dispatch
+  if (!counts.every((each) => Number.isFinite(each) && each >= 0 && each < 2 ** 32)) {
+    ctx.errors.report(
+      'validation',
+      `dispatchWorkgroups(${counts.join(', ')}) has an invalid count.`,
+    );
+    return;
+  }
+  const [x, y, z] = counts.map(Math.trunc) as [number, number, number];
   const pipeline = pass.pipeline;
   const module = pipeline?.module;
   if (!module) {
@@ -77,7 +87,9 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   const gpu = pipeline.gpu;
   if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups)) {
     const start = performance.now();
+    const probe = beginProbe(ctx, pipeline, pipeline.label, invocations);
     const reason = runGpu(ctx, gpu, pass.groups, x, y, z);
+    endProbe(ctx, pipeline, probe, reason === undefined);
     if (reason === undefined) {
       const ms = performance.now() - start;
       count(ctx, `${pipeline.label} (gpu)`, ms, invocations);
