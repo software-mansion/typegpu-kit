@@ -356,6 +356,8 @@ New.
 
 **Why.** Patches E and F need GLSL helpers declared once per resolution. A subclass that lays declarations out differently, as the kit's generator does with its chunks, overrides the hook.
 
+**Reproduction.** `const f = (a: d.v3f, b: d.v3f, c: boolean) => { 'use gpu'; return std.select(a, b, c); };` resolved with the kit's generator needs the `select` helper of patch F in a chunk of its own; without the hook it is added to the declarations directly and no stage's chunks list it.
+
 **Diff.**
 
 ```diff
