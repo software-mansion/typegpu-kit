@@ -6,7 +6,14 @@ import { completeCall, projectRecordBody, usedRecordFields } from './record-fiel
 import { readAddress, referenceAddress, writeAddress, type Address } from './address.ts';
 import { addressParts, callArguments, lowerReferences } from './references.ts';
 import { layoutOf } from './memory.ts';
-import { NodeTypeCatalog as NODE, type Expression, type Statement, type Return } from 'tinyest';
+import {
+  NodeTypeCatalog as NODE,
+  type Expression,
+  type Statement,
+  type Return,
+  type Block,
+  type Switch,
+} from 'tinyest';
 import { d, std } from 'typegpu';
 import {
   WgslGenerator,
@@ -239,6 +246,74 @@ export class CpuGenerator extends WgslGenerator {
   #vectors = new Map<string, string[]>();
   #constantVectors = new Map<string, string[]>();
   #ownedLocals = new Set<string>();
+  #lowerPlaces(body: string): string {
+    for (const [name, address] of this.#addresses) {
+      if (address.layout.type === 'array') {
+        const length =
+          address.layout.count ||
+          `Math.floor((${address.base}_u32.byteLength-(${address.offset}))/${address.layout.stride})`;
+        body = body
+          .replaceAll(`arrayLength((&${name}))`, String(length))
+          .replaceAll(`arrayLength(&${name})`, String(length));
+      }
+      if (body.includes(`(&${name})`))
+        body = body.replaceAll(`(&${name})`, referenceAddress(address));
+      if (body.includes(`return ${name};`))
+        body = body.replaceAll(`return ${name};`, `return ${readAddress(address)};`);
+    }
+    for (const [name, parts] of this.#vectors) {
+      if (body.includes(`(&${name})`)) {
+        const writes = parts.map((part, i) => `${part}=value[${i}];`).join('');
+        const properties = parts
+          .map((part, i) => `get ${i}(){return ${part}},set ${i}(value){${part}=value}`)
+          .join(',');
+        body = body.replaceAll(
+          `(&${name})`,
+          `((view)=>({get $(){return view},set $(value){${writes}}}))({length:${parts.length},${properties}})`,
+        );
+      }
+    }
+    body = body.replace(/\bcpuVector(?:_\d+)?\b/g, (name) => {
+      const parts = this.#components(name);
+      return parts ? `$vector([${parts.join(',')}])` : name;
+    });
+    body = body.replace(/\bcpuAddress(?:_\d+)?\b/g, (name) => {
+      const address = this.#addresses.get(name);
+      return address ? readAddress(address) : name;
+    });
+    return body;
+  }
+  #scope(emit: () => ResolvedStatement): ResolvedStatement {
+    const addresses = this.#addresses;
+    const vectors = this.#vectors;
+    const owned = this.#ownedLocals;
+    this.#addresses = new Map(addresses);
+    this.#vectors = new Map(vectors);
+    this.#ownedLocals = new Set(owned);
+    try {
+      const result = emit();
+      return { ...result, code: this.#lowerPlaces(result.code) };
+    } finally {
+      this.#addresses = addresses;
+      this.#vectors = vectors;
+      this.#ownedLocals = owned;
+      for (const [name, address] of this.#globalAddresses) this.#addresses.set(name, address);
+    }
+  }
+  #forgetLocal(name: string): void {
+    this.#addresses.delete(name);
+    this.#vectors.delete(name);
+    this.#ownedLocals.delete(name);
+  }
+  protected override _block(
+    block: Block,
+    allowInlining: boolean,
+    externalMap?: Record<string, unknown>,
+  ): ResolvedStatement {
+    // Lower references while their lexical bindings still exist.
+    // eslint-disable-next-line no-underscore-dangle
+    return this.#scope(() => super._block(block, allowInlining, externalMap));
+  }
   #lowerSwizzle(original: Snippet, code: string): Snippet {
     if (typeof original.value !== 'object' || !original.value)
       return snip(code, original.dataType, original.origin, original.possibleSideEffects);
@@ -583,6 +658,22 @@ export class CpuGenerator extends WgslGenerator {
   }
 
   protected override _statement(statement: Statement): ResolvedStatement {
+    if (Array.isArray(statement) && (statement[0] === NODE.for || statement[0] === NODE.forOf)) {
+      // eslint-disable-next-line no-underscore-dangle
+      return this.#scope(() => super._statement(statement));
+    }
+    if (Array.isArray(statement) && statement[0] === NODE.switch) {
+      // TypeGPU emits case statements without calling _block; give each case an explicit block.
+      // eslint-disable-next-line no-underscore-dangle
+      return super._statement([
+        NODE.switch,
+        statement[1],
+        (statement as Switch)[2].map(([test, body]) => [
+          test,
+          body.length ? [[NODE.block, [...body]]] : [],
+        ]),
+      ]);
+    }
     if (Array.isArray(statement) && statement[0] === NODE.postUpdate) {
       // Preserve the base generator's mutability checks and variable tracking.
       // eslint-disable-next-line no-underscore-dangle
@@ -614,6 +705,7 @@ export class CpuGenerator extends WgslGenerator {
     const address = this.#addresses.get(code);
     if (address) {
       const name = this.ctx.makeUniqueIdentifier(rawId, 'block');
+      this.#forgetLocal(name);
       this.#addresses.set(name, { ...address, offset: name });
       this.ctx.defineVariable(rawId, snip(name, value.dataType as d.BaseData, value.origin, false));
       return { code: `const ${name} = ${address.offset};`, definesInNearestScope: true };
@@ -621,6 +713,7 @@ export class CpuGenerator extends WgslGenerator {
     const components = this.#parts(value);
     if (components) {
       const name = this.ctx.makeUniqueIdentifier(rawId, 'block');
+      this.#forgetLocal(name);
       this.#vectors.set(name, components);
       this.ctx.defineVariable(rawId, snip(name, value.dataType as d.BaseData, value.origin, false));
       return { code: '', definesInNearestScope: false };
@@ -628,6 +721,7 @@ export class CpuGenerator extends WgslGenerator {
     const type = scalar(value.dataType);
     if (type === 'ptr') return unsupported('implicit pointer alias');
     const name = this.ctx.makeUniqueIdentifier(rawId, 'block');
+    this.#forgetLocal(name);
     this.ctx.defineVariable(rawId, snip(name, value.dataType as d.BaseData, value.origin, false));
     return {
       code: `const ${name} = ${this.ctx.resolveSnippet(value).value};`,
@@ -1004,6 +1098,7 @@ export class CpuGenerator extends WgslGenerator {
     schema: d.BaseData,
     rhs: string,
   ): string {
+    const incomingAddress = this.#addresses.get(rhs);
     let components = this.#components(rhs);
     let prefix = '';
     if (!components && /^vec[234][fui]$/.test(schema.type)) {
@@ -1015,6 +1110,7 @@ export class CpuGenerator extends WgslGenerator {
         components = Array.from({ length: Number(schema.type[3]) }, (_, i) => `${temporary}[${i}]`);
       }
     }
+    this.#forgetLocal(name);
     if (components) {
       const locals = components.map(() => this.ctx.makeUniqueIdentifier('cpuComponent', 'global'));
       this.#vectors.set(name, locals);
@@ -1026,7 +1122,7 @@ export class CpuGenerator extends WgslGenerator {
       return `${record.prefix}let ${name} = ${record.value};`;
     }
     const type = this.emitTypeAnnotation(schema);
-    const address = this.#addresses.get(rhs);
+    const address = incomingAddress;
     if (address) rhs = readAddress(address);
     if (type === 'f32') return `let ${name} = ${f32(rhs)};`;
     this.#ownedLocals.add(name);
@@ -1152,32 +1248,7 @@ export class CpuGenerator extends WgslGenerator {
       // The protected AST emitter is the extension hook TypeGPU exposes.
       // eslint-disable-next-line no-underscore-dangle
       let body = this._block(options.body, false).code;
-      for (const [name, address] of this.#addresses) {
-        if (address.layout.type === 'array') {
-          const length =
-            address.layout.count ||
-            `Math.floor((${address.base}_u32.byteLength-(${address.offset}))/${address.layout.stride})`;
-          body = body
-            .replaceAll(`arrayLength((&${name}))`, String(length))
-            .replaceAll(`arrayLength(&${name})`, String(length));
-        }
-        if (body.includes(`(&${name})`))
-          body = body.replaceAll(`(&${name})`, referenceAddress(address));
-        if (body.includes(`return ${name};`))
-          body = body.replaceAll(`return ${name};`, `return ${readAddress(address)};`);
-      }
-      for (const [name, parts] of this.#vectors) {
-        if (body.includes(`(&${name})`)) {
-          const writes = parts.map((part, i) => `${part}=value[${i}];`).join('');
-          const properties = parts
-            .map((part, i) => `get ${i}(){return ${part}},set ${i}(value){${part}=value}`)
-            .join(',');
-          body = body.replaceAll(
-            `(&${name})`,
-            `((view)=>({get $(){return view},set $(value){${writes}}}))({length:${parts.length},${properties}})`,
-          );
-        }
-      }
+      body = this.#lowerPlaces(body);
       body = lowerReferences(body);
       body = body.replace(/\b(?:workgroupBarrier|storageBarrier|textureBarrier)\(\)/g, '(yield)');
       for (const name of this.#generators) {
@@ -1197,14 +1268,6 @@ export class CpuGenerator extends WgslGenerator {
       }
       const generator = /\(yield(?:\)|\* )/.test(body);
       if (generator) this.#generators.add(options.name);
-      body = body.replace(/\bcpuVector(?:_\d+)?\b/g, (name) => {
-        const parts = this.#components(name);
-        return parts ? `$vector([${parts.join(',')}])` : name;
-      });
-      body = body.replace(/\bcpuAddress(?:_\d+)?\b/g, (name) => {
-        const address = this.#addresses.get(name);
-        return address ? readAddress(address) : name;
-      });
       body = prunePureLocals(this.#projectLocalRecords(body), this.#functionEffects);
       this.#functionEffects.set(options.name, this.#effects);
       this.#functionBodies.set(options.name, body);
