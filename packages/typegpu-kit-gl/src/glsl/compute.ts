@@ -1211,7 +1211,11 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const operand = this.#valueAs(amount, inner);
     const bits = inner === d.u32 ? operand : `uint(${operand})`;
     const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
-    if (!this.#plan) return snip(`${ADD_MARK}${buffer.id}()`, d.Void, 'runtime', true);
+    // The mark keeps the address and the amount, so `flow.ts` sees what they read, before the
+    // addition, as they run
+    if (!this.#plan) {
+      return snip(`${ADD_MARK}${buffer.id}(${place.address}, ${signed})`, d.Void, 'runtime', true);
+    }
     // The records are kept per pass, one buffer's additions each, in arrays the most of them fit
     const slots = Math.max(0, ...(this.#plan.slots?.values() ?? []));
     this.helper(
@@ -1279,7 +1283,8 @@ void ${ADD}(int aim, uint at, uint amount, uint words, uint first, int op) {
     }
     this.#takes.add(buffer.id);
     const added = this.#add('atomicAdd', place, amount, d.u32);
-    if (!this.#plan) return snip(`${TAKE}0()`, d.u32, 'runtime', true);
+    // As an addition's mark, the take keeps its address
+    if (!this.#plan) return snip(`${TAKE}0(${place.address})`, d.u32, 'runtime', true);
     const aim = this.#aim(buffer.id);
     const name = `${TAKE}${aim}`;
     const head = this.load(buffer.source, place.address, d.u32, buffer.id);
@@ -2077,7 +2082,9 @@ ${stored.join('\n')}
     if (!owns && !column && !strided && this.#scatterable()) {
       this.#scatters.set(texture.id, { kind: 'texture', texture });
       this.#wrote(texture.id, 1);
-      return '';
+      // The first resolution keeps the store's arguments, so `flow.ts` sees what they read
+      const values = args.map((arg) => this.ctx.resolveSnippet(arg).value);
+      return `${ADD_MARK}${texture.id}(${values.join(', ')})`;
     }
     if (!owns && !column && !strided) {
       const frame = this.#frame;

@@ -748,6 +748,63 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     "'atomicMin' on an element of 'a' that is not the invocation's own",
   ],
   [
+    "loads a summed cell inside a later addition's operand",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.atomicAdd(other.$[i], std.atomicLoad(sums.$[i]));
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside a later addition's address",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.atomicAdd(other.$[std.atomicLoad(sums.$[i]) % 64], 1);
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside a later scattered store's value",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const store = root.createTexture({ size: [64, 1], format: 'r32uint' }).$usage('storage');
+      const view = store.createView(d.textureStorage2d('r32uint', 'write-only'));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(sums.$[i], 1);
+        std.textureStore(view.$, d.vec2u(i, 0), d.vec4u(std.atomicLoad(sums.$[i]), 0, 0, 1));
+      });
+    },
+    'where it may have added to it',
+  ],
+  [
+    "loads a summed cell inside an addition's operand before adding to it",
+    (root) => {
+      const sums = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      const other = root.createMutable(d.arrayOf(d.atomic(d.u32), 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        const i = id.x ^ 1;
+        std.atomicAdd(other.$[i], std.atomicLoad(sums.$[i]));
+        std.atomicAdd(sums.$[i], 1);
+      });
+    },
+    'scatter',
+  ],
+  [
     'loads after adding in a switch case beside one that adds and returns',
     (root) => {
       const a = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
