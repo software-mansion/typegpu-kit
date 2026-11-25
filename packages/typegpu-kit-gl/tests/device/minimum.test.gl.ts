@@ -127,11 +127,17 @@ test('a draw that blends, writes and masks its targets differently needs no inde
         Array.from((await readTexture(root.device, root.unwrap(texture))).bytes.subarray(0, 4)),
       ),
     );
-    expect(pixels).toEqual([
+    // 0.25 + 0.5 lands halfway between two bytes, which drivers round either way
+    const expected = [
       [191, 64, 0, 255],
       [0, 0, 255, 255],
       [0, 128, 0, 255],
-    ]);
+    ];
+    pixels.forEach((pixel, i) =>
+      pixel.forEach((value, c) =>
+        expect(Math.abs(value - expected[i]![c]!)).toBeLessThanOrEqual(1),
+      ),
+    );
   } finally {
     root.destroy();
   }
