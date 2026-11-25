@@ -351,3 +351,71 @@ test.each([
     }
   },
 );
+
+test('a form that reads what another GPU form wrote once moves to the CPU when its outputs are read back', async () => {
+  const root = glRoot();
+  try {
+    const N = 64;
+    const x = root.createMutable(d.arrayOf(d.u32, N)).$name('x');
+    const y = root.createMutable(d.arrayOf(d.u32, N)).$name('y');
+    const sums = root.createMutable(d.arrayOf(d.u32, 2)).$name('sums');
+    const salt = root.createUniform(d.u32);
+    const frame = root.createUniform(d.u32);
+    const id = { id: d.builtin.globalInvocationId };
+    const seeding = root
+      .createComputePipeline({
+        compute: tgpu.computeFn({ workgroupSize: [64], in: id })(({ id: at }) => {
+          'use gpu';
+          x.$[at.x] = at.x + salt.$;
+        }),
+      })
+      .$name('seeding');
+    const doubling = root
+      .createComputePipeline({
+        compute: tgpu.computeFn({ workgroupSize: [64], in: id })(({ id: at }) => {
+          'use gpu';
+          y.$[at.x] = x.$[at.x] * 2 + frame.$;
+        }),
+      })
+      .$name('doubling');
+    // A barrier keeps the reader on the CPU, where it binds `y` every frame
+    const summing = root
+      .createComputePipeline({
+        compute: tgpu.computeFn({ workgroupSize: [1] })(() => {
+          'use gpu';
+          std.workgroupBarrier();
+          let total = d.u32(0);
+          for (let i = d.u32(0); i < N; i++) total += y.$[i];
+          sums.$[0] = total;
+        }),
+      })
+      .$name('summing');
+    const { stats } = root.device as GLDevice;
+    const expected = (s: number, f: number) => {
+      let total = 0;
+      for (let i = 0; i < N; i++) total += (i + s) * 2 + f;
+      return total >>> 0;
+    };
+    let lateReads = 0;
+    let seed = 0;
+    for (let f = 1; f <= 30; f++) {
+      if (f === 1 || f === 20) {
+        seed = f * 1000;
+        salt.write(seed);
+        seeding.dispatchWorkgroups(1);
+      }
+      frame.write(f);
+      doubling.dispatchWorkgroups(1);
+      summing.dispatchWorkgroups(1);
+      if (f === 22) stats.reset();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (f % 5 === 0) expect((await sums.read())[0]).toBe(expected(seed, f));
+    }
+    lateReads = [...stats.buffers].find(([label]) => label.startsWith('y '))?.[1].reads ?? 0;
+    expect(stats.placement.get('doubling')).toMatch(/^cpu: /);
+    expect([...stats.kernels.keys()]).toContain('doubling');
+    expect(lateReads).toBe(0);
+  } finally {
+    root.destroy();
+  }
+});

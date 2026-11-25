@@ -94,6 +94,14 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   const gpu = pipeline.gpu;
   if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups, invocations)) {
     const start = performance.now();
+    // A GPU form replaces the data texture of each buffer it writes, the passes' targets and the
+    // counters it takes from alike: the replaced ones are what this dispatch wrote
+    const before = new Map<BufferImpl, WebGLTexture | undefined>();
+    for (const bound of pass.groups) {
+      for (const entry of bound?.group.entries.values() ?? []) {
+        if (entry.kind === 'buffer') before.set(entry.buffer, entry.buffer.data?.value.texture);
+      }
+    }
     const probe = beginProbe(ctx, pipeline, pipeline.label, invocations);
     let reason: string | undefined;
     let ran = false;
@@ -106,7 +114,10 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
     if (reason === undefined) {
       const ms = performance.now() - start;
       count(ctx, `${pipeline.label} (gpu)`, ms, invocations);
-      ranOnGpu(ctx, pipeline, pipeline.label, gpu, pass.groups, ms, invocations);
+      const replaced = [...before]
+        .filter(([buffer, texture]) => buffer.data?.value.texture !== texture)
+        .map(([buffer]) => buffer);
+      ranOnGpu(ctx, pipeline, pipeline.label, gpu, pass.groups, ms, invocations, replaced);
       return;
     }
     ctx.stats.fallbacks.set(pipeline.label, reason);

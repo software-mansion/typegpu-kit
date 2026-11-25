@@ -279,3 +279,80 @@ test.each([
   expect(fired()).toBe(woken);
   expect(pending.size).toBe(0);
 });
+
+/** A second pipeline whose GPU form writes `target`, as a dispatch of it does. */
+function producer(ctx: Ctx, target: BufferImpl) {
+  const pipeline = {};
+  const entries = new Map([[0, { kind: 'buffer' as const, buffer: target, offset: 0, size: 16 }]]);
+  const groups: Bound[] = [
+    { group: { layout: { entries: [], dynamic: [] }, entries }, offsets: undefined },
+  ];
+  const gpu = {
+    passes: [{ target: { kind: 'buffer', group: 0, binding: 0 } }],
+  } as unknown as GpuCompute;
+  return () => {
+    ranOnGpu(ctx, pipeline, 'producer', gpu, groups, 0.1, 64);
+    target.gpuNewer = true;
+  };
+}
+
+/**
+ * Six dispatches of a kernel whose outputs the CPU reads back after each, with its input written
+ * on the GPU before the dispatches `before` lists: where the window leaves it.
+ */
+async function rewritten(before: (i: number) => boolean, writer = true) {
+  const { ctx, run, input, outputs } = kernel(fakeCtx({ timer: true, gpuMs: 0.1 }).ctx);
+  const write = producer(ctx, input);
+  for (let i = 0; i < 6; i++) {
+    if (before(i)) {
+      if (writer) write();
+      else input.gpuNewer = true;
+    }
+    expect(run(1000)).toBe('gpu');
+    readBack(ctx, outputs[0]!, 1);
+    await task();
+  }
+  return { ctx, run, write };
+}
+
+test('an input GL rewrites before a dispatch counts as held, and one seen first counts too', async () => {
+  // Written before the first, second, third and fifth: held there, current on the CPU otherwise
+  const { ctx } = await rewritten((i) => [0, 1, 2, 4].includes(i));
+  expect(ctx.stats.placement.get('kernel')).toBe(
+    "gpu: GL rewrote its input 'input' before 4 of 6 dispatches",
+  );
+});
+
+test('an input the GPU rewrites before every dispatch keeps the form on the GPU', async () => {
+  const { ctx, run } = await rewritten(() => true);
+  expect(ctx.stats.placement.get('kernel')).toBe(
+    "gpu: GL rewrote its input 'input' before 6 of 6 dispatches",
+  );
+  expect(run(1000)).toBe('gpu');
+});
+
+test('an input no known GPU form wrote counts as held at every dispatch', async () => {
+  const { ctx } = await rewritten((i) => i === 0, false);
+  expect(ctx.stats.placement.get('kernel')).toBe(
+    "gpu: GL rewrote its input 'input' before 6 of 6 dispatches",
+  );
+});
+
+test('an input the GPU wrote once costs one readback, so a read-back form moves to the CPU', async () => {
+  const { ctx, run } = await rewritten((i) => i === 0);
+  expect(ctx.stats.placement.get('kernel')).toMatch(
+    /^cpu: the CPU read back its outputs after 5 of 6 dispatches/,
+  );
+  expect(run(1000)).toBe('cpu');
+});
+
+test('a costly form on the CPU returns to the GPU on the dispatch after GL rewrote its input', async () => {
+  const { ctx, run, input } = await costly(true);
+  expect(run(SAMPLED)).toBe('cpu');
+  await task();
+  producer(ctx, input)();
+  expect(run(SAMPLED)).toBe('gpu');
+  expect(ctx.stats.placement.get('kernel')).toBe(
+    "gpu: GL rewrote its input 'input', which a CPU run would read back",
+  );
+});

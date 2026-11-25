@@ -103,10 +103,12 @@ interface Record {
   /** When it moved: a GPU dispatch's own cost, and the device's readback wait per dispatch. */
   gpuIssue: number;
   waitBefore: number;
-  /** The last input that GL alone held, for the stats. */
+  /** The last input GL rewrote before a dispatch, for the stats. */
   held: string;
-  /** Whether GL alone held an input at the last dispatch, which a CPU run would read back. */
+  /** Whether GL rewrote an input before the last dispatch, which a CPU run would read back. */
   heldNow: boolean;
+  /** The GPU form's write each GL-newer input held when this pipeline last dispatched over it. */
+  readonly seen: WeakMap<BufferImpl | TextureImpl, Writer>;
   /** The invocations of the last dispatch. */
   upcoming: number;
   /** Why it runs on the CPU: its outputs were read back, or its GPU form cost too much. */
@@ -223,7 +225,11 @@ function waitedOf(ctx: Ctx): { ms: number } {
   return waited;
 }
 /** The pipeline whose GPU form last wrote each resource, and which of its dispatches did. */
-const writers = new WeakMap<BufferImpl | TextureImpl, { record: Record; dispatch: number }>();
+interface Writer {
+  readonly record: Record;
+  readonly dispatch: number;
+}
+const writers = new WeakMap<BufferImpl | TextureImpl, Writer>();
 
 function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
   let record = records.get(pipeline);
@@ -247,6 +253,7 @@ function recordOf(ctx: Ctx, pipeline: object, label: string): Record {
       waitBefore: 0,
       held: '',
       heldNow: false,
+      seen: new WeakMap(),
       upcoming: 0,
       why: 'readback',
       samples: [],
@@ -276,39 +283,50 @@ function restart(ctx: Ctx, record: Record): void {
 }
 
 /**
- * The label of a resource the dispatch binds that only GL holds current, which a CPU run would
- * read back, or undefined when every one is current on the CPU. What the pipeline's own GPU form
- * wrote last does not count: on the CPU, the pipeline would have written it there.
+ * The label of a resource the dispatch binds that GL rewrote since this pipeline's last dispatch,
+ * which a CPU run would read back each time, or undefined when there is none. An input GL holds
+ * that no GPU form wrote again costs a CPU run one readback in all, after which it stays current
+ * on the CPU, so it counts only the first time this pipeline sees it, or when no GPU form is known
+ * to have written it. What the pipeline's own GPU form wrote last does not count: on the CPU, the
+ * pipeline would have written it there.
  */
 function heldOnGl(
   module: CpuModule,
   groups: readonly (Bound | undefined)[],
   record: Record,
 ): string | undefined {
+  let held: string | undefined;
+  const rewritten = (resource: BufferImpl | TextureImpl) => {
+    const writer = writers.get(resource);
+    if (writer?.record === record) return false;
+    const again = writer === undefined || record.seen.get(resource) !== writer;
+    if (writer) record.seen.set(resource, writer);
+    return again;
+  };
   for (const use of module.bindings) {
     if (use.kind === 'sampler') continue;
     if (use.kind === 'buffer') {
       const buffer = bufferEntry(groups[use.group], use.binding)?.buffer;
-      if (buffer?.gpuNewer && writers.get(buffer)?.record !== record) {
-        return buffer.label || `@group(${use.group}) @binding(${use.binding})`;
+      if (buffer?.gpuNewer && rewritten(buffer)) {
+        held ??= buffer.label || `@group(${use.group}) @binding(${use.binding})`;
       }
       continue;
     }
     const entry = groups[use.group]?.group.entries.get(use.binding);
     if (entry?.kind === 'texture') {
       const { texture } = entry.view;
-      if (texture.written && texture.home === 'gl' && writers.get(texture)?.record !== record) {
-        return texture.label || 'a texture';
+      if (texture.written && texture.home === 'gl' && rewritten(texture)) {
+        held ??= texture.label || 'a texture';
       }
     }
   }
-  return undefined;
+  return held;
 }
 
 /**
  * Whether the dispatch should run its GPU form. A move for cost takes this dispatch's size and
  * inputs: samples that arrive now judge it, and a form on the CPU for cost returns to the GPU
- * before a run past `MOST_TRIED` invocations or one that would read back what GL alone holds.
+ * before a run past `MOST_TRIED` invocations or one that would read back what GL rewrote.
  */
 export function runsOnGpu(
   ctx: Ctx,
@@ -343,7 +361,7 @@ function costlyRefusal(record: Record): string | undefined {
     return `${record.upcoming} invocations are too many to try on the CPU`;
   }
   if (record.heldNow) {
-    return `GL alone holds its input '${record.held}', which a CPU run would read back`;
+    return `GL rewrote its input '${record.held}', which a CPU run would read back`;
   }
   return undefined;
 }
@@ -373,10 +391,12 @@ export function ranOnGpu(
   groups: readonly (Bound | undefined)[],
   ms: number,
   invocations: number,
+  replaced: readonly BufferImpl[] = [],
 ): void {
   const record = recordOf(ctx, pipeline, label);
   record.gpuMs += ms;
   const writer = { record, dispatch: ++record.written };
+  for (const buffer of replaced) writers.set(buffer, writer);
   for (const { target } of gpu.passes) {
     if (target.kind === 'buffer') {
       const buffer = bufferEntry(groups[target.group], target.binding)?.buffer;
@@ -409,7 +429,7 @@ export function ranOnGpu(
       reads * 2 < dispatches
         ? `its outputs were read back after ${reads} of ${dispatches} dispatches`
         : cpuInputs * 2 < dispatches
-          ? `GL alone held its input '${record.held}' in ${dispatches - cpuInputs} of ${dispatches} dispatches`
+          ? `GL rewrote its input '${record.held}' before ${dispatches - cpuInputs} of ${dispatches} dispatches`
           : `${invocations} invocations are too many to try on the CPU`;
     ctx.stats.placement.set(label, `gpu: ${why}${record.costNote ? `; ${record.costNote}` : ''}`);
   }
@@ -584,7 +604,7 @@ function sampled(ctx: Ctx, record: Record, ms: number): void {
   if (record.samples.length > 2) record.samples.shift();
   if (record.onCpu || record.triedCost || record.samples.length < 2) return;
   const least = Math.min(...record.samples);
-  // A form whose inputs GL alone holds would read them back every CPU run, a wait the GPU time
+  // A form whose inputs GL rewrites would read them back every CPU run, a wait the GPU time
   // does not count
   const cpuMs = record.invocations * CPU_NS * 1e-6;
   if (least < COSTLY_MS || cpuMs >= least * KEEP_SHARE || record.heldNow) return;
