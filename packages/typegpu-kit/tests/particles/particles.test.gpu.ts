@@ -679,15 +679,21 @@ async function ringed(compute: 'gpu' | 'cpu') {
     }),
   });
 
+  // Atomics hand out the slots of one dispatch in any order, so which particles a later spawn
+  // overwrites is only the same on both paths when it overwrites whole dispatches, or the dead.
+  // Each frame here fills the ring to a boundary between them: 7 emitted, then the bursts
   const plan: { bursts: number[]; emit?: boolean; steps: number }[] = [
     { bursts: [20, 0], steps: 1 },
     { bursts: [15], emit: true, steps: 2 },
+    // More than the ring holds: both keep 50, over everything before
     { bursts: [80], steps: 1 },
-    { bursts: [10, 12, 3], steps: 3 },
+    { bursts: [10, 12, 3, 40], steps: 3 },
+    // Long enough for all 50 to die
+    { bursts: [], steps: 60 },
     { bursts: [], emit: true, steps: 1 },
-    { bursts: [30, 9], emit: true, steps: 2 },
-    { bursts: [1], steps: 40 },
-    { bursts: [49], emit: true, steps: 1 },
+    { bursts: [30, 6], emit: true, steps: 2 },
+    { bursts: [7], steps: 40 },
+    { bursts: [43], emit: true, steps: 1 },
   ];
   const seen: { rows: number[][]; live: number }[] = [];
   for (const [k, { bursts, emit, steps }] of plan.entries()) {
