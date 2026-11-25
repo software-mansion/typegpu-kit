@@ -100,7 +100,40 @@ export interface ComputePlan {
   readonly records?: ReadonlyMap<string, number>;
   /** The counters the kernel takes values of, among `adds`. */
   readonly takes?: ReadonlySet<string>;
+  /** The arrays invocations own constant blocks of, written through helpers. */
+  readonly blocks?: ReadonlyMap<string, BlockPlan>;
 }
+
+/**
+ * An array each invocation owns a constant 2-d block of: element `row * width + col` belongs to
+ * invocation `g` at site `s` when `col = step[0] * g.x + sites[s][0] + phase[0]` and `row =
+ * step[1] * g.y + sites[s][1] + phase[1]`, with `col` below `width`. Phases are GLSL `int`
+ * text every invocation sees alike.
+ */
+export interface BlockPlan {
+  readonly offset: number;
+  readonly width: number;
+  readonly step: readonly [number, number];
+  readonly phase: readonly [string, string];
+  readonly sites: readonly (readonly [number, number])[];
+}
+
+interface Block extends BlockPlan {
+  readonly buffer: BufferInfo;
+  readonly array: d.WgslArray;
+}
+
+/** A helper's write at `row * width + col` of a vector parameter, guarded to its row's width. */
+interface BlockWrite {
+  readonly param: number;
+  readonly buffer: BufferInfo;
+  readonly array: d.WgslArray;
+  readonly offset: number;
+  readonly width: number;
+}
+
+/** The most cells of one array an invocation may own as a block. */
+const MOST_SITES = 8;
 
 /** A resource written at computed cells: an array of a buffer, or a texture. */
 type Scatter =
@@ -358,6 +391,20 @@ function ownOf(value: Own | number | Shared): Own {
   return value;
 }
 
+/**
+ * A value as an own one of `size` components: a vector's own as it is, a number or a shared
+ * scalar for each component, and a shared vector one component each.
+ */
+function spread(value: Own | number | Shared, size: number): Own {
+  if (Array.isArray(value) || size === 1) return ownOf(value);
+  if (typeof value === 'number') return Array.from({ length: size }, () => constant(value));
+  const shared = value as Shared;
+  return Array.from({ length: size }, (_, i) => ({
+    ...constant(0),
+    s: [{ text: `(${shared.shared}).${'xyzw'[i]}`, sign: 1 as const, from: shared.from }],
+  }));
+}
+
 function scale(value: Own, by: number): Own | undefined {
   if (by === 1) return value;
   const scaled: Affine[] = [];
@@ -517,8 +564,12 @@ class Arithmetic {
       const other = this.#product();
       if (other === undefined) return undefined;
       if (Array.isArray(value) || Array.isArray(other)) {
-        const right = scale(ownOf(other), sign);
-        value = right && add(ownOf(value), right);
+        const size = Math.max(
+          Array.isArray(value) ? value.length : 1,
+          Array.isArray(other) ? other.length : 1,
+        );
+        const right = scale(spread(other, size), sign);
+        value = right && add(spread(value, size), right);
       } else value = this.#whole(start, value, other, (a, b) => a + sign * b);
     }
     return value;
@@ -585,6 +636,16 @@ class Arithmetic {
         return isShared(part)
           ? { shared: this.#text.slice(start, this.#at), from: part.from }
           : part;
+      }
+      const size = Number(call[1]?.at(-1));
+      if (
+        parts.every((part) => typeof part === 'number') &&
+        call[1] !== 'uint' &&
+        call[1] !== 'int'
+      ) {
+        // A vector of one number has it in every component
+        const numbers = parts.length === 1 ? Array<number>(size).fill(parts[0] as number) : parts;
+        if (numbers.length === size) return (numbers as number[]).map(constant);
       }
       if (parts.every((part) => !Array.isArray(part))) {
         return this.#atom(start, this.#text.slice(start, this.#at));
@@ -681,6 +742,12 @@ interface Frame {
   adds: number;
   /** The most writes at computed cells it makes per resource, its callees' included. */
   readonly records: Map<string, number>;
+  /** Its parameters' names, in order. */
+  readonly params: readonly string[];
+  /** Conditions of early returns at its top, before anything else it does, that hold after. */
+  readonly guards: string[];
+  /** Its writes of blocks through a vector parameter. */
+  readonly blockWrites: BlockWrite[];
 }
 
 /**
@@ -711,6 +778,10 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #inCall: Frame | undefined;
   /** Counters whose values the kernel takes: atomic additions of 1 whose results it uses. */
   readonly #takes = new Set<string>();
+  /** Arrays invocations own blocks of, with the sites the entry's calls give. */
+  readonly #blocks = new Map<string, Block>();
+  readonly #blockWritersOf = new Map<string, readonly BlockWrite[]>();
+  readonly #codeOf = new Map<string, string>();
   /** Buffers the kernel loads atomically anywhere, in whatever order its functions resolve. */
   readonly #loads = new Set<string>();
   /** Every function's code, which the takes are checked over once the walk has seen it all. */
@@ -722,6 +793,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #branches = 0;
   /** The condition of an early `return` the entry starts with, before it writes anything. */
   #exit: Expression | undefined;
+  /** The condition of an early `return` at the top of a function, which holds after it. */
+  #guard: Expression | undefined;
   /** Bounds such returns put on the invocation, by axis: invocations at or past them return. */
   readonly #bounds = new Map<number, number>();
   /** Whether the write being checked assigns a whole value with `=`. */
@@ -802,6 +875,12 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       slots: this.#slots,
       records: new Map(this.#records),
       takes: new Set(this.#takes),
+      blocks: new Map(
+        [...this.#blocks].map(([id, { offset, width, step, phase, sites }]) => [
+          id,
+          { offset, width, step, phase, sites },
+        ]),
+      ),
     };
   }
 
@@ -956,6 +1035,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#inCall = calling;
     }
     const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
+    if (!nested && name !== undefined) this.#blockCall(name, args);
     // A call reaches here once more through the generator's own call, which counts it
     const adds = (!nested && name !== undefined && this.#addsOf.get(name)) || 0;
     if (adds > 0) this.#added(adds);
@@ -1254,6 +1334,9 @@ uint ${name}() {
         if (returns(statement[2] as Statement) && this.#beforeWrites()) {
           this.#exit = statement[1] as Expression;
         }
+        if (returns(statement[2] as Statement) && this.#loops === 0 && this.#branches === 0) {
+          this.#guard = statement[1] as Expression;
+        }
         this.#branches++;
         try {
           return super._statement(statement);
@@ -1261,6 +1344,7 @@ uint ${name}() {
           this.#branches--;
           this.#condition = undefined;
           this.#exit = undefined;
+          this.#guard = undefined;
           this.#chosen.length = depth;
         }
       }
@@ -1296,6 +1380,10 @@ uint ${name}() {
     if (expression === this.#exit && frame && typeof result.value === 'string') {
       this.#exit = undefined;
       this.#boundBy(result.value, frame);
+    }
+    if (expression === this.#guard && frame && typeof result.value === 'string') {
+      this.#guard = undefined;
+      frame.guards.push(result.value.replace(/\s+/g, ''));
     }
     if (expression === this.#condition && frame) {
       this.#condition = undefined;
@@ -1537,6 +1625,10 @@ ${stored.join('\n')}
     if (this.#adds.has(buffer.id)) {
       throw new Ineligible(`${verb} '${buffer.id}', which it adds to at shared cells`);
     }
+    if (verb === 'writes' && this.#blockWrite(place)) return;
+    if (this.#plan?.blocks?.has(buffer.id) || this.#blocks.has(buffer.id)) {
+      throw new Ineligible(`${verb} '${buffer.id}' other than at a block it owns`);
+    }
     if (this.#plan?.scatters.has(buffer.id)) {
       if (verb !== 'writes' || !this.#plain) {
         throw new Ineligible(`${verb} '${buffer.id}', which it writes at computed cells`);
@@ -1594,6 +1686,114 @@ ${stored.join('\n')}
       throw new Ineligible(`a helper function ${verb} '${buffer.id}'`);
     }
     throw new Ineligible(`${verb} an element of '${buffer.id}' that is not the invocation's own`);
+  }
+
+  /**
+   * Whether a write is a helper's write at `row * width + col` of one of its vector parameters,
+   * after an early return unless a guard function proves `0 <= col < width`: it then records
+   * itself on the helper, and each call names the block's cell it writes.
+   */
+  #blockWrite(place: Place): boolean {
+    const { buffer, element } = place;
+    const frame = this.#frame;
+    if (!frame || frame.entry || !element?.array || element.path !== '' || !this.#plain) {
+      return false;
+    }
+    const index = element.index.replace(/\s+/g, '');
+    const shape = /^\(*\(uint\((\w+)\.y\)\*(\d+)u\)\+uint\(\1\.x\)\)*$/.exec(index);
+    if (!shape) return false;
+    const [, name, wide] = shape as unknown as [string, string, string];
+    const param = frame.params.indexOf(name);
+    if (param < 0 || this.#loops > 0) return false;
+    const width = Number(wide);
+    if (!frame.guards.some((guard) => this.#keepsColumn(guard, name, width))) {
+      throw new Ineligible(`writes '${buffer.id}' at a column it does not keep below ${width}`);
+    }
+    frame.blockWrites.push({
+      param,
+      buffer,
+      array: element.array,
+      offset: element.offset,
+      width,
+    });
+    return true;
+  }
+
+  /**
+   * Whether an early return's condition, `!f(p)`, leaves `0 <= p.x < width`: `f` returns a
+   * conjunction that includes `p.x >= 0`, or every component non-negative, and `p.x < width`.
+   */
+  #keepsColumn(guard: string, name: string, width: number): boolean {
+    const call = /^!\(?(\w+)\((\w+)\)\)?$/.exec(guard);
+    if (!call || call[2] !== name) return false;
+    const code = this.#codeOf
+      .get(call[1] as string)
+      ?.replace(/^\/\/#.*$/gm, '')
+      .replace(/\s+/g, '');
+    const signature = code && /^bool\w+\(ivec2(\w+)\)\{return(.*);\}$/.exec(code);
+    if (!signature) return false;
+    const [, param, body] = signature as unknown as [string, string, string];
+    const flatten = (text: string): string[] => {
+      const parts = conjuncts(unwrap(text));
+      return parts.length > 1 ? parts.flatMap(flatten) : [unwrap(text)];
+    };
+    const parts = flatten(body);
+    const low = [`all(greaterThanEqual(${param},ivec2(0)))`, `${param}.x>=0`, `0<=${param}.x`];
+    const high = [`${param}.x<${width}`, `${width}>${param}.x`];
+    return parts.some((part) => low.includes(part)) && parts.some((part) => high.includes(part));
+  }
+
+  /** Names the block cells a call writes through a helper that writes blocks. */
+  #blockCall(name: string, args: readonly Snippet[]): void {
+    const writes = this.#blockWritersOf.get(name);
+    if (!writes?.length) return;
+    const frame = this.#frame;
+    if (!frame?.entry || this.#loops > 0) {
+      throw new Ineligible(`writes blocks through '${name}' other than from the entry, once`);
+    }
+    for (const write of writes) {
+      const own = this.#own(args[write.param]);
+      const [col, row] = own ?? [];
+      const plainAxis = (a: Affine | undefined, along: 'x' | 'y') =>
+        a &&
+        !a.r &&
+        a[along] > 0 &&
+        (['x', 'y', 'z'] as const).every((c) => c === along || a[c] === 0);
+      if (own?.length !== 2 || !plainAxis(col, 'x') || !plainAxis(row, 'y')) {
+        throw new Ineligible(
+          `writes '${write.buffer.id}' through '${name}' at no block of its own`,
+        );
+      }
+      const phaseOf = (a: Affine) =>
+        (a.s ?? []).map((term) => `${term.sign > 0 ? '+' : '-'} int(${term.text})`).join(' ') ||
+        '+ 0';
+      for (const term of [...(col?.s ?? []), ...(row?.s ?? [])]) {
+        for (const settled of term.from) frame.choosing.add(settled);
+      }
+      const block: Block = {
+        buffer: write.buffer,
+        array: write.array,
+        offset: write.offset,
+        width: write.width,
+        step: [(col as Affine).x, (row as Affine).y],
+        phase: [phaseOf(col as Affine), phaseOf(row as Affine)],
+        sites: [],
+      };
+      const known = this.#blocks.get(write.buffer.id) ?? block;
+      if (
+        known.width !== block.width ||
+        known.offset !== block.offset ||
+        String(known.step) !== String(block.step) ||
+        String(known.phase) !== String(block.phase)
+      ) {
+        throw new Ineligible(`writes '${write.buffer.id}' at blocks of two shapes`);
+      }
+      const site = [(col as Affine).k, (row as Affine).k] as const;
+      const sites = known.sites.some(([c, r]) => c === site[0] && r === site[1])
+        ? known.sites
+        : [...known.sites, site];
+      this.#blocks.set(write.buffer.id, { ...known, sites });
+    }
   }
 
   #record(buffer: BufferInfo, written: WrittenPlan, array?: d.WgslArray): void {
@@ -1662,6 +1862,15 @@ ${stored.join('\n')}
   protected override placeValue(place: Place, load: string): string {
     if (this.#plan?.scatters.has(place.buffer.id))
       return `${SCATTERED}${place.buffer.id}_${this.#packers++}`;
+    const block = this.#plan?.blocks?.get(place.buffer.id);
+    if (block) {
+      const element = place.element;
+      if (!element || element.offset !== block.offset) {
+        return `${STALE}${place.buffer.id}_${this.#packers++}`;
+      }
+      const { shadows, site } = this.#blockNames(place.buffer, block, element.array);
+      return `${shadows}[${site}(uint(${element.index}))]${element.path}`;
+    }
     const written = this.#plan?.buffers.get(place.buffer.id);
     if (!written) return load;
     const element = place.element;
@@ -1901,6 +2110,9 @@ ${stored.join('\n')}
       relies: false,
       adds: 0,
       records: new Map(),
+      params: options.args.map((arg) => arg.name),
+      guards: [],
+      blockWrites: [],
     };
     this.#functions.add(options.name);
     if (options.functionType === 'normal') {
@@ -1924,6 +2136,8 @@ ${stored.join('\n')}
     if (frame.relies) this.#relies.add(options.name);
     this.#addsOf.set(options.name, frame.adds);
     this.#recordsOf.set(options.name, frame.records);
+    this.#blockWritersOf.set(options.name, frame.blockWrites);
+    this.#codeOf.set(options.name, code);
     const body = code.slice(code.indexOf('{'));
     if (options.functionType === 'normal' && options.args.length === 0 && !this.#varies(body)) {
       this.#pure.add(options.name);
@@ -1997,8 +2211,26 @@ ${stored.join('\n')}
     }
     const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
-      if (buffers.length + this.#textures.size + this.#scatters.size + this.#adds.size === 0) {
+      if (
+        buffers.length + this.#textures.size + this.#scatters.size + this.#adds.size === 0 &&
+        this.#blocks.size === 0
+      ) {
         throw new Ineligible('writes nothing');
+      }
+      for (const [id, block] of this.#blocks) {
+        if (this.#buffers.has(id) || this.#scatters.has(id) || this.#adds.has(id)) {
+          throw new Ineligible(`writes '${id}' other than at blocks it owns`);
+        }
+        if (block.sites.length > MOST_SITES) {
+          throw new Ineligible(`owns more than ${MOST_SITES} cells of '${id}'`);
+        }
+        // Each axis's offsets lie within one step, so no two invocations share a cell
+        for (const along of [0, 1] as const) {
+          const offsets = block.sites.map((site) => site[along]);
+          if (Math.max(...offsets) - Math.min(...offsets) >= block.step[along]) {
+            throw new Ineligible(`owns blocks of '${id}' wider than their step`);
+          }
+        }
       }
       // Decided from the whole walk, not where it met them: a helper resolved before the kernel's
       // addition still reads what it adds to
@@ -2058,6 +2290,7 @@ ${stored.join('\n')}
               ? 2
               : ({ '1d': 1, '2d': 2 }[texture.kind.dimension as string] ?? 3),
           ),
+          ...[...this.#blocks.keys()].map(() => 2),
         );
     return [
       `${COMPUTE} ${size.join(' ')} ${grid} ${single ? 1 : 0}`,
@@ -2070,10 +2303,17 @@ ${stored.join('\n')}
       ...[...this.#scatters.values()].map((target, i) =>
         this.#scatterPass(target, buffers.length + this.#textures.size + i, options.name),
       ),
+      ...[...this.#blocks.values()].map((block, i) =>
+        this.#blockPass(
+          block,
+          buffers.length + this.#textures.size + this.#scatters.size + i,
+          options.name,
+        ),
+      ),
       ...[...this.#adds.values()].map((buffer, i) =>
         this.#addPass(
           buffer,
-          buffers.length + this.#textures.size + this.#scatters.size + i,
+          buffers.length + this.#textures.size + this.#scatters.size + this.#blocks.size + i,
           options.name,
         ),
       ),
@@ -2084,6 +2324,7 @@ ${stored.join('\n')}
   #begin(): string {
     const lines = [`  ${GID} = kit_g;`];
     for (const id of this.#takes) lines.push(`  kit_taken${this.#aim(id)} = 0u;`);
+    for (const block of this.#blocks.values()) lines.push(...this.#blockBegin(block));
     for (const { id, dataType, init } of this.#privates) {
       lines.push(
         `  ${id} = ${init ?? this.ctx.resolveSnippet(this.typeInstantiation(dataType, [])).value};`,
@@ -2110,6 +2351,138 @@ ${stored.join('\n')}
       lines.push(`  ${this.#textureShadow(texture)} = texelFetch(${old}, ${cell}, 0);`);
     }
     return `${CHUNK} shared ${BEGIN}\nvoid ${BEGIN}(uvec3 kit_g) {\n${lines.join('\n')}\n}`;
+  }
+
+  /**
+   * The shadows of a block array, one per site and a spare, and the function that names the
+   * shadow an element index reads or writes: its site's, or the spare, loaded from the old contents.
+   */
+  #blockNames(
+    buffer: BufferInfo,
+    block: BlockPlan,
+    array: d.WgslArray | undefined,
+  ): { shadows: string; addresses: string; site: string } {
+    const element = (array as d.WgslArray).elementType as d.BaseData;
+    const type = `${this.ctx.resolve(element).value}`;
+    const suffix = this.arraySuffix(element);
+    const k = block.sites.length;
+    const shadows = `kit_shadows_${buffer.id}`;
+    const addresses = `kit_addresses_${buffer.id}`;
+    const site = `kit_site_${buffer.id}`;
+    const stride = wordsOf(strideOf(element));
+    const load = this.load(
+      buffer.source,
+      `${buffer.base} + ${block.offset}u + i * ${stride}u`,
+      element,
+      buffer.id,
+    );
+    this.helper(
+      site,
+      `${type} ${shadows}[${k + 1}]${suffix};
+uint ${addresses}[${k}];
+uint ${site}(uint i) {
+  for (int s = 0; s < ${k}; s++) {
+    if (i == ${addresses}[s]) return uint(s);
+  }
+  ${shadows}[${k}] = ${load};
+  return ${k}u;
+}`,
+    );
+    return { shadows, addresses, site };
+  }
+
+  /** A block array's sites' cells for invocation `kit_g`, and their old contents, for `kit_begin`. */
+  #blockBegin(block: Block): string[] {
+    const { shadows, addresses } = this.#blockNames(block.buffer, block, block.array);
+    const element = block.array.elementType as d.BaseData;
+    const stride = wordsOf(strideOf(element));
+    return block.sites.map(([c, r], s) => {
+      const load = this.load(
+        block.buffer.source,
+        `${block.buffer.base} + ${block.offset}u + ${addresses}[${s}] * ${stride}u`,
+        element,
+        block.buffer.id,
+      );
+      return `  {
+    int kit_c = int(kit_g.x) * ${block.step[0]} + (${c}) ${block.phase[0]};
+    int kit_r = int(kit_g.y) * ${block.step[1]} + (${r}) ${block.phase[1]};
+    ${addresses}[${s}] = kit_c >= 0 && kit_c < ${block.width} && kit_r >= 0 ? uint(kit_r * ${block.width} + kit_c) : 0xFFFFFFFFu;
+    if (${addresses}[${s}] != 0xFFFFFFFFu) ${shadows}[${s}] = ${load};
+  }`;
+    });
+  }
+
+  /**
+   * The pass of a block array: each element finds the site and invocation whose block holds it,
+   * runs the kernel for that invocation and keeps that site's shadow.
+   */
+  #blockPass(block: Block, index: number, kernel: string): string {
+    const { buffer, offset, array } = block;
+    const range = buffer.range as string;
+    const value = array.elementType as d.BaseData;
+    const size = Math.ceil(d.sizeOf(value as d.AnyData) / 4);
+    const stride = wordsOf(strideOf(value));
+    const count =
+      array.elementCount > 0
+        ? `${array.elementCount}u`
+        : `(${range}.y / 4u > ${offset}u ? (${range}.y / 4u - ${offset}u) / ${stride}u : 0u)`;
+    const { shadows } = this.#blockNames(buffer, block, array);
+    const pack = this.#packer(value);
+    const target = [
+      TARGET,
+      'buffer',
+      buffer.group,
+      buffer.binding,
+      buffer.id,
+      offset * 4,
+      stride * 4,
+      d.sizeOf(value as d.AnyData),
+    ].join(' ');
+    const sites = block.sites
+      .map(
+        ([c, r], s) => `    {
+      int kit_dx = kit_c - (${c}) - (0 ${block.phase[0]});
+      int kit_dy = kit_r - (${r}) - (0 ${block.phase[1]});
+      if (kit_dx >= 0 && kit_dy >= 0 && kit_dx % ${block.step[0]} == 0 && kit_dy % ${block.step[1]} == 0) {
+        kit_g = uvec3(uint(kit_dx / ${block.step[0]}), uint(kit_dy / ${block.step[1]}), 0u);
+        kit_s = ${s};
+      }
+    }`,
+      )
+      .join('\n');
+    return `${CHUNK} pass${index} main
+${target}
+layout(location = 0) out uvec4 ${RESULT};
+void main() {
+  ivec2 kit_frag = ivec2(gl_FragCoord.xy);
+  uvec4 kit_old = texelFetch(${buffer.id}, kit_frag, 0);
+  uvec4 kit_new = kit_old;
+  uint kit_first = ${range}.x + ${offset}u;
+  uint kit_end = ${range}.x + ${range}.y / 4u;
+  uint kit_count = ${count};
+  uint kit_base = (uint(kit_frag.y) * uint(textureSize(${buffer.id}, 0).x) + uint(kit_frag.x)) * 4u;
+  uint kit_last = 0xFFFFFFFFu;
+  for (int kit_k = 0; kit_k < 4; kit_k++) {
+    uint kit_at = kit_base + uint(kit_k);
+    if (kit_at < kit_first || kit_at >= kit_end) continue;
+    uint kit_element = (kit_at - kit_first) / ${stride}u;
+    uint kit_inner = kit_at - kit_first - kit_element * ${stride}u;
+    if (kit_element >= kit_count || kit_inner >= ${size}u) continue;
+    int kit_c = int(kit_element % ${block.width}u);
+    int kit_r = int(kit_element / ${block.width}u);
+    uvec3 kit_g = uvec3(0xFFFFFFFFu);
+    int kit_s = -1;
+${sites}
+    if (kit_s < 0 || any(greaterThanEqual(kit_g, ${INVOCATIONS}))) continue;
+    if (kit_element != kit_last) {
+      ${BEGIN}(kit_g);
+      ${kernel}();
+      kit_last = kit_element;
+    }
+    kit_new[kit_k] = ${pack}(${shadows}[kit_s], kit_inner, kit_old[kit_k]);
+  }
+  ${RESULT} = kit_new;
+}`;
   }
 
   #bufferPass(written: WrittenBuffer, index: number, kernel: string): string {

@@ -418,6 +418,7 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     },
     'a helper function takes the pointer',
   ],
+  ...blockKernels(),
   [
     'adds to shared cells inside a loop',
     (root) => {
@@ -800,6 +801,116 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
   ],
 ];
 
+/** Kernels that write a 10-wide grid through a helper, `put`, at cells of a block. */
+function blockKernels(): [string, Make, number | string][] {
+  const W = 10;
+  const parts = (root: TgpuRoot, guarded: boolean) => {
+    const cells = root.createMutable(d.arrayOf(d.u32, W * 6));
+    const inside = (p: d.v2i) => {
+      'use gpu';
+      return std.all(std.ge(p, d.vec2i())) && p.x < W && p.y < 6;
+    };
+    const put = (p: d.v2i, value: number) => {
+      'use gpu';
+      if (guarded && !inside(p)) return;
+      cells.$[d.u32(p.y) * W + d.u32(p.x)] = value;
+    };
+    return { cells, put };
+  };
+  return [
+    [
+      'owns a 2 × 2 block through a guarded helper',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          const o = d.vec2i(g.xy) * 2;
+          put(o, d.u32(1));
+          put(o + d.vec2i(1, 0), d.u32(2));
+          put(o + d.vec2i(0, 1), d.u32(3));
+          put(o + d.vec2i(1), d.u32(4));
+        });
+      },
+      2,
+    ],
+    [
+      'owns a 1 × 2 pair through a guarded helper',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          const o = d.vec2i(d.i32(g.x) * 2 - 1, d.i32(g.y));
+          put(o, d.u32(1));
+          put(o + d.vec2i(1, 0), d.u32(2));
+        });
+      },
+      2,
+    ],
+    [
+      'writes a block whose column it does not keep inside the row',
+      (root) => {
+        const { put } = parts(root, false);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          put(d.vec2i(g.xy) * 2, d.u32(1));
+        });
+      },
+      'at a column it does not keep below 10',
+    ],
+    [
+      'writes a block at an offset that is not constant',
+      (root) => {
+        const { put } = parts(root, true);
+        const shift = root.createUniform(d.vec2i);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          const o = d.vec2i(g.xy) * 2;
+          put(o, d.u32(1));
+          put(o + shift.$, d.u32(2));
+        });
+      },
+      'blocks of two shapes',
+    ],
+    [
+      'writes blocks wider than their step, overlapping a neighbour',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          const o = d.vec2i(g.xy) * 2;
+          put(o, d.u32(1));
+          put(o + d.vec2i(2, 0), d.u32(2));
+        });
+      },
+      'wider than their step',
+    ],
+    [
+      'writes blocks whose axes are swapped between calls',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          put(d.vec2i(g.xy) * 2, d.u32(1));
+          put(d.vec2i(g.yx) * 2 + 1, d.u32(2));
+        });
+      },
+      'at no block of its own',
+    ],
+    [
+      'writes blocks with steps that differ between calls',
+      (root) => {
+        const { put } = parts(root, true);
+        return tgpu.computeFn({ workgroupSize: [4, 4], in: gid })(({ gid: g }) => {
+          'use gpu';
+          put(d.vec2i(g.xy) * 2, d.u32(1));
+          put(d.vec2i(g.xy) * 3, d.u32(2));
+        });
+      },
+      'blocks of two shapes',
+    ],
+  ];
+}
+
 function verdictOf(make: Make): ComputeVerdict {
   const { root, computes } = glslRoot();
   const pipeline = root.createComputePipeline({ compute: make(root) as never });
@@ -850,4 +961,5 @@ describe('GPU forms of compute kernels', () => {
       expect(problems(report), verdict.module.passes[i]?.fragment).toEqual([]);
     }
   });
+
 });
