@@ -507,6 +507,23 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
     },
     'a helper function takes the pointer',
   ],
+  [
+    'writes where a helper moved its index through a pointer',
+    (root) => {
+      const out = root.createMutable(d.arrayOf(d.u32, 128));
+      const bump = tgpu.fn([d.ptrFn(d.u32)])((at) => {
+        'use gpu';
+        at.$ += 64;
+      });
+      return line(({ gid: id }) => {
+        'use gpu';
+        const at = d.ref(d.u32(id.x));
+        bump(at);
+        out.$[at.$] = 1;
+      });
+    },
+    'a helper function takes the pointer',
+  ],
   ...blockKernels(),
   [
     'adds to shared cells inside a loop',
