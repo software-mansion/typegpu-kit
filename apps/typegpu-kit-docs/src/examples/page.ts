@@ -1,6 +1,7 @@
 // The example page: its canvas, loading cover and error display, the generic page that hosts an
 // example, and the UI its ui.ts declares
 
+import { backends } from '@typegpu/kit';
 import type { Hosted } from '@typegpu/kit/web';
 import type GUI from 'lil-gui';
 import { exampleOf } from 'typegpu-kit-examples';
@@ -28,6 +29,8 @@ const words = element('#cover > span');
 const curtain = veil(cover, { cell: 4, poster: posterOf(element('#example').dataset.key) });
 const notice = element<HTMLOutputElement>('#notice');
 const pause = element<HTMLButtonElement>('#pause');
+/** The bar's tag that says the WebGL 2 fallback draws the example. */
+const backend = element('#backend');
 
 /**
  * `?stats` exposes the WebGL fallback's device statistics as `globalThis.kitGlStats()`, with the
@@ -219,7 +222,7 @@ function ui(declared: Ui | undefined, scene: ExampleScene, gui?: GUI): Shown {
  * Hosts example `key` on the page: its input, a settings panel titled with its
  * title, its declared UI and the bar's Pause button. Removes the cover when the scene is ready and
  * has drawn `WARMUP_FRAMES` frames, then pauses under reduced motion. Hosts on WebGL 2 where WebGPU
- * is missing, or everywhere with `webgl` `'force'`.
+ * is missing, or everywhere with `webgl` `'force'`, and then shows the bar's WebGL tag.
  */
 export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted<ExampleScene> {
   const example = exampleOf(key);
@@ -240,6 +243,8 @@ export function run(key: string, webgl: 'missing' | 'force' = 'missing'): Hosted
     webgl,
     onError: fail,
     attach: ({ scene, root }) => {
+      // The root tells, since the fallback also takes over where WebGPU gives no device
+      backend.hidden = backends.of(root).kind !== 'webgl';
       if (statsAsked) {
         void import('@typegpu/kit-gl').then((gl) => {
           Object.assign(globalThis, {

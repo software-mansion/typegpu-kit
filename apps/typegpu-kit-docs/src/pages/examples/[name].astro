@@ -181,6 +181,7 @@ const { example } = Astro.props as { example: Example };
     <nav class="bar" aria-label="Example">
       <a href={exampleHref()}><span aria-hidden="true">←</span> Examples</a>
       <span class="title">{example.title}</span>
+      <span id="backend" title="Drawn by the WebGL 2 fallback" hidden>WebGL</span>
       <a href={sourceHref(example.key)}>Source</a>
       <button id="pause" type="button" aria-pressed="false" hidden>Pause</button>
       <button id="debug" type="button" aria-pressed="false" hidden>Profile</button>
@@ -305,6 +306,12 @@ const { example } = Astro.props as { example: Example };
     overflow: hidden;
     color: var(--text);
     text-overflow: ellipsis;
+  }
+
+  #backend {
+    border-color: var(--rule-control);
+    color: var(--text-2);
+    cursor: default;
   }
 
   /* A phone leaves the top right to the example's own readout. */
