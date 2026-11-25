@@ -75,6 +75,13 @@ export const COMPUTE = '//#compute';
 export const TARGET = '//#target';
 /** Marks a pass of points: `//#scatter <sites> <words> [lanes]`. */
 export const SCATTER = '//#scatter';
+/** Marks a pass of points that adds to a buffer: `//#accumulate <slots>`. */
+export const ACCUMULATE = '//#accumulate';
+/**
+ * The most records an accumulating pass may sum into one word in a dispatch. Each of its four
+ * float channels sums one byte of every amount, so it stays exact up to 2^24 / 255.
+ */
+export const MOST_ADDED = 65_536;
 
 /** Uniforms every pass may declare, which the device sets as step 3 and 4 of a dispatch say. */
 export const INVOCATIONS = 'kit_invocations';
@@ -171,7 +178,68 @@ export interface Scatter {
    * `words` channels from `kit_phase * lanes` on.
    */
   readonly lanes: number;
+  /**
+   * Set for a pass that adds to a buffer, as `Accumulating` describes. Its fields are `hit`, `at`
+   * and `value`, all `uint`, `sites` is its slots, and `words` and `lanes` are 1.
+   */
+  readonly accumulate?: true;
 }
+
+/**
+ * A pass of points that adds to a buffer, for atomic additions whose results the kernel drops on
+ * cells other invocations may add to too. The kernel qualifies when every atomic on the buffer is
+ * an `atomicAdd` or `atomicSub` whose value its statement drops, it neither reads nor writes the
+ * buffer otherwise, and no addition, its own or in a function it calls, is inside a runtime loop:
+ * then an invocation makes at most `sites` additions, its slots.
+ *
+ * The capture stage records, for each slot from 0 to `sites - 1`, whether the invocation made that
+ * many additions (`hit`), the word it added to (`at`) and the amount as `uint` bits (`value`,
+ * negated for a subtraction). The device then clears four `RGBA32F` textures of the data
+ * texture's size to 0, and draws `vertex` with `accumulateFragment` as `POINTS` once per slot with
+ * additive blending (`ONE`, `ONE`), each point on its word's data texel, carrying `kit_value` and
+ * `kit_lane`, the word's channel. Texture `k` sums byte `k` of the amounts in each channel. Last
+ * it renders the target's new contents: each word plus the sum of its four bytes at their places,
+ * in `uint` arithmetic, which wraps as the atomic does.
+ *
+ * The sums are exact while no word takes more than `MOST_ADDED` records in a dispatch, so the
+ * device runs a dispatch of more invocations times slots on the CPU. The order of additions does
+ * not change a sum.
+ */
+export const ACCUMULATE_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+flat in uint kit_value;
+flat in uint kit_lane;
+layout(location = 0) out vec4 kit_byte0;
+layout(location = 1) out vec4 kit_byte1;
+layout(location = 2) out vec4 kit_byte2;
+layout(location = 3) out vec4 kit_byte3;
+void main() {
+  vec4 lane = vec4(equal(uvec4(kit_lane), uvec4(0u, 1u, 2u, 3u)));
+  kit_byte0 = lane * float(kit_value & 255u);
+  kit_byte1 = lane * float((kit_value >> 8u) & 255u);
+  kit_byte2 = lane * float((kit_value >> 16u) & 255u);
+  kit_byte3 = lane * float(kit_value >> 24u);
+}`;
+
+/** Renders a buffer's data texture plus the four byte sums an accumulating pass drew. */
+export const ACCUMULATED_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp usampler2D kit_old;
+uniform highp sampler2D kit_sum0;
+uniform highp sampler2D kit_sum1;
+uniform highp sampler2D kit_sum2;
+uniform highp sampler2D kit_sum3;
+layout(location = 0) out uvec4 kit_result;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  uvec4 added = uvec4(texelFetch(kit_sum0, at, 0))
+    + (uvec4(texelFetch(kit_sum1, at, 0)) << 8u)
+    + (uvec4(texelFetch(kit_sum2, at, 0)) << 16u)
+    + (uvec4(texelFetch(kit_sum3, at, 0)) << 24u);
+  kit_result = texelFetch(kit_old, at, 0) + added;
+}`;
 
 /** A binding the GPU form uses, to compare with the CPU module's `bindings`. */
 export interface ComputeBinding {
@@ -303,9 +371,12 @@ export function parseCompute(
     if (target.kind === 'buffer' && target.width !== undefined && !conditions.has('limits')) {
       return undefined;
     }
-    const scatter = chunk.directives.find((each) => each.startsWith(`${SCATTER} `));
+    const accumulate = chunk.directives.find((each) => each.startsWith(`${ACCUMULATE} `));
+    const scatter = accumulate ?? chunk.directives.find((each) => each.startsWith(`${SCATTER} `));
     if (scatter) {
-      const [, sites, words, lanes = '1'] = scatter.trim().split(/\s+/);
+      const [, sites, words = '1', lanes = '1'] = accumulate
+        ? [ACCUMULATE, accumulate.trim().split(/\s+/)[1]]
+        : scatter.trim().split(/\s+/);
       const stage = `points${chunk.stage.slice('pass'.length)}`;
       const draw = chunks.find((each) => each.stage === stage);
       if (!draw) throw new Error(`@typegpu/kit-gl: a pass of points without its '${stage}'`);
@@ -317,14 +388,15 @@ export function parseCompute(
       }));
       passes.push({
         target,
-        fragment: pointFragment(target, options.defines ?? []),
+        fragment: accumulate ? ACCUMULATE_FRAGMENT : pointFragment(target, options.defines ?? []),
         scatter: {
           capture: source(included, options.defines ?? []),
           vertex: source(drawing, options.defines ?? []),
           fields,
-          sites: int(sites, scatter),
+          sites: int(sites as string, scatter),
           words: int(words, scatter),
           lanes: int(lanes, scatter),
+          ...(accumulate && { accumulate: true as const }),
         },
       });
       continue;

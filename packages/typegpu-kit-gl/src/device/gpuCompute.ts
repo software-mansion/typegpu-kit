@@ -7,7 +7,9 @@
 
 import type { CpuModule } from '../cpu/types.ts';
 import {
+  ACCUMULATED_FRAGMENT,
   type ComputeModule,
+  MOST_ADDED,
   type Scatter,
   type ScatterField,
   type ComputeTarget,
@@ -52,6 +54,8 @@ interface Points {
   readonly sites: number;
   readonly words: number;
   readonly lanes: number;
+  /** Whether the pass adds its records to the target instead of writing them. */
+  readonly accumulate: boolean;
   readonly capture: Program;
   readonly captureUses: Uses;
   readonly invocations: WebGLUniformLocation | null;
@@ -186,6 +190,7 @@ function preparePoints(
     sites: scatter.sites,
     words: scatter.words,
     lanes: scatter.lanes,
+    accumulate: scatter.accumulate === true,
     capture,
     captureUses,
     invocations: capture.uniforms.get(INVOCATIONS) ?? null,
@@ -196,6 +201,107 @@ function preparePoints(
     records: undefined,
     vertexArray: undefined,
   };
+}
+
+/** `FUNC_ADD` of `ONE` and `ONE`: each point adds its bytes to what its texel holds. */
+const ADDING: BlendState = {
+  enabled: true,
+  colorOp: 0x8006,
+  colorSrc: 1,
+  colorDst: 1,
+  alphaOp: 0x8006,
+  alphaSrc: 1,
+  alphaDst: 1,
+};
+
+const combiners = new WeakMap<Ctx, Program | string>();
+
+/** The program that adds the four byte sums to a data texture. */
+function combinerOf(ctx: Ctx): Program | string {
+  let combiner = combiners.get(ctx);
+  if (!combiner) {
+    const linked = link(ctx, PASS_VERTEX, ACCUMULATED_FRAGMENT, 'adding to a buffer');
+    combiner = linked.ok ? linked.program : linked.message;
+    combiners.set(ctx, combiner);
+  }
+  return combiner;
+}
+
+/**
+ * Sums an accumulating pass's records into four float textures, a byte of every amount each, and
+ * renders the buffer's data texture plus those sums into a texture of the pool, which it returns.
+ */
+function accumulate(
+  ctx: Ctx,
+  pass: GpuPass,
+  points: Points,
+  buffer: BufferImpl,
+  count: number,
+  pointAt: (site: number) => void,
+  width: number,
+  height: number,
+): WebGLTexture | string {
+  const { gl, state } = ctx;
+  const combiner = combinerOf(ctx);
+  if (typeof combiner === 'string') return combiner;
+  const sums = [0, 1, 2, 3].map(() => take(ctx, gl.RGBA32F, width, height));
+  const attachments = sums.map((_, i) => gl.COLOR_ATTACHMENT0 + i);
+  state.drawFramebuffer(ctx.scratch.draw);
+  sums.forEach((texture, i) =>
+    gl.framebufferTexture2D(
+      gl.DRAW_FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0 + i,
+      gl.TEXTURE_2D,
+      texture,
+      0,
+    ),
+  );
+  state.drawBuffers(attachments);
+  state.viewport(0, 0, width, height);
+  writeEverything(ctx);
+  for (const cap of [
+    gl.SCISSOR_TEST,
+    gl.DEPTH_TEST,
+    gl.STENCIL_TEST,
+    gl.CULL_FACE,
+    gl.RASTERIZER_DISCARD,
+    gl.SAMPLE_ALPHA_TO_COVERAGE,
+    gl.POLYGON_OFFSET_FILL,
+  ]) {
+    state.enable(cap, false);
+  }
+  for (let i = 0; i < 4; i++) {
+    state.colorMask(i, 0xf);
+    gl.clearBufferfv(gl.COLOR, i, [0, 0, 0, 0]);
+    state.blend(i, ADDING);
+  }
+  state.program(pass.program.program);
+  for (let slot = 0; slot < (count > 0 ? points.sites : 0); slot++) {
+    pointAt(slot);
+    gl.drawArrays(gl.POINTS, 0, count);
+  }
+  state.vertexArray(null);
+  for (let i = 0; i < 4; i++) {
+    state.blend(i, NO_BLEND);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, null, 0);
+  }
+
+  const internal = gl.RGBA32UI;
+  const made = take(ctx, internal, width, height);
+  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, made, 0);
+  state.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  state.colorMask(0, 0xf);
+  state.program(combiner.program);
+  const sources = [dataTexture(ctx, buffer).texture, ...sums];
+  ['kit_old', 'kit_sum0', 'kit_sum1', 'kit_sum2', 'kit_sum3'].forEach((name, unit) => {
+    state.texture(unit, gl.TEXTURE_2D, sources[unit] as WebGLTexture);
+    state.sampler(unit, ctx.nearest);
+    setInt(gl, combiner.uniforms.get(name) ?? null, unit);
+  });
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  for (const texture of sums) give(ctx, gl.RGBA32F, width, height, texture);
+  return made;
 }
 
 export interface GpuCompute {
@@ -464,6 +570,15 @@ export function runGpu(
     }
   }
 
+  for (const { scatter } of gpu.passes) {
+    if (!scatter?.accumulate) continue;
+    if (!ctx.ext.colorBufferFloat || !ctx.ext.floatBlend) {
+      return 'adding needs EXT_color_buffer_float and EXT_float_blend';
+    }
+    const records = invocations[0] * invocations[1] * invocations[2] * scatter.sites;
+    if (records > MOST_ADDED) return `the dispatch may add ${records} times to one cell`;
+  }
+
   const resolved: Resolved[] = [];
   const written = new Set<BufferImpl>();
   for (const { target } of gpu.passes) {
@@ -589,6 +704,23 @@ export function runGpu(
           }
         }
       };
+      if (points.accumulate && resource.kind === 'buffer') {
+        const summed = accumulate(
+          ctx,
+          pass,
+          points,
+          resource.buffer,
+          count,
+          pointAt,
+          width,
+          height,
+        );
+        if (typeof summed === 'string') return summed;
+        const size = [internal, width, height] as const;
+        outputs.push(() => give(ctx, ...size, replaceData(resource.buffer, summed)));
+        state.vertexArray(null);
+        continue;
+      }
       for (let layer = 0; layer < layers; layer++) {
         const texture = take(ctx, internal, width, height);
         // Cells no point covers keep their old contents

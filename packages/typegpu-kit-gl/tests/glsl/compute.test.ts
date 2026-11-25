@@ -290,7 +290,64 @@ const kernels: [name: string, make: Make, verdict: number | string][] = [
         out.$[id.x] = 1;
       });
     },
-    "'atomicAdd'",
+    'scatter',
+  ],
+  [
+    'adds through a helper at cells it computes',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.f32, 64));
+      const off = false;
+      const deposit = (cell: number, amount: number) => {
+        'use gpu';
+        if (!off) {
+          std.atomicAdd(counter.$[cell % 4], d.u32(amount));
+        }
+      };
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        deposit(id.x, 2);
+        if (id.x > 3) deposit(id.x + 1, 1);
+        out.$[id.x] = 1;
+      });
+    },
+    'scatter',
+  ],
+  [
+    'adds to shared cells inside a loop',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        for (let k = d.u32(0); k < id.x; k++) std.atomicAdd(counter.$[k % 4], 1);
+      });
+    },
+    'adds to shared cells inside a loop',
+  ],
+  [
+    'reads a buffer it adds to',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        std.atomicAdd(counter.$[id.x % 4], 1);
+        out.$[id.x] = std.atomicLoad(counter.$[0]);
+      });
+    },
+    'which it adds to at shared cells',
+  ],
+  [
+    'uses the old value an addition returns',
+    (root) => {
+      const counter = root.createMutable(d.arrayOf(d.atomic(d.u32), 4));
+      const out = root.createMutable(d.arrayOf(d.u32, 64));
+      return tgpu.computeFn({ workgroupSize: [64], in: gid })(({ gid: id }) => {
+        'use gpu';
+        out.$[id.x] = std.atomicAdd(counter.$[id.x % 4], 1);
+      });
+    },
+    "'atomicAdd' on an element of 'counter' that is not the invocation's own",
   ],
   [
     'waits at a barrier',

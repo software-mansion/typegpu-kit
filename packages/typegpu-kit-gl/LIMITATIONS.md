@@ -12,7 +12,9 @@ A compute pipeline runs one of three ways. The generator picks per pipeline, and
 
 **As points on the GPU**, when a kernel writes cells it computes: each write site is in the entry function, outside runtime loops (`tgpu.unroll` loops are fine), and writes a whole element or texel with `=` or `textureStore`, and the kernel never reads what it writes this way.
 
-Both run at GPU speed, and differ from WebGPU in these ways:
+**As sums on the GPU**, for a buffer the kernel only adds to with `atomicAdd` or `atomicSub` whose results it drops, as a counter's `add` does: the kernel reads and writes that buffer no other way, and makes no addition inside a runtime loop, its own or in a function it calls. Additions to the same cell sum exactly, wrapping at 2^32 as atomics do, up to 65 536 records a cell in a dispatch: a dispatch whose invocations times additions could pass that runs on the CPU. The device needs `EXT_color_buffer_float` and `EXT_float_blend` for it, and runs such kernels on the CPU without them.
+
+All three run at GPU speed, and differ from WebGPU in these ways:
 
 - A read of a cell another invocation writes in the same dispatch returns the value from before the dispatch. WebGPU leaves such a read a data race, so a kernel that is correct there does not depend on it.
 - Where two invocations write one cell, either value may win, as in WebGPU.
@@ -20,16 +22,15 @@ Both run at GPU speed, and differ from WebGPU in these ways:
 - A fragment pass runs the whole kernel once per written resource, and once more for each texel a buffer element spans beyond the first; it writes four layers of a 3d or array target a draw. A pass of points runs it once per invocation, captured with transform feedback, then draws the captured writes once per write site, and for a buffer once per word of the element and per channel of a data texel unless the element fits a texel. A kernel that writes many resources or large structs costs a multiple of its WebGPU cost.
 - A linear index with a constant width needs a dispatch no wider than that width, or an early return past it at the top of the kernel, such as `if (gid.x >= width) return;` with a constant `width`. A wider dispatch runs on the CPU.
 
-**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed cells inside loops or helper functions, and writes to computed cells the kernel also reads. A kernel that calls a particle system's `emit` or a counter's `add` stays here, since each takes an atomic on a shared cell. A small GPU form whose outputs the CPU reads back may also move here, when its inputs are on the CPU and the move saves waiting for the GPU.
+**On the CPU**, as generated JavaScript, for everything else: shared atomics, `workgroupBarrier` and workgroup variables, writes to computed cells inside loops or helper functions, and writes to computed cells the kernel also reads. A kernel that calls a particle system's `emit` stays here, since it uses the value its atomic returns. A small GPU form whose outputs the CPU reads back may also move here, when its inputs are on the CPU and the move saves waiting for the GPU.
 
 - Workgroups run in order, with x varying fastest. Within a workgroup, invocations run in order until a barrier; all lanes reach it before any continues. Atomics follow that sequential order.
 - A simple kernel costs about 0.04 microseconds per invocation, one with barriers or atomics 0.2 to 2. Tens of thousands of rows a frame are fine. A texture-sized kernel that stays on the CPU is not.
 - A CPU kernel that reads a texture or buffer a draw or a GPU-run kernel wrote waits for the GPU and reads it back, every dispatch. A kernel that meters or sums a render target pays this each frame.
-- `f32` literals, conversions and arithmetic round to 32 bits at each operation, including vector and matrix components. Integer arithmetic preserves 32-bit wraparound. Transcendental builtins use JavaScript's math functions rounded to `f32`. GPU implementations can contract multiply-add expressions and differ in permitted builtin accuracy, so simulations that amplify small differences can still diverge. Seeding a hash from a computed float can turn one rounding difference into a different random value.
-- Half-float texture stores round to nearest, ties to even. A GPU store may choose the neighbouring half-float value; repeated sampling and storage can accumulate the difference.
-- A builtin outside its specified domain follows JavaScript's result on the CPU. For example, `atan2(0, 0)` returns zero. WebGPU need not return the same result for such inputs.
 - Buffer accesses must be in bounds: the CPU path does not implement WebGPU's robust out-of-bounds access rules. Passing a pointer to a runtime-sized array is unsupported.
 - Kernels are compiled with `new Function`, so a page whose content security policy forbids `unsafe-eval` cannot run them.
+
+CPU `f32` literals, conversions and arithmetic round to 32 bits at each operation, including vector and matrix components. Integers preserve 32-bit wraparound, and half-float stores round to nearest, ties to even. GPU multiply-add contraction, builtin accuracy and half-store rounding can differ, and simulations can amplify those differences. For repeatable random streams, seed from integer ids and explicit seeds rather than computed positions. Avoid subtracting nearly equal large floats, and guard builtin inputs outside their specified domain: the CPU's `atan2(0, 0)` returns zero, while WebGPU need not return the same result.
 
 `backends.of(root).compute` is `'cpu'` on the fallback. A module reads it to pick kernels the fallback runs on the GPU or that suit a CPU, as the Kit's culling, `exposure`, `environment`, `grid`, `particles` and `poses` do, and an example's `meta.json` may give `fallback` scene options that size it. On the fallback, particles from one burst fill the ring in burst order, where WebGPU's atomics fill it in any order.
 

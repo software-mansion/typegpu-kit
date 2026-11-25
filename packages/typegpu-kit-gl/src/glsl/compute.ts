@@ -21,6 +21,7 @@ import {
   INVOCATIONS,
   LAYER,
   LAYERS_PER_DRAW,
+  ACCUMULATE,
   SCATTER,
   TARGET,
   WORKGROUPS,
@@ -91,6 +92,10 @@ export interface ComputePlan {
   readonly maps: ReadonlyMap<string, TexelMap>;
   /** The buffers and textures written at cells the kernel computes, a pass of points each. */
   readonly scatters: ReadonlySet<string>;
+  /** The buffers the kernel only adds to with atomics whose results it drops, a pass each. */
+  readonly adds?: ReadonlySet<string>;
+  /** The most additions an invocation makes, which bounds its records. */
+  readonly slots?: number;
 }
 
 /** A resource written at computed cells: an array of a buffer, or a texture. */
@@ -133,6 +138,9 @@ const plainMap = (map: TexelMap) => map.every(({ step, r }) => step === 1 && !r)
 const GID = 'kit_gid';
 /** Which resource written at computed cells the pass of points draws, by its index. */
 const AIM = 'kit_aim';
+/** An invocation's additions so far, and their words and amounts. */
+const ADDED = 'kit_added';
+const ADD = 'kit_add';
 /** Stands in for a read of a buffer the kernel writes at computed cells, which no pass can see. */
 const SCATTERED = 'kit_scattered_';
 /** The layer of a layered target the pass computes now, of the several one draw writes. */
@@ -661,6 +669,8 @@ interface Frame {
   readonly choosing: Set<string>;
   /** Whether its code depends on its arguments being the invocation's own. */
   relies: boolean;
+  /** The most additions to shared cells it makes, counting those of the functions it calls. */
+  adds: number;
 }
 
 /**
@@ -676,6 +686,16 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   readonly #columns = new Set<string>();
   readonly #maps = new Map<string, TexelMap>();
   readonly #scatters = new Map<string, Scatter>();
+  /** Buffers the kernel adds to at shared cells, dropping the atomics' results. */
+  readonly #adds = new Map<string, BufferInfo>();
+  /** The most additions each generated function makes, its callees' included. */
+  readonly #addsOf = new Map<string, number>();
+  /** The call whose value the statement being generated drops, and whether it is being made. */
+  #dropped: Expression | undefined;
+  #dropping = false;
+  /** Whether a call is being made, so a nested route to the same call does not count it twice. */
+  #inCall = false;
+  #slots = 0;
   /** Write sites emitted so far, per resource written at computed cells. */
   readonly #sites = new Map<string, number>();
   /** What each such resource's captured write holds. */
@@ -762,6 +782,8 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       columns: new Set(this.#columns),
       maps: new Map(this.#maps),
       scatters: new Set(this.#scatters.keys()),
+      adds: new Set(this.#adds.keys()),
+      slots: this.#slots,
     };
   }
 
@@ -904,13 +926,19 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     const owns = args.map((arg) => this.#own(arg));
     const outer = this.#pending;
     this.#pending = owns.some(Boolean) ? owns : undefined;
+    const nested = this.#inCall;
+    this.#inCall = true;
     let result: T;
     try {
       result = call();
     } finally {
       this.#pending = outer;
+      this.#inCall = nested;
     }
     const name = typeof result?.value === 'string' ? /^(\w+)\(/.exec(result.value)?.[1] : undefined;
+    // A call reaches here once more through the generator's own call, which counts it
+    const adds = (!nested && name !== undefined && this.#addsOf.get(name)) || 0;
+    if (adds > 0) this.#added(adds);
     if (name === undefined || !this.#relies.has(name)) return result;
     if (this.#assumed.get(name) !== JSON.stringify(owns.some(Boolean) ? owns : [])) {
       throw new Ineligible(`calls '${name}' with other invocation indices than it was made for`);
@@ -921,8 +949,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   override call(callee: AnyFn, args: readonly Snippet[], calleeSnippet?: Snippet): Snippet {
     const name = getName(callee) ?? '';
+    const dropped = this.#dropping;
     if (name === 'atomicLoad' || name === 'atomicStore' || name in ATOMICS) {
-      return this.#atomic(name, args);
+      return this.#atomic(name, args, dropped);
     }
     return this.#calling(args, () => super.call(callee, args, calleeSnippet));
   }
@@ -932,12 +961,28 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
    * sequential: a read, or a read-modify-write of what the invocation holds, returning the old
    * value. Atomics on cells other invocations share stay on the CPU.
    */
-  #atomic(name: string, args: readonly Snippet[]): Snippet {
+  #atomic(name: string, args: readonly Snippet[], dropped: boolean): Snippet {
     const target = args[0];
     const place = target && this.placeOf(target);
     if (!target || !place) throw new Ineligible(`'${name}' outside a buffer`);
     const inner = (undecorate(place.schema) as d.Atomic).inner as d.BaseData;
     const value = this.ctx.resolveSnippet(target).value;
+    const id = place.buffer.id;
+    if (this.#adds.has(id) && !(dropped && (name === 'atomicAdd' || name === 'atomicSub'))) {
+      throw new Ineligible(`'${name}' on '${id}', which it adds to at shared cells`);
+    }
+    if (
+      dropped &&
+      (name === 'atomicAdd' || name === 'atomicSub') &&
+      (this.#adds.has(id) ||
+        (!place.element?.own &&
+          !this.#single &&
+          !this.#buffers.has(id) &&
+          !this.#plan?.buffers.has(id) &&
+          !this.#chosen.some((each) => each.frame === this.#frame)))
+    ) {
+      return this.#add(name, place, args[1], inner);
+    }
     if (name === 'atomicLoad') return snip(value, inner, 'runtime', false);
     this.#recordPlace(place, `'${name}' on`);
     const operand = this.#valueAs(args[1], inner);
@@ -963,6 +1008,47 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     return snippet.dataType === type ? value : `${this.ctx.resolve(type).value}(${value})`;
   }
 
+  /** Counts additions the statement being generated makes, which loops would leave unbounded. */
+  #added(count: number): void {
+    if (this.#loops > 0) throw new Ineligible('adds to shared cells inside a loop');
+    const frame = this.#frame;
+    if (frame) frame.adds += count;
+  }
+
+  /**
+   * An atomic addition whose result the kernel drops, on a cell other invocations may add to: the
+   * invocation records the word and the amount, and a pass sums every record into the cells.
+   */
+  #add(name: string, place: Place, amount: Snippet | undefined, inner: d.BaseData): Snippet {
+    const { buffer } = place;
+    if (this.#buffers.has(buffer.id) || this.#scatters.has(buffer.id)) {
+      throw new Ineligible(`adds to '${buffer.id}', which it also writes`);
+    }
+    this.#adds.set(buffer.id, buffer);
+    this.#added(1);
+    const operand = this.#valueAs(amount, inner);
+    const bits = inner === d.u32 ? operand : `uint(${operand})`;
+    const signed = name === 'atomicSub' ? `0u - ${bits}` : bits;
+    if (!this.#plan) return snip('', d.Void, 'runtime', true);
+    const slots = this.#plan.slots ?? 0;
+    this.helper(
+      ADD,
+      `uint ${ADDED};\nuint ${ADDED}_at[${slots}];\nuint ${ADDED}_amount[${slots}];
+void ${ADD}(int aim, uint at, uint amount) {
+  if (${AIM} != aim || ${ADDED} >= ${slots}u) return;
+  ${ADDED}_at[${ADDED}] = at;
+  ${ADDED}_amount[${ADDED}] = amount;
+  ${ADDED} += 1u;
+}`,
+    );
+    return snip(
+      `${ADD}(${this.#aim(buffer.id)}, uint(${place.address}), uint(${signed}))`,
+      d.Void,
+      'runtime',
+      true,
+    );
+  }
+
   protected override _callShellless(
     callee: AnyFn,
     args: readonly Snippet[],
@@ -975,6 +1061,15 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   // ---------------------------------------------------------------------------------------------
 
   protected override _statement(statement: Statement): ResolvedStatement {
+    if (Array.isArray(statement) && statement[0] === NODE.call) {
+      const outer = this.#dropped;
+      this.#dropped = statement as Expression;
+      try {
+        return super._statement(statement);
+      } finally {
+        this.#dropped = outer;
+      }
+    }
     if (Array.isArray(statement)) {
       if (statement[0] === NODE.assignmentExpr) {
         this.#plain = statement[2] === '=';
@@ -1028,6 +1123,17 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       }
     }
     return super._statement(statement);
+  }
+
+  /** Notes whether the call being made is the one whose value its statement drops. */
+  protected override _expression(expression: Expression): Snippet {
+    const outer = this.#dropping;
+    this.#dropping = expression === this.#dropped;
+    try {
+      return super._expression(expression);
+    } finally {
+      this.#dropping = outer;
+    }
   }
 
   protected override _expressionWithTypeConversion(
@@ -1198,7 +1304,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
 
   /** A resource's index among those the kernel writes at computed cells, as `kit_aim` holds it. */
   #aim(id: string): number {
-    return [...(this.#plan?.scatters ?? [])].toSorted().indexOf(id);
+    return [...(this.#plan?.scatters ?? []), ...(this.#plan?.adds ?? [])].toSorted().indexOf(id);
   }
 
   /** The next write site of a resource written at computed cells. */
@@ -1262,6 +1368,9 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
   #recordPlace(place: Place, verb: string): void {
     const { buffer, element } = place;
     const frame = this.#frame;
+    if (this.#adds.has(buffer.id)) {
+      throw new Ineligible(`${verb} '${buffer.id}', which it adds to at shared cells`);
+    }
     if (this.#plan?.scatters.has(buffer.id)) {
       if (verb !== 'writes' || !this.#plain) {
         throw new Ineligible(`${verb} '${buffer.id}', which it writes at computed cells`);
@@ -1603,6 +1712,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       assigned: new Set(),
       choosing: new Set(),
       relies: false,
+      adds: 0,
     };
     this.#functions.add(options.name);
     if (options.functionType === 'normal') {
@@ -1624,6 +1734,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       this.#frames.pop();
     }
     if (frame.relies) this.#relies.add(options.name);
+    this.#addsOf.set(options.name, frame.adds);
     const body = code.slice(code.indexOf('{'));
     if (options.functionType === 'normal' && options.args.length === 0 && !this.#varies(body)) {
       this.#pure.add(options.name);
@@ -1660,6 +1771,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     const body = this._block(options.body, /* allowInlining */ false).code;
     options.determineReturnType();
+    this.#slots = this.#frame?.adds ?? 0;
 
     const wg = `uvec3(${size.join('u, ')}u)`;
     const prelude = options.args
@@ -1694,7 +1806,7 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
     }
     const buffers = [...this.#buffers.values()];
     if (!this.#plan) {
-      if (buffers.length + this.#textures.size + this.#scatters.size === 0) {
+      if (buffers.length + this.#textures.size + this.#scatters.size + this.#adds.size === 0) {
         throw new Ineligible('writes nothing');
       }
       for (const id of this.#columns) {
@@ -1751,6 +1863,13 @@ export class KitGlslComputeGenerator extends KitGlslGenerator {
       ),
       ...[...this.#scatters.values()].map((target, i) =>
         this.#scatterPass(target, buffers.length + this.#textures.size + i, options.name),
+      ),
+      ...[...this.#adds.values()].map((buffer, i) =>
+        this.#addPass(
+          buffer,
+          buffers.length + this.#textures.size + this.#scatters.size + i,
+          options.name,
+        ),
       ),
     ].join('\n\n');
   }
@@ -1935,6 +2054,61 @@ ${outputs.map((name, i) => `  ${name} = kit_cellAt(${LAYER} + ${i});`).join('\n'
    * the draw stage reads one site's record as attributes, `kit_a_<field>`, and puts its point on
    * the written cell.
    */
+  /**
+   * A pass that sums what the kernel adds to a buffer: each invocation records up to `slots`
+   * additions, and every record becomes a point on its word, which the device accumulates.
+   */
+  #addPass(buffer: BufferInfo, index: number, kernel: string): string {
+    const slots = this.#slots;
+    const outputs: string[] = [];
+    const lines: string[] = [];
+    for (let slot = 0; slot < slots; slot++) {
+      for (const name of ['hit', 'at', 'value'])
+        outputs.push(`flat out uint kit_c${slot}_${name};`);
+      lines.push(
+        `  kit_c${slot}_hit = ${slot}u < ${ADDED} ? 1u : 0u;`,
+        `  kit_c${slot}_at = ${ADDED}_at[${slot}];`,
+        `  kit_c${slot}_value = ${ADDED}_amount[${slot}];`,
+      );
+    }
+    const range = buffer.range as string;
+    const directive = [TARGET, 'buffer', buffer.group, buffer.binding, buffer.id, 0, 4, 4];
+    return `${CHUNK} pass${index} main
+${directive.join(' ')}
+${ACCUMULATE} ${slots}
+${outputs.join('\n')}
+void main() {
+  uint kit_id = uint(gl_VertexID);
+  uvec3 kit_g = uvec3(kit_id % ${INVOCATIONS}.x, (kit_id / ${INVOCATIONS}.x) % ${INVOCATIONS}.y, kit_id / (${INVOCATIONS}.x * ${INVOCATIONS}.y));
+  ${ADDED} = 0u;
+  ${AIM} = ${this.#aim(buffer.id)};
+  ${BEGIN}(kit_g);
+  ${kernel}();
+${lines.join('\n')}
+  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}
+
+${CHUNK} points${index} main
+in uint kit_a_hit;
+in uint kit_a_at;
+in uint kit_a_value;
+flat out uint kit_value;
+flat out uint kit_lane;
+void main() {
+  gl_PointSize = 1.0;
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  if (kit_a_hit == 0u) return;
+  uint kit_w = kit_a_at;
+  if (kit_w < ${range}.x || kit_w >= ${range}.x + ${range}.y / 4u) return;
+  ivec2 kit_size = textureSize(${buffer.id}, 0);
+  uint kit_t = kit_w >> 2u;
+  vec2 kit_xy = vec2(float(kit_t % uint(kit_size.x)), float(kit_t / uint(kit_size.x)));
+  gl_Position = vec4((kit_xy + 0.5) / vec2(kit_size) * 2.0 - 1.0, 0.0, 1.0);
+  kit_value = kit_a_value;
+  kit_lane = kit_w & 3u;
+}`;
+  }
+
   #scatterPass(target: Scatter, index: number, kernel: string): string {
     const id = target.kind === 'buffer' ? target.buffer.id : target.texture.id;
     const sites = this.#sites.get(id) ?? 0;
