@@ -1544,6 +1544,24 @@ export class CpuGenerator extends WgslGenerator {
 
     if (!['u32', 'i32', 'f32', 'bool', 'abstractInt', 'abstractFloat'].includes(type))
       unsupported(`${op} on ${type}`);
+    if (op.endsWith('=') && !['=', '==', '!=', '<=', '>='].includes(op)) {
+      const place = addressParts(this.#value(lhs));
+      const simple = /^[A-Za-z_$][\w$]*$|^\d+$|^"[^"\\]*"$/;
+      if (place && (!simple.test(place.object) || !simple.test(place.key))) {
+        const index = this.ctx.makeUniqueIdentifier('cpuIndex', 'global');
+        const base = simple.test(place.object)
+          ? place.object
+          : this.ctx.makeUniqueIdentifier('cpuBase', 'global');
+        const assignment = this.emitBinaryOp(
+          snip(`${base}[${index}]`, lhs.dataType as d.BaseData, 'runtime'),
+          op,
+          rhs,
+        );
+        return base === place.object
+          ? `((${index})=>(${assignment}))(${place.key})`
+          : `((${base},${index})=>(${assignment}))(${place.object},${place.key})`;
+      }
+    }
     const float = type === 'f32' || rhsType === 'f32';
     const left = `(${float ? f32Literal(this.#value(lhs)) : this.#value(lhs)})`;
     const right = `(${float ? f32Literal(this.#value(rhs)) : this.#value(rhs)})`;

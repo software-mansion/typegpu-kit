@@ -213,3 +213,18 @@ it('tracks a store inside the index of another store, each in its own range', ()
   expect(module.writtenWords?.(0, 0)).toEqual([0, 10]);
   expect(module.writtenWords?.(0, 1)).toEqual([2, 6]);
 });
+
+it('tracks a compound store with a call in its index', () => {
+  const count = tgpu.privateVar(d.u32);
+  const index = (i: number) => {
+    'use gpu';
+    count.$++;
+    return i + 10;
+  };
+  expect(
+    storedWords((data) => (i: number) => {
+      'use gpu';
+      data.$[index(i)] += 1;
+    }),
+  ).toEqual([10, 14]);
+});
