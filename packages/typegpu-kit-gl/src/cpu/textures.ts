@@ -235,7 +235,7 @@ export const textureOps = {
     if (typeof coords === 'number') coords = [coords, 0];
     const array = texture.dimension === '2d-array';
     const level = texture.levels[array ? lod : index];
-    if (!level) return vector([0, 0, 0, 0]);
+    if (!level) return texture.format.startsWith('depth') ? 0 : vector([0, 0, 0, 0]);
     const result = texel(texture, level, coords[0]!, coords[1]!, array ? index : (coords[2] ?? 0));
     return texture.format.startsWith('depth') ? result[0]! : result;
   },
