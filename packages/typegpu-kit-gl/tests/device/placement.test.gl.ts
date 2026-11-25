@@ -180,3 +180,117 @@ test('a crowded form whose input only GL holds stays on the GPU, as a CPU run wo
     root.destroy();
   }
 });
+
+type Gl = WebGL2RenderingContext;
+
+/**
+ * Counts the timer queries and fences every WebGL 2 context makes and deletes, and queries begun
+ * over another, from the prototype, which `install`'s proxy reaches too. Fails a draw while `fail`
+ * is set. Returns its undo.
+ */
+function watchSamples() {
+  const live = { queries: new Set<WebGLQuery>(), fences: new Set<WebGLSync>() };
+  const seen = { queries: 0, fences: 0, unknown: 0, overlapping: 0, fail: false };
+  let active = false;
+  const prototype = WebGL2RenderingContext.prototype;
+  const { createQuery, deleteQuery, beginQuery, endQuery, fenceSync, deleteSync, drawArrays } =
+    prototype;
+  Object.assign(prototype, {
+    createQuery(this: Gl) {
+      const query = createQuery.call(this);
+      if (query) live.queries.add(query);
+      seen.queries++;
+      return query;
+    },
+    deleteQuery(this: Gl, query: WebGLQuery | null) {
+      if (!query || !live.queries.delete(query)) seen.unknown++;
+      deleteQuery.call(this, query);
+    },
+    beginQuery(this: Gl, target: number, query: WebGLQuery) {
+      if (active) seen.overlapping++;
+      active = true;
+      beginQuery.call(this, target, query);
+    },
+    endQuery(this: Gl, target: number) {
+      active = false;
+      endQuery.call(this, target);
+    },
+    fenceSync(this: Gl, condition: number, flags: number) {
+      const fence = fenceSync.call(this, condition, flags);
+      if (fence) live.fences.add(fence);
+      seen.fences++;
+      return fence;
+    },
+    deleteSync(this: Gl, fence: WebGLSync | null) {
+      if (!fence || !live.fences.delete(fence)) seen.unknown++;
+      deleteSync.call(this, fence);
+    },
+    drawArrays(this: Gl, mode: number, first: number, count: number) {
+      if (seen.fail) {
+        seen.fail = false;
+        throw new Error('a draw failed');
+      }
+      drawArrays.call(this, mode, first, count);
+    },
+  });
+  const undo = () =>
+    Object.assign(prototype, {
+      createQuery,
+      deleteQuery,
+      beginQuery,
+      endQuery,
+      fenceSync,
+      deleteSync,
+      drawArrays,
+    });
+  return { live, seen, undo };
+}
+
+/** A small form that stays on the GPU, as nothing reads its output back. */
+function filling(root: ReturnType<typeof glRoot>) {
+  const out = root.createMutable(d.arrayOf(d.u32, COUNT));
+  const kernel = tgpu.computeFn({ workgroupSize: [64], in: { id: d.builtin.globalInvocationId } })(
+    ({ id }) => {
+      'use gpu';
+      out.$[id.x] = id.x + 1;
+    },
+  );
+  const pipeline = root.createComputePipeline({ compute: kernel }).$name('filling');
+  return () => pipeline.dispatchWorkgroups(COUNT / 64);
+}
+
+const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test.each([
+  ['timer queries', []],
+  ['fences', ['EXT_disjoint_timer_query_webgl2']],
+] as const)('a sampled GPU dispatch that throws closes its sample, with %s', async (_, hide) => {
+  const undo = install({ minimum: false, hide });
+  const { live, seen, undo: unwatch } = watchSamples();
+  const root = glRoot();
+  try {
+    const { gl } = root.device as GLDevice;
+    const errors: string[] = [];
+    root.device.addEventListener('uncapturederror', (e) =>
+      errors.push((e as GPUUncapturedErrorEvent).error.message),
+    );
+    const dispatch = filling(root);
+    // The fifth dispatch is the first sampled
+    for (let frame = 1; frame <= 10; frame++) {
+      seen.fail = frame === 5;
+      dispatch();
+      await settle(20);
+    }
+    await settle(200);
+    expect(errors).toEqual(['a draw failed']);
+    expect(seen.overlapping).toBe(0);
+    expect(seen.unknown).toBe(0);
+    expect(gl.getError()).toBe(0);
+    if (hide.length > 0) expect(live.fences.size).toBe(0);
+    else expect(live.queries.size).toBeLessThanOrEqual(1);
+  } finally {
+    root.destroy();
+    unwatch();
+    undo();
+  }
+});

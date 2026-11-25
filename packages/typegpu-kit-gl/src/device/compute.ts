@@ -95,8 +95,14 @@ export function dispatch(ctx: Ctx, pass: ComputePass, x: number, y: number, z: n
   if (gpu && runsOnGpu(ctx, pipeline, pipeline.label, module, pass.groups)) {
     const start = performance.now();
     const probe = beginProbe(ctx, pipeline, pipeline.label, invocations);
-    const reason = runGpu(ctx, gpu, pass.groups, x, y, z);
-    endProbe(ctx, pipeline, probe, reason === undefined);
+    let reason: string | undefined;
+    let ran = false;
+    try {
+      reason = runGpu(ctx, gpu, pass.groups, x, y, z);
+      ran = reason === undefined;
+    } finally {
+      endProbe(ctx, pipeline, probe, ran);
+    }
     if (reason === undefined) {
       const ms = performance.now() - start;
       count(ctx, `${pipeline.label} (gpu)`, ms, invocations);
