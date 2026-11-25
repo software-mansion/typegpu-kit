@@ -448,7 +448,7 @@ export async function uniformArguments(root: TgpuRoot): Promise<number[]> {
 export async function literalFields(root: TgpuRoot): Promise<number[]> {
   const Row = d.struct({ used: d.u32, unused: d.vec4u });
   const source = root.createMutable(d.vec4u, d.vec4u(3, 4, 5, 6));
-  const output = root.createMutable(d.arrayOf(d.u32, 3));
+  const output = root.createMutable(d.arrayOf(d.u32, 5));
   const state = tgpu.privateVar(d.u32);
   const next = tgpu.fn(
     [],
@@ -480,7 +480,52 @@ export async function literalFields(root: TgpuRoot): Promise<number[]> {
     output.$[0] = snapshot.used;
     output.$[1] = other.used;
     output.$[2] = state.$;
+    const mutable = pure();
+    mutable.used += d.u32(1);
+    output.$[3] = mutable.used;
+    if (source.$.x === 99) {
+      const sibling = pure();
+      output.$[4] = sibling.used;
+    } else {
+      const sibling = pure();
+      output.$[4] = sibling.used + d.u32(2);
+    }
   });
   root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
   return output.read();
+}
+
+export async function addressReturns(root: TgpuRoot): Promise<number[]> {
+  const rows = root.createMutable(d.arrayOf(d.vec4u, 1), [d.vec4u(4, 5, 6, 7)]);
+  const output = root.createMutable(d.arrayOf(d.vec4u, 2));
+  const read = tgpu.fn(
+    [d.u32],
+    d.vec4u,
+  )((index) => {
+    'use gpu';
+    const row = rows.$[index];
+    return d.vec4u(row);
+  });
+  const mutate = tgpu.fn(
+    [],
+    d.u32,
+  )(() => {
+    'use gpu';
+    rows.$[0] = d.vec4u(99);
+    return 0;
+  });
+  const consume = tgpu.fn(
+    [d.vec4u, d.u32],
+    d.vec4u,
+  )((before, _unused) => {
+    'use gpu';
+    return d.vec4u(before);
+  });
+  const kernel = tgpu.computeFn({ workgroupSize: [1] })(() => {
+    'use gpu';
+    output.$[0] = consume(read(0), mutate());
+    output.$[1] = read(0);
+  });
+  root.createComputePipeline({ compute: kernel }).dispatchWorkgroups(1);
+  return (await output.read()).flatMap((row) => [...row]);
 }

@@ -9,6 +9,7 @@ it('distinguishes complete calls and record escapes', () => {
   expect(completeCall('make(a)+other(b)')).toBeUndefined();
   expect(usedRecordFields('return r.position[0]+r.member;', 'r')).toEqual(['member', 'position']);
   expect(usedRecordFields('return f(r);', 'r')).toBeUndefined();
+  expect(usedRecordFields('return r.x+other.r.y;', 'r')).toEqual(['x']);
 });
 
 it('does not project dependent or escaping records', () => {

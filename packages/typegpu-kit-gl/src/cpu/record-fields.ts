@@ -20,7 +20,7 @@ export function completeCall(
 }
 
 export function usedRecordFields(body: string, parameter: string): string[] | undefined {
-  const identifier = `(?<![\\w$])${parameter.replace(/[$]/g, '\\$')}(?![\\w$])`;
+  const identifier = `(?<![\\w$.])${parameter.replace(/[$]/g, '\\$')}(?![\\w$])`;
   const fields = new Set<string>();
   const rest = body.replace(
     new RegExp(`${identifier}\\.([A-Za-z_$][\\w$]*)`, 'g'),

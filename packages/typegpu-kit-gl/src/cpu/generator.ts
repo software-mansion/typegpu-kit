@@ -69,14 +69,39 @@ export class CpuGenerator extends WgslGenerator {
     });
   }
   #projectLocalRecords(body: string): string {
-    for (const local of body.matchAll(/^(let|const) ([A-Za-z_$][\w$]*) = ([^\n]*);$/gm)) {
+    const declarations = [...body.matchAll(/^(let|const) ([A-Za-z_$][\w$]*) = ([^\n]*);$/gm)];
+    for (const local of declarations) {
       const fields = usedRecordFields(body.replace(local[0], ''), local[2]!);
       if (!fields?.length) continue;
       const projected = this.#projectRecord(local[3]!, fields, false);
-      if (projected) body = body.replace(local[0], `${local[1]} ${local[2]} = ${projected};`);
+      if (!projected) continue;
+      if (
+        !projected.startsWith('({') ||
+        declarations.filter((other) => other[2] === local[2]).length !== 1
+      ) {
+        body = body.replace(local[0], `${local[1]} ${local[2]} = ${projected};`);
+        continue;
+      }
+      const entries = callArguments(`record(${projected.slice(2, -2)})`).map((entry) =>
+        /^"([A-Za-z_$][\w$]*)":([\s\S]*)$/.exec(entry),
+      );
+      if (entries.some((entry) => !entry)) continue;
+      const replacements = new Map(
+        entries.map((entry) => [entry![1]!, this.ctx.makeUniqueIdentifier('cpuField', 'global')]),
+      );
+      body = body.replace(
+        local[0],
+        entries.map((entry) => `let ${replacements.get(entry![1]!)} = ${entry![2]};`).join('\n'),
+      );
+      const name = local[2]!.replace(/[$]/g, '\\$');
+      body = body.replace(
+        new RegExp(`(?<![\\w$.])${name}\\.([A-Za-z_$][\\w$]*)`, 'g'),
+        (access, field: string) => replacements.get(field) ?? access,
+      );
     }
     return body;
   }
+
   #projectRecord(value: string, fields: readonly string[], unwrap: boolean): string | undefined {
     if (value.startsWith('({') && isPureExpression(value, this.#functionEffects)) {
       const projected = projectRecordBody(
@@ -1162,7 +1187,21 @@ export class CpuGenerator extends WgslGenerator {
         });
       this.emitTypeAnnotation(returnType);
       const args = options.args.filter((arg) => arg.used || options.functionType === 'normal');
-      const vectorReturn = /^\{\s*return \$vector\(\[([\s\S]*)\]\);\s*}$/.exec(body);
+      let vectorBody = body;
+      for (;;) {
+        const alias =
+          /^\{\s*const ([A-Za-z_$][\w$]*) = ([A-Za-z_$\d\s()+*/%<>&|^.-]{1,120});\s*/.exec(
+            vectorBody,
+          );
+        if (!alias || /[A-Za-z_$][\w$]*\(/.test(alias[2]!)) break;
+        vectorBody = `{${vectorBody.slice(alias[0].length)}`;
+        const name = alias[1]!.replace(/[$]/g, '\\$');
+        vectorBody = vectorBody.replace(
+          new RegExp(`(?<![\\w$.])${name}(?![\\w$])`, 'g'),
+          () => `(${alias[2]})`,
+        );
+      }
+      const vectorReturn = /^\{\s*return \$vector\(\[([\s\S]*)\]\);\s*}$/.exec(vectorBody);
       if (!this.#effects && /^vec[234][fui]$/.test(scalar(returnType)) && vectorReturn) {
         const components = callArguments(`value(${vectorReturn[1]})`);
         if (components.length === Number(scalar(returnType)[3]))
