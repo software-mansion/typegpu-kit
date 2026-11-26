@@ -417,10 +417,13 @@ describe('camera', () => {
     importExternalTexture: ({ source }: { source: Pixels }) => new External(source),
   } as unknown as GPUDevice;
 
-  it('shows every reader each new frame and releases each frame once', async () => {
+  // react-native-webgpu 0.23 renamed the function that wraps a buffer
+  const wraps = ['createNativeBufferFromPointer', 'createVideoFrameFromNativeBuffer'];
+
+  it.each(wraps)('shows every new frame and releases each once, with %s', async (wrap) => {
     const pixels: Pixels[] = [];
     vi.stubGlobal('RNWebGPU', {
-      createVideoFrameFromNativeBuffer: () => {
+      [wrap]: () => {
         pixels.push(new Pixels());
         return pixels.at(-1);
       },

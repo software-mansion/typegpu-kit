@@ -338,7 +338,10 @@ export function camera(runtime: Runtime): CameraSource {
     stopped: false,
     device: undefined,
   });
-  const webgpu = RNWebGPU;
+  // react-native-webgpu 0.23 renamed `createVideoFrameFromNativeBuffer`
+  const webgpu: typeof RNWebGPU & {
+    createNativeBufferFromPointer?: typeof RNWebGPU.createVideoFrameFromNativeBuffer;
+  } = RNWebGPU;
 
   const destroy = () => {
     'worklet';
@@ -351,7 +354,9 @@ export function camera(runtime: Runtime): CameraSource {
       const buffer = frame.getNativeBuffer();
       let pixels: NativeVideoFrame;
       try {
-        pixels = webgpu.createVideoFrameFromNativeBuffer(buffer.pointer);
+        pixels = webgpu.createNativeBufferFromPointer
+          ? webgpu.createNativeBufferFromPointer(buffer.pointer)
+          : webgpu.createVideoFrameFromNativeBuffer(buffer.pointer);
       } finally {
         buffer.release();
       }
