@@ -19,8 +19,8 @@ catalogs:
       specifier: 0.12.2
       version: 0.12.2
     typegpu:
-      specifier: 0.12.11
-      version: 0.12.11
+      specifier: 0.12.12
+      version: 0.12.12
     unplugin-typegpu:
       specifier: 0.12.8
       version: 0.12.8
@@ -86,13 +86,13 @@ importers:
         version: 1.94.0
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       typescript:
         specifier: npm:tsover@6.0.2
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vite:
         specifier: 8.3.8
         version: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
@@ -116,7 +116,7 @@ importers:
         version: 5.3.0
       '@typegpu/color':
         specifier: 'catalog:'
-        version: 0.12.2(typegpu@0.12.11)
+        version: 0.12.2(typegpu@0.12.12)
       '@typegpu/create-kit':
         specifier: workspace:*
         version: link:../../packages/typegpu-create-kit
@@ -125,10 +125,10 @@ importers:
         version: link:../../packages/typegpu-kit
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       '@typegpu/radiance-cascades':
         specifier: 'catalog:'
-        version: 0.12.3(typegpu@0.12.11)
+        version: 0.12.3(typegpu@0.12.12)
       astro:
         specifier: ^7.4.12
         version: 7.4.12(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
@@ -140,7 +140,7 @@ importers:
         version: 0.21.0
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       typegpu-kit-examples:
         specifier: workspace:*
         version: link:../../packages/typegpu-kit-examples
@@ -171,7 +171,7 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
         version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
@@ -186,13 +186,13 @@ importers:
         version: 58.0.29(@babel/core@7.29.13(supports-color@8.1.1))(expo@58.0.26)(react-dom@19.3.1(react@19.3.1))(react-native-worklets@0.13.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)
       '@typegpu/color':
         specifier: 'catalog:'
-        version: 0.12.2(typegpu@0.12.11)
+        version: 0.12.2(typegpu@0.12.12)
       '@typegpu/kit':
         specifier: workspace:*
         version: link:../../packages/typegpu-kit
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       expo:
         specifier: ~58.0.26
         version: 58.0.26(@babel/core@7.29.13(supports-color@8.1.1))(@expo/dom-webview@58.0.2)(@expo/metro-runtime@58.0.17)(expo-router@58.0.32)(react-dom@19.3.1(react@19.3.1))(react-native-worklets@0.13.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1)(tsover@6.0.2)
@@ -261,7 +261,7 @@ importers:
         version: 0.13.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1)
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       typegpu-kit-examples:
         specifier: workspace:*
         version: link:../../packages/typegpu-kit-examples
@@ -286,7 +286,7 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
 
   packages/typegpu-create-kit:
     dependencies:
@@ -299,7 +299,7 @@ importers:
         version: link:../typegpu-kit
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       '@types/node':
         specifier: catalog:types
         version: 24.19.2
@@ -308,7 +308,7 @@ importers:
         version: 0.1.74
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       typescript:
         specifier: npm:tsover@6.0.2
         version: tsover@6.0.2
@@ -324,13 +324,13 @@ importers:
     devDependencies:
       '@pmndrs/glyph':
         specifier: 0.1.0
-        version: 0.1.0(@oxc-project/types@0.156.0)(react@19.3.1)(rolldown@1.2.19)(typegpu@0.12.11)
+        version: 0.1.0(@oxc-project/types@0.156.0)(react@19.3.1)(rolldown@1.2.19)(typegpu@0.12.12)
       '@typegpu/color':
         specifier: 'catalog:'
-        version: 0.12.2(typegpu@0.12.11)
+        version: 0.12.2(typegpu@0.12.12)
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       '@types/draco3d':
         specifier: 1.4.10
         version: 1.4.10
@@ -360,13 +360,13 @@ importers:
         version: 0.13.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.13(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.1)(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1)
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       typescript:
         specifier: npm:tsover@6.0.2
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
         version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
@@ -378,25 +378,25 @@ importers:
     dependencies:
       '@typegpu/color':
         specifier: 'catalog:'
-        version: 0.12.2(typegpu@0.12.11)
+        version: 0.12.2(typegpu@0.12.12)
       '@typegpu/kit':
         specifier: workspace:*
         version: link:../typegpu-kit
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       '@typegpu/radiance-cascades':
         specifier: 'catalog:'
-        version: 0.12.3(typegpu@0.12.11)
+        version: 0.12.3(typegpu@0.12.12)
       '@typegpu/sdf':
         specifier: 'catalog:'
-        version: 0.12.2(typegpu@0.12.11)
+        version: 0.12.2(typegpu@0.12.12)
       math:
         specifier: ^0.1.0
         version: 0.1.0
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
       wgpu-matrix:
         specifier: 'catalog:'
         version: 3.4.2
@@ -421,7 +421,7 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
         version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
@@ -433,10 +433,10 @@ importers:
     dependencies:
       '@typegpu/noise':
         specifier: 'catalog:'
-        version: 0.12.1(typegpu@0.12.11)
+        version: 0.12.1(typegpu@0.12.12)
       typegpu:
         specifier: 'catalog:'
-        version: 0.12.11
+        version: 0.12.12
     devDependencies:
       '@typegpu/kit':
         specifier: workspace:*
@@ -452,7 +452,7 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
         version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
@@ -5621,8 +5621,8 @@ packages:
   typed-binary@4.3.5:
     resolution: {integrity: sha512-irziT9zxcyZs8TawuZBab1kQTACM3Q6wGWDh/a5IB2iWbueu+jbkN5ofoSvp28Em1w4ZEa7y44Jx7pHmgBGZdw==}
 
-  typegpu@0.12.11:
-    resolution: {integrity: sha512-C2ytNE3KrJddfapKHS0uhLEtEHE7hmujHYMF8+5ZNs14X4DNXar/SoSVLCE6rru+rqRZz5HuCVZHugP8l02OPw==}
+  typegpu@0.12.12:
+    resolution: {integrity: sha512-9z8WEwChP06BvlUJFytRMfrsXkGIQO6SO9ffClbkbrUya3oe8w/Fag/DVGtV0gUbnKKI9jTlAm09UHJvJfwFdA==}
     engines: {node: '>=12.20.0'}
     hasBin: true
 
@@ -8147,7 +8147,7 @@ snapshots:
   '@pagefind/windows-x64@1.5.2':
     optional: true
 
-  '@pmndrs/glyph@0.1.0(@oxc-project/types@0.156.0)(react@19.3.1)(rolldown@1.2.19)(typegpu@0.12.11)':
+  '@pmndrs/glyph@0.1.0(@oxc-project/types@0.156.0)(react@19.3.1)(rolldown@1.2.19)(typegpu@0.12.12)':
     dependencies:
       ajv: 6.15.0
       gltf-validator: 2.0.0-dev.3.10
@@ -8159,7 +8159,7 @@ snapshots:
       unicode-segmenter: 0.15.0
     optionalDependencies:
       react: 19.3.1
-      typegpu: 0.12.11
+      typegpu: 0.12.12
     transitivePeerDependencies:
       - '@oxc-project/types'
       - rolldown
@@ -8652,21 +8652,21 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@typegpu/color@0.12.2(typegpu@0.12.11)':
+  '@typegpu/color@0.12.2(typegpu@0.12.12)':
     dependencies:
-      typegpu: 0.12.11
+      typegpu: 0.12.12
 
-  '@typegpu/noise@0.12.1(typegpu@0.12.11)':
+  '@typegpu/noise@0.12.1(typegpu@0.12.12)':
     dependencies:
-      typegpu: 0.12.11
+      typegpu: 0.12.12
 
-  '@typegpu/radiance-cascades@0.12.3(typegpu@0.12.11)':
+  '@typegpu/radiance-cascades@0.12.3(typegpu@0.12.12)':
     dependencies:
-      typegpu: 0.12.11
+      typegpu: 0.12.12
 
-  '@typegpu/sdf@0.12.2(typegpu@0.12.11)':
+  '@typegpu/sdf@0.12.2(typegpu@0.12.12)':
     dependencies:
-      typegpu: 0.12.11
+      typegpu: 0.12.12
 
   '@types/chai@5.2.3':
     dependencies:
@@ -11873,7 +11873,7 @@ snapshots:
 
   typed-binary@4.3.5: {}
 
-  typegpu@0.12.11:
+  typegpu@0.12.12:
     dependencies:
       tinyest: 0.3.4
       tsover-runtime: 0.0.7
@@ -11955,7 +11955,7 @@ snapshots:
 
   unpipe@1.0.0: {}
 
-  unplugin-typegpu@0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.11)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
+  unplugin-typegpu@0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
     dependencies:
       '@babel/parser': 7.29.13
       '@babel/traverse': 7.29.13(supports-color@8.1.1)
@@ -11968,7 +11968,7 @@ snapshots:
       picomatch: 4.0.7
       tinyest: 0.3.4
       tinyest-for-wgsl: 0.4.3(@babel/types@7.29.11)(acorn@8.18.0)
-      typegpu: 0.12.11
+      typegpu: 0.12.12
       unplugin: 3.4.0(esbuild@0.28.2)(rolldown@1.2.19)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
     transitivePeerDependencies:
       - '@farmfe/core'

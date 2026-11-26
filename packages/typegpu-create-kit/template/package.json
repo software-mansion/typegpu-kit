@@ -12,7 +12,7 @@
     "@typegpu/color": "0.12.2",
     "@typegpu/kit": "^0.1.0",
     "@typegpu/noise": "0.12.1",
-    "typegpu": "0.12.11"
+    "typegpu": "0.12.12"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",
