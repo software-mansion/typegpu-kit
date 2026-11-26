@@ -222,7 +222,7 @@
     "@pmndrs/glyph": "^0.1.0",
     "@typegpu/color": "^0.12.2",
     "@typegpu/noise": "^0.12.1",
-    "react": ">=19",
+    "react": "*",
     "react-native": ">=0.88.1",
     "react-native-webgpu": ">=0.21.1",
     "react-native-worklets": ">=0.13.1",
