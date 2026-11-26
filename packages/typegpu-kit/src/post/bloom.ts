@@ -227,7 +227,7 @@ const upsample = /* @__PURE__ */ tgpu.fragmentFn({ in: { uv: d.vec2f }, out: d.v
  * source size. With `region`, passes draw and sample only that region; changing the region
  * allocates nothing.
  *
- * @allocates on resize: a new chain and the bind groups of its passes; so does a new source
+ * @allocates on resize: a new chain and the bind groups of its passes; a new source, one bind group
  * @owns targets, a sampler, 3 pipelines, 2 bind groups and a buffer per level: the chain of glow
  * levels, the settings, a group for each pass, and the region each pass reads
  * @records `record` after whatever wrote the source; then `output` holds the glow.
@@ -278,11 +278,12 @@ export function create(root: TgpuRoot, options: Options): Bloom {
   const group = (input: FloatTexture | GPUTextureView, read: number) =>
     root.createBindGroup(layout, { source: input, sampler, region: reads[read] });
 
-  // Keep each bind group on its pass pipeline so a frame only sets the pipeline on the pass
-  const passesOf = memo((texture: FloatTexture, views: readonly GPUTextureView[]) => ({
-    downPipelines: views.map((_, level) =>
-      (level === 0 ? first : down).with(group(level === 0 ? texture : views[level - 1], level)),
-    ),
+  // Keep each bind group on its pass pipeline so a frame only sets the pipeline on the pass. Only
+  // the first pass reads the source, so a new source rebuilds one group, not the chain's
+  const prefilterOf = memo((texture: FloatTexture) => first.with(group(texture, 0)));
+  const chainOf = memo((views: readonly GPUTextureView[]) => ({
+    // Downsamples after the prefilter, from level 1
+    downPipelines: views.slice(1).map((_, level) => down.with(group(views[level], level + 1))),
     upPipelines: views.map((view, level) => up.with(group(view, level + 1))),
     downPasses: views.map((view): PassDescriptor => ({
       colorAttachments: { view, loadOp: 'clear', storeOp: 'store' },
@@ -323,9 +324,10 @@ export function create(root: TgpuRoot, options: Options): Bloom {
   const follow = () => {
     const views = fitted();
     measure(views.length);
-    return passesOf(picture, views);
+    return chainOf(views);
   };
   follow();
+  prefilterOf(picture);
 
   const destroy = () => chain.destroy();
 
@@ -355,6 +357,7 @@ export function create(root: TgpuRoot, options: Options): Bloom {
       const encoder = encoderOf(target);
       const timestampWrites = timing?.timestampWrites;
       const { downPipelines, upPipelines, downPasses, upPasses } = follow();
+      const fromSource = prefilterOf(picture);
       const { opening, closing } = profiler.split(timestampWrites);
 
       // Place timer writes only on the first and last passes. A single-level chain needs both
@@ -367,7 +370,7 @@ export function create(root: TgpuRoot, options: Options): Bloom {
         const pass = encoder.beginRenderPass(downPasses[level]);
         const size = drawn[level + 1];
         pass.setViewport(0, 0, size[0], size[1], 0, 1);
-        pass.setPipeline(downPipelines[level]);
+        pass.setPipeline(level === 0 ? fromSource : downPipelines[level - 1]);
         pass.draw(3);
         pass.end();
       }

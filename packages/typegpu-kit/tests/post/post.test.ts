@@ -117,3 +117,21 @@ it('names the pipelines of TAA, exposure, FXAA and the finish for the debug brea
 
   expect(labels).toEqual(['taa', 'exposure', 'fxaa', 'finish']);
 });
+
+it("rebinds only bloom's first pass for a new source", () => {
+  const recording = recordingRoot();
+  const { root } = recording;
+  const size = { width: 64, height: 32 };
+  const make = () =>
+    targets.create(root, size, { hdr: { format: 'rgba16float', sampled: true } }).textures.hdr;
+  // Three sources, so the last two cached groups cannot hold them all
+  const sources = [make(), make(), make()];
+  let current = 0;
+  const glow = bloom.create(root, { source: () => sources[current] });
+
+  for (current = 0; current < 3; current++) glow.record(root.createCommandEncoder());
+  const groups = recording.log.bindGroups;
+  current = 0;
+  glow.record(root.createCommandEncoder());
+  expect(recording.log.bindGroups).toBe(groups + 1);
+});
