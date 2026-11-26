@@ -58,6 +58,38 @@ describe('compile', () => {
     expect(events).toEqual(['item 0', 'task', 'item 1']);
   });
 
+  it('keeps at most maxInFlight items compiling, and starts none after an abort', async () => {
+    const pending = [0, 1, 2, 3].map(() => Promise.withResolvers<void>());
+    const started: number[] = [];
+    const items = pending.map((compiled, i) => ({
+      initAsync() {
+        started.push(i);
+        return compiled.promise;
+      },
+    }));
+    const stop = new AbortController();
+    const reason = new Error('host destroyed');
+    const compiling = pipelines.compile(items, { maxInFlight: 2, signal: stop.signal });
+
+    await Promise.resolve();
+    expect(started).toEqual([0, 1]);
+    pending[0].resolve();
+    await new Promise((resume) => setTimeout(resume));
+    expect(started).toEqual([0, 1, 2]);
+
+    stop.abort(reason);
+    pending[1].resolve();
+    await new Promise((resume) => setTimeout(resume));
+    expect(started).toEqual([0, 1, 2]);
+    // Rejects only once the started items settle
+    let settled = false;
+    compiling.catch(() => (settled = true));
+    await new Promise((resume) => setTimeout(resume));
+    expect(settled).toBe(false);
+    pending[2].resolve();
+    await expect(compiling).rejects.toBe(reason);
+  });
+
   it('rejects after every item has finished, with all the errors', async () => {
     const started: number[] = [];
     const thrown: pipelines.Warmable = {

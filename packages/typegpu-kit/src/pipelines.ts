@@ -69,18 +69,26 @@ export interface CompileOptions {
    * resolves its WGSL on the calling thread. `compile` then yields to the event loop. Default 8.
    */
   readonly budget?: number;
+  /**
+   * Limits how many items compile at once. Counts the items `compile` takes, since a module can
+   * start several pipelines of its own. Default no limit.
+   */
+  readonly maxInFlight?: number;
+  /**
+   * Stops starting items once aborted. The items already started settle, then `compile` rejects
+   * with the signal's reason. Default none.
+   */
+  readonly signal?: AbortSignal;
 }
 
-function tally(
-  items: readonly Warmable[],
-  onProgress: CompileOptions['onProgress'],
-  done: () => void,
-) {
+function tally(items: readonly Warmable[], onProgress: CompileOptions['onProgress']) {
   const errors: unknown[] = [];
   // Stop calling an observer that threw, and rethrow its first error at the end
   let observer = onProgress;
   let observed: { readonly error: unknown } | undefined;
+  let started = 0;
   let finished = 0;
+  let wake: (() => void) | undefined;
 
   const finish = () => {
     finished += 1;
@@ -90,7 +98,8 @@ function tally(
       observer = undefined;
       observed = { error };
     }
-    if (finished === items.length) done();
+    wake?.();
+    wake = undefined;
   };
 
   const fail = (error: unknown) => {
@@ -99,13 +108,24 @@ function tally(
   };
 
   return {
+    get running() {
+      return started - finished;
+    },
+
     start(item: Warmable) {
+      started += 1;
       try {
         item.initAsync().then(finish, (error: unknown) => fail(explained(item, error)));
       } catch (error) {
         fail(error); // resolution errors can surface synchronously
       }
     },
+
+    /** Resolves when the next started item finishes. */
+    settle: () =>
+      new Promise<void>((resolve) => {
+        wake = resolve;
+      }),
 
     check() {
       if (observed) {
@@ -130,7 +150,8 @@ function tally(
 /**
  * Starts compiling every item the list holds at the call, yielding to the event loop past the
  * time budget so the page's other work, such as a loading animation, keeps running. Use before the
- * frame loop starts. Waits for every item to finish, then rejects if any failed.
+ * frame loop starts. Waits for every started item to finish, then rejects if any failed or the
+ * signal aborted.
  *
  * @param from a list of pipelines and modules that compile their own, or an owner that took them
  * @returns a promise that resolves once every item has compiled
@@ -139,23 +160,28 @@ export async function compile(
   from: readonly Warmable[] | Owner,
   options: CompileOptions = {},
 ): Promise<void> {
-  const { onProgress, budget: ms = 8 } = options;
+  const { onProgress, budget: ms = 8, maxInFlight = Infinity, signal } = options;
+  if (!(maxInFlight >= 1))
+    throw new RangeError(`maxInFlight must be at least 1, not ${maxInFlight}.`);
+  signal?.throwIfAborted();
   // Snapshot the list, so an item added after the call can't keep it waiting
   const items = [...('warmables' in from ? from.warmables : from)];
-  if (items.length === 0) return;
-  let counted!: ReturnType<typeof tally>;
-  const finished = new Promise<void>((resolve) => {
-    counted = tally(items, onProgress, resolve);
-  });
+  const counted = tally(items, onProgress);
   let since = performance.now();
   for (const [i, item] of items.entries()) {
+    while (counted.running >= maxInFlight) {
+      await counted.settle();
+      since = performance.now();
+    }
+    if (signal?.aborted) break;
     counted.start(item);
     if (i < items.length - 1 && performance.now() - since >= ms) {
       await new Promise((resume) => setTimeout(resume));
       since = performance.now();
     }
   }
-  await finished;
+  while (counted.running > 0) await counted.settle();
+  signal?.throwIfAborted();
   counted.check();
 }
 
