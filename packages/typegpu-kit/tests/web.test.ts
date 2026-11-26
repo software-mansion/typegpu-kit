@@ -326,6 +326,18 @@ it('leaves touch-action and capture to a borrowed pointer, and its own page to t
   expect(orbit.goal.distance).toBeCloseTo(8 * Math.exp(0.1));
 });
 
+it('leaves the canvas configured for a later surface when an earlier one is destroyed', () => {
+  const { root } = recordingRoot();
+  const { canvas, context } = fakePage();
+  const first = web.surface(root, canvas, { format: 'bgra8unorm' });
+  const second = web.surface(root, canvas, { format: 'bgra8unorm' });
+
+  first.destroy();
+  expect(context.unconfigure).not.toHaveBeenCalled();
+  second.destroy();
+  expect(context.unconfigure).toHaveBeenCalledOnce();
+});
+
 it('shares one Surface type with the native surface', () => {
   expectTypeOf(web.surface).returns.toExtend<Surface>();
   expectTypeOf(native.surface).returns.toExtend<Surface>();

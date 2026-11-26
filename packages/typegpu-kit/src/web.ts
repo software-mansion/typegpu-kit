@@ -85,6 +85,11 @@ export interface Surface extends Base {
   view(frame: Frame): GPUTextureView;
 }
 
+// A canvas has one context, which every surface on it shares. Only the surface that configured it
+// last may unconfigure it, so a host released late, such as one destroyed while its scene loaded,
+// leaves the context to its replacement
+const configured = new WeakMap<HTMLCanvasElement, () => void>();
+
 /**
  * Configures a canvas for the root. Matches its drawing buffer to the layout size or the fixed
  * `options.size`. Throws if the fixed size is invalid.
@@ -177,8 +182,11 @@ export function surface(
   let paused = false;
   const destroy = () => {
     observer.disconnect();
+    if (configured.get(canvas) !== destroy) return;
+    configured.delete(canvas);
     context.unconfigure();
   };
+  configured.set(canvas, destroy);
 
   return {
     context,
