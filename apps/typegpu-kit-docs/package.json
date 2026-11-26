@@ -23,7 +23,7 @@
     "@typegpu/kit": "workspace:*",
     "@typegpu/noise": "catalog:",
     "@typegpu/radiance-cascades": "catalog:",
-    "astro": "^7.4.12",
+    "astro": "^7.4.13",
     "expressive-code-twoslash": "^0.6.1",
     "lil-gui": "^0.21.0",
     "typegpu": "catalog:",
