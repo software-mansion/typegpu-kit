@@ -7,7 +7,7 @@ allowBuilds:
   webgpu: false
 
 catalog:
-  typegpu: 0.12.11
+  typegpu: 0.12.12
   wgpu-matrix: ^3.4.2
   '@typegpu/color': 0.12.2
   '@typegpu/noise': 0.12.1
@@ -31,7 +31,7 @@ catalogs:
     typescript: npm:tsover@6.0.2
 
 minimumReleaseAgeExclude:
-  - typegpu@0.12.11
+  - typegpu@0.12.12
 
 overrides:
   # Use one JS wrapper and native binding for docs prerendering.
