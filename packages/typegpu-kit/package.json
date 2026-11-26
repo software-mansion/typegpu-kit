@@ -1,6 +1,6 @@
 {
   "name": "@typegpu/kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GPU modules on TypeGPU for lit 3D scenes, post-processing, particles, text, glTF models and simulations, on the web and React Native.",
   "keywords": [
     "gpu",

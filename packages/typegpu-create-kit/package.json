@@ -1,6 +1,6 @@
 {
   "name": "@typegpu/create-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Starts a Vite project with TypeGPU Kit and a scene to build on.",
   "keywords": [
     "typegpu",
