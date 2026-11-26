@@ -52,8 +52,8 @@ catalogs:
       version: 0.6.2
   types:
     '@types/node':
-      specifier: ^24.19.2
-      version: 24.19.2
+      specifier: ^25.9.9
+      version: 25.9.9
     '@webgpu/types':
       specifier: ^0.1.74
       version: 0.1.74
@@ -74,7 +74,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: catalog:types
-        version: 24.19.2
+        version: 25.9.9
       '@webgpu/types':
         specifier: catalog:types
         version: 0.1.74
@@ -92,13 +92,13 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vite:
         specifier: 8.3.8
-        version: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+        version: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
 
   apps/typegpu-kit-docs:
     dependencies:
@@ -159,7 +159,7 @@ importers:
         version: 1.4.10
       '@vitejs/plugin-basic-ssl':
         specifier: ^2.3.0
-        version: 2.3.0(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 2.3.0(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       '@webgpu/types':
         specifier: catalog:types
         version: 0.1.74
@@ -171,10 +171,10 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       webgpu:
         specifier: catalog:test
         version: 0.6.2(supports-color@8.1.1)
@@ -286,7 +286,7 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
 
   packages/typegpu-create-kit:
     dependencies:
@@ -302,7 +302,7 @@ importers:
         version: 0.12.1(typegpu@0.12.12)
       '@types/node':
         specifier: catalog:types
-        version: 24.19.2
+        version: 25.9.9
       '@webgpu/types':
         specifier: catalog:types
         version: 0.1.74
@@ -314,7 +314,7 @@ importers:
         version: tsover@6.0.2
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
 
   packages/typegpu-kit:
     dependencies:
@@ -336,7 +336,7 @@ importers:
         version: 1.4.10
       '@types/node':
         specifier: catalog:types
-        version: 24.19.2
+        version: 25.9.9
       '@types/react':
         specifier: catalog:native
         version: 19.3.0
@@ -366,10 +366,10 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       webgpu:
         specifier: catalog:test
         version: 0.6.2(supports-color@8.1.1)
@@ -406,7 +406,7 @@ importers:
         version: 1.4.10
       '@types/node':
         specifier: catalog:types
-        version: 24.19.2
+        version: 25.9.9
       '@webgpu/types':
         specifier: catalog:types
         version: 0.1.74
@@ -415,16 +415,16 @@ importers:
         version: 1.5.9
       sharp:
         specifier: 0.35.5
-        version: 0.35.5(@types/node@24.19.2)
+        version: 0.35.5(@types/node@25.9.9)
       typescript:
         specifier: npm:tsover@6.0.2
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       webgpu:
         specifier: catalog:test
         version: 0.6.2(supports-color@8.1.1)
@@ -443,7 +443,7 @@ importers:
         version: link:../typegpu-kit
       '@types/node':
         specifier: catalog:types
-        version: 24.19.2
+        version: 25.9.9
       '@webgpu/types':
         specifier: catalog:types
         version: 0.1.74
@@ -452,10 +452,10 @@ importers:
         version: tsover@6.0.2
       unplugin-typegpu:
         specifier: 'catalog:'
-        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       vitest:
         specifier: catalog:test
-        version: 5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       webgpu:
         specifier: catalog:test
         version: 0.6.2(supports-color@8.1.1)
@@ -3030,6 +3030,9 @@ packages:
 
   '@types/node@24.19.2':
     resolution: {integrity: sha512-93d49wCWJkCyN87MxLpNN6KXPCwFw7bVUg79mGUV1OS40JGWwVCr8n61DXCSqz7CV6/VfPkb7xec7uP2M+QHWQ==}
+
+  '@types/node@25.9.9':
+    resolution: {integrity: sha512-b4e2xxj/yMeT2hNlD6x7zNFiQK2Dlmkb9CQ6v3/1G2RezKN4YS2lcEv8lzGm1mhs4f2lM4yNAMI/zUDBZBBt7w==}
 
   '@types/react-test-renderer@19.3.0':
     resolution: {integrity: sha512-TX4p2D4Z2oigM3SXU7+QyLSUnSR0vR1S1Pfxm/qFL9nHQ3jclgi6ioGoWQmlIr1DeKRVmPJrmNlhgM0JlWlLUg==}
@@ -8719,6 +8722,10 @@ snapshots:
     dependencies:
       undici-types: 7.24.6
 
+  '@types/node@25.9.9':
+    dependencies:
+      undici-types: 7.24.6
+
   '@types/react-test-renderer@19.3.0':
     dependencies:
       '@types/react': 19.3.0
@@ -8795,18 +8802,18 @@ snapshots:
 
   '@ungap/structured-clone@1.4.0': {}
 
-  '@vitejs/plugin-basic-ssl@2.3.0(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))':
+  '@vitejs/plugin-basic-ssl@2.3.0(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))':
     dependencies:
-      vite: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+      vite: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
 
-  '@vitest/mocker@5.1.1(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))':
+  '@vitest/mocker@5.1.1(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@vitest/spy': 5.1.1
       estree-walker: 3.0.3
       magic-string: 1.4.5
     optionalDependencies:
-      vite: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+      vite: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
 
   '@vitest/spy@5.1.1': {}
 
@@ -11622,6 +11629,40 @@ snapshots:
       '@img/sharp-win32-ia32': 0.35.5
       '@img/sharp-win32-x64': 0.35.5
       '@types/node': 24.19.2
+    optional: true
+
+  sharp@0.35.5(@types/node@25.9.9):
+    dependencies:
+      '@img/colour': 1.1.0
+      detect-libc: 2.1.2
+      semver: 7.8.5
+    optionalDependencies:
+      '@img/sharp-darwin-arm64': 0.35.5
+      '@img/sharp-darwin-x64': 0.35.5
+      '@img/sharp-freebsd-wasm32': 0.35.5
+      '@img/sharp-libvips-darwin-arm64': 1.3.4
+      '@img/sharp-libvips-darwin-x64': 1.3.4
+      '@img/sharp-libvips-linux-arm': 1.3.4
+      '@img/sharp-libvips-linux-arm64': 1.3.4
+      '@img/sharp-libvips-linux-ppc64': 1.3.4
+      '@img/sharp-libvips-linux-riscv64': 1.3.4
+      '@img/sharp-libvips-linux-s390x': 1.3.4
+      '@img/sharp-libvips-linux-x64': 1.3.4
+      '@img/sharp-libvips-linuxmusl-arm64': 1.3.4
+      '@img/sharp-libvips-linuxmusl-x64': 1.3.4
+      '@img/sharp-linux-arm': 0.35.5
+      '@img/sharp-linux-arm64': 0.35.5
+      '@img/sharp-linux-ppc64': 0.35.5
+      '@img/sharp-linux-riscv64': 0.35.5
+      '@img/sharp-linux-s390x': 0.35.5
+      '@img/sharp-linux-x64': 0.35.5
+      '@img/sharp-linuxmusl-arm64': 0.35.5
+      '@img/sharp-linuxmusl-x64': 0.35.5
+      '@img/sharp-webcontainers-wasm32': 0.35.5
+      '@img/sharp-win32-arm64': 0.35.5
+      '@img/sharp-win32-ia32': 0.35.5
+      '@img/sharp-win32-x64': 0.35.5
+      '@types/node': 25.9.9
 
   shebang-command@2.0.0:
     dependencies:
@@ -11955,7 +11996,7 @@ snapshots:
 
   unpipe@1.0.0: {}
 
-  unplugin-typegpu@0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
+  unplugin-typegpu@0.12.8(patch_hash=b61a3e61346c9cabebd0674d3339c305ee81ce67f469c8430a7d47b1306d1c0b)(acorn@8.18.0)(esbuild@0.28.2)(rolldown@1.2.19)(supports-color@8.1.1)(typegpu@0.12.12)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
     dependencies:
       '@babel/parser': 7.29.13
       '@babel/traverse': 7.29.13(supports-color@8.1.1)
@@ -11969,7 +12010,7 @@ snapshots:
       tinyest: 0.3.4
       tinyest-for-wgsl: 0.4.3(@babel/types@7.29.11)(acorn@8.18.0)
       typegpu: 0.12.12
-      unplugin: 3.4.0(esbuild@0.28.2)(rolldown@1.2.19)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+      unplugin: 3.4.0(esbuild@0.28.2)(rolldown@1.2.19)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
     transitivePeerDependencies:
       - '@farmfe/core'
       - '@rsbuild/core'
@@ -11991,7 +12032,7 @@ snapshots:
       picomatch: 4.0.7
       webpack-virtual-modules: 0.6.2
 
-  unplugin@3.4.0(esbuild@0.28.2)(rolldown@1.2.19)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
+  unplugin@3.4.0(esbuild@0.28.2)(rolldown@1.2.19)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
     dependencies:
       '@jridgewell/remapping': 2.3.5
       picomatch: 4.0.7
@@ -11999,7 +12040,7 @@ snapshots:
     optionalDependencies:
       esbuild: 0.28.2
       rolldown: 1.2.19
-      vite: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+      vite: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
 
   unstorage@1.17.6:
     dependencies:
@@ -12062,7 +12103,7 @@ snapshots:
       terser: 5.51.2
       yaml: 2.9.1
 
-  vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1):
+  vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
@@ -12070,7 +12111,7 @@ snapshots:
       rolldown: 1.2.19
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 24.19.2
+      '@types/node': 25.9.9
       esbuild: 0.28.2
       fsevents: 2.3.3
       terser: 5.51.2
@@ -12080,10 +12121,10 @@ snapshots:
     optionalDependencies:
       vite: 8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
 
-  vitest@5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
+  vitest@5.1.1(@types/node@24.19.2)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
     dependencies:
       '@types/chai': 5.2.3
-      '@vitest/mocker': 5.1.1(vite@8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+      '@vitest/mocker': 5.1.1(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
       chai: 6.3.0
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
@@ -12094,10 +12135,31 @@ snapshots:
       tinybench: 6.2.3
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
-      vite: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+      vite: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
       why-is-node-running: 3.2.1
     optionalDependencies:
       '@types/node': 24.19.2
+    transitivePeerDependencies:
+      - msw
+
+  vitest@5.1.1(@types/node@25.9.9)(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)):
+    dependencies:
+      '@types/chai': 5.2.3
+      '@vitest/mocker': 5.1.1(vite@8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1))
+      chai: 6.3.0
+      es-module-lexer: 2.3.2
+      expect-type: 1.4.0
+      magic-string: 1.4.5
+      obug: 3.0.0
+      picomatch: 4.0.7
+      std-env: 4.3.0
+      tinybench: 6.2.3
+      tinyexec: 1.3.1
+      tinyglobby: 0.2.17
+      vite: 8.3.8(@types/node@25.9.9)(esbuild@0.28.2)(terser@5.51.2)(yaml@2.9.1)
+      why-is-node-running: 3.2.1
+    optionalDependencies:
+      '@types/node': 25.9.9
     transitivePeerDependencies:
       - msw
 
