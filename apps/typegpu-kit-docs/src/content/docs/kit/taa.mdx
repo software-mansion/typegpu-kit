@@ -138,6 +138,7 @@ const final = finish.create(root, { format: surface.format, source: aa });
 
 - **Output size** History, `aa.output` and `aa.region` take `size`, so bloom, exposure and the final pass read `aa` at the output size. While off, `output` is the source in its own region.
 - **Reconstruction** Each output pixel rebuilds the frame from the nine drawn pixels around it, weighted by where this frame's jitter placed each one. A frame whose samples land far from the pixel counts for less.
+- **Moving eye** With `depth` and a camera, where the eye's move shifts the nearest surface by a drawn pixel or more a frame, each frame counts as much as at the drawn size, so near surfaces don't smear across far ones.
 - **Jitter** Jitter stays within a drawn pixel. It takes 8 offsets for each output pixel a drawn pixel covers: 18 at two thirds of each side.
 - **Changing scale** History keeps through changes to the region, so the scale can follow [`dynamicResolution`](/kit/profiler/#following-gpu-time). A new `size` starts over.
 - **Smaller sources** A source texture smaller than the output, such as one made with `targets.scaled`, needs no `region`.

@@ -189,6 +189,10 @@ export const motion = /* @__PURE__ */ passes.output(d.vec2f, {
 });
 
 const clipBefore = /* @__PURE__ */ history.previously(cameras.toClip);
+const eyeBefore = /* @__PURE__ */ history.previously(() => {
+  'use gpu';
+  return d.vec3f(cameras.current.$.position);
+});
 
 /**
  * Halton offsets use bases 2 and 3 and span -0.5 to 0.5 pixels, starting at the second sample.
@@ -282,8 +286,9 @@ const lanczos = (x: number) => {
  * the local colour spread to reduce trails and weights by brightness to reduce bright-pixel
  * flicker. With `size`, it resolves a smaller source up to that size: each output pixel rebuilds
  * the current frame from the nine source pixels around it with Lanczos-2 weights placed by this
- * frame's jitter, and blends less of it where those weights add up to less. Record its single
- * pass after scene passes and before the final pass reads `output`.
+ * frame's jitter, and blends less of it where those weights add up to less, unless the eye's move
+ * shifts the nearest surface by a source pixel a frame. Record its single pass after scene passes
+ * and before the final pass reads `output`.
  *
  * @allocates on resize: targets for the new size and the bind groups of its passes; so does a new
  * source, motion, depth or reactive texture
@@ -379,16 +384,27 @@ export function create(root: TgpuRoot, options: Options): Taa {
     return std.max(sum / weight, d.vec3f());
   };
 
-  const cameraMotion = (pixel: d.v2f, z: number) => {
+  /** The unjittered NDC of a source pixel. */
+  const ndcOf = (pixel: d.v2f) => {
     'use gpu';
     const uv = pixel / state.$.region;
-    const ndc = d.vec2f(uv.x * 2 - 1, 1 - uv.y * 2) - offset.$;
-    const ray = cameras.rayOf(cameras.current.$, ndc);
+    return d.vec2f(uv.x * 2 - 1, 1 - uv.y * 2) - offset.$;
+  };
+
+  /** The world position of the surface at a source pixel with depth `z`. */
+  const surfaceAt = (pixel: d.v2f, z: number) => {
+    'use gpu';
+    const ray = cameras.rayOf(cameras.current.$, ndcOf(pixel));
     // Use clip z and w, linear along the ray, to reconstruct the surface distance from depth
     const start = cameras.current.$.viewProjection * d.vec4f(ray.origin, 1);
     const along = cameras.current.$.viewProjection * d.vec4f(ray.direction, 0);
     const t = (start.z - z * start.w) / (z * along.w - along.z);
-    return uvOf(clipBefore(ray.origin + ray.direction * t)) - ndc * d.vec2f(0.5, -0.5);
+    return ray.origin + ray.direction * t;
+  };
+
+  const cameraMotion = (pixel: d.v2f, z: number) => {
+    'use gpu';
+    return uvOf(clipBefore(surfaceAt(pixel, z))) - ndcOf(pixel) * d.vec2f(0.5, -0.5);
   };
 
   // Private, so a resolve without `size` declares none of it
@@ -487,8 +503,28 @@ export function create(root: TgpuRoot, options: Options): Taa {
       std.sqrt(std.max(squares / 9 - mean * mean, d.vec3f())) * settings.$.spread,
       d.vec3f(0.0001),
     );
-    // History between source pixels holds detail that no one frame shows, so let it stray further
-    if (upscaled) extent *= std.max(gathered.$.ratio.x, gathered.$.ratio.y);
+    // History between source pixels holds detail that no one frame shows, gathered over many
+    // frames of jitter, so let it stray further and blend in less of each frame. Only while the
+    // picture moves whole, as it does when the eye turns: where the eye's move shifts near
+    // surfaces against far ones, history is pulled apart and resampled anew each frame, and
+    // blended that slowly it smears along the motion, so there blend as at the source's size
+    let held = d.f32(1);
+    if (upscaled) {
+      const ratio = std.max(gathered.$.ratio.x, gathered.$.ratio.y);
+      if (reprojected) {
+        // Under an orthographic camera the eye's move shifts everything alike
+        const m = cameras.current.$.viewProjection;
+        const w = d.vec3f(m.columns[0].w, m.columns[1].w, m.columns[2].w);
+        if (std.dot(w, w) > 0) {
+          const eye = cameras.current.$.position;
+          const distance = std.length(surfaceAt(d.vec2f(nearestAt) + 0.5, nearest) - eye);
+          // The eye's move as seen from the nearest surface around, in source pixels
+          const focal = cameras.lensOf(cameras.current.$).y * part.y * 0.5;
+          held = 1 - std.saturate((std.length(eye - eyeBefore()) / distance) * focal);
+        }
+      }
+      extent *= std.mix(1, ratio, held);
+    }
     const away = toYCoCg(historyAt(before)) - mean;
     const reach = std.abs(away) / extent;
     const furthest = std.max(reach.x, std.max(reach.y, reach.z));
@@ -498,7 +534,7 @@ export function create(root: TgpuRoot, options: Options): Taa {
     // of the filter its samples cover, and history by what `reactive` leaves of it
     let now = settings.$.blend / (1 + std.max(current.x, 0));
     let then = (1 - settings.$.blend) / (1 + std.max(previous.x, 0));
-    if (upscaled) now *= std.saturate(gathered.$.weight);
+    if (upscaled) now *= std.mix(1, std.saturate(gathered.$.weight), held);
     if (responsive) {
       then *= 1 - std.clamp(std.textureLoad(reactiveLayout.$.reactive, pixel, 0).x, 0, RESPONSIVE);
     }
