@@ -4,9 +4,11 @@
 version: 2
 updates:
   - package-ecosystem: 'npm'
-    directories:
-      - /
-      - /packages/*
-      - /apps/*
+    # The root covers every workspace package and updates the lockfile with them
+    directory: /
     schedule:
       interval: 'weekly'
+    ignore:
+      # Node runs at 24 (.nvmrc), so its types stay on 24
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
