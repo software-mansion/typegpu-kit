@@ -1,21 +1,60 @@
 import type { FixedStep, Frame } from '@typegpu/kit';
 import type { TgpuComputePass } from 'typegpu';
+import { RUN, RUNNING } from './avatar.ts';
 import type { Coins } from './coins.ts';
 import type { Critters } from './critters.ts';
 import type { Effects } from './effects.ts';
 import { createHero, HALF, type Input } from './hero.ts';
-import type { Level } from './level.ts';
+import { solidAt, type Level } from './level.ts';
+import { TEXELS } from './sprites.ts';
+import type { Voice } from '../ui.ts';
 
 /** Seconds per step. The hero and the critters move at 120 Hz. */
 export const STEP = 1 / 120;
 
-/** Invulnerability after restart, in seconds. Exceeds contact-readback latency. */
-const SAFE = 1.5;
-/** Fall distance below the level before restart, in tiles. */
+/** Raspberries the hero starts with. A hit or a fall takes half of one. */
+export const HEARTS = 3;
+/**
+ * Seconds the hero can't be hurt after a start or a hit, and after a fall puts it back. Each
+ * exceeds contact-readback latency.
+ */
+const SAFE = { start: 1.5, hit: 1.5, fall: 2 };
+/** Fall distance below the level before the hero is put back, in tiles. */
 const FELL = 1;
+/** Tiles a second a skid kicks its dust, the way the hero slides. */
+const KICK = 7;
+/** Run frames a footstep lasts: a foot comes down twice in the run's frames. */
+const STRIDE = RUN.count / 2;
+
+/** The sounds the game plays, which `ui.ts` names files for. */
+export type Sound =
+  | 'jump'
+  | 'backflip'
+  | 'slide'
+  | 'coin'
+  | 'hurt'
+  | `grass${1 | 2 | 3 | 4}`
+  | 'fall'
+  | 'heel'
+  | 'peppergrind'
+  | 'fork_jump'
+  | 'fork_land'
+  | 'fork_death'
+  | 'sponge_walk'
+  | 'death_layer'
+  | `sponge_death${1 | 2}`;
+const STEPS = ['grass1', 'grass2', 'grass3', 'grass4'] as const;
+const SQUELCHES = ['sponge_death1', 'sponge_death2'] as const;
+/** Seconds a slide's or a skid's sound fades out over when it ends before its sound. */
+const SLID = 0.03;
+/** Seconds a grind's sound fades out over as the grind ends, or its grinder is defeated. */
+const GROUND = 0.1;
 
 export interface Score {
+  /** Halves of raspberries left, from `2 * HEARTS` down. The run starts over at none. */
+  health: number;
   coins: number;
+  /** Critters defeated, by stomps and slides. */
   stomps: number;
   /** Fastest time to the flag in seconds. */
   best: number | undefined;
@@ -27,37 +66,82 @@ export interface PlatformerParts {
   readonly effects: Effects;
   /** Fixed step shared by the hero, critters and effects, with duration `STEP`. */
   readonly sim: FixedStep;
+  /**
+   * Plays a sound, from where it is made in the level, in tiles, when it is made somewhere, and
+   * returns it while it plays. Default silent.
+   */
+  readonly play?: (sound: Sound, at?: readonly [x: number, y: number]) => Voice | undefined | void;
 }
 
 /**
- * Runs toward the flag, collecting coins and stomping critters. Falls and other critter
- * contacts restart the run.
+ * Runs toward the flag, collecting coins and stomping critters. Other critter contacts and falls
+ * each take half a raspberry: a hit knocks the hero back, and a fall puts it back on the last
+ * ground it stood on. The run starts over when none are left.
  */
 export function createPlatformer(
   level: Level,
   parts: PlatformerParts,
   onScore: (score: Score) => void,
 ) {
-  const { coins, critters, effects, sim } = parts;
+  const { coins, critters, effects, sim, play = () => {} } = parts;
+  /** Plays a footstep on the grass, a different one from the last. */
+  let last = 0;
+  const footstep = () => {
+    last = (last + 1 + Math.floor(Math.random() * (STEPS.length - 1))) % STEPS.length;
+    play(STEPS[last]!);
+  };
+  let stride = 0;
+  let slid: Voice | undefined;
+  let skid: Voice | undefined;
+  /** Grinds heard, and when each ends, soonest first. */
+  const grinds: { readonly voice: Voice; readonly until: number }[] = [];
 
   const hero = createHero(level);
-  const input: Input = { left: false, right: false, jump: false };
-  const score: Score = { coins: 0, stomps: 0, best: undefined };
+  const input: Input = { left: false, right: false, jump: false, down: false };
+  const score: Score = { health: 2 * HEARTS, coins: 0, stomps: 0, best: undefined };
 
   let now = 0;
   let startedAt = 0;
   let safeUntil = 0;
+  /** The centre of the tile above the last ground the hero stood on, where a fall puts it back. */
+  const ground: [number, number] = [...level.start];
 
   const restart = () => {
     hero.place(...level.start);
     coins.reset(level);
     critters.reset(level);
 
+    score.health = 2 * HEARTS;
     score.coins = 0;
     score.stomps = 0;
     startedAt = now;
-    safeUntil = now + SAFE;
+    safeUntil = now + SAFE.start;
+    ground[0] = level.start[0];
+    ground[1] = level.start[1];
     onScore(score);
+  };
+
+  /** Takes half a raspberry. Returns false when none are left and the run starts over. */
+  const hurt = () => {
+    play('hurt');
+    score.health -= 1;
+    if (score.health > 0) {
+      onScore(score);
+      return true;
+    }
+    restart();
+    return false;
+  };
+
+  /** Remembers the tile the hero stands over when it is solid, with room to stand above. */
+  const remember = () => {
+    const x = Math.floor(hero.position[0]);
+    const below = Math.round(hero.position[1] - HALF[1]) - 1;
+    if (!solidAt(level, x, below) || solidAt(level, x, below + 1) || solidAt(level, x, below + 2)) {
+      return;
+    }
+    ground[0] = x + 0.5;
+    ground[1] = below + 1.5;
   };
 
   restart();
@@ -66,7 +150,7 @@ export function createPlatformer(
     hero,
     input,
 
-    /** Whether restart invulnerability is active. */
+    /** Whether the hero can't be hurt, after a start, a hit or a fall. */
     get safe() {
       return now < safeUntil;
     },
@@ -80,28 +164,99 @@ export function createPlatformer(
 
       // GPU contacts arrive one or two frames after detection
       const contact = critters.contacts.take();
+      // Every kill plays the same layer, and a sponge's adds a squelch of its own
+      if (contact?.stomps || contact?.slides) play('death_layer');
+      if (contact?.sponges) play(SQUELCHES[Math.floor(Math.random() * SQUELCHES.length)]!);
+      if (contact?.forks) play('fork_death');
+      // Crawls that began together are heard from where they began on average
+      if (contact?.walks) {
+        const texels = contact.walks * TEXELS;
+        play('sponge_walk', [contact.walkedX / texels, contact.walkedY / texels]);
+      }
+      if (contact?.hops) {
+        const texels = contact.hops * TEXELS;
+        play('fork_jump', [contact.hoppedX / texels, contact.hoppedY / texels]);
+      }
+      if (contact?.lands) {
+        const texels = contact.lands * TEXELS;
+        play('fork_land', [contact.landedX / texels, contact.landedY / texels]);
+      }
+      if (contact?.grinds) {
+        const texels = contact.grinds * TEXELS;
+        const voice = play('peppergrind', [contact.groundX / texels, contact.groundY / texels]);
+        const left = contact.grindLeft / contact.grinds / 1000;
+        if (voice) grinds.push({ voice, until: now + left });
+        grinds.sort((a, b) => a.until - b.until);
+      }
+      // A defeated grinder falls silent, taken as the grind that would end last
+      for (let quiet = contact?.quiets ?? 0; quiet > 0; quiet--) grinds.pop()?.voice.stop(GROUND);
+      while (grinds[0] && now >= grinds[0].until) grinds.shift()!.voice.stop(GROUND);
       if (contact?.stomps) {
         hero.bounce();
         score.stomps += contact.stomps;
         onScore(score);
       }
-      if (contact?.hurts && now >= safeUntil) restart();
+      if (contact?.slides) {
+        score.stomps += contact.slides;
+        onScore(score);
+      }
+      // A hit knocks the hero away from the critters that touched it, the way most of them push
+      if (contact?.hurts && now >= safeUntil && hurt()) {
+        hero.knock(2 * contact.rightward >= contact.hurts ? 1 : -1);
+        safeUntil = now + SAFE.hit;
+      }
 
       let taken = 0;
       hero.start[0] = hero.position[0];
       hero.start[1] = hero.position[1];
       for (let steps = sim.update(frame.dt); steps > 0; steps--) {
         const airborne = !hero.grounded;
+        const skidding = hero.skidding;
+        const sliding = hero.sliding;
         hero.step(input, STEP);
-        if (airborne && hero.grounded) effects.puff(hero.position[0], hero.position[1] - HALF[1]);
+        if (!sliding && hero.sliding) slid = play('slide') ?? undefined;
+        // A slide that ends before its sound fades the sound out
+        if (sliding && !hero.sliding) {
+          slid?.stop(SLID);
+          slid = undefined;
+        }
+        if (skidding && !hero.skidding) {
+          skid?.stop(SLID);
+          skid = undefined;
+        }
+        if (hero.grounded) remember();
+        const feet = hero.position[1] - HALF[1];
+        if (hero.leapt) play(hero.leapt);
+        if (airborne && hero.grounded) {
+          effects.puff(hero.position[0], feet);
+          play('fall');
+          footstep();
+        }
+        // A ducked hero turns without kicking up dust
+        else if (!skidding && hero.skidding && !hero.ducked) {
+          effects.puff(hero.position[0], feet, -hero.facing * KICK);
+          // A skid scrapes like a slide, on its heel
+          play('heel');
+          skid = play('slide') ?? undefined;
+        }
+        effects.slide(hero.position[0], feet, hero.sliding ? hero.velocity[0] : 0);
 
         taken += coins.collect(hero.position, now, effects.sparkle);
         critters.step(pass);
         effects.dust.step(pass);
         effects.sparks.step(pass);
+        effects.bubbles.step(pass);
+        effects.pepper.step(pass);
       }
 
+      // A foot comes down each `STRIDE` run frames while the hero runs on the ground
+      const strides = Math.floor((now * RUN.rate) / STRIDE);
+      const running = hero.grounded && !hero.ducked && Math.abs(hero.velocity[0]) > RUNNING;
+      if (running && strides !== stride) footstep();
+      stride = strides;
+
       if (taken > 0) {
+        play('coin');
         score.coins += taken;
         onScore(score);
       }
@@ -111,7 +266,10 @@ export function createPlatformer(
         score.best = Math.min(score.best ?? run, run);
         restart();
       }
-      if (hero.position[1] < -FELL) restart();
+      if (hero.position[1] < -FELL && hurt()) {
+        hero.place(...ground);
+        safeUntil = now + SAFE.fall;
+      }
     },
   };
 }

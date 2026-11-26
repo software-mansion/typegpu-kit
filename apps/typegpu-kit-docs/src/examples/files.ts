@@ -5,11 +5,11 @@ import type { FontName, Loading, Read, Say } from 'typegpu-kit-examples/contract
 
 const PACKAGE = '../../../../packages/typegpu-kit-examples/src/';
 
-/** Vite's URL of every model, texture and HDR image the examples ship, by path from the package's `src/`. */
+/** Vite's URL of every model, texture, HDR image and sound the examples ship, by path from the package's `src/`. */
 const urls = Object.fromEntries(
   Object.entries(
     import.meta.glob<string>(
-      '../../../../packages/typegpu-kit-examples/src/*/{models,textures}/*.{glb,webp,hdr}',
+      '../../../../packages/typegpu-kit-examples/src/*/{models,textures,sounds}/*.{glb,webp,hdr,wav}',
       { query: '?url', import: 'default', eager: true },
     ),
   ).map(([path, url]) => [path.slice(PACKAGE.length), url]),
@@ -27,7 +27,7 @@ const fetchFile: Read = async (url) => {
 };
 
 /** Reads a file the examples package ships, by path from its `src/`. */
-const fetchExampleFile: Read = (path) => {
+export const fetchExampleFile: Read = (path) => {
   const url = urls[path];
   if (!url) throw new Error(`The examples ship no ${path}.`);
   return fetchFile(url);
