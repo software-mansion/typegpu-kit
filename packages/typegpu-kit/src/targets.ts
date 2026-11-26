@@ -111,7 +111,8 @@ export interface Surface extends SizeSource, Disposable {
   view(frame: Frame): GPUTextureView;
   /**
    * Releases the drawing destination. Canvas surfaces unconfigure their contexts. Web surfaces
-   * also stop observing the canvas. Also `[Symbol.dispose]`.
+   * also stop observing the canvas, and leave it configured if another surface configured it since.
+   * Also `[Symbol.dispose]`.
    */
   destroy(): void;
 }
