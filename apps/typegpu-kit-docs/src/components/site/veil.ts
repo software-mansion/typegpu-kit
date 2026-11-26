@@ -12,14 +12,20 @@ export interface Veil {
   /** Puts the veil back, at once, settling a lift under way. */
   cover(): void;
   /**
-   * Stops the waiting light and shows a printed poster undimmed, for a screen that won't go live or
-   * waits to be asked; `rest(false)` starts the light again. A sharp poster shows no light.
+   * Stops the waiting light, for a screen that won't go live or waits to be asked; `rest(false)`
+   * starts it again. A loaded poster shows no light.
    */
   rest(resting?: boolean): void;
 }
 
-/** How bright a printed poster shows while it waits, before the passing light raises it. */
-const DIM = 0.6;
+/** Cells deep the printed edge around a poster is fully covered. */
+const SOLID = 6;
+
+/** Cells further in over which the printed edge thins to nothing. */
+const FADE = 5;
+
+/** CSS pixels wide below which a screen is a small thumbnail, whose printed edge is half as deep. */
+const SMALL = 480;
 
 /** `value`, a byte, printed in six levels through the threshold `threshold`. */
 const print = (value: number, threshold: number) => {
@@ -31,8 +37,9 @@ const print = (value: number, threshold: number) => {
 /**
  * Veils `screen` with a canvas of cells `cell` CSS pixels wide, put over its first canvas and under
  * what follows it, on the screen's own background, or showing `poster`, an image's address, as it
- * covers the screen: printed in the cells, or sharp when the reader turned the dither off. When
- * `owner` is given, the veil lifts as it gains the `live` class and comes back as it loses it.
+ * covers the screen: sharp, inside an edge printed in the cells unless the reader turned the dither
+ * off. When `owner` is given, the veil lifts as it gains the `live` class and comes back as it
+ * loses it.
  */
 export function veil(
   screen: HTMLElement,
@@ -57,8 +64,8 @@ export function veil(
     pointerEvents: 'none',
     imageRendering: 'pixelated',
   });
-  // A sharp poster at the screen's own resolution, under the cells, which print only the sweep
-  const plate = poster && plain ? document.createElement('canvas') : undefined;
+  // A sharp poster at the screen's own resolution, under the cells, which print its edge and sweep
+  const plate = poster ? document.createElement('canvas') : undefined;
   if (plate) {
     plate.setAttribute('aria-hidden', 'true');
     Object.assign(plate.style, {
@@ -89,16 +96,25 @@ export function veil(
   const cutCanvas = new OffscreenCanvas(1, 1);
   let resized = true;
   let picture: HTMLImageElement | undefined;
-  // A printed poster at a pixel a cell, cropped as `object-fit: cover` would
+  // The poster at a pixel a cell, cropped as `object-fit: cover` would, for its printed edge
   let pixels: Uint8ClampedArray | undefined;
   // Plate pixels a CSS pixel
   let pixel = 1;
+  // How deep the printed edge is, against a large screen's
+  let edge = 1;
+  // Bottom rows a cell of the edge's depth there
+  let stretch = 1;
   const size = () => {
     if (!resized) return;
     resized = false;
     const { width, height } = screen.getBoundingClientRect();
+    edge = width < SMALL ? 0.5 : 1;
     const columns = Math.max(1, Math.ceil(width / cell));
     const rows = Math.max(1, Math.ceil(height / cell));
+    // A screen with a caption over it sets `--veil-bottom`, the share of its height the bottom edge
+    // reaches, stretching that edge's solid and fading parts alike
+    const bottom = Number.parseFloat(getComputedStyle(screen).getPropertyValue('--veil-bottom'));
+    stretch = bottom > 0 ? (bottom * rows) / ((SOLID + FADE) * edge) : 1;
     if (canvas.width !== columns || canvas.height !== rows) {
       canvas.width = columns;
       canvas.height = rows;
@@ -109,14 +125,13 @@ export function veil(
       cutCanvas.width = columns;
       cutCanvas.height = rows;
     }
-    if (!picture) return;
-    if (!plate) {
+    if (!picture || !plate) return;
+    if (!plain) {
       const shrunk = new OffscreenCanvas(columns, rows).getContext('2d', {
         willReadFrequently: true,
       })!;
       cover(shrunk, picture);
       pixels = shrunk.getImageData(0, 0, columns, rows).data;
-      return;
     }
     pixel = devicePixelRatio;
     plate.width = Math.max(1, Math.round(width * pixel));
@@ -170,7 +185,10 @@ export function veil(
         const swept = (front - x * 0.85 - y * 0.15) * 9;
         const at = (j * columns + i) * 4;
         if (plate) gone[at + 3] = swept > threshold ? 255 : 0;
-        if (swept > threshold + 0.6 || (plate && picture && swept <= threshold)) {
+        // Full in the outer `SOLID` cells, thinning to none over the next `FADE`, both by `edge`
+        const depth = Math.min(i, j, columns - 1 - i, (rows - 1 - j) / stretch);
+        const edged = pixels && threshold < 1 - (depth - SOLID * edge + 1) / (FADE * edge + 1);
+        if (swept > threshold + 0.6 || (picture && swept <= threshold && !edged)) {
           data[at + 3] = 0;
           continue;
         }
@@ -178,21 +196,18 @@ export function veil(
         let color: Rgb;
         if (swept > threshold + 0.25) color = bright;
         else if (swept > threshold) color = accent;
-        else {
+        else if (pixels) {
+          color = [
+            Math.max(base[0], print(pixels[at], threshold)),
+            Math.max(base[1], print(pixels[at + 1], threshold)),
+            Math.max(base[2], print(pixels[at + 2], threshold)),
+          ];
+        } else {
           const across = (x - light) * 3.4;
           const glow = Math.exp(-across * across) * (0.55 + 0.45 * y);
-          if (pixels) {
-            const k = resting ? 1 : DIM + (1 - DIM) * glow;
-            color = [
-              Math.max(base[0], print(pixels[at] * k, threshold)),
-              Math.max(base[1], print(pixels[at + 1] * k, threshold)),
-              Math.max(base[2], print(pixels[at + 2] * k, threshold)),
-            ];
-          } else {
-            const level = 2.3 * glow;
-            const low = Math.min(Math.floor(level), ramp.length - 2);
-            color = ramp[level - low > threshold ? low + 1 : low];
-          }
+          const level = 2.3 * glow;
+          const low = Math.min(Math.floor(level), ramp.length - 2);
+          color = ramp[level - low > threshold ? low + 1 : low];
         }
         data[at] = color[0];
         data[at + 1] = color[1];
@@ -233,8 +248,8 @@ export function veil(
       draw(light, -1);
       paint(false);
     }
-    // A sharp poster holds still until the sweep
-    const waiting = !(plate && picture) && !(still.matches || resting);
+    // A poster holds still until the sweep
+    const waiting = !picture && !(still.matches || resting);
     if (seen && (phase.kind === 'lifting' || waiting)) frame = requestAnimationFrame(tick);
   };
   const run = () => {
