@@ -134,15 +134,16 @@ function staging() {
 /** A device whose uncaptured errors the test raises. */
 function watchedDevice(root: TgpuRoot) {
   const events = new EventTarget();
+  const { promise: lost, resolve: lose } = Promise.withResolvers<GPUDeviceLostInfo>();
   const device = Object.assign(Object.create(root.device) as GPUDevice, {
-    lost: new Promise(() => {}),
+    lost,
     addEventListener: events.addEventListener.bind(events),
     removeEventListener: events.removeEventListener.bind(events),
   });
   const uncaptured = (message: string) =>
     events.dispatchEvent(Object.assign(new Event('uncapturederror'), { error: { message } }));
 
-  return { device, uncaptured };
+  return { device, uncaptured, lose };
 }
 
 describe('stage', () => {
@@ -441,6 +442,42 @@ describe('stage', () => {
     expect(staged.ready).toBe(true);
     expect(onError).not.toHaveBeenCalled();
   });
+});
+
+it('keeps the frames running through uncaptured errors given onUncaptured, and stops at a loss', async () => {
+  const { root, surface, order, createScene, schedule, step } = staging();
+  const { device, uncaptured, lose } = watchedDevice(root);
+  const onError = vi.fn();
+  const onUncaptured = vi.fn();
+  await stage(
+    root,
+    surface,
+    createScene,
+    { name: 'reef' },
+    {
+      schedule,
+      onError,
+      onUncaptured,
+      watch: device,
+    },
+  );
+
+  uncaptured('bad');
+  uncaptured('worse');
+  step(0);
+  expect(onUncaptured.mock.calls).toEqual([
+    [expect.objectContaining({ message: 'bad' })],
+    [expect.objectContaining({ message: 'worse' })],
+  ]);
+  expect(order).toEqual(['frame reef']);
+
+  lose({ message: 'removed', reason: 'unknown' } as GPUDeviceLostInfo);
+  await settle();
+  step(16);
+  expect(onError.mock.calls).toEqual([
+    [expect.objectContaining({ message: expect.stringContaining('lost') })],
+  ]);
+  expect(order).toEqual(['frame reef']);
 });
 
 describe('watch', () => {

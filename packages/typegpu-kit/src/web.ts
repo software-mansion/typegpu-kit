@@ -674,6 +674,13 @@ export interface HostOptions<S extends Scene> extends AnyHostOptions<S, Surface>
    * none.
    */
   readonly optionalFeatures?: Iterable<GPUFeatureName>;
+  /**
+   * Receives each uncaptured GPU error and keeps the scene running, for an optional effect whose
+   * failure should not stop it. A lost device still reaches `onError` and stops the scene. Default
+   * none: the first uncaptured error stops it.
+   * @cpu
+   */
+  readonly onUncaptured?: (error: Error) => void;
 }
 
 /**
@@ -700,7 +707,16 @@ export function host<Options, S extends Scene>(
   ...rest: [HostOptions<S>] | [Options, HostOptions<S>]
 ): Hosted<S> {
   const [options, hosting] = rest.length === 1 ? [{} as Options, rest[0]] : rest;
-  const { canvas, device, root: given, optionalFeatures = [], schedule, onFrame, attach } = hosting;
+  const {
+    canvas,
+    device,
+    root: given,
+    optionalFeatures = [],
+    schedule,
+    onFrame,
+    attach,
+    onUncaptured,
+  } = hosting;
   const report = hosting.onError ?? ((error: unknown) => console.error(error));
   if (device && given) {
     throw new Error('web.host accepts either device or root. A root already provides its device.');
@@ -732,6 +748,7 @@ export function host<Options, S extends Scene>(
         ...(schedule === undefined ? {} : { schedule }),
         ...(onFrame ? { onFrame } : {}),
         ...(attach ? { attach } : {}),
+        ...(onUncaptured ? { onUncaptured } : {}),
       });
     } catch (error) {
       freeEach([release], [error]);

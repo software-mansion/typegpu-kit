@@ -236,6 +236,12 @@ export interface StageOptions<S extends Scene, Canvas extends Surface = Surface>
    * pass it there or on the web. Default none.
    */
   readonly watch?: GPUDevice;
+  /**
+   * Receives each uncaptured error on the watched device and keeps the frames running. A lost
+   * device still fails the stage. Default none: the first uncaptured error fails it.
+   * @cpu
+   */
+  readonly onUncaptured?: (error: Error) => void;
   /** Runs after the scene's `frame` in every frame, with the stage. Default none. @cpu */
   readonly onFrame?: (stage: Stage<S, Canvas>, frame: Frame) => void;
   /**
@@ -308,7 +314,9 @@ export async function stage<Options, S extends Scene, Canvas extends Pausing>(
     onError(error);
   };
 
-  const watching = hosting.watch && watch(hosting.watch, fail);
+  const watching =
+    hosting.watch &&
+    watch(hosting.watch, fail, hosting.onUncaptured && { onUncaptured: hosting.onUncaptured });
 
   // Frees the animation, what `attach` returned, the loop, the scene, then the watch
   const cleanups = [
@@ -400,6 +408,15 @@ function detachOf(held: Detach | void): (() => void) | undefined {
   throw new Error('`attach` must return a cleanup function or an object with `destroy()`.');
 }
 
+export interface WatchOptions {
+  /**
+   * Receives each uncaptured error and keeps the watch listening, so `onError` takes only an
+   * unexpected loss. Default none: the first uncaptured error goes to `onError`.
+   * @cpu
+   */
+  readonly onUncaptured?: (error: Error) => void;
+}
+
 /**
  * Reports the device's first uncaptured error or unexpected loss until disposed. Ignores
  * deliberate device destruction. WebGPU does not identify which scene caused an uncaptured error,
@@ -410,8 +427,13 @@ function detachOf(held: Detach | void): (() => void) | undefined {
  * @param onError takes the first error, once
  * @returns a watch you dispose to stop listening
  */
-export function watch(device: GPUDevice, onError: (error: Error) => void): Disposable {
+export function watch(
+  device: GPUDevice,
+  onError: (error: Error) => void,
+  options: WatchOptions = {},
+): Disposable {
   let listener: typeof onError | undefined = onError;
+  const { onUncaptured } = options;
 
   // The device's lost promise and native event listener can outlive the watch
   const release = () => {
@@ -425,8 +447,11 @@ export function watch(device: GPUDevice, onError: (error: Error) => void): Dispo
     notify?.(error);
   };
 
-  const uncaptured = (event: Event) =>
-    report(new Error((event as GPUUncapturedErrorEvent).error.message));
+  const uncaptured = (event: Event) => {
+    const error = new Error((event as GPUUncapturedErrorEvent).error.message);
+    if (onUncaptured) onUncaptured(error);
+    else report(error);
+  };
 
   device.addEventListener('uncapturederror', uncaptured);
   void device.lost.then((info) => {
