@@ -21,7 +21,7 @@ In a terminal the initializer asks which scene to start from: the shader this pa
 
 ## Install
 
-In a [Vite](https://vite.dev) project, install the kit, TypeGPU and its noise and colour packages. As dev dependencies, install Vite, the TypeGPU bundler plugin, [tsover](#setting-up-a-project) in place of TypeScript, and WebGPU's types:
+In a [Vite](https://vite.dev) project, install the kit, TypeGPU and its noise and colour packages. As dev dependencies, install Vite, the TypeGPU bundler plugin, WebGPU's types and [tsover](#setting-up-a-project), which is optional, in place of TypeScript:
 
 <Install
   add="@typegpu/kit typegpu @typegpu/noise @typegpu/color"
@@ -153,7 +153,7 @@ The picture stays the same. The [hosting page](/kit/hosting/) covers controlling
 
 {/* BEGIN:setup, whose patches tests/setup.test.ts checks against packages/typegpu-kit/patches */}
 
-The packages ship built JavaScript and type declarations, with their `'use gpu'` functions already transformed. The plugin transforms your own `'use gpu'` functions. Vector operators in them, such as `a * b`, type-check only under tsover, TypeGPU's fork of TypeScript. It replaces `typescript`, so a project on another TypeScript version moves to tsover's.
+The packages ship built JavaScript and type declarations, with their `'use gpu'` functions already transformed. The plugin transforms your own `'use gpu'` functions. Vector operators in them, such as `a * b`, type-check only under tsover, TypeGPU's fork of TypeScript, which installs as `typescript`. The kit works without it. With plain TypeScript, write operators as functions, such as `std.mul(a, b)`.
 
 A few entries need optional peers:
 

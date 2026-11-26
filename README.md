@@ -57,6 +57,10 @@ pnpm add @typegpu/kit typegpu @typegpu/noise @typegpu/color
 pnpm add -D vite unplugin-typegpu typescript@npm:tsover@6.0.2 @webgpu/types
 ```
 
+tsover, TypeGPU's fork of TypeScript, is optional. It type-checks vector operators such as `a * b`
+in your `'use gpu'` functions. With plain TypeScript, write them as functions, such as
+`std.mul(a, b)`. The web entries need neither tsover nor React.
+
 [Setting up a project](https://docs.swmansion.com/typegpu-kit/getting-started/#setting-up-a-project)
 covers the bundler plugin and React Native.
 
