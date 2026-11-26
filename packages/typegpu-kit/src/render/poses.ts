@@ -26,8 +26,9 @@
 import * as table from '../table.ts';
 import { temporal } from '../history.ts';
 import { unfilled, type Inject } from '../inject.ts';
+import { adopt, type AnyComputePass } from '../passes.ts';
 import { type RowId } from '../table.ts';
-import { d, std, tgpu, type TgpuComputePass, type TgpuRoot } from 'typegpu';
+import { d, std, tgpu, type TgpuRoot } from 'typegpu';
 import { mat4d, quatd } from 'wgpu-matrix';
 import type { ModelData } from './meshPool.ts';
 import {
@@ -259,7 +260,7 @@ export interface Poses<C extends string = string, L extends string = string> ext
    * this once per frame in a compute pass before drawing, also while paused, so last frame's
    * joints stay one frame old.
    */
-  animate(pass: TgpuComputePass, time: number): void;
+  animate(pass: AnyComputePass, time: number): void;
   /**
    * Fills joint and play resources for pipelines created from the configuration you pipe it
    * into. Apply this to the renderer of a kind with `pose`, and to kernels calling the verbs.
@@ -1658,6 +1659,7 @@ export function create<const C extends string, const L extends string = never>(
     slotOf: (id) => plays.slotOf(id),
 
     animate(pass, time) {
+      const into = adopt(pass);
       plays.flush();
       if (plays.span === 0) return;
       flip ^= 1;
@@ -1665,8 +1667,8 @@ export function create<const C extends string, const L extends string = never>(
       clockHalves[0] = flip * half;
       clockHalves[1] = (1 - flip) * half;
       queue.writeBuffer(clockGpu, 0, clockData);
-      pass.setPipeline(finding);
-      pass.dispatchWorkgroups(plays.span);
+      into.setPipeline(finding);
+      into.dispatchWorkgroups(plays.span);
     },
 
     inject: () => inject,

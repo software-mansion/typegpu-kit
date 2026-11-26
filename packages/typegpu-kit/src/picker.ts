@@ -1,7 +1,8 @@
-import { d, std, tgpu, type TgpuComputePass, type TgpuRoot, type TgpuUniform } from 'typegpu';
+import { d, std, tgpu, type TgpuRoot, type TgpuUniform } from 'typegpu';
 import * as cameras from './cameras.ts';
 import { checkDispatch } from './dispatchLimit.ts';
 import type { Inject } from './inject.ts';
+import { adopt, type AnyComputePass } from './passes.ts';
 import * as pipelines from './pipelines.ts';
 import { create as createReadback, type Readback } from './readback.ts';
 import type { SizeSource } from './targets.ts';
@@ -123,7 +124,7 @@ export interface Picker extends Disposable {
    * `pointing` take them. Uses the camera given to `create`. Records one pick per frame: a second
    * call into the same pass replaces the point and records no second dispatch.
    */
-  pick(pass: TgpuComputePass, x: number, y: number): void;
+  pick(pass: AnyComputePass, x: number, y: number): void;
   /**
    * Forgets the last pick without a dispatch, such as when the pointer leaves: `found` returns
    * `none` and the next capture reads null, until the next `pick`. A pick recorded in the same
@@ -265,7 +266,7 @@ export function create(root: TgpuRoot, camera: cameras.CameraBase, options: Opti
   const written = new Float32Array(d.sizeOf(Pointer) / 4);
   // The pass holding the pending pick. Queue writes land before the submit, so a second pick into
   // it moves the point of the one dispatch
-  let picking: TgpuComputePass | undefined;
+  let picking: AnyComputePass | undefined;
 
   return {
     capacity,
@@ -287,8 +288,9 @@ export function create(root: TgpuRoot, camera: cameras.CameraBase, options: Opti
       queue.writeBuffer(keyGpu, 0, reset);
       if (pass === picking) return;
       picking = pass;
-      pass.setPipeline(pickPipeline);
-      pass.dispatchWorkgroups(Math.ceil((span ? span() : capacity) / WORKGROUP));
+      const into = adopt(pass);
+      into.setPipeline(pickPipeline);
+      into.dispatchWorkgroups(Math.ceil((span ? span() : capacity) / WORKGROUP));
 
       // Tap picks request one copy. Hover picks use the readback rate
       if (hz === undefined) result.request();

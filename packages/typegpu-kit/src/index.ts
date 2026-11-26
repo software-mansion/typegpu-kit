@@ -40,7 +40,9 @@ export { memo } from './memo.ts';
 
 export * as passes from './passes.ts';
 export type {
+  AnyComputePass,
   AnyDrawing,
+  AnyRenderPass,
   Compound,
   Description as PassDescription,
   Drawable,

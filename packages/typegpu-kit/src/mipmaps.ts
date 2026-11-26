@@ -11,11 +11,11 @@ import {
   tgpu,
   type SampledFlag,
   type TgpuCommandEncoder,
-  type TgpuComputePass,
   type TgpuRoot,
   type TgpuTexture,
 } from 'typegpu';
 import { fill, floatLayers, one } from './fill.ts';
+import type { AnyComputePass } from './passes.ts';
 
 /** This type combines four texels, left to right and then top to bottom, into one. */
 export type Combine = (a: d.v4f, b: d.v4f, c: d.v4f, e: d.v4f) => d.v4f;
@@ -55,7 +55,7 @@ export interface Mipmaps {
    * Records the levels in order. A texture with `storage` usage fills in a compute pass, the
    * pass given or one of its own on the encoder. Another fills in render passes on the encoder.
    */
-  record(target: TgpuCommandEncoder | TgpuComputePass): void;
+  record(target: TgpuCommandEncoder | AnyComputePass): void;
   /** Compiles the pipeline. Calling it is optional. */
   initAsync(): Promise<void>;
   /**

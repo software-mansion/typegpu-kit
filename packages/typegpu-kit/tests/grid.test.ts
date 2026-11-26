@@ -160,6 +160,7 @@ describe('grid', () => {
     const { cells } = setup({ span: () => span });
     const sizes: number[] = [];
     const pass = {
+      resourceType: 'compute-pass',
       setPipeline: () => {},
       dispatchWorkgroups: (x: number) => sizes.push(x),
       dispatchWorkgroupsIndirect: () => {},

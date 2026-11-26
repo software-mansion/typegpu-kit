@@ -5,15 +5,20 @@ import {
   type StorageFlag,
   type TgpuBindGroup,
   type TgpuCommandEncoder,
-  type TgpuComputePass,
   type TgpuRenderPassDescriptor,
   type TgpuRoot,
   type TgpuTexture,
 } from 'typegpu';
+import { adopt, type AnyComputePass } from './passes.ts';
+
+type Target = TgpuCommandEncoder | AnyComputePass;
+
+const isEncoder = (target: Target): target is TgpuCommandEncoder =>
+  'resourceType' in target && target.resourceType === 'command-encoder';
 
 /** This type writes a texture's texels each time it records. */
 export interface Filled {
-  record(target: TgpuCommandEncoder | TgpuComputePass): void;
+  record(target: Target): void;
   initAsync(): Promise<void>;
 }
 
@@ -130,13 +135,13 @@ export function fill(
       return {
         record(target) {
           if (dispatches.length === 0) return;
-          const pass =
-            target.resourceType === 'command-encoder' ? target.beginComputePass() : target;
+          const opened = isEncoder(target) ? target.beginComputePass() : undefined;
+          const into = opened ?? adopt(target as AnyComputePass);
           for (const dispatch of dispatches) {
-            pass.setPipeline(dispatch.pipeline);
-            pass.dispatchWorkgroups(dispatch.x, dispatch.y, layers);
+            into.setPipeline(dispatch.pipeline);
+            into.dispatchWorkgroups(dispatch.x, dispatch.y, layers);
           }
-          if (pass !== target) pass.end();
+          opened?.end();
         },
         initAsync: () => pipeline.initAsync(),
       };
@@ -178,7 +183,7 @@ export function fill(
 
     return {
       record(target) {
-        if (target.resourceType !== 'command-encoder') {
+        if (!isEncoder(target)) {
           throw new Error(
             'Pass a command encoder to `record` when the texture lacks `storage` usage. The fill needs to open render passes.',
           );

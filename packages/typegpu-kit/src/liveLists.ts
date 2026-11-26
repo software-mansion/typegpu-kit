@@ -24,12 +24,12 @@ import {
   type IndirectFlag,
   type StorageFlag,
   type TgpuBuffer,
-  type TgpuComputePass,
   type TgpuRoot,
 } from 'typegpu';
 import * as pipelines from './pipelines.ts';
 import { checkDispatch } from './dispatchLimit.ts';
 import type { Inject } from './inject.ts';
+import { adopt, type AnyComputePass } from './passes.ts';
 
 export type IndirectDraw =
   | { readonly vertexCount: number; readonly firstVertex?: number }
@@ -150,12 +150,12 @@ export interface LiveLists extends Disposable {
   /** Compiles the compaction and counting pipelines. Calling it is optional. */
   initAsync(): Promise<void>;
   /** Rewrites the live slots and instance counts. Record it after the table's flush. */
-  compact(pass: TgpuComputePass): void;
+  compact(pass: AnyComputePass): void;
   /**
    * Writes the counts of the rows listed with `list` into the draws and dispatches, and empties
    * the lists for the next listing. Record it after the kernels that list.
    */
-  finish(pass: TgpuComputePass): void;
+  finish(pass: AnyComputePass): void;
   /**
    * Draws `group` into the pass with the pipeline set on it. Uses an indexed draw when the group's
    * draw is indexed.
@@ -356,10 +356,11 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
     );
   };
 
-  const finish = (pass: TgpuComputePass) => {
+  const finish = (pass: AnyComputePass) => {
+    const into = adopt(pass);
     listed = true;
-    pass.setPipeline(finishPipeline);
-    pass.dispatchWorkgroups(Math.ceil(groups / 64));
+    into.setPipeline(finishPipeline);
+    into.dispatchWorkgroups(Math.ceil(groups / 64));
   };
 
   const setDraw = (group: number, draw: IndirectDraw) => {
@@ -406,10 +407,11 @@ export function create(root: TgpuRoot, options: Options): LiveLists {
     list,
 
     compact(pass) {
+      const into = adopt(pass);
       const rows = span ? span() : capacity;
       if (rows > 0) {
-        pass.setPipeline(compactPipeline);
-        pass.dispatchWorkgroups(Math.ceil(rows / WORKGROUP));
+        into.setPipeline(compactPipeline);
+        into.dispatchWorkgroups(Math.ceil(rows / WORKGROUP));
       }
       finish(pass);
     },

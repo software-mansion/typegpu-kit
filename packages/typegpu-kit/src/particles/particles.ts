@@ -16,7 +16,6 @@ import {
   type StorageFlag,
   type TgpuBuffer,
   type TgpuCommandEncoder,
-  type TgpuComputePass,
   type TgpuRoot,
   type TgpuUniform,
 } from 'typegpu';
@@ -267,15 +266,15 @@ export interface System extends Disposable {
    * runs, so a second spawn before then, in any pass or encoder, replaces the first one's bursts.
    * Throws when one pass spawns bursts twice.
    */
-  spawn(pass: TgpuComputePass): void;
+  spawn(pass: passes.AnyComputePass): void;
   /** Advances every live particle by one fixed step. */
-  step(pass: TgpuComputePass): void;
+  step(pass: passes.AnyComputePass): void;
   /**
    * Lists live particles for drawing. Record this once per frame after simulation steps. Drawing
    * moves each particle `ahead` seconds along its velocity, such as a fixed-step clock's
    * `sim.ahead`, so motion follows the display rate between steps.
    */
-  compact(pass: TgpuComputePass, ahead: number): void;
+  compact(pass: passes.AnyComputePass, ahead: number): void;
   /**
    * Provides the particle drawing for pass descriptions, as in `scene.add(system.drawing)`. It
    * supplies colour, world position and corner data to outputs, tests depth without writing it
@@ -715,7 +714,7 @@ export function create<S extends Schema>(
   const lastDrawn: [number, number] = [0, 0];
 
   let stepped = 0;
-  let spawnedIn: TgpuComputePass | undefined;
+  let spawnedIn: passes.AnyComputePass | undefined;
 
   const initAsync = () => pipelines.compile([live, spawnPipeline, stepPipeline]);
 
@@ -776,19 +775,21 @@ export function create<S extends Schema>(
         );
       }
       spawnedIn = pass;
+      const into = passes.adopt(pass);
 
       burstBuffer.write(pending as d.InferInput<typeof BurstData>[]);
       queued.write(pending.length);
-      pass.setPipeline(spawnPipeline);
-      pass.dispatchWorkgroups(Math.ceil(total / WORKGROUP));
+      into.setPipeline(spawnPipeline);
+      into.dispatchWorkgroups(Math.ceil(total / WORKGROUP));
 
       pending.length = 0;
       total = 0;
     },
 
     step(pass) {
-      pass.setPipeline(stepPipeline);
-      pass.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
+      const into = passes.adopt(pass);
+      into.setPipeline(stepPipeline);
+      into.dispatchWorkgroups(Math.ceil(size / WORKGROUP));
       stepped += 1;
       // A stream owes at most a pool's worth, however long spawns stop
       for (const flowing of streams) {

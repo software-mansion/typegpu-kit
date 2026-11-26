@@ -5,14 +5,9 @@
  * @module
  */
 
-import {
-  d,
-  type TgpuCommandEncoder,
-  type TgpuComputePass,
-  type TgpuRoot,
-  type TgpuTexture,
-} from 'typegpu';
+import { d, type TgpuCommandEncoder, type TgpuRoot, type TgpuTexture } from 'typegpu';
 import { fill } from './fill.ts';
+import type { AnyComputePass } from './passes.ts';
 
 export interface Options {
   /**
@@ -29,7 +24,7 @@ export interface Baker {
    * Records the texels. A texture with `storage` usage fills in a compute pass, the pass given or
    * one of its own on the encoder. Another fills in a render pass per array layer on the encoder.
    */
-  record(target: TgpuCommandEncoder | TgpuComputePass): void;
+  record(target: TgpuCommandEncoder | AnyComputePass): void;
   /** Compiles the pipeline. Calling it is optional. */
   initAsync(): Promise<void>;
 }

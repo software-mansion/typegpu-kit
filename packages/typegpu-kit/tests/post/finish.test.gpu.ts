@@ -464,3 +464,45 @@ it('shows depth through a grade reading a shared part, before and after the targ
   for (const at of [0, (WIDTH * HEIGHT - 1) * 4]) expect(pixels[at]).toBeCloseTo(191, -1);
   expect(await root.takeErrors()).toEqual([]);
 });
+
+it('draws FXAA and the finish into a raw pass as their records do', async () => {
+  const root = await gpuRoot();
+  const size = { width: WIDTH, height: HEIGHT };
+  const screen = targets.create(root, size, {
+    hdr: { format: 'rgba16float', sampled: true },
+    recorded: { format: 'rgba8unorm' },
+    drawn: { format: 'rgba8unorm' },
+  });
+  const source = () => screen.textures.hdr;
+  const posts = [
+    fxaa.create(root, { format: 'rgba8unorm', source }),
+    finish.create(root, { format: 'rgba8unorm', source }),
+  ];
+
+  for (const post of posts) {
+    const encoder = root.device.createCommandEncoder();
+    const clear = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: screen.views.hdr,
+          clearValue: [0.8, 0.4, 0.1, 1],
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    });
+    clear.end();
+    post.record(root.createCommandEncoder(encoder), screen.views.recorded);
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: screen.views.drawn, loadOp: 'clear', storeOp: 'store' }],
+    });
+    post.draw(pass);
+    pass.end();
+    root.device.queue.submit([encoder.finish()]);
+
+    const recorded = await readPixels(root, root.unwrap(screen.textures.recorded));
+    const drawn = await readPixels(root, root.unwrap(screen.textures.drawn));
+    expect(recorded[0]).toBeGreaterThan(0);
+    expect(drawn).toEqual(recorded);
+  }
+});

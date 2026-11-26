@@ -1,7 +1,15 @@
 import { cameras, lighting, materials, passes, shading, table } from '@typegpu/kit';
 import * as grid from '@typegpu/kit/grid';
 import { perlin3d, randf } from '@typegpu/noise';
-import { d, std, tgpu, type TgpuFn, type TgpuRoot, type TgpuUniform } from 'typegpu';
+import {
+  d,
+  std,
+  tgpu,
+  type TgpuComputePass,
+  type TgpuFn,
+  type TgpuRoot,
+  type TgpuUniform,
+} from 'typegpu';
 import { KNOBS } from './knobs.ts';
 
 /** The most birds the table holds: 32 × 32, so the table's plate lays out square. */
@@ -307,7 +315,7 @@ export function createSteering<Name extends string>(
         ),
       ),
     /** One step under `name`'s rule: on the grid, sorted first in the same pass, or without it. */
-    step(pass: Parameters<typeof cells.sort>[0], onGrid: boolean, name: Name) {
+    step(pass: TgpuComputePass, onGrid: boolean, name: Name) {
       if (birds.span === 0) return;
       const groups = Math.ceil(birds.span / WORKGROUP);
       pass.setPipeline((onGrid ? flocking : drifting)[name]);

@@ -69,6 +69,8 @@ A method takes the smallest piece of the frame it needs, so the call site shows 
 | `capture(frame)` | `Frame`                         | work after the submit too, through [`frame.afterSubmit`](/kit/frames/#after-the-submit) |
 | `update(dt)`     | numbers                         | maths on the CPU over time, such as a camera easing towards its goal                    |
 
+A method that adds to a pass you opened also takes a raw `GPUComputePassEncoder` or `GPURenderPassEncoder`, such as one a frame graph opens. A description's drawings are the exception: they draw into the passes its `begin` opens.
+
 A method that records passes or copies of its own takes either the frame or its encoder, so a frame's code passes `frame` to each. A description that draws into a surface takes only the frame, which holds the surface's view.
 
 ```ts

@@ -13,7 +13,6 @@ import {
   tgpu,
   type StorageFlag,
   type TgpuBuffer,
-  type TgpuComputePass,
   type TgpuComputePipeline,
   type TgpuRoot,
 } from 'typegpu';
@@ -21,6 +20,7 @@ import * as pipelines from './pipelines.ts';
 import { checkDispatch } from './dispatchLimit.ts';
 import type { Inject } from './inject.ts';
 import type { IndirectDispatcher } from './liveLists.ts';
+import { adopt, type AnyComputePass } from './passes.ts';
 import * as sorter from './sorter.ts';
 import * as workgroup from './workgroup.ts';
 
@@ -102,7 +102,7 @@ export interface Binning extends Disposable {
    * Records the sort into a compute pass. Slots at `span` and above hold no item, so a binning may
    * skip them.
    */
-  sort(pass: TgpuComputePass, span: number): void;
+  sort(pass: AnyComputePass, span: number): void;
   /** Compiles the binning pipelines. Calling it is optional. */
   initAsync(): Promise<void>;
   /** Destroys the buffers the binning made. A grid destroys its own binning. */
@@ -275,16 +275,17 @@ export function counting(root: TgpuRoot, options: BinningOptions): Binning {
     slots,
 
     sort(pass, span) {
+      const into = adopt(pass);
       const groups = Math.ceil(Math.max(span, lastSpan) / WORKGROUP);
       lastSpan = span;
-      pass.setPipeline(counter);
-      pass.dispatchWorkgroups(groups);
-      pass.setPipeline(sizer);
-      pass.dispatchWorkgroups(1);
-      pass.setPipeline(reserver);
-      pass.dispatchWorkgroupsIndirect(args);
-      pass.setPipeline(scatterer);
-      pass.dispatchWorkgroups(groups);
+      into.setPipeline(counter);
+      into.dispatchWorkgroups(groups);
+      into.setPipeline(sizer);
+      into.dispatchWorkgroups(1);
+      into.setPipeline(reserver);
+      into.dispatchWorkgroupsIndirect(args);
+      into.setPipeline(scatterer);
+      into.dispatchWorkgroups(groups);
     },
 
     initAsync: () => pipelines.compile([counter, sizer, reserver, scatterer]),
@@ -340,8 +341,9 @@ export function radix(root: TgpuRoot, options: BinningOptions): Binning {
     slots,
 
     sort(pass) {
-      pass.setPipeline(keyPipeline);
-      pass.dispatchWorkgroups(groups);
+      const into = adopt(pass);
+      into.setPipeline(keyPipeline);
+      into.dispatchWorkgroups(groups);
       byKey.sort(pass);
     },
 
@@ -474,7 +476,7 @@ export interface Grid<T extends d.AnyWgslData> extends Disposable {
   /** Compiles the grid pipelines and its binning. Calling it is optional. */
   initAsync(): Promise<void>;
   /** Sorts live items into cells and copies their `itemOf` data, if any. Record before a walk. */
-  sort(pass: TgpuComputePass): void;
+  sort(pass: AnyComputePass): void;
   /**
    * Dispatches the pipeline set on the compute pass over the sorted items after `sort`, in
    * workgroups of `WORKGROUP`, enough for `count()` and at least one. Each thread's global index is
@@ -904,21 +906,22 @@ export function create<T extends d.AnyWgslData = never>(
       ]);
     },
 
-    sort(pass: TgpuComputePass) {
+    sort(pass: AnyComputePass) {
+      const into = adopt(pass);
       sorted = true;
 
       const rows = span ? Math.min(span(), capacity) : capacity;
-      pass.setPipeline(clearPipeline);
-      pass.dispatchWorkgroupsIndirect(header);
+      into.setPipeline(clearPipeline);
+      into.dispatchWorkgroupsIndirect(header);
       bins.sort(pass, rows);
       // Sorted items end by `rows`, and the key after the last says where
-      pass.setPipeline(boundPipeline);
-      pass.dispatchWorkgroups(Math.ceil(Math.min(rows + 1, capacity) / WORKGROUP));
-      pass.setPipeline(copyPipeline);
-      pass.dispatchWorkgroupsIndirect(header);
+      into.setPipeline(boundPipeline);
+      into.dispatchWorkgroups(Math.ceil(Math.min(rows + 1, capacity) / WORKGROUP));
+      into.setPipeline(copyPipeline);
+      into.dispatchWorkgroupsIndirect(header);
       if (nearPipeline) {
-        pass.setPipeline(nearPipeline);
-        pass.dispatchWorkgroupsIndirect(blockArgs, 0);
+        into.setPipeline(nearPipeline);
+        into.dispatchWorkgroupsIndirect(blockArgs, 0);
       }
     },
 

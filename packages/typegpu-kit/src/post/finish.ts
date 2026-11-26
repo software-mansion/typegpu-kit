@@ -1,4 +1,5 @@
 import { memo, passInto } from '../memo.ts';
+import { adopt, type AnyRenderPass } from '../passes.ts';
 import { type SizeSource } from '../targets.ts';
 import { linearToSrgb, srgbToLinear } from '@typegpu/color';
 import {
@@ -7,7 +8,6 @@ import {
   std,
   tgpu,
   type TgpuCommandEncoder,
-  type TgpuRenderCommands,
   type TgpuRoot,
   type TgpuUniform,
 } from 'typegpu';
@@ -117,8 +117,8 @@ export interface Finish {
   readonly settings: TgpuUniform<typeof Settings>;
   /** Compiles the pipeline. Calling it is optional. */
   initAsync(): Promise<void>;
-  /** Draws into the caller's pass, which usually targets the canvas. */
-  draw(pass: TgpuRenderCommands): void;
+  /** Draws into the caller's pass, TypeGPU's or a raw one, which usually targets the canvas. */
+  draw(pass: AnyRenderPass): void;
   /**
    * Opens a pass on `view`, such as `surface.view(frame)`, draws into it and ends it. A
    * `viewport` draws the picture into that rectangle and clears the rest, transparent with
@@ -317,13 +317,14 @@ export function create(root: TgpuRoot, options: Options): Finish {
     if (moved || glowMoved) regions.write(written);
   };
 
-  const draw = (pass: TgpuRenderCommands) => {
+  const draw = (pass: AnyRenderPass) => {
+    const target = adopt(pass);
     const texture = source.output;
     const light = added?.output;
     measure(texture, light);
 
-    pass.setPipeline(boundTo(texture)(light));
-    pass.draw(3);
+    target.setPipeline(boundTo(texture)(light));
+    target.draw(3);
   };
 
   const into = passInto(covered ? [0, 0, 0, 0] : [0, 0, 0, 1]);

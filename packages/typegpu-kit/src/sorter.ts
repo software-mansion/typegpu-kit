@@ -1,4 +1,5 @@
-import type { d, StorageFlag, TgpuBuffer, TgpuComputePass, TgpuRoot } from 'typegpu';
+import type { d, StorageFlag, TgpuBuffer, TgpuRoot } from 'typegpu';
+import type { AnyComputePass } from './passes.ts';
 import { createRadixSorter } from './sort/index.ts';
 
 /** This type is the schema of a key: `u32`, `i32` or `f32`. */
@@ -41,7 +42,7 @@ export interface Options<K extends Key = Key, V extends d.AnyWgslData = d.AnyWgs
 /** This type sorts a key buffer, with its payload, each time it records. */
 export interface Sorter {
   /** Records the sort into a compute pass. */
-  sort(pass: TgpuComputePass): void;
+  sort(pass: AnyComputePass): void;
   /** Compiles the sort's pipelines. Calling it is optional. */
   initAsync(): Promise<void>;
   /** Destroys the buffers the sort made and keeps `keys` and its payload. */

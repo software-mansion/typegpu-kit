@@ -5,13 +5,12 @@ import {
   type IndirectFlag,
   type StorageFlag,
   type TgpuBuffer,
-  type TgpuComputePass,
   type TgpuReadonly,
   type TgpuRoot,
   type TgpuUniform,
   type WithBinding,
 } from 'typegpu';
-import { layer } from '../passes.ts';
+import { adopt, layer, type AnyComputePass } from '../passes.ts';
 import * as pipelines from '../pipelines.ts';
 import * as workgroup from '../workgroup.ts';
 
@@ -57,7 +56,7 @@ export interface Culling {
    */
   readonly draws: TgpuBuffer<d.WgslArray<d.U32>> & IndirectFlag & StorageFlag;
   /** Records culling of every active layer for the first `rows` entries in the listing. */
-  record(pass: TgpuComputePass, rows: number): void;
+  record(pass: AnyComputePass, rows: number): void;
   initAsync(): Promise<void>;
   destroy(): void;
 }
@@ -221,10 +220,11 @@ export function createCulling(root: TgpuRoot, cfg: WithBinding, options: Culling
         root.device.queue.writeBuffer(root.unwrap(scratchBuffer), orderAt, order, 0, count);
       }
       const groups = Math.ceil(rows / WORKGROUP);
-      pass.setPipeline(marking);
-      pass.dispatchWorkgroups(groups, count);
-      pass.setPipeline(placing);
-      pass.dispatchWorkgroups(groups, count);
+      const into = adopt(pass);
+      into.setPipeline(marking);
+      into.dispatchWorkgroups(groups, count);
+      into.setPipeline(placing);
+      into.dispatchWorkgroups(groups, count);
     },
 
     async initAsync() {

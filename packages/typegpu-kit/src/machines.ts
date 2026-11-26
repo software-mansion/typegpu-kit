@@ -26,7 +26,6 @@ import {
   type StorageFlag,
   type TgpuAccessor,
   type TgpuBuffer,
-  type TgpuComputePass,
   type TgpuGenericFn,
   type TgpuMutableAccessor,
   type TgpuRoot,
@@ -39,6 +38,7 @@ import { unfilled, type Inject } from './inject.ts';
 import * as liveLists from './liveLists.ts';
 import { memo } from './memo.ts';
 import { named } from './named.ts';
+import { adopt, type AnyComputePass } from './passes.ts';
 
 declare const stateBrand: unique symbol;
 /** Identifies a state by its index in machine `N`. Compiles to a literal in WGSL. */
@@ -729,7 +729,7 @@ export interface Machines<N extends string, K extends string, E extends string> 
    * rows in each state of `lists`. Guards and hooks are row-local: another row's state reads from
    * before or after that row's step, and an event to another row may reach this step or the next.
    */
-  step(pass: TgpuComputePass): void;
+  step(pass: AnyComputePass): void;
   /** Compiles the step pipeline and the pipelines of its lists. Calling it is optional. */
   initAsync(): Promise<void>;
   /** Stores one row per slot, with its state and the number of steps spent in it. */
@@ -1109,9 +1109,10 @@ export function create<N extends string, K extends string, E extends string>(
       send,
       flush,
       step(pass) {
+        const into = adopt(pass);
         if (dirtyCount > 0) flush();
-        pass.setPipeline(built());
-        pass.dispatchWorkgroups(Math.ceil((span ? span() : capacity) / WORKGROUP));
+        into.setPipeline(built());
+        into.dispatchWorkgroups(Math.ceil((span ? span() : capacity) / WORKGROUP));
         listed?.finish(pass);
         for (let k = 0; k < flownCount; k++) {
           const slot = flown[k];

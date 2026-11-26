@@ -1,4 +1,5 @@
 import { memo, passInto } from '../memo.ts';
+import { adopt, type AnyRenderPass } from '../passes.ts';
 import { type SizeSource } from '../targets.ts';
 import { srgbToLinear } from '@typegpu/color';
 import {
@@ -7,7 +8,6 @@ import {
   std,
   tgpu,
   type TgpuCommandEncoder,
-  type TgpuRenderCommands,
   type TgpuRoot,
   type TgpuUniform,
 } from 'typegpu';
@@ -63,8 +63,8 @@ export interface Fxaa {
   readonly settings: TgpuUniform<typeof Settings>;
   /** Compiles the pipeline. Calling it is optional. */
   initAsync(): Promise<void>;
-  /** Draws into the caller's pass, which usually targets the canvas. */
-  draw(pass: TgpuRenderCommands): void;
+  /** Draws into the caller's pass, TypeGPU's or a raw one, which usually targets the canvas. */
+  draw(pass: AnyRenderPass): void;
   /**
    * Opens a pass on `view`, such as `surface.view(frame)`, draws into it and ends it. Optional
    * timer writes measure the pass.
@@ -225,11 +225,12 @@ export function create(root: TgpuRoot, options: Options): Fxaa {
   });
 
   const written: [number, number] = [0, 0];
-  const draw = (pass: TgpuRenderCommands) => {
+  const draw = (pass: AnyRenderPass) => {
+    const target = adopt(pass);
     const texture = source.output;
     if (fitRegion(written, texture, source.region)) part.write(written);
-    pass.setPipeline(bound(texture));
-    pass.draw(3);
+    target.setPipeline(bound(texture));
+    target.draw(3);
   };
 
   const into = passInto();

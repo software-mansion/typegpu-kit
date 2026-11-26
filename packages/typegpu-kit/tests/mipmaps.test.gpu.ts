@@ -76,13 +76,13 @@ const pattern = (width: number, height: number, seed: number): Level => ({
   texels: Array.from({ length: width * height }, (_, i) => ((i * 37 + seed) % 23) * 4),
 });
 
-it('fills farthest depths from a source, and after a resize through the same pipeline', async () => {
+it('fills farthest depths from a source, and after a resize into a raw pass with the same pipeline', async () => {
   const root = await gpuRoot();
   const made = vi.spyOn(root.device, 'createComputePipeline');
   let farthest: mipmaps.Mipmaps | undefined;
-  for (const [depth, size, levels] of [
-    [pattern(13, 9, 5), 8, 4],
-    [pattern(21, 30, 2), 16, 5],
+  for (const [depth, size, levels, raw] of [
+    [pattern(13, 9, 5), 8, 4, false],
+    [pattern(21, 30, 2), 16, 5, true],
   ] as const) {
     const source = root
       .createTexture({ size: [depth.width, depth.height], format: 'r32float' })
@@ -95,11 +95,13 @@ it('fills farthest depths from a source, and after a resize through the same pip
       ? farthest.of(pyramid, source)
       : mipmaps.create(root, pyramid, { combine: mipmaps.largest, source });
 
-    const encoder = root.createCommandEncoder();
-    const pass = encoder.beginComputePass();
+    const encoder = root.device.createCommandEncoder();
+    const pass = raw
+      ? encoder.beginComputePass()
+      : root.createCommandEncoder(encoder).beginComputePass();
     farthest.record(pass);
     pass.end();
-    encoder.submit();
+    root.device.queue.submit([encoder.finish()]);
 
     let above: Level = depth;
     for (const level of await read(root, root.unwrap(pyramid), 0)) {

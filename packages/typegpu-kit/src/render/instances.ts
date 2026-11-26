@@ -41,7 +41,6 @@ import {
   type TgpuBindGroup,
   type TgpuBuffer,
   type TgpuCommandEncoder,
-  type TgpuComputePass,
   type TgpuRenderCommands,
   type TgpuRenderPass,
   type TgpuRenderPipeline,
@@ -489,7 +488,7 @@ export interface Renderer extends passes.Compound<Lit, Corner> {
    * `flush()` and any kernels that move instances, before drawing. Throws unless the renderer has
    * `cull: true`.
    */
-  cull(pass: TgpuComputePass): void;
+  cull(pass: passes.AnyComputePass): void;
   /**
    * Returns this renderer with `fill` applied to every pipeline and kernel it builds. The fill
    * runs after lighting and before the pass camera. Use it for resources read by kind callbacks,

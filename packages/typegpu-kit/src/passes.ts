@@ -33,6 +33,7 @@ import {
   type TgpuBindGroup,
   type TgpuBuffer,
   type TgpuCommandEncoder,
+  type TgpuComputePass,
   type TgpuFragmentFn,
   type TgpuRenderCommands,
   type TgpuRenderPass,
@@ -1848,4 +1849,46 @@ export function create(
     new Set(),
     new Map(),
   );
+}
+
+/** A render pass that a kit method draws into: TypeGPU's, or a raw one that a caller opened. */
+export type AnyRenderPass = TgpuRenderCommands | GPURenderPassEncoder;
+
+/** A compute pass that a kit method records into: TypeGPU's, or a raw one that a caller opened. */
+export type AnyComputePass = TgpuComputePass | GPUComputePassEncoder;
+
+type Methods = Record<string, (...args: unknown[]) => unknown>;
+
+const DRAWS = ['draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect'];
+const DISPATCHES = ['dispatchWorkgroups', 'dispatchWorkgroupsIndirect'];
+
+/**
+ * Returns a TypeGPU pass unchanged and wraps a raw one, so a method sets its pipelines and draws or
+ * dispatches into either the same way. The wrap binds each pipeline to the raw pass with
+ * `pipeline.with(raw)`, which is how TypeGPU records into a raw pass. A method that hands the pass
+ * on to another method hands on the caller's pass.
+ *
+ * @hidden
+ */
+export function adopt(
+  pass: AnyComputePass,
+): Pick<TgpuComputePass, 'setPipeline' | 'dispatchWorkgroups' | 'dispatchWorkgroupsIndirect'>;
+export function adopt(
+  pass: AnyRenderPass,
+): Pick<
+  TgpuRenderCommands,
+  'setPipeline' | 'draw' | 'drawIndexed' | 'drawIndirect' | 'drawIndexedIndirect'
+>;
+export function adopt(pass: AnyComputePass | AnyRenderPass): unknown {
+  if ('resourceType' in pass) return pass;
+  let bound: Methods | undefined;
+  const wrap: Methods = {
+    setPipeline(pipeline) {
+      bound = (pipeline as Methods).with!(pass) as Methods;
+    },
+  };
+  for (const name of 'dispatchWorkgroups' in pass ? DISPATCHES : DRAWS) {
+    wrap[name] = (...args) => bound![name]!(...args);
+  }
+  return wrap;
 }
