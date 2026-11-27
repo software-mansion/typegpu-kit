@@ -88,11 +88,16 @@ describe('impostors', () => {
     const view = ['begin-render', 'draw-indexed', 'draw-indexed', 'end-render'];
     const views = capture.slice(fit.length, fit.length + 9 * 4);
     expect(views).toEqual(Array.from({ length: 9 }, () => view).flat());
-    // Four levels below the first of 16 texels, nine layers each, of both textures.
-    const level = ['begin-render', 'draw', 'end-render'];
-    expect(capture.slice(fit.length + 9 * 4, -1)).toEqual(
-      Array.from({ length: 2 * 4 * 9 }, () => level).flat(),
-    );
+    // For each texture, kernels fill the four levels below the first of 16 texels, every layer
+    // at once, and copies move them in. A pass per layer and level would reach Firefox's 2048
+    // passes per submit.
+    const mips = [
+      'begin-compute',
+      ...Array.from({ length: 4 }, () => 'dispatch'),
+      'end-compute',
+      ...Array.from({ length: 4 }, () => 'copy-texture'),
+    ];
+    expect(capture.slice(fit.length + 9 * 4, -1)).toEqual([...mips, ...mips]);
     expect(capture.at(-1)).toBe('submit');
   });
 
@@ -125,10 +130,10 @@ describe('impostors', () => {
       .record(encoder);
     encoder.submit();
 
-    // The sphere's four kernels, a pipeline for each of the three looks, and two that make
+    // The sphere's four kernels, a pipeline for each of the three looks, and three that make
     // mipmaps.
-    expect(log.pipelines - pipelines).toBe(9);
-    expect(culls.toSorted()).toEqual(['back', 'back', 'none', undefined, undefined]);
+    expect(log.pipelines - pipelines).toBe(10);
+    expect(culls.toSorted()).toEqual(['back', 'back', 'none']);
     const fragments = log.shaders.slice(shaders).filter((code) => code.includes('@fragment'));
     expect(fragments.filter((code) => code.includes('discard'))).toHaveLength(1);
     expect(fragments.filter((code) => code.includes('front_facing'))).toHaveLength(1);
@@ -144,9 +149,9 @@ describe('impostors', () => {
     const encoder = root.createCommandEncoder();
     atlas.record(encoder);
     encoder.submit();
-    // The atlas's two textures, its three multisampled targets, the sphere, its extents and the
-    // parts.
-    expect(log.alive()).toHaveLength(before.length + 8);
+    // The atlas's two textures, its three multisampled targets, the two that fill its mips, the
+    // sphere, its extents and the parts.
+    expect(log.alive()).toHaveLength(before.length + 10);
     atlas.destroy();
     expect(log.alive()).toEqual(before);
   });

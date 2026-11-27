@@ -9,16 +9,18 @@
  * @binds 1 storage: the subject's sphere, in the impostors' renderer's pipelines
  * @binds 1 storage: the kind's device rows, where its surface reads the captured `phase`, beside
  * the host rows its transform reads
- * @owns 5 textures, 3 buffers, 1 or 2 samplers, 5 to 8 pipelines, mipmaps: the atlas's colours
- * and its normals with depth, the multisampled targets that draw them, the subject's sphere, the
- * extents it is fitted from and its pieces; the atlas's sampler, and the pool's the first time a
- * capture binds its textures; four kernels that fit the sphere, a pipeline for each look of the
- * subject's meshes, one-sided or two-sided, masked or not, that capture it; the mipmaps of each
- * atlas texture
+ * @owns 7 textures, 3 buffers, 1 or 2 samplers, 5 to 8 pipelines, mipmaps: the atlas's colours
+ * and its normals with depth, the multisampled targets that draw them, the two that fill their
+ * mips for copies to the atlas, the subject's sphere, the extents it is fitted from and its
+ * pieces; the atlas's sampler, and the pool's the first time a capture binds its textures; four
+ * kernels that fit the sphere, a pipeline for each look of the subject's meshes, one-sided or
+ * two-sided, masked or not, that capture it; the mipmaps that fill the two textures, for colour
+ * and for normals
  * @records `atlas.record(frame)` once while loading, after what moves the subject's poses and
  * before the passes that draw the atlas
  */
 
+import { linearToSrgb, srgbToLinear } from '@typegpu/color';
 import * as cameras from '../cameras.ts';
 import * as mipmaps from '../mipmaps.ts';
 import * as passes from '../passes.ts';
@@ -188,6 +190,20 @@ const oneLayer = (layer: number) => ({
   baseArrayLayer: layer,
   arrayLayerCount: 1,
 });
+
+/** Averages four linear texels and encodes the result as sRGB. */
+const meanToSrgb: mipmaps.Combine = (a, b, c, e) => {
+  'use gpu';
+  const mean = (a + b + c + e) * 0.25;
+  return d.vec4f(linearToSrgb(mean.xyz), mean.w);
+};
+
+/** Averages four sRGB-encoded texels in linear light and encodes the result. */
+const srgbMean: mipmaps.Combine = (a, b, c, e) => {
+  'use gpu';
+  const sum = srgbToLinear(a.xyz) + srgbToLinear(b.xyz) + srgbToLinear(c.xyz) + srgbToLinear(e.xyz);
+  return d.vec4f(linearToSrgb(sum * 0.25), (a.w + b.w + c.w + e.w) * 0.25);
+};
 
 const missing = unfilled("an impostor's atlas", 'atlas', 'an `impostors.create`');
 const albedoAtlas = tgpu.accessor(d.texture2dArray(d.f32), missing);
@@ -934,9 +950,34 @@ export function create(
   const resolves = atlases.map((texture) =>
     Array.from({ length: layers }, (_, layer) => texture.createView('render', oneLayer(layer))),
   );
-  const mipmapping = atlases.map((texture) =>
-    mipmaps.create(root, texture, { combine: mipmaps.mean }),
-  );
+
+  // A render pass per layer and mip level can reach 2048 passes in one submit, where Firefox loses
+  // the device. Kernels fill every layer of a level at once in storage textures, which the atlases
+  // lack to keep their sampling compressed, and the levels are copied over. `first` holds mip 1 and
+  // `rest` the mips below it, for one atlas texture at a time, with albedo sRGB-encoded.
+  const scratch = (side: number, mipLevelCount: number) =>
+    root
+      .createTexture({ size: [side, side, layers], format: 'rgba8unorm', mipLevelCount })
+      .$usage('storage', 'sampled');
+  const first = scratch(size / 2, 1);
+  const rest = scratch(size / 4, levels - 2);
+  const normalRest = mipmaps.create(root, rest, { combine: mipmaps.mean, source: first });
+  const mipmapping = [
+    {
+      atlas: albedo,
+      first: mipmaps.create(root, first, { combine: meanToSrgb, source: albedo }),
+      rest: mipmaps.create(root, rest, { combine: srgbMean, source: first }),
+    },
+    { atlas: normals, first: normalRest.of(first, normals), rest: normalRest },
+  ];
+  const copies = Array.from({ length: levels - 1 }, (_, level) => {
+    const side = size >> (level + 1);
+    return {
+      from: level === 0 ? { texture: first, mipLevel: 0 } : { texture: rest, mipLevel: level - 1 },
+      mipLevel: level + 1,
+      extent: [side, side, layers] as const,
+    };
+  });
 
   const record = (into: Frame | TgpuCommandEncoder) => {
     const encoder = encoderOf(into);
@@ -992,11 +1033,24 @@ export function create(
       pass.end();
     }
 
-    for (const each of mipmapping) each.record(encoder);
+    const raw = root.unwrap(encoder);
+    for (const mips of mipmapping) {
+      const filling = encoder.beginComputePass();
+      mips.first.record(filling);
+      mips.rest.record(filling);
+      filling.end();
+      for (const { from, mipLevel, extent } of copies) {
+        raw.copyTextureToTexture(
+          { texture: root.unwrap(from.texture), mipLevel: from.mipLevel },
+          { texture: root.unwrap(mips.atlas), mipLevel },
+          extent,
+        );
+      }
+    }
   };
 
   const destroy = () => {
-    for (const texture of [albedo, normals, albedoSamples, normalSamples, depthSamples]) {
+    for (const texture of [...atlases, albedoSamples, normalSamples, depthSamples, first, rest]) {
       texture.destroy();
     }
     partBuffer.destroy();

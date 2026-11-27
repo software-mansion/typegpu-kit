@@ -96,6 +96,6 @@ describeExample(
     gap: 0.05,
     options: { count: 256, random: () => 0.5 },
     features: ['indirect-first-instance'],
-    pipelines: 55,
+    pipelines: 56,
   },
 );
